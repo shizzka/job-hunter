@@ -1,0 +1,10 @@
+# Core HTTP + async
+aiohttp>=3.10,<4
+aiohttp-socks>=0.9,<1
+
+# LLM client
+openai>=1.50,<2
+
+# Browser automation
+playwright>=1.50,<2
+
