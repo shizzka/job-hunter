@@ -177,6 +177,7 @@ Default state directory: `~/.job-hunter/`
 Important files:
 
 - `seen_vacancies.json`
+- `run_history.jsonl`
 - `resume.md`
 - `runtime_status.json`
 - `hh_cookies.json`

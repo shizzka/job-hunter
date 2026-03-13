@@ -56,12 +56,47 @@ def mark_seen(vacancy_id: str, vacancy: dict, action: str = "applied"):
 def stats() -> dict:
     """Статистика по обработанным вакансиям."""
     data = _load()
-    applied = sum(1 for v in data.values() if v.get("action") == "applied")
-    skipped = sum(
-        1
-        for v in data.values()
-        if (
-            action := (v.get("action") or "")
-        ).startswith(("skipped", "apply_failed", "manual_"))
-    )
-    return {"total": len(data), "applied": applied, "skipped": skipped}
+    summary = {
+        "total": len(data),
+        "applied": 0,
+        "skipped": 0,
+        "manual": 0,
+        "by_source": {},
+        "by_action": {},
+    }
+
+    for vacancy_id, payload in data.items():
+        action = (payload.get("action") or "").strip()
+        if ":" in vacancy_id:
+            source = vacancy_id.split(":", 1)[0]
+        elif vacancy_id.isdigit():
+            # Исторически hh.ru хранился как голый numeric vacancy id без префикса.
+            source = "hh"
+        else:
+            source = "unknown"
+
+        bucket = summary["by_source"].setdefault(
+            source,
+            {
+                "total": 0,
+                "applied": 0,
+                "skipped": 0,
+                "manual": 0,
+            },
+        )
+        bucket["total"] += 1
+        summary["by_action"][action or "unknown"] = summary["by_action"].get(action or "unknown", 0) + 1
+
+        if action == "applied":
+            summary["applied"] += 1
+            bucket["applied"] += 1
+        elif action.startswith("manual_"):
+            summary["manual"] += 1
+            summary["skipped"] += 1
+            bucket["manual"] += 1
+            bucket["skipped"] += 1
+        elif action.startswith(("skipped", "apply_failed")):
+            summary["skipped"] += 1
+            bucket["skipped"] += 1
+
+    return summary

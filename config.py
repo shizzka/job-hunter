@@ -85,6 +85,7 @@ MAX_AUTO_APPLICATIONS_PER_SOURCE = _env_int(
 # Уже обработанные вакансии (хранятся в файле)
 SEEN_VACANCIES_FILE = os.path.join(JOB_HUNTER_HOME, "seen_vacancies.json")
 RUNTIME_STATUS_FILE = os.path.join(JOB_HUNTER_HOME, "runtime_status.json")
+RUN_HISTORY_FILE = os.path.join(JOB_HUNTER_HOME, "run_history.jsonl")
 
 # ── LLM (для оценки релевантности и cover letter) ────────────────────────
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")

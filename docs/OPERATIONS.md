@@ -178,6 +178,7 @@ tail -f /tmp/job-hunter.log | rg 'Apply|manual|Score:|ERROR|WARNING'
 Runtime status is persisted to:
 
 - `~/.job-hunter/runtime_status.json`
+- `~/.job-hunter/run_history.jsonl` for completed search runs
 
 That file is intended for dashboards or external bots that need a short answer like:
 
@@ -186,6 +187,8 @@ That file is intended for dashboards or external bots that need a short answer l
 - idle
 - stopped
 - current phase
+
+`./run.sh stats` reads both the cumulative `seen_vacancies.json` state and the recent search history from `run_history.jsonl`.
 
 ## Debugging
 

@@ -141,6 +141,97 @@ def _write_runtime_status(
         log.warning("Failed to write runtime status: %s", exc)
 
 
+def _append_run_history(entry: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(config.RUN_HISTORY_FILE), exist_ok=True)
+        with open(config.RUN_HISTORY_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        log.warning("Failed to append run history: %s", exc)
+
+
+def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -> None:
+    entry = {
+        "kind": "search",
+        "ok": ok,
+        "mode": "dry-run" if dry_run else "search",
+        "found": result.get("found", 0),
+        "applied": result.get("applied", 0),
+        "skipped": result.get("skipped", 0),
+        "source_stats": result.get("source_stats", {}),
+        "error": error,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    _append_run_history(entry)
+
+
+def _load_recent_run_history(limit: int = 5) -> list[dict]:
+    if limit <= 0 or not os.path.exists(config.RUN_HISTORY_FILE):
+        return []
+
+    try:
+        with open(config.RUN_HISTORY_FILE, encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+    except Exception as exc:
+        log.warning("Failed to read run history: %s", exc)
+        return []
+
+    items = []
+    for line in lines[-limit:]:
+        try:
+            items.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return list(reversed(items))
+
+
+def _format_stats_source_breakdown(by_source: dict) -> list[str]:
+    lines = []
+    for source in SOURCE_ORDER:
+        bucket = by_source.get(source)
+        if not bucket:
+            continue
+        lines.append(
+            "  "
+            f"{_source_label(source):<10} total {bucket.get('total', 0):>4} | "
+            f"applied {bucket.get('applied', 0):>3} | "
+            f"manual {bucket.get('manual', 0):>3} | "
+            f"skipped {bucket.get('skipped', 0):>3}"
+        )
+
+    for source, bucket in by_source.items():
+        if source in SOURCE_ORDER:
+            continue
+        lines.append(
+            "  "
+            f"{source:<10} total {bucket.get('total', 0):>4} | "
+            f"applied {bucket.get('applied', 0):>3} | "
+            f"manual {bucket.get('manual', 0):>3} | "
+            f"skipped {bucket.get('skipped', 0):>3}"
+        )
+
+    return lines
+
+
+def _format_run_source_stats(source_stats: dict) -> str:
+    if not source_stats:
+        return "-"
+
+    parts = []
+    for source in SOURCE_ORDER:
+        bucket = source_stats.get(source)
+        if not bucket:
+            continue
+        parts.append(
+            f"{_source_label(source, short=True)} "
+            f"new {bucket.get('new', 0)}"
+            f"/rel {bucket.get('relevant', 0)}"
+            f"/app {bucket.get('applied', 0)}"
+            f"/man {bucket.get('manual', 0)}"
+        )
+    return "; ".join(parts) or "-"
+
+
 async def _collect_hh_vacancies(client: HHClient | None) -> list[dict]:
     if client is None:
         return []
@@ -470,6 +561,7 @@ async def do_search(dry_run: bool = False) -> dict:
 
         if not config.HH_ENABLED and not config.SUPERJOB_ENABLED and not config.HABR_ENABLED and not config.GEEKJOB_ENABLED:
             await set_hunter_status("search_done", "Все источники отключены", "idle")
+            _record_search_run(result, dry_run=dry_run, ok=True)
             return result
 
         collected_counts = {}
@@ -609,6 +701,7 @@ async def do_search(dry_run: bool = False) -> dict:
 
         if not all_vacancies:
             await set_hunter_status("search_done", "Новых вакансий нет", "idle")
+            _record_search_run(result, dry_run=dry_run, ok=True)
             return result
 
         applied_count = 0
@@ -1356,10 +1449,12 @@ async def do_search(dry_run: bool = False) -> dict:
             result["skipped"],
             result["source_stats"],
         )
+        _record_search_run(result, dry_run=dry_run, ok=True)
 
     except Exception as e:
         log.error("Search failed: %s", e, exc_info=True)
         await set_hunter_status("error", f"Ошибка поиска: {e}", "idle")
+        _record_search_run(result, dry_run=dry_run, ok=False, error=str(e))
     finally:
         if hh_client:
             await hh_client.stop()
@@ -1488,11 +1583,49 @@ async def do_daemon():
 async def do_stats():
     """Показать статистику."""
     s = seen.stats()
+    recent_runs = _load_recent_run_history(limit=5)
     print(f"\n📊 Статистика Job Hunter")
     print(f"{'='*40}")
     print(f"  Всего обработано: {s['total']}")
     print(f"  Откликов:        {s['applied']}")
+    print(f"  Ручной разбор:   {s['manual']}")
     print(f"  Пропущено:       {s['skipped']}")
+    print()
+
+    by_source = s.get("by_source", {})
+    if by_source:
+        print("По площадкам:")
+        for line in _format_stats_source_breakdown(by_source):
+            print(line)
+        print()
+
+    by_action = s.get("by_action", {})
+    if by_action:
+        print("Топ действий:")
+        for action, count in sorted(by_action.items(), key=lambda item: (-item[1], item[0]))[:8]:
+            print(f"  {action:<28} {count:>4}")
+        print()
+
+    print("Последние прогоны:")
+    if not recent_runs:
+        print("  пока нет истории запусков")
+        print()
+        return
+
+    for run in recent_runs:
+        status = "ok" if run.get("ok") else "err"
+        created_at = run.get("created_at", "—")
+        mode = run.get("mode", "search")
+        found = run.get("found", 0)
+        applied = run.get("applied", 0)
+        skipped = run.get("skipped", 0)
+        print(
+            f"  {created_at} | {mode:<7} | {status:<3} | "
+            f"found {found:<3} | applied {applied:<3} | skipped {skipped:<3}"
+        )
+        print(f"    {_format_run_source_stats(run.get('source_stats', {}))}")
+        if run.get("error"):
+            print(f"    error: {run['error']}")
     print()
 
 

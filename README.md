@@ -183,6 +183,7 @@ Runtime state is intentionally stored outside the repository, by default in `~/.
 - cookies for browser sessions
 - downloaded resume
 - `seen_vacancies.json`
+- `run_history.jsonl`
 - runtime status
 - Playwright debug screenshots and HTML dumps
 
@@ -191,6 +192,15 @@ That keeps the repository safe to publish while preserving personal state locall
 ## Optional Integrations
 
 Telegram notifications and AI Office integration are both optional. If you leave their env variables empty, the core search pipeline still works.
+
+## Built-in Stats
+
+`./run.sh stats` shows:
+
+- cumulative processed/applied/manual/skipped counts from `seen_vacancies.json`;
+- per-source breakdown (`hh.ru`, `Habr Career`, `GeekJob`, `SuperJob`);
+- top action types such as `applied`, `skipped_low_score`, `manual_*`;
+- the last few search runs from `run_history.jsonl`.
 
 ## Known Limitations
 
