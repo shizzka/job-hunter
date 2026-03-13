@@ -26,7 +26,7 @@ Current public status: `OBT` (open beta testing). Expect selector drift, captcha
 | `hh.ru` | Yes | Yes | Yes |
 | `Habr Career` | Yes | Yes | Yes |
 | `SuperJob` | Yes | Yes | Yes |
-| `GeekJob` | Yes | Yes | Not yet |
+| `GeekJob` | Yes | Yes | Yes |
 
 ## How It Works
 
@@ -73,6 +73,7 @@ cp job-hunter.env.example ~/.job-hunter/job-hunter.env
 ./run.sh login
 ./run.sh habr-login
 ./run.sh superjob-login
+./run.sh geekjob-login
 
 ./run.sh dry-run
 ./run.sh search
@@ -122,6 +123,7 @@ Notes:
 - `HABR_SEARCH_PATHS` uses listing paths, not free-text terms.
 - Use `||` as the separator for multiple values.
 - `GeekJob` currently scans the public vacancy listing and relies on the shared filter/LLM stage instead of a source-specific query list.
+- `GeekJob` auto-apply requires a saved browser session from `./run.sh geekjob-login`.
 
 ### Example: Ollama Cloud
 
@@ -157,6 +159,7 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 ./run.sh login
 ./run.sh superjob-login
 ./run.sh habr-login
+./run.sh geekjob-login
 ./run.sh grab-resume
 
 ./run.sh dry-run
@@ -193,7 +196,7 @@ Telegram notifications and AI Office integration are both optional. If you leave
 
 - `hh.ru` and `Habr Career` DOM can change and break selectors.
 - `hh.ru` can trigger captcha after many consecutive auto-applications.
-- `GeekJob` currently works as a manual-review source only.
+- `GeekJob` auto-apply depends on a saved specialist session and can fail if GeekJob changes its JSON/API flow.
 - search defaults are QA-oriented until you override them in env or `config.py`.
 - LLM quality depends entirely on your prompt provider, model, and resume quality.
 

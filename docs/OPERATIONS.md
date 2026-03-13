@@ -108,7 +108,7 @@ LLM_MODEL=gpt-4.1-mini
 Additional source-specific setup:
 
 - `SUPERJOB_API_KEY` for SuperJob search
-- browser login sessions for `hh.ru`, `Habr Career`, `SuperJob`
+- browser login sessions for `hh.ru`, `Habr Career`, `SuperJob`, `GeekJob`
 
 Optional extras:
 
@@ -121,8 +121,9 @@ Optional extras:
 2. Run `./run.sh login` for `hh.ru`.
 3. Run `./run.sh habr-login` for `Habr Career`.
 4. Run `./run.sh superjob-login` for `SuperJob`.
-5. Run `./run.sh grab-resume` to save the working resume.
-6. Run `./run.sh dry-run` before `./run.sh search`.
+5. Run `./run.sh geekjob-login` for `GeekJob`.
+6. Run `./run.sh grab-resume` to save the working resume.
+7. Run `./run.sh dry-run` before `./run.sh search`.
 
 ## Runtime Commands
 

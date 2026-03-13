@@ -4,6 +4,7 @@ set -euo pipefail
 # Job Hunter — скрипт запуска
 # Использование:
 #   ./run.sh login       — ручной логин
+#   ./run.sh geekjob-login — ручной логин в GeekJob
 #   ./run.sh search      — один прогон
 #   ./run.sh check       — проверка приглашений
 #   ./run.sh daemon      — демон (в фоне)
@@ -35,6 +36,9 @@ case "$MODE" in
         ;;
     habr-login)
         $VENV agent.py --habr-login
+        ;;
+    geekjob-login)
+        $VENV agent.py --geekjob-login
         ;;
     search)
         $VENV agent.py --search
@@ -79,7 +83,7 @@ case "$MODE" in
         pkill -f "agent.py --daemon" && echo "Stopped" || echo "Not running"
         ;;
     *)
-        echo "Usage: $0 {login|superjob-login|habr-login|search|check|daemon|stats|dry-run|superjob-dry-run|superjob-search|habr-dry-run|habr-search|geekjob-dry-run|geekjob-search|grab-resume|stop}"
+        echo "Usage: $0 {login|superjob-login|habr-login|geekjob-login|search|check|daemon|stats|dry-run|superjob-dry-run|superjob-search|habr-dry-run|habr-search|geekjob-dry-run|geekjob-search|grab-resume|stop}"
         exit 1
         ;;
 esac

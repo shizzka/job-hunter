@@ -52,13 +52,15 @@ Hybrid client:
 
 ### `geekjob_client.py`
 
-Pure `aiohttp` + SSR HTML parsing:
+Hybrid client:
 
 - list pages
 - vacancy details
+- browser session login
 - normalized output
+- JSON-based auto-apply
 
-At the moment it is `manual-only` after matching.
+Search uses SSR HTML parsing, while apply uses the site's own JSON endpoint with a saved browser session.
 
 ### `matcher.py`
 
@@ -156,7 +158,7 @@ Behavior depends on source:
 - `hh.ru`: browser auto-apply when possible
 - `Habr Career`: browser auto-apply with source-specific rate limiting
 - `SuperJob`: browser auto-apply, manual fallback for external ATS flows
-- `GeekJob`: always manual fallback
+- `GeekJob`: JSON auto-apply with manual fallback when the user session is missing or the site rejects the request
 
 When auto-apply fails safely, the vacancy is converted into a manual-review task instead of being dropped.
 
@@ -179,6 +181,7 @@ Important files:
 - `runtime_status.json`
 - `hh_cookies.json`
 - `habr_cookies.json`
+- `geekjob_cookies.json`
 - `superjob_cookies.json`
 - `state/debug_*.html|png`
 
@@ -204,7 +207,7 @@ Search is API-based. Apply is browser-based because practical site behavior is m
 
 ### `GeekJob`
 
-The most lightweight source in the codebase. Easy to extend further because list pages and details are stable SSR HTML.
+List and detail parsing are lightweight SSR HTML. Auto-apply is implemented through the site's own `/json/respond/vacancy` flow using saved cookies from an interactive login.
 
 ## Extension Guide
 
@@ -226,4 +229,3 @@ The project intentionally prefers a safe failure mode:
 - if LLM fails, do not auto-apply blindly;
 - if a site selector breaks, create manual work instead of losing a good lead;
 - if optional integrations are missing, the main search flow keeps running.
-

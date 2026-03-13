@@ -165,6 +165,10 @@ HABR_SEARCH_PATHS = _env_list("HABR_SEARCH_PATHS", [
 # ── GeekJob ────────────────────────────────────────────────────────────────
 GEEKJOB_ENABLED = _env_flag("GEEKJOB_ENABLED", "1")
 GEEKJOB_BASE_URL = "https://geekjob.ru"
+GEEKJOB_LOGIN_URL = f"{GEEKJOB_BASE_URL}/signin"
+GEEKJOB_COOKIES_FILE = os.path.join(JOB_HUNTER_HOME, "geekjob_cookies.json")
+GEEKJOB_AUTO_APPLY = _env_flag("GEEKJOB_AUTO_APPLY", "1")
+GEEKJOB_RESUME_ID = os.getenv("GEEKJOB_RESUME_ID", "").strip()
 GEEKJOB_SEARCH_PAGES = 5
 
 # ── Резюме ────────────────────────────────────────────────────────────────
