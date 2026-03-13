@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0
+## v0.2.0-obt
 
 - added `GeekJob` as a searchable source
 - added browser-based `SuperJob` login/apply flow
@@ -12,3 +12,4 @@
 - made `AI Office` and Telegram integrations optional via env
 - documented setup, architecture, and operations
 - added an MIT `LICENSE` for public release
+- marked the first public build as `OBT`

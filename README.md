@@ -1,8 +1,10 @@
-# Job Hunter v0.2.0
+# Job Hunter v0.2.0 OBT
 
 `Job Hunter` is a Python automation tool for searching QA/testing vacancies across multiple job boards, scoring them with an LLM, and sending auto-applications where the platform allows it.
 
 It is designed for personal use first, but the repository is now structured so other people can clone it, configure their own accounts, and run it on their own machine.
+
+Current public status: `OBT` (open beta testing). Expect selector drift, captcha limits, and platform-specific edge cases.
 
 ## What It Does
 
