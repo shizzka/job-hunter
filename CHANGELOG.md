@@ -11,4 +11,4 @@
 - removed local secret fallbacks from `run.sh`
 - made `AI Office` and Telegram integrations optional via env
 - documented setup, architecture, and operations
-
+- added an MIT `LICENSE` for public release

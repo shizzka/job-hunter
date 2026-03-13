@@ -173,3 +173,7 @@ Telegram notifications and AI Office integration are both optional. If you leave
 - [Architecture](docs/ARCHITECTURE.md)
 - [Operations](docs/OPERATIONS.md)
 - [Changelog](CHANGELOG.md)
+
+## License
+
+MIT. See [LICENSE](LICENSE).
