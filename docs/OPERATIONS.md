@@ -31,6 +31,61 @@ Minimum practical setup:
 - `LLM_BASE_URL`
 - `LLM_MODEL`
 
+## LLM Provider Setup
+
+The vacancy scoring and cover-letter generation go through the provider configured by:
+
+- `LLM_BASE_URL`
+- `JOB_HUNTER_LLM_KEY`
+- `LLM_MODEL`
+
+The code uses an OpenAI-compatible client, so the provider must expose the `chat.completions` style API.
+
+### Option A: Ollama Cloud / `ollama.com`
+
+If you already use the hosted Ollama endpoint, configure:
+
+```env
+LLM_BASE_URL=https://ollama.com/v1
+JOB_HUNTER_LLM_KEY=your-ollama-cloud-key
+LLM_MODEL=deepseek-v3.1:671b
+```
+
+This is the shape used in the original local setup of this project.
+
+### Option B: local Ollama
+
+Install Ollama, pull a model, and run the server:
+
+```bash
+ollama pull qwen2.5:14b
+ollama serve
+```
+
+Then configure:
+
+```env
+LLM_BASE_URL=http://127.0.0.1:11434/v1
+JOB_HUNTER_LLM_KEY=ollama
+LLM_MODEL=qwen2.5:14b
+```
+
+Notes:
+
+- `JOB_HUNTER_LLM_KEY` can be any non-empty placeholder for local Ollama.
+- The model must already exist locally via `ollama pull`.
+- If you use a very small local model, vacancy scoring quality will drop noticeably.
+
+### Option C: other hosted OpenAI-compatible providers
+
+Any hosted provider that supports the OpenAI `chat.completions` interface should work:
+
+```env
+LLM_BASE_URL=https://api.openai.com/v1
+JOB_HUNTER_LLM_KEY=your-key
+LLM_MODEL=gpt-4.1-mini
+```
+
 Additional source-specific setup:
 
 - `SUPERJOB_API_KEY` for SuperJob search
@@ -163,4 +218,3 @@ Files that should stay local:
 - local assistant notes
 
 The provided `.gitignore` is set up to keep those out of version control.
-

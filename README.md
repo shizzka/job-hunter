@@ -37,6 +37,16 @@ It is designed for personal use first, but the repository is now structured so o
 
 More detail: [Architecture](docs/ARCHITECTURE.md)
 
+## LLM Setup
+
+`Job Hunter` talks to the matcher through an OpenAI-compatible API. That means you can use:
+
+- OpenAI
+- Ollama Cloud / `ollama.com`
+- a local `Ollama` server exposing the OpenAI-compatible `/v1` endpoint
+
+The scoring step and cover-letter generation both use this provider.
+
 ## Quick Start
 
 1. Create and activate a virtual environment.
@@ -84,6 +94,34 @@ Important variables:
 - `JOB_HUNTER_HOME`: directory for cookies, resume, seen state, runtime status, screenshots
 
 See the full template in [job-hunter.env.example](job-hunter.env.example).
+
+### Example: Ollama Cloud
+
+```env
+LLM_BASE_URL=https://ollama.com/v1
+JOB_HUNTER_LLM_KEY=your-ollama-cloud-key
+LLM_MODEL=deepseek-v3.1:671b
+```
+
+### Example: local Ollama
+
+1. Install Ollama on your machine.
+2. Pull a chat-capable model.
+3. Make sure the local server is running.
+4. Point `Job Hunter` at the local OpenAI-compatible endpoint.
+
+```bash
+ollama pull qwen2.5:14b
+ollama serve
+```
+
+```env
+LLM_BASE_URL=http://127.0.0.1:11434/v1
+JOB_HUNTER_LLM_KEY=ollama
+LLM_MODEL=qwen2.5:14b
+```
+
+For local Ollama the API key can be any non-empty placeholder string, because the local server usually does not enforce hosted-style auth.
 
 ## Commands
 
@@ -135,4 +173,3 @@ Telegram notifications and AI Office integration are both optional. If you leave
 - [Architecture](docs/ARCHITECTURE.md)
 - [Operations](docs/OPERATIONS.md)
 - [Changelog](CHANGELOG.md)
-
