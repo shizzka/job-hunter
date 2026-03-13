@@ -31,6 +31,25 @@ Minimum practical setup:
 - `LLM_BASE_URL`
 - `LLM_MODEL`
 
+## Search Target Customization
+
+The shipped defaults are QA-oriented, but they are only defaults.
+
+You can customize source search targets either by editing [config.py](../config.py) or by overriding them in your env file:
+
+```env
+HH_SEARCH_QUERIES=QA engineer||SDET||automation tester
+SUPERJOB_SEARCH_QUERIES=QA||qa engineer||sdet
+HABR_SEARCH_PATHS=/vacancies/testirovschik_qa/remote||/vacancies/devops/remote
+```
+
+Rules:
+
+- use `||` as a separator;
+- `HH_SEARCH_QUERIES` and `SUPERJOB_SEARCH_QUERIES` are free-text queries;
+- `HABR_SEARCH_PATHS` expects listing paths, not search phrases;
+- `GeekJob` currently does not expose a source-specific query list and is filtered later in the shared pipeline.
+
 ## LLM Provider Setup
 
 The vacancy scoring and cover-letter generation go through the provider configured by:

@@ -15,6 +15,21 @@ def _env_int(name: str, default: str) -> int:
         return int(default)
 
 
+def _env_list(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return list(default)
+
+    values = []
+    normalized = raw.replace("\r", "\n")
+    for line in normalized.split("\n"):
+        for item in line.split("||"):
+            item = item.strip()
+            if item:
+                values.append(item)
+    return values or list(default)
+
+
 def _infer_superjob_client_id(secret_key: str) -> int:
     match = re.match(r"^v\d+\.[^.]+\.(\d+)\.", (secret_key or "").strip())
     return int(match.group(1)) if match else 0
@@ -30,7 +45,7 @@ HH_COOKIES_FILE = os.path.join(JOB_HUNTER_HOME, "hh_cookies.json")
 HH_STATE_DIR = os.path.join(JOB_HUNTER_HOME, "state")
 
 # Поисковые запросы (каждый будет искаться отдельно)
-SEARCH_QUERIES = [
+SEARCH_QUERIES = _env_list("HH_SEARCH_QUERIES", [
     "тестировщик",
     "QA engineer",
     "QA тестировщик",
@@ -38,7 +53,7 @@ SEARCH_QUERIES = [
     "инженер по тестированию",
     "функциональное тестирование",
     "тестировщик веб приложений",
-]
+])
 
 # Фильтры поиска
 # Несколько наборов: (area, schedule)
@@ -93,7 +108,7 @@ SUPERJOB_COUNT_PER_PAGE = 100
 SUPERJOB_SEARCH_PAGES = 3
 # Для SuperJob держим более узкий набор запросов: широкие фразы вроде
 # "тестировщик" дают слишком много нерелевантных админских вакансий.
-SUPERJOB_SEARCH_QUERIES = [
+SUPERJOB_SEARCH_QUERIES = _env_list("SUPERJOB_SEARCH_QUERIES", [
     "QA",
     "qa engineer",
     "qa specialist",
@@ -102,7 +117,7 @@ SUPERJOB_SEARCH_QUERIES = [
     "инженер по тестированию",
     "инженер по качеству",
     "тестировщик ПО",
-]
+])
 SUPERJOB_REMOTE_COUNTRIES = [
     (1, "Россия"),
     (10, "Беларусь"),
@@ -143,9 +158,9 @@ HABR_MIN_SECONDS_BETWEEN_APPLICATIONS = _env_int(
     "10",
 )
 HABR_SEARCH_PAGES = 3
-HABR_SEARCH_PATHS = [
+HABR_SEARCH_PATHS = _env_list("HABR_SEARCH_PATHS", [
     "/vacancies/testirovschik_qa/remote",
-]
+])
 
 # ── GeekJob ────────────────────────────────────────────────────────────────
 GEEKJOB_ENABLED = _env_flag("GEEKJOB_ENABLED", "1")

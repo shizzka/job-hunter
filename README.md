@@ -99,6 +99,30 @@ Important variables:
 
 See the full template in [job-hunter.env.example](job-hunter.env.example).
 
+## Customizing Search Targets
+
+The default configuration is QA-focused because that is the original use case, but the project is not limited to QA jobs.
+
+You can change search targets in two ways:
+
+- edit the defaults in [config.py](config.py);
+- or override them from your env file without touching the code.
+
+Source-specific env overrides:
+
+```env
+HH_SEARCH_QUERIES=QA engineer||SDET||automation tester
+SUPERJOB_SEARCH_QUERIES=QA||qa engineer||sdet
+HABR_SEARCH_PATHS=/vacancies/testirovschik_qa/remote||/vacancies/devops/remote
+```
+
+Notes:
+
+- `HH_SEARCH_QUERIES` and `SUPERJOB_SEARCH_QUERIES` are free-text queries.
+- `HABR_SEARCH_PATHS` uses listing paths, not free-text terms.
+- Use `||` as the separator for multiple values.
+- `GeekJob` currently scans the public vacancy listing and relies on the shared filter/LLM stage instead of a source-specific query list.
+
 ### Example: Ollama Cloud
 
 ```env
@@ -170,6 +194,7 @@ Telegram notifications and AI Office integration are both optional. If you leave
 - `hh.ru` and `Habr Career` DOM can change and break selectors.
 - `hh.ru` can trigger captcha after many consecutive auto-applications.
 - `GeekJob` currently works as a manual-review source only.
+- search defaults are QA-oriented until you override them in env or `config.py`.
 - LLM quality depends entirely on your prompt provider, model, and resume quality.
 
 ## Docs
