@@ -167,6 +167,7 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 ./run.sh check
 ./run.sh daemon
 ./run.sh stats
+./run.sh digest
 ./run.sh analytics-backfill
 
 ./run.sh superjob-dry-run

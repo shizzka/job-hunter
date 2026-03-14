@@ -175,6 +175,62 @@ async def notify_summary(total_found: int, applied: int, skipped: int, source_st
     await send_message(text)
 
 
+def _format_funnel(funnel: dict) -> str:
+    if not funnel or funnel.get("applied", 0) == 0:
+        return ""
+    return (
+        f"\n\n📊 <b>Воронка</b>\n"
+        f"откликов: {funnel['applied']}\n"
+        f"просмотрено: {funnel['viewed']} ({funnel['response_rate']:.1f}%)\n"
+        f"ожидание: {funnel['pending']} | "
+        f"отказ: {funnel['rejected']} | "
+        f"позитив: {funnel['positive']} ({funnel['positive_rate']:.1f}%)"
+    )
+
+
+def _format_ab_resume(by_resume_variant: dict) -> str:
+    if not by_resume_variant:
+        return ""
+    items = sorted(
+        by_resume_variant.items(),
+        key=lambda item: (-item[1].get("positive_rate", 0), -item[1].get("applications", 0)),
+    )
+    lines = []
+    for variant, b in items:
+        lines.append(
+            f"<b>{variant}</b>: "
+            f"{b.get('applications', 0)} откл, "
+            f"{b.get('viewed', 0)} просм, "
+            f"{b.get('positive', 0)} пос, "
+            f"{b.get('rejected', 0)} отк — "
+            f"resp {b.get('response_rate', 0):.0f}% conv {b.get('positive_rate', 0):.0f}%"
+        )
+    return "\n\n🔬 <b>A/B резюме</b>\n" + "\n".join(lines)
+
+
+async def notify_digest(analytics_summary: dict):
+    """Отправить полный дайджест с воронкой и A/B в Telegram."""
+    if not config.TELEGRAM_BOT_TOKEN or not config.NOTIFY_CHAT_ID:
+        return
+
+    days = analytics_summary.get("days", 30)
+    text = (
+        f"📈 <b>Дайджест за {days} дн.</b>\n\n"
+        f"решений: {analytics_summary.get('decisions', 0)} | "
+        f"автооткликов: {analytics_summary.get('auto_applied', 0)} | "
+        f"manual: {analytics_summary.get('manual', 0)}\n"
+        f"фильтр: {analytics_summary.get('keyword_filtered', 0)} | "
+        f"red flags: {analytics_summary.get('red_flagged', 0)} | "
+        f"low score: {analytics_summary.get('low_score', 0)}"
+    )
+
+    funnel = analytics_summary.get("funnel", {})
+    text += _format_funnel(funnel)
+    text += _format_ab_resume(analytics_summary.get("by_resume_variant", {}))
+
+    await send_message(text)
+
+
 async def close_session():
     global _session
     if _session and not _session.closed:

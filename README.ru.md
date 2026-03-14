@@ -167,6 +167,7 @@ LLM_MODEL=qwen2.5:14b
 ./run.sh check
 ./run.sh daemon
 ./run.sh stats
+./run.sh digest
 ./run.sh analytics-backfill
 
 ./run.sh superjob-dry-run

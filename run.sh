@@ -56,6 +56,9 @@ case "$MODE" in
     stats)
         $VENV agent.py --stats
         ;;
+    digest)
+        $VENV agent.py --digest
+        ;;
     analytics-backfill|backfill)
         $VENV agent.py --analytics-backfill
         ;;
@@ -87,7 +90,7 @@ case "$MODE" in
         pkill -f "agent.py --daemon" && echo "Stopped" || echo "Not running"
         ;;
     *)
-        echo "Usage: $0 {login|superjob-login|habr-login|geekjob-login|search|check|daemon|stats|analytics-backfill|dry-run|superjob-dry-run|superjob-search|habr-dry-run|habr-search|geekjob-dry-run|geekjob-search|grab-resume|stop}"
+        echo "Usage: $0 {login|superjob-login|habr-login|geekjob-login|search|check|daemon|stats|digest|analytics-backfill|dry-run|superjob-dry-run|superjob-search|habr-dry-run|habr-search|geekjob-dry-run|geekjob-search|grab-resume|stop}"
         exit 1
         ;;
 esac

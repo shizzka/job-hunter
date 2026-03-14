@@ -35,7 +35,7 @@ from matcher import evaluate_vacancy, generate_cover_letter
 from office_bridge import office_log, create_task, task_progress, task_complete
 from office_bridge import close_session as close_office_session
 from notifier import (
-    notify_application, notify_invitation, notify_search_started, notify_summary, notify_needs_manual,
+    notify_application, notify_invitation, notify_search_started, notify_summary, notify_digest, notify_needs_manual,
     close_session as close_notify_session,
 )
 from superjob_client import SuperJobClient
@@ -1056,6 +1056,8 @@ async def do_search(dry_run: bool = False) -> dict:
             result["skipped"],
             result["source_stats"],
         )
+        if not dry_run and result["applied"] > 0:
+            await notify_digest(analytics.summarize())
         _record_search_run(result, dry_run=dry_run, ok=True)
 
     except Exception as e:
@@ -1196,6 +1198,14 @@ async def do_daemon():
     log.info("Daemon stopped")
 
 
+async def do_digest():
+    """Отправить дайджест с воронкой и A/B в Telegram."""
+    summary = analytics.summarize()
+    reporting.print_stats()
+    await notify_digest(summary)
+    print("📨 Дайджест отправлен в Telegram")
+
+
 async def do_stats():
     """Показать статистику."""
     reporting.print_stats()
@@ -1292,6 +1302,7 @@ async def main():
     group.add_argument("--check", action="store_true", help="Проверить приглашения")
     group.add_argument("--daemon", action="store_true", help="Демон: поиск + проверка в цикле")
     group.add_argument("--stats", action="store_true", help="Статистика")
+    group.add_argument("--digest", action="store_true", help="Отправить дайджест в Telegram")
     group.add_argument("--analytics-backfill", action="store_true", help="Подтянуть историю в аналитику")
     group.add_argument("--dry-run", action="store_true", help="Поиск без откликов")
     group.add_argument("--grab-resume", action="store_true", help="Скачать резюме с hh.ru")
@@ -1318,6 +1329,8 @@ async def main():
             await do_daemon()
         elif args.stats:
             await do_stats()
+        elif args.digest:
+            await do_digest()
         elif args.analytics_backfill:
             await do_analytics_backfill()
         elif args.dry_run:
