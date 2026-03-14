@@ -14,6 +14,11 @@ job-hunter.env
 
 CODEX.md
 
+.claude/
+web/
+node_modules/
+.next/
+
 .DS_Store
 
 state/
@@ -22,3 +27,12 @@ state/
 seen_vacancies.json
 runtime_status.json
 
+# Internal planning docs kept local only.
+docs/PROJECT_TZ_RU.md
+docs/ANALYTICS_TZ_RU.md
+docs/ROADMAP_RU.md
+docs/BACKLOG_RU.md
+docs/CONTROL_PLANE_TZ_RU.md
+docs/TEST_STRATEGY_RU.md
+docs/MONETIZATION_PRD_RU.md
+docs/MONETIZATION_TZ_RU.md

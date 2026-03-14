@@ -16,7 +16,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import signal
 import sys
 from collections import defaultdict
@@ -28,6 +27,8 @@ import hh_resume_pipeline as hh_pipeline
 import reporting
 import seen
 import analytics
+import search_pipeline
+import apply_orchestrator
 from geekjob_client import GeekJobClient
 from habr_career_client import HabrCareerClient
 from hh_client import HHClient
@@ -72,44 +73,6 @@ _source_label = reporting.source_label
 _format_compact_source_counts = reporting.format_compact_source_counts
 _format_source_progress = reporting.format_source_progress
 
-
-def _vacancy_dedupe_key(vacancy: dict) -> str:
-    url = (vacancy.get("url") or "").split("?", 1)[0].strip().casefold()
-    title = re.sub(r"\s+", " ", vacancy.get("title", "").casefold()).strip()
-    company = re.sub(r"\s+", " ", vacancy.get("company", "").casefold()).strip()
-    location = re.sub(r"\s+", " ", vacancy.get("location", "").casefold()).strip()
-    if title and company:
-        return f"{title}|{company}|{location}"
-    if url:
-        return url
-    return vacancy.get("id", "")
-
-
-def _normalize_match_value(value: str) -> str:
-    return " ".join((value or "").casefold().split())
-
-
-def _vacancy_match_key(title: str, company: str) -> str:
-    return f"{_normalize_match_value(title)}|{_normalize_match_value(company)}"
-
-
-def _get_source_bucket(stats: dict, vacancy: dict) -> dict:
-    source = vacancy.get("source") or "unknown"
-    label = vacancy.get("source_label") or source
-    bucket = stats.setdefault(
-        source,
-        {
-            "label": label,
-            "new": 0,
-            "relevant": 0,
-            "applied": 0,
-            "manual": 0,
-            "rejected": 0,
-        },
-    )
-    if not bucket.get("label"):
-        bucket["label"] = label
-    return bucket
 
 
 def _write_runtime_status(
@@ -164,143 +127,6 @@ def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -
 
 
 
-
-async def _collect_hh_vacancies(client: HHClient | None) -> list[dict]:
-    if client is None:
-        return []
-    if not config.HH_ENABLED:
-        log.info("HH_ENABLED=0, skipping hh.ru source")
-        return []
-
-    if not await client.is_logged_in():
-        log.warning("hh.ru is not logged in, skipping hh source")
-        await office_log("hh_skipped", "hh.ru пропущен: нет авторизации", "thinking")
-        return []
-
-    all_vacancies = []
-    for profile in config.SEARCH_PROFILES:
-        area = profile["area"]
-        schedule = profile.get("schedule", "")
-        area_label = f"area={area}" + (f",schedule={schedule}" if schedule else "")
-        for query in config.SEARCH_QUERIES:
-            for page_num in range(config.SEARCH_PAGES):
-                log.info("HH search: %s [%s] page %d", query, area_label, page_num)
-                vacancies = await client.search_vacancies(
-                    query, page=page_num, area=area, schedule=schedule,
-                )
-
-                new_on_page = 0
-                for vacancy in vacancies:
-                    vid = vacancy.get("id")
-                    if not vid or seen.is_seen(vid):
-                        continue
-                    vacancy["source"] = "hh"
-                    vacancy["source_label"] = "hh.ru"
-                    vacancy["apply_mode"] = "auto"
-                    vacancy["_search_query"] = query
-                    vacancy["_search_profile"] = area_label
-                    all_vacancies.append(vacancy)
-                    new_on_page += 1
-
-                if len(vacancies) < 10 or new_on_page == 0:
-                    break
-
-    return all_vacancies
-
-
-async def _collect_superjob_vacancies(client: SuperJobClient | None) -> list[dict]:
-    if client is None:
-        return []
-    if not config.SUPERJOB_ENABLED:
-        return []
-    if not config.SUPERJOB_API_KEY:
-        log.info("SUPERJOB_API_KEY is not configured, skipping SuperJob source")
-        return []
-
-    all_vacancies = []
-    for profile in config.SUPERJOB_SEARCH_PROFILES:
-        profile_label = profile.get("label", "default")
-        for query in config.SUPERJOB_SEARCH_QUERIES:
-            for page_num in range(config.SUPERJOB_SEARCH_PAGES):
-                log.info("SuperJob search: %s [%s] page %d", query, profile_label, page_num)
-                vacancies, more = await client.search_vacancies(query, page=page_num, profile=profile)
-
-                new_on_page = 0
-                for vacancy in vacancies:
-                    vid = vacancy.get("id")
-                    if not vid or seen.is_seen(vid):
-                        continue
-                    vacancy["_search_query"] = query
-                    vacancy["_search_profile"] = profile_label
-                    all_vacancies.append(vacancy)
-                    new_on_page += 1
-
-                if not vacancies or not more or new_on_page == 0:
-                    break
-
-    return all_vacancies
-
-
-async def _collect_habr_vacancies(client: HabrCareerClient | None) -> list[dict]:
-    if client is None:
-        return []
-    if not config.HABR_ENABLED:
-        return []
-
-    all_vacancies = []
-    for path in config.HABR_SEARCH_PATHS:
-        total_pages = 1
-        for page_num in range(1, config.HABR_SEARCH_PAGES + 1):
-            if page_num > total_pages:
-                break
-
-            log.info("Habr Career search: %s page %d", path, page_num)
-            vacancies, total_pages = await client.search_vacancies(path=path, page=page_num)
-
-            new_on_page = 0
-            for vacancy in vacancies:
-                vid = vacancy.get("id")
-                if not vid or seen.is_seen(vid):
-                    continue
-                vacancy["_search_path"] = path
-                vacancy["_search_profile"] = path
-                all_vacancies.append(vacancy)
-                new_on_page += 1
-
-            if not vacancies or new_on_page == 0:
-                break
-
-    return all_vacancies
-
-
-async def _collect_geekjob_vacancies(client: GeekJobClient | None) -> list[dict]:
-    if client is None:
-        return []
-    if not config.GEEKJOB_ENABLED:
-        return []
-
-    all_vacancies = []
-    total_pages = 1
-    for page_num in range(1, config.GEEKJOB_SEARCH_PAGES + 1):
-        if page_num > total_pages:
-            break
-
-        log.info("GeekJob search: page %d", page_num)
-        vacancies, total_pages = await client.search_vacancies(page=page_num)
-
-        new_on_page = 0
-        for vacancy in vacancies:
-            vid = vacancy.get("id")
-            if not vid or seen.is_seen(vid):
-                continue
-            vacancy["_search_profile"] = f"page={page_num}"
-            all_vacancies.append(vacancy)
-            new_on_page += 1
-
-        if not vacancies or new_on_page == 0:
-            break
-
-    return all_vacancies
 
 
 async def do_login():
@@ -550,27 +376,10 @@ async def do_search(dry_run: bool = False) -> dict:
                 enabled_sources.append("GeekJob")
             await notify_search_started(enabled_sources)
 
-        if config.HH_ENABLED:
-            await set_hunter_status("search_collect", "Собираю hh.ru", "working")
-        hh_vacancies = await _collect_hh_vacancies(hh_client)
-
-        if config.SUPERJOB_ENABLED:
-            await set_hunter_status("search_collect", "Собираю SuperJob", "working")
-        superjob_vacancies = await _collect_superjob_vacancies(superjob_client)
-
-        if config.HABR_ENABLED:
-            await set_hunter_status("search_collect", "Собираю Хабр", "working")
-        habr_vacancies = await _collect_habr_vacancies(habr_client)
-
-        if config.GEEKJOB_ENABLED:
-            await set_hunter_status("search_collect", "Собираю GeekJob", "working")
-        geekjob_vacancies = await _collect_geekjob_vacancies(geekjob_client)
-        all_vacancies = (
-            hh_vacancies
-            + hh_retry_vacancies
-            + superjob_vacancies
-            + habr_vacancies
-            + geekjob_vacancies
+        all_vacancies = await search_pipeline.collect_all(
+            hh_client, superjob_client, habr_client, geekjob_client,
+            hh_retry_vacancies=hh_retry_vacancies,
+            status_callback=set_hunter_status,
         )
 
         if not config.HH_ENABLED and not config.SUPERJOB_ENABLED and not config.HABR_ENABLED and not config.GEEKJOB_ENABLED:
@@ -578,66 +387,25 @@ async def do_search(dry_run: bool = False) -> dict:
             _record_search_run(result, dry_run=dry_run, ok=True)
             return result
 
-        collected_counts = {}
-        if config.HH_ENABLED:
-            collected_counts["hh"] = len(hh_vacancies) + len(hh_retry_vacancies)
-        if config.HABR_ENABLED:
-            collected_counts["habr"] = len(habr_vacancies)
-        if config.GEEKJOB_ENABLED:
-            collected_counts["geekjob"] = len(geekjob_vacancies)
-        if config.SUPERJOB_ENABLED:
-            collected_counts["superjob"] = len(superjob_vacancies)
         await set_hunter_status(
             "search_collect_done",
-            f"Собрал {_format_compact_source_counts(collected_counts)}",
+            f"Собрал {len(all_vacancies)} вакансий",
             "working",
         )
 
-        # Дедупликация между источниками по нормализованному ключу
+        # Дедупликация
         raw_count = len(all_vacancies)
         await set_hunter_status("search_dedupe", f"Убираю дубли {raw_count}", "thinking")
-        unique = {}
-        for vacancy in all_vacancies:
-            dedupe_key = _vacancy_dedupe_key(vacancy)
-            existing = unique.get(dedupe_key)
-            if existing is None:
-                unique[dedupe_key] = vacancy
-                continue
-            if existing.get("source") != "hh" and vacancy.get("source") == "hh":
-                unique[dedupe_key] = vacancy
-        all_vacancies = list(unique.values())
+        all_vacancies = search_pipeline.deduplicate(all_vacancies)
         for vacancy in all_vacancies:
             if not vacancy.get("_hh_retry"):
-                _get_source_bucket(result["source_stats"], vacancy)["new"] += 1
+                search_pipeline.get_source_bucket(result["source_stats"], vacancy)["new"] += 1
 
-        log.info(
-            "Found %d unique vacancies before keyword filter (hh=%d, superjob=%d, habr=%d, geekjob=%d)",
-            len(all_vacancies),
-            len(hh_vacancies),
-            len(superjob_vacancies),
-            len(habr_vacancies),
-            len(geekjob_vacancies),
-        )
+        log.info("Found %d unique vacancies before keyword filter", len(all_vacancies))
         await set_hunter_status("search_filter", f"Фильтр {len(all_vacancies)} вакансий", "thinking")
 
-        filtered = []
-        for v in all_vacancies:
-            bucket = _get_source_bucket(result["source_stats"], v)
-            reject_reason = filters.check_vacancy(v)
-            if reject_reason:
-                seen.mark_seen(v["id"], v, "skipped_keyword_filter")
-                analytics.record_decision(
-                    run_id=run_id,
-                    vacancy=v,
-                    decision="skipped_keyword_filter",
-                    note=reject_reason,
-                )
-            else:
-                bucket["relevant"] += 1
-                filtered.append(v)
-
-        log.info("After keyword filter: %d → %d vacancies", len(all_vacancies), len(filtered))
-        all_vacancies = filtered
+        # Keyword-фильтрация
+        all_vacancies = search_pipeline.keyword_filter(all_vacancies, result["source_stats"], run_id)
         result["found"] = len(all_vacancies)
 
         log.info("Found %d relevant vacancies", len(all_vacancies))
@@ -680,7 +448,7 @@ async def do_search(dry_run: bool = False) -> dict:
 
             vid = v["id"]
             source = v.get("source", "hh")
-            bucket = _get_source_bucket(result["source_stats"], v)
+            bucket = search_pipeline.get_source_bucket(result["source_stats"], v)
             processed_by_source[source] += 1
             source_index = processed_by_source[source]
             source_total = relevant_counts.get(source, 0)
@@ -694,22 +462,9 @@ async def do_search(dry_run: bool = False) -> dict:
                 )
 
             # Получаем детали
-            details = v.get("details", "")
-            if source == "hh" and hh_client is not None and v.get("url"):
-                try:
-                    details = await hh_client.get_vacancy_details(v["url"])
-                except Exception as e:
-                    log.warning("Failed to get details for %s: %s", vid, e)
-            elif source == "habr" and habr_client is not None and v.get("url"):
-                try:
-                    details = await habr_client.get_vacancy_details(v["url"])
-                except Exception as e:
-                    log.warning("Failed to get Habr details for %s: %s", vid, e)
-            elif source == "geekjob" and geekjob_client is not None and v.get("url"):
-                try:
-                    details = await geekjob_client.get_vacancy_details(v["url"])
-                except Exception as e:
-                    log.warning("Failed to get GeekJob details for %s: %s", vid, e)
+            details = await apply_orchestrator.fetch_vacancy_details(
+                v, hh_client, superjob_client, habr_client, geekjob_client,
+            )
 
             # LLM-оценка
             evaluation = await evaluate_vacancy(v, details)
@@ -780,12 +535,7 @@ async def do_search(dry_run: bool = False) -> dict:
             short_label = _source_label(source, short=True)
 
             # 1. Проверяем, включён ли автоотклик для источника
-            auto_apply_enabled = {
-                "hh": True,  # hh всегда enabled если дошли сюда
-                "superjob": config.SUPERJOB_AUTO_APPLY,
-                "habr": config.HABR_AUTO_APPLY,
-                "geekjob": config.GEEKJOB_AUTO_APPLY,
-            }.get(source, False)
+            auto_apply_enabled = apply_orchestrator.is_auto_apply_enabled(source)
 
             source_client = {
                 "hh": hh_client,
@@ -886,7 +636,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 _format_source_progress("Отклик", source, source_index, source_total),
                 "working",
             )
-            cover_limit = 1500 if source == "habr" else 1900
+            cover_limit = apply_orchestrator.get_cover_letter_limit(source)
             cover = await generate_cover_letter(v, details)
             if len(cover) > cover_limit:
                 cover = cover[:cover_limit]
@@ -899,23 +649,12 @@ async def do_search(dry_run: bool = False) -> dict:
 
             # 6. Отправляем отклик
             try:
-                if source == "hh":
-                    apply_result = await hh_client.apply_to_vacancy(
-                        v["url"],
-                        cover,
-                        response_url=v.get("response_url", ""),
-                        preferred_resume_title=(hh_resume_variant or {}).get("title", ""),
-                        preferred_resume_id=(hh_resume_variant or {}).get("id", ""),
-                    )
-                elif source == "superjob":
-                    apply_result = await superjob_client.apply_to_vacancy(v, cover)
-                elif source == "habr":
-                    apply_result = await habr_client.apply_to_vacancy(v["url"], cover)
-                elif source == "geekjob":
-                    apply_result = await geekjob_client.apply_to_vacancy(v, cover)
-                else:
-                    log.warning("Unknown source %s, skipping apply", source)
-                    continue
+                apply_result = await apply_orchestrator.dispatch_apply(
+                    v, cover,
+                    hh_client, superjob_client, habr_client, geekjob_client,
+                    preferred_resume_title=(hh_resume_variant or {}).get("title", ""),
+                    preferred_resume_id=(hh_resume_variant or {}).get("id", ""),
+                )
             except Exception as e:
                 await set_hunter_status("search_manual", f"Ручной {short_label}: ошибка", "busy")
                 seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
@@ -1234,11 +973,11 @@ async def do_analytics_backfill():
             continue
 
         tracked_hh_ids.add(local_id)
-        tracked_hh_keys.add(_vacancy_match_key(payload.get("title", ""), payload.get("company", "")))
+        tracked_hh_keys.add(search_pipeline.vacancy_match_key(payload.get("title", ""), payload.get("company", "")))
 
     for vacancy_id, payload in hh_pipeline.all_entries().items():
         tracked_hh_ids.add(str(vacancy_id))
-        tracked_hh_keys.add(_vacancy_match_key(payload.get("title", ""), payload.get("company", "")))
+        tracked_hh_keys.add(search_pipeline.vacancy_match_key(payload.get("title", ""), payload.get("company", "")))
 
     client = HHClient()
     filtered_statuses = []
@@ -1257,7 +996,7 @@ async def do_analytics_backfill():
             for item in negotiation_statuses
             if (
                 str(item.get("id") or "").strip() in tracked_hh_ids
-                or _vacancy_match_key(item.get("title", ""), item.get("company", "")) in tracked_hh_keys
+                or search_pipeline.vacancy_match_key(item.get("title", ""), item.get("company", "")) in tracked_hh_keys
             )
         ]
         analytics.record_negotiation_statuses(filtered_statuses)
@@ -1271,7 +1010,7 @@ async def do_analytics_backfill():
             for item in invitations
             if (
                 str(item.get("id") or "").strip() in tracked_hh_ids
-                or _vacancy_match_key(item.get("title", ""), item.get("company", "")) in tracked_hh_keys
+                or search_pipeline.vacancy_match_key(item.get("title", ""), item.get("company", "")) in tracked_hh_keys
             )
         ]
         analytics.record_invitations(filtered_invitations)

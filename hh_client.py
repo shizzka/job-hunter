@@ -570,11 +570,27 @@ class HHClient:
                         continue
                     if id_norm and id_norm in text:
                         return item
-                    if title_norm and title_norm in text:
+                    if title_norm and (title_norm in text or text in title_norm):
                         return item
                 return None
 
             best_item = await find_matching_item(resume_items)
+
+            # Single-resume shortcut: если на странице ровно одно резюме
+            # и пикер не раскрывается — считаем его выбранным
+            if best_item is None and resume_items:
+                unique_texts = set()
+                for item in resume_items:
+                    try:
+                        text = _normalize_text(await item.inner_text())
+                        if text and len(text) >= 6:
+                            unique_texts.add(text)
+                    except Exception:
+                        continue
+                if len(unique_texts) <= 1:
+                    log.info("Single resume on page — treating as selected")
+                    return True
+
             if best_item is None:
                 expanded = await expand_resume_picker()
                 if expanded:
@@ -582,6 +598,13 @@ class HHClient:
                     best_item = await find_matching_item(resume_items)
 
             if best_item is None:
+                # Последняя попытка: проверить текст страницы
+                page_text = _normalize_text(
+                    await self._page.evaluate("() => document.body.innerText.slice(0, 6000)")
+                )
+                if title_norm and title_norm in page_text:
+                    log.info("Resume title found in page text — treating as selected")
+                    return True
                 return False
 
             return await self._click_with_fallbacks(best_item, "resume_item_preferred")
@@ -620,6 +643,13 @@ class HHClient:
             "a[data-qa*='response-link'], "
             "button[data-qa*='vacancy-response']"
         )
+
+        if not apply_btn:
+            # Кнопка повторного отклика другим резюме
+            apply_btn = await self._page.query_selector(
+                "button:has-text('Отклик другим резюме'), "
+                "a:has-text('Отклик другим резюме')"
+            )
 
         if not apply_btn:
             # Попробуем найти по тексту
