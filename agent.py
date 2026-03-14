@@ -23,6 +23,7 @@ from collections import defaultdict
 from datetime import datetime
 
 import config
+import filters
 import hh_resume_pipeline as hh_pipeline
 import seen
 import analytics
@@ -782,96 +783,21 @@ async def do_search(dry_run: bool = False) -> dict:
         )
         await set_hunter_status("search_filter", f"Фильтр {len(all_vacancies)} вакансий", "thinking")
 
-        # Быстрый фильтр по ключевым словам — отсеиваем явно нерелевантные
-        # до LLM (экономит время и запросы)
-        RELEVANT_KEYWORDS = {
-            "тестиров", "qa", "quality", "тест ", "test",
-            "автоматиз", "ручн", "manual", "sdet",
-        }
-        SUPERJOB_TITLE_KEYWORDS = {
-            "тест",
-            "qa",
-            "quality engineer",
-            "quality assurance",
-        }
-        SUPERJOB_QUALITY_TITLE_KEYWORDS = {"качеств"}
-        SUPERJOB_IT_CONTEXT_KEYWORDS = {
-            "программ",
-            "software",
-            "qa",
-            "тест",
-            "api",
-            "web",
-            "веб",
-            "прилож",
-            "frontend",
-            "backend",
-            "mobile",
-            "автоматиз",
-            "manual",
-            "selenium",
-            "postman",
-            "sql",
-        }
-        EXCLUDE_KEYWORDS = {
-            "директор магазин", "продавец", "кассир", "менеджер по продажам",
-            "бухгалтер", "повар", "водитель", "курьер", "охранник",
-            "уборщ", "грузчик", "кладовщик",
-        }
         filtered = []
         for v in all_vacancies:
             bucket = _get_source_bucket(result["source_stats"], v)
-            title_lower = v["title"].lower()
-            snippet_lower = v.get("snippet", "").lower()
-            combined = title_lower + " " + snippet_lower
-
-            # Сначала проверяем исключения
-            if any(ex in combined for ex in EXCLUDE_KEYWORDS):
+            reject_reason = filters.check_vacancy(v)
+            if reject_reason:
                 seen.mark_seen(v["id"], v, "skipped_keyword_filter")
                 analytics.record_decision(
                     run_id=run_id,
                     vacancy=v,
                     decision="skipped_keyword_filter",
-                    note="exclude_keywords",
+                    note=reject_reason,
                 )
-                continue
-
-            if v.get("source") == "superjob":
-                # У SuperJob релевантность в сниппете часто ложноположительная,
-                # поэтому по умолчанию опираемся на заголовок вакансии.
-                # Для "инженер по качеству" требуем явный IT-контекст.
-                if any(kw in title_lower for kw in SUPERJOB_TITLE_KEYWORDS):
-                    bucket["relevant"] += 1
-                    filtered.append(v)
-                elif (
-                    any(kw in title_lower for kw in SUPERJOB_QUALITY_TITLE_KEYWORDS)
-                    and any(kw in combined for kw in SUPERJOB_IT_CONTEXT_KEYWORDS)
-                ):
-                    bucket["relevant"] += 1
-                    filtered.append(v)
-                else:
-                    seen.mark_seen(v["id"], v, "skipped_keyword_filter")
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="skipped_keyword_filter",
-                        note="superjob_title_filter",
-                    )
-                continue
-
-            # Потом проверяем релевантность
-            if any(kw in combined for kw in RELEVANT_KEYWORDS):
+            else:
                 bucket["relevant"] += 1
                 filtered.append(v)
-            else:
-                # Не содержит ключевых слов QA/тест — пропускаем
-                seen.mark_seen(v["id"], v, "skipped_keyword_filter")
-                analytics.record_decision(
-                    run_id=run_id,
-                    vacancy=v,
-                    decision="skipped_keyword_filter",
-                    note="relevant_keywords",
-                )
 
         log.info("After keyword filter: %d → %d vacancies", len(all_vacancies), len(filtered))
         all_vacancies = filtered
