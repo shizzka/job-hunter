@@ -25,6 +25,7 @@ from datetime import datetime
 import config
 import filters
 import hh_resume_pipeline as hh_pipeline
+import reporting
 import seen
 import analytics
 from geekjob_client import GeekJobClient
@@ -66,42 +67,10 @@ logging.basicConfig(
     handlers=_build_logging_handlers(),
 )
 log = logging.getLogger("agent")
-SOURCE_ORDER = ("hh", "habr", "geekjob", "superjob")
-SOURCE_LABELS = {
-    "hh": "hh.ru",
-    "habr": "Хабр",
-    "geekjob": "GeekJob",
-    "superjob": "SuperJob",
-    "unknown": "unknown",
-}
-SOURCE_SHORT_LABELS = {
-    "hh": "hh",
-    "habr": "Хабр",
-    "geekjob": "GJ",
-    "superjob": "SJ",
-    "unknown": "?",
-}
-
-
-def _source_label(source: str, short: bool = False) -> str:
-    labels = SOURCE_SHORT_LABELS if short else SOURCE_LABELS
-    return labels.get(source, source)
-
-
-def _format_compact_source_counts(counts: dict[str, int]) -> str:
-    parts = []
-    for source in SOURCE_ORDER:
-        if source not in counts:
-            continue
-        parts.append(f"{_source_label(source, short=True)} {counts[source]}")
-    return " ".join(parts) or "0"
-
-
-def _format_source_progress(prefix: str, source: str, current: int, total: int) -> str:
-    label = _source_label(source, short=True)
-    if total > 0:
-        return f"{prefix} {label} {current}/{total}"
-    return f"{prefix} {label}"
+SOURCE_ORDER = reporting.SOURCE_ORDER
+_source_label = reporting.source_label
+_format_compact_source_counts = reporting.format_compact_source_counts
+_format_source_progress = reporting.format_source_progress
 
 
 def _vacancy_dedupe_key(vacancy: dict) -> str:
@@ -194,138 +163,6 @@ def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -
     _append_run_history(entry)
 
 
-def _load_recent_run_history(limit: int = 5) -> list[dict]:
-    if limit <= 0 or not os.path.exists(config.RUN_HISTORY_FILE):
-        return []
-
-    try:
-        with open(config.RUN_HISTORY_FILE, encoding="utf-8") as f:
-            lines = [line.strip() for line in f if line.strip()]
-    except Exception as exc:
-        log.warning("Failed to read run history: %s", exc)
-        return []
-
-    items = []
-    for line in lines[-limit:]:
-        try:
-            items.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return list(reversed(items))
-
-
-def _format_stats_source_breakdown(by_source: dict) -> list[str]:
-    lines = []
-    for source in SOURCE_ORDER:
-        bucket = by_source.get(source)
-        if not bucket:
-            continue
-        lines.append(
-            "  "
-            f"{_source_label(source):<10} total {bucket.get('total', 0):>4} | "
-            f"applied {bucket.get('applied', 0):>3} | "
-            f"manual {bucket.get('manual', 0):>3} | "
-            f"skipped {bucket.get('skipped', 0):>3}"
-        )
-
-    for source, bucket in by_source.items():
-        if source in SOURCE_ORDER:
-            continue
-        lines.append(
-            "  "
-            f"{source:<10} total {bucket.get('total', 0):>4} | "
-            f"applied {bucket.get('applied', 0):>3} | "
-            f"manual {bucket.get('manual', 0):>3} | "
-            f"skipped {bucket.get('skipped', 0):>3}"
-        )
-
-    return lines
-
-
-def _format_run_source_stats(source_stats: dict) -> str:
-    if not source_stats:
-        return "-"
-
-    parts = []
-    for source in SOURCE_ORDER:
-        bucket = source_stats.get(source)
-        if not bucket:
-            continue
-        parts.append(
-            f"{_source_label(source, short=True)} "
-            f"new {bucket.get('new', 0)}"
-            f"/rel {bucket.get('relevant', 0)}"
-            f"/app {bucket.get('applied', 0)}"
-            f"/man {bucket.get('manual', 0)}"
-        )
-    return "; ".join(parts) or "-"
-
-
-def _format_analytics_source_breakdown(by_source: dict) -> list[str]:
-    lines = []
-    for source in SOURCE_ORDER:
-        bucket = by_source.get(source)
-        if not bucket:
-            continue
-        lines.append(
-            "  "
-            f"{_source_label(source):<10} dec {bucket.get('decisions', 0):>4} | "
-            f"auto {bucket.get('auto_applied', 0):>3} | "
-            f"manual {bucket.get('manual', 0):>3} | "
-            f"pos {bucket.get('positive', 0):>3} | "
-            f"rej {bucket.get('rejected', 0):>3}"
-        )
-
-    for source, bucket in by_source.items():
-        if source in SOURCE_ORDER:
-            continue
-        lines.append(
-            "  "
-            f"{source:<10} dec {bucket.get('decisions', 0):>4} | "
-            f"auto {bucket.get('auto_applied', 0):>3} | "
-            f"manual {bucket.get('manual', 0):>3} | "
-            f"pos {bucket.get('positive', 0):>3} | "
-            f"rej {bucket.get('rejected', 0):>3}"
-        )
-    return lines
-
-
-def _format_top_query_breakdown(by_query: dict, limit: int = 5) -> list[str]:
-    items = sorted(
-        by_query.items(),
-        key=lambda item: (
-            -item[1].get("positive", 0),
-            -item[1].get("auto_applied", 0),
-            -item[1].get("decisions", 0),
-            item[0],
-        ),
-    )[:limit]
-    return [
-        "  "
-        f"{query[:42]:<42} | dec {bucket.get('decisions', 0):>3} | "
-        f"auto {bucket.get('auto_applied', 0):>3} | "
-        f"pos {bucket.get('positive', 0):>3} | "
-        f"rej {bucket.get('rejected', 0):>3}"
-        for query, bucket in items
-    ]
-
-
-def _format_resume_variant_breakdown(by_resume_variant: dict) -> list[str]:
-    items = sorted(
-        by_resume_variant.items(),
-        key=lambda item: (
-            -item[1].get("positive", 0),
-            -item[1].get("applications", 0),
-            item[0],
-        ),
-    )
-    return [
-        "  "
-        f"{variant:<12} app {bucket.get('applications', 0):>3} | "
-        f"pos {bucket.get('positive', 0):>3} | "
-        f"rej {bucket.get('rejected', 0):>3}"
-        for variant, bucket in items
-    ]
 
 
 async def _collect_hh_vacancies(client: HHClient | None) -> list[dict]:
@@ -1361,102 +1198,7 @@ async def do_daemon():
 
 async def do_stats():
     """Показать статистику."""
-    s = seen.stats()
-    recent_runs = _load_recent_run_history(limit=5)
-    analytics_summary = analytics.summarize()
-    print(f"\n📊 Статистика Job Hunter")
-    print(f"{'='*40}")
-    print(f"  Всего обработано: {s['total']}")
-    print(f"  Откликов:        {s['applied']}")
-    print(f"  Ручной разбор:   {s['manual']}")
-    print(f"  Пропущено:       {s['skipped']}")
-    print()
-
-    by_source = s.get("by_source", {})
-    if by_source:
-        print("По площадкам:")
-        for line in _format_stats_source_breakdown(by_source):
-            print(line)
-        print()
-
-    by_action = s.get("by_action", {})
-    if by_action:
-        print("Топ действий:")
-        for action, count in sorted(by_action.items(), key=lambda item: (-item[1], item[0]))[:8]:
-            print(f"  {action:<28} {count:>4}")
-        print()
-
-    print("Последние прогоны:")
-    if not recent_runs:
-        print("  пока нет истории запусков")
-        print()
-        return
-
-    for run in recent_runs:
-        status = "ok" if run.get("ok") else "err"
-        created_at = run.get("created_at", "—")
-        mode = run.get("mode", "search")
-        found = run.get("found", 0)
-        applied = run.get("applied", 0)
-        skipped = run.get("skipped", 0)
-        print(
-            f"  {created_at} | {mode:<7} | {status:<3} | "
-            f"found {found:<3} | applied {applied:<3} | skipped {skipped:<3}"
-        )
-        print(f"    {_format_run_source_stats(run.get('source_stats', {}))}")
-        if run.get("error"):
-            print(f"    error: {run['error']}")
-
-    print()
-    print(f"Аналитика за {analytics_summary['days']} дн.:")
-    print(
-        "  "
-        f"Событий: {analytics_summary['events']} | "
-        f"решений: {analytics_summary['decisions']} | "
-        f"автооткликов: {analytics_summary['auto_applied']} | "
-        f"manual: {analytics_summary['manual']}"
-    )
-    print(
-        "  "
-        f"keyword skip: {analytics_summary['keyword_filtered']} | "
-        f"red flags: {analytics_summary['red_flagged']} | "
-        f"low score: {analytics_summary['low_score']}"
-    )
-    print(
-        "  "
-        f"инвайтов: {analytics_summary['invitations']} | "
-        f"positive: {analytics_summary['positive_statuses']} | "
-        f"rejected: {analytics_summary['rejected_statuses']} | "
-        f"pending: {analytics_summary['pending_statuses']}"
-    )
-
-    if analytics_summary["events"] == 0:
-        print("  Аналитика начнёт заполняться со следующего search/check.")
-
-    if analytics_summary.get("by_source"):
-        print()
-        print("Аналитика по площадкам:")
-        for line in _format_analytics_source_breakdown(analytics_summary["by_source"]):
-            print(line)
-
-    if analytics_summary.get("by_query"):
-        print()
-        print("Топ запросов:")
-        for line in _format_top_query_breakdown(analytics_summary["by_query"]):
-            print(line)
-
-    if analytics_summary.get("by_resume_variant"):
-        print()
-        print("По вариантам резюме:")
-        for line in _format_resume_variant_breakdown(analytics_summary["by_resume_variant"]):
-            print(line)
-
-    if analytics_summary.get("top_decisions"):
-        print()
-        print("Топ решений:")
-        for action, count in analytics_summary["top_decisions"]:
-            print(f"  {action:<28} {count:>4}")
-    print()
+    reporting.print_stats()
 
 
 async def do_analytics_backfill():
