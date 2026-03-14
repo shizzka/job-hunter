@@ -23,7 +23,9 @@ from collections import defaultdict
 from datetime import datetime
 
 import config
+import hh_resume_pipeline as hh_pipeline
 import seen
+import analytics
 from geekjob_client import GeekJobClient
 from habr_career_client import HabrCareerClient
 from hh_client import HHClient
@@ -36,13 +38,31 @@ from notifier import (
 )
 from superjob_client import SuperJobClient
 
+
+def _build_logging_handlers() -> list[logging.Handler]:
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+
+    if config.LOG_FILE:
+        log_dir = os.path.dirname(config.LOG_FILE)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        handlers.append(logging.FileHandler(config.LOG_FILE))
+
+    if config.ERROR_LOG_FILE:
+        error_dir = os.path.dirname(config.ERROR_LOG_FILE)
+        if error_dir:
+            os.makedirs(error_dir, exist_ok=True)
+        error_handler = logging.FileHandler(config.ERROR_LOG_FILE)
+        error_handler.setLevel(logging.WARNING)
+        handlers.append(error_handler)
+
+    return handlers
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("/tmp/job-hunter.log"),
-    ],
+    handlers=_build_logging_handlers(),
 )
 log = logging.getLogger("agent")
 SOURCE_ORDER = ("hh", "habr", "geekjob", "superjob")
@@ -93,6 +113,14 @@ def _vacancy_dedupe_key(vacancy: dict) -> str:
     if url:
         return url
     return vacancy.get("id", "")
+
+
+def _normalize_match_value(value: str) -> str:
+    return " ".join((value or "").casefold().split())
+
+
+def _vacancy_match_key(title: str, company: str) -> str:
+    return f"{_normalize_match_value(title)}|{_normalize_match_value(company)}"
 
 
 def _get_source_bucket(stats: dict, vacancy: dict) -> dict:
@@ -232,6 +260,73 @@ def _format_run_source_stats(source_stats: dict) -> str:
     return "; ".join(parts) or "-"
 
 
+def _format_analytics_source_breakdown(by_source: dict) -> list[str]:
+    lines = []
+    for source in SOURCE_ORDER:
+        bucket = by_source.get(source)
+        if not bucket:
+            continue
+        lines.append(
+            "  "
+            f"{_source_label(source):<10} dec {bucket.get('decisions', 0):>4} | "
+            f"auto {bucket.get('auto_applied', 0):>3} | "
+            f"manual {bucket.get('manual', 0):>3} | "
+            f"pos {bucket.get('positive', 0):>3} | "
+            f"rej {bucket.get('rejected', 0):>3}"
+        )
+
+    for source, bucket in by_source.items():
+        if source in SOURCE_ORDER:
+            continue
+        lines.append(
+            "  "
+            f"{source:<10} dec {bucket.get('decisions', 0):>4} | "
+            f"auto {bucket.get('auto_applied', 0):>3} | "
+            f"manual {bucket.get('manual', 0):>3} | "
+            f"pos {bucket.get('positive', 0):>3} | "
+            f"rej {bucket.get('rejected', 0):>3}"
+        )
+    return lines
+
+
+def _format_top_query_breakdown(by_query: dict, limit: int = 5) -> list[str]:
+    items = sorted(
+        by_query.items(),
+        key=lambda item: (
+            -item[1].get("positive", 0),
+            -item[1].get("auto_applied", 0),
+            -item[1].get("decisions", 0),
+            item[0],
+        ),
+    )[:limit]
+    return [
+        "  "
+        f"{query[:42]:<42} | dec {bucket.get('decisions', 0):>3} | "
+        f"auto {bucket.get('auto_applied', 0):>3} | "
+        f"pos {bucket.get('positive', 0):>3} | "
+        f"rej {bucket.get('rejected', 0):>3}"
+        for query, bucket in items
+    ]
+
+
+def _format_resume_variant_breakdown(by_resume_variant: dict) -> list[str]:
+    items = sorted(
+        by_resume_variant.items(),
+        key=lambda item: (
+            -item[1].get("positive", 0),
+            -item[1].get("applications", 0),
+            item[0],
+        ),
+    )
+    return [
+        "  "
+        f"{variant:<12} app {bucket.get('applications', 0):>3} | "
+        f"pos {bucket.get('positive', 0):>3} | "
+        f"rej {bucket.get('rejected', 0):>3}"
+        for variant, bucket in items
+    ]
+
+
 async def _collect_hh_vacancies(client: HHClient | None) -> list[dict]:
     if client is None:
         return []
@@ -264,6 +359,8 @@ async def _collect_hh_vacancies(client: HHClient | None) -> list[dict]:
                     vacancy["source"] = "hh"
                     vacancy["source_label"] = "hh.ru"
                     vacancy["apply_mode"] = "auto"
+                    vacancy["_search_query"] = query
+                    vacancy["_search_profile"] = area_label
                     all_vacancies.append(vacancy)
                     new_on_page += 1
 
@@ -295,6 +392,8 @@ async def _collect_superjob_vacancies(client: SuperJobClient | None) -> list[dic
                     vid = vacancy.get("id")
                     if not vid or seen.is_seen(vid):
                         continue
+                    vacancy["_search_query"] = query
+                    vacancy["_search_profile"] = profile_label
                     all_vacancies.append(vacancy)
                     new_on_page += 1
 
@@ -325,6 +424,8 @@ async def _collect_habr_vacancies(client: HabrCareerClient | None) -> list[dict]
                 vid = vacancy.get("id")
                 if not vid or seen.is_seen(vid):
                     continue
+                vacancy["_search_path"] = path
+                vacancy["_search_profile"] = path
                 all_vacancies.append(vacancy)
                 new_on_page += 1
 
@@ -354,6 +455,7 @@ async def _collect_geekjob_vacancies(client: GeekJobClient | None) -> list[dict]
             vid = vacancy.get("id")
             if not vid or seen.is_seen(vid):
                 continue
+            vacancy["_search_profile"] = f"page={page_num}"
             all_vacancies.append(vacancy)
             new_on_page += 1
 
@@ -488,7 +590,9 @@ async def do_search(dry_run: bool = False) -> dict:
     geekjob_client: GeekJobClient | None = GeekJobClient() if config.GEEKJOB_ENABLED else None
     last_office_status: tuple[str, str, str] | None = None
     runtime_mode = "dry-run" if dry_run else "search"
+    run_id = analytics.new_run_id(runtime_mode)
     last_apply_attempt_started_at_by_source = defaultdict(float)
+    hh_retry_vacancies: list[dict] = []
 
     async def set_hunter_status(action: str, message: str, status: str) -> None:
         nonlocal last_office_status
@@ -528,6 +632,24 @@ async def do_search(dry_run: bool = False) -> dict:
     try:
         if hh_client is not None:
             await hh_client.start()
+            try:
+                if await hh_client.is_logged_in():
+                    negotiation_statuses = await hh_client.get_negotiation_statuses()
+                    analytics.record_negotiation_statuses(negotiation_statuses)
+                    if hh_pipeline.enabled():
+                        resumes = await hh_client.get_resume_ids()
+                        hh_pipeline.remember_resolved_variants(
+                            hh_pipeline.resolve_variants(resumes)
+                        )
+                        hh_pipeline.sync_negotiation_statuses(negotiation_statuses)
+                        hh_retry_vacancies = hh_pipeline.get_retry_candidates()
+                        if hh_retry_vacancies:
+                            log.info(
+                                "Prepared %d hh retry candidates for staged resumes",
+                                len(hh_retry_vacancies),
+                            )
+            except Exception as e:
+                log.warning("Failed to prepare hh staged resume pipeline: %s", e)
 
         await set_hunter_status("search_start", "Старт поиска", "working")
         if not dry_run:
@@ -557,7 +679,13 @@ async def do_search(dry_run: bool = False) -> dict:
         if config.GEEKJOB_ENABLED:
             await set_hunter_status("search_collect", "Собираю GeekJob", "working")
         geekjob_vacancies = await _collect_geekjob_vacancies(geekjob_client)
-        all_vacancies = hh_vacancies + superjob_vacancies + habr_vacancies + geekjob_vacancies
+        all_vacancies = (
+            hh_vacancies
+            + hh_retry_vacancies
+            + superjob_vacancies
+            + habr_vacancies
+            + geekjob_vacancies
+        )
 
         if not config.HH_ENABLED and not config.SUPERJOB_ENABLED and not config.HABR_ENABLED and not config.GEEKJOB_ENABLED:
             await set_hunter_status("search_done", "Все источники отключены", "idle")
@@ -566,7 +694,7 @@ async def do_search(dry_run: bool = False) -> dict:
 
         collected_counts = {}
         if config.HH_ENABLED:
-            collected_counts["hh"] = len(hh_vacancies)
+            collected_counts["hh"] = len(hh_vacancies) + len(hh_retry_vacancies)
         if config.HABR_ENABLED:
             collected_counts["habr"] = len(habr_vacancies)
         if config.GEEKJOB_ENABLED:
@@ -593,7 +721,8 @@ async def do_search(dry_run: bool = False) -> dict:
                 unique[dedupe_key] = vacancy
         all_vacancies = list(unique.values())
         for vacancy in all_vacancies:
-            _get_source_bucket(result["source_stats"], vacancy)["new"] += 1
+            if not vacancy.get("_hh_retry"):
+                _get_source_bucket(result["source_stats"], vacancy)["new"] += 1
 
         log.info(
             "Found %d unique vacancies before keyword filter (hh=%d, superjob=%d, habr=%d, geekjob=%d)",
@@ -651,6 +780,12 @@ async def do_search(dry_run: bool = False) -> dict:
             # Сначала проверяем исключения
             if any(ex in combined for ex in EXCLUDE_KEYWORDS):
                 seen.mark_seen(v["id"], v, "skipped_keyword_filter")
+                analytics.record_decision(
+                    run_id=run_id,
+                    vacancy=v,
+                    decision="skipped_keyword_filter",
+                    note="exclude_keywords",
+                )
                 continue
 
             if v.get("source") == "superjob":
@@ -668,6 +803,12 @@ async def do_search(dry_run: bool = False) -> dict:
                     filtered.append(v)
                 else:
                     seen.mark_seen(v["id"], v, "skipped_keyword_filter")
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="skipped_keyword_filter",
+                        note="superjob_title_filter",
+                    )
                 continue
 
             # Потом проверяем релевантность
@@ -677,6 +818,12 @@ async def do_search(dry_run: bool = False) -> dict:
             else:
                 # Не содержит ключевых слов QA/тест — пропускаем
                 seen.mark_seen(v["id"], v, "skipped_keyword_filter")
+                analytics.record_decision(
+                    run_id=run_id,
+                    vacancy=v,
+                    decision="skipped_keyword_filter",
+                    note="relevant_keywords",
+                )
 
         log.info("After keyword filter: %d → %d vacancies", len(all_vacancies), len(filtered))
         all_vacancies = filtered
@@ -766,6 +913,13 @@ async def do_search(dry_run: bool = False) -> dict:
                 seen.mark_seen(vid, v, "skipped_red_flags")
                 result["skipped"] += 1
                 bucket["rejected"] += 1
+                analytics.record_decision(
+                    run_id=run_id,
+                    vacancy=v,
+                    decision="skipped_red_flags",
+                    evaluation=evaluation,
+                    details=details,
+                )
                 continue
 
             if not evaluation.get("should_apply", False):
@@ -773,13 +927,36 @@ async def do_search(dry_run: bool = False) -> dict:
                 seen.mark_seen(vid, v, "skipped_low_score")
                 result["skipped"] += 1
                 bucket["rejected"] += 1
+                analytics.record_decision(
+                    run_id=run_id,
+                    vacancy=v,
+                    decision="skipped_low_score",
+                    evaluation=evaluation,
+                    details=details,
+                )
                 continue
+
+            hh_resume_variant = None
+            if source == "hh" and hh_pipeline.enabled():
+                if v.get("_hh_resume_variant"):
+                    hh_resume_variant = hh_pipeline.get_variant_by_name(v["_hh_resume_variant"])
+                if hh_resume_variant is None:
+                    hh_resume_variant = hh_pipeline.get_next_variant(vid)
 
             if dry_run:
                 log.info("  [DRY RUN] Would handle: %s @ %s (score=%d)", v["title"], v["company"], score)
                 seen.mark_seen(vid, v, f"dry_run_{source}")
                 result["applied"] += 1
                 bucket["applied"] += 1
+                analytics.record_decision(
+                    run_id=run_id,
+                    vacancy=v,
+                    decision="dry_run_match",
+                    evaluation=evaluation,
+                    details=details,
+                    dry_run=True,
+                    resume_variant=hh_resume_variant,
+                )
                 await set_hunter_status(
                     "search_dry_run",
                     _format_source_progress("Подходит", source, source_index, source_total),
@@ -793,6 +970,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, "manual_superjob")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="manual_superjob_disabled",
+                        evaluation=evaluation,
+                        details=details,
+                    )
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
                         (
@@ -823,6 +1007,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, "manual_superjob")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="manual_superjob_session",
+                        evaluation=evaluation,
+                        details=details,
+                    )
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
                         (
@@ -850,6 +1041,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, "manual_superjob")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="manual_superjob_limit",
+                        evaluation=evaluation,
+                        details=details,
+                    )
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
                         (
@@ -889,6 +1087,14 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="apply_failed_exception",
+                        evaluation=evaluation,
+                        details=details,
+                        note=f"superjob:{type(e).__name__}",
+                    )
                     log.exception("  SuperJob apply crashed for %s: %s", vid, e)
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
@@ -916,6 +1122,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     applied_count += 1
                     bucket["applied"] += 1
                     auto_applied_count_by_source[source] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="applied_auto",
+                        evaluation=evaluation,
+                        details=details,
+                    )
                     await set_hunter_status(
                         "search_apply_done",
                         f"Отправил SJ {auto_applied_count_by_source[source]}",
@@ -942,6 +1155,14 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, f"apply_failed:{apply_result.get('message', 'unknown')}")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="apply_failed",
+                        evaluation=evaluation,
+                        details=details,
+                        note=f"superjob:{apply_result.get('message', 'unknown')}",
+                    )
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
                         (
@@ -967,6 +1188,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, "manual_geekjob")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="manual_geekjob_disabled",
+                        evaluation=evaluation,
+                        details=details,
+                    )
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
                         (
@@ -1000,6 +1228,14 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, "manual_geekjob")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="manual_geekjob_session",
+                        evaluation=evaluation,
+                        details=details,
+                        note=geekjob_ready_message,
+                    )
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
                         (
@@ -1030,6 +1266,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, "manual_geekjob")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="manual_geekjob_limit",
+                        evaluation=evaluation,
+                        details=details,
+                    )
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
                         (
@@ -1067,6 +1310,14 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="apply_failed_exception",
+                        evaluation=evaluation,
+                        details=details,
+                        note=f"geekjob:{type(e).__name__}",
+                    )
                     log.exception("  GeekJob apply crashed for %s: %s", vid, e)
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
@@ -1094,6 +1345,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     applied_count += 1
                     bucket["applied"] += 1
                     auto_applied_count_by_source[source] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="applied_auto",
+                        evaluation=evaluation,
+                        details=details,
+                    )
                     await set_hunter_status(
                         "search_apply_done",
                         f"Отправил GJ {auto_applied_count_by_source[source]}",
@@ -1125,6 +1383,14 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, f"apply_failed:{apply_message}")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="apply_failed",
+                        evaluation=evaluation,
+                        details=details,
+                        note=f"geekjob:{apply_message}",
+                    )
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
                         (
@@ -1150,6 +1416,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, "manual_habr")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="manual_habr_disabled",
+                        evaluation=evaluation,
+                        details=details,
+                    )
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
                         (
@@ -1180,6 +1453,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, "manual_habr")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="manual_habr_session",
+                        evaluation=evaluation,
+                        details=details,
+                    )
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
                         (
@@ -1207,6 +1487,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, "manual_habr")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="manual_habr_limit",
+                        evaluation=evaluation,
+                        details=details,
+                    )
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
                         (
@@ -1251,6 +1538,14 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="apply_failed_exception",
+                        evaluation=evaluation,
+                        details=details,
+                        note=f"habr:{type(e).__name__}",
+                    )
                     log.exception("  Habr apply crashed for %s: %s", vid, e)
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
@@ -1278,6 +1573,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     applied_count += 1
                     bucket["applied"] += 1
                     auto_applied_count_by_source[source] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="applied_auto",
+                        evaluation=evaluation,
+                        details=details,
+                    )
                     await set_hunter_status(
                         "search_apply_done",
                         f"Отправил Хабр {auto_applied_count_by_source[source]}",
@@ -1304,6 +1606,14 @@ async def do_search(dry_run: bool = False) -> dict:
                     seen.mark_seen(vid, v, f"apply_failed:{apply_result.get('message', 'unknown')}")
                     result["skipped"] += 1
                     bucket["manual"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision="apply_failed",
+                        evaluation=evaluation,
+                        details=details,
+                        note=f"habr:{apply_result.get('message', 'unknown')}",
+                    )
                     create_task(
                         f"Ручной отклик: {v['title']} @ {v['company']}",
                         (
@@ -1332,6 +1642,14 @@ async def do_search(dry_run: bool = False) -> dict:
                 seen.mark_seen(vid, v, "manual_hh")
                 result["skipped"] += 1
                 bucket["manual"] += 1
+                analytics.record_decision(
+                    run_id=run_id,
+                    vacancy=v,
+                    decision="manual_hh_limit",
+                    evaluation=evaluation,
+                    details=details,
+                    resume_variant=hh_resume_variant,
+                )
                 create_task(
                     f"Ручной отклик: {v['title']} @ {v['company']}",
                     (
@@ -1364,14 +1682,28 @@ async def do_search(dry_run: bool = False) -> dict:
                 cover = cover[:1900]
             log.info("  Cover letter: %s", cover[:100] if cover else "(empty)")
 
-            # Откликаемся
             try:
-                apply_result = await hh_client.apply_to_vacancy(v["url"], cover)
+                apply_result = await hh_client.apply_to_vacancy(
+                    v["url"],
+                    cover,
+                    response_url=v.get("response_url", ""),
+                    preferred_resume_title=(hh_resume_variant or {}).get("title", ""),
+                    preferred_resume_id=(hh_resume_variant or {}).get("id", ""),
+                )
             except Exception as e:
                 await set_hunter_status("search_manual", "Ручной hh: ошибка", "busy")
                 seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
                 result["skipped"] += 1
                 bucket["manual"] += 1
+                analytics.record_decision(
+                    run_id=run_id,
+                    vacancy=v,
+                    decision="apply_failed_exception",
+                    evaluation=evaluation,
+                    details=details,
+                    resume_variant=hh_resume_variant,
+                    note=f"hh:{type(e).__name__}",
+                )
                 log.exception("  Apply crashed for %s: %s", vid, e)
                 create_task(
                     f"Ручной отклик: {v['title']} @ {v['company']}",
@@ -1398,16 +1730,34 @@ async def do_search(dry_run: bool = False) -> dict:
                 seen.mark_seen(vid, v, "skipped_questions")
                 result["skipped"] += 1
                 bucket["manual"] += 1
+                analytics.record_decision(
+                    run_id=run_id,
+                    vacancy=v,
+                    decision="questions_required",
+                    evaluation=evaluation,
+                    details=details,
+                    resume_variant=hh_resume_variant,
+                )
                 log.info("  Skipped: employer requires extra questions")
                 await notify_needs_manual(v, score, reason)
                 continue
 
             if apply_result["ok"]:
                 seen.mark_seen(vid, v, "applied")
+                if hh_resume_variant is not None:
+                    hh_pipeline.record_successful_apply(v, hh_resume_variant)
                 result["applied"] += 1
                 applied_count += 1
                 bucket["applied"] += 1
                 auto_applied_count_by_source[source] += 1
+                analytics.record_decision(
+                    run_id=run_id,
+                    vacancy=v,
+                    decision="applied_auto",
+                    evaluation=evaluation,
+                    details=details,
+                    resume_variant=hh_resume_variant,
+                )
                 await set_hunter_status(
                     "search_apply_done",
                     f"Отправил hh {auto_applied_count_by_source[source]}",
@@ -1430,6 +1780,15 @@ async def do_search(dry_run: bool = False) -> dict:
                 seen.mark_seen(vid, v, f"apply_failed:{apply_result['message']}")
                 result["skipped"] += 1
                 bucket["manual"] += 1
+                analytics.record_decision(
+                    run_id=run_id,
+                    vacancy=v,
+                    decision="apply_failed",
+                    evaluation=evaluation,
+                    details=details,
+                    resume_variant=hh_resume_variant,
+                    note=f"hh:{apply_result['message']}",
+                )
                 log.warning("  Apply failed: %s", apply_result["message"])
                 await notify_needs_manual(
                     v,
@@ -1482,8 +1841,17 @@ async def do_check_invitations():
         _write_runtime_status("check_invitations", "Проверяю инвайты", "thinking", "check")
         await office_log("check_invitations", "Проверяю инвайты", "thinking")
 
+        try:
+            negotiation_statuses = await client.get_negotiation_statuses()
+            analytics.record_negotiation_statuses(negotiation_statuses)
+            if hh_pipeline.enabled():
+                hh_pipeline.sync_negotiation_statuses(negotiation_statuses)
+        except Exception as e:
+            log.warning("Failed to sync hh staged resume statuses during check: %s", e)
+
         negotiations = await client.check_negotiations()
         invitations = negotiations.get("invitations", [])
+        analytics.record_invitations(invitations)
 
         if invitations:
             log.info("Found %d invitations!", len(invitations))
@@ -1584,6 +1952,7 @@ async def do_stats():
     """Показать статистику."""
     s = seen.stats()
     recent_runs = _load_recent_run_history(limit=5)
+    analytics_summary = analytics.summarize()
     print(f"\n📊 Статистика Job Hunter")
     print(f"{'='*40}")
     print(f"  Всего обработано: {s['total']}")
@@ -1626,6 +1995,134 @@ async def do_stats():
         print(f"    {_format_run_source_stats(run.get('source_stats', {}))}")
         if run.get("error"):
             print(f"    error: {run['error']}")
+
+    print()
+    print(f"Аналитика за {analytics_summary['days']} дн.:")
+    print(
+        "  "
+        f"Событий: {analytics_summary['events']} | "
+        f"решений: {analytics_summary['decisions']} | "
+        f"автооткликов: {analytics_summary['auto_applied']} | "
+        f"manual: {analytics_summary['manual']}"
+    )
+    print(
+        "  "
+        f"keyword skip: {analytics_summary['keyword_filtered']} | "
+        f"red flags: {analytics_summary['red_flagged']} | "
+        f"low score: {analytics_summary['low_score']}"
+    )
+    print(
+        "  "
+        f"инвайтов: {analytics_summary['invitations']} | "
+        f"positive: {analytics_summary['positive_statuses']} | "
+        f"rejected: {analytics_summary['rejected_statuses']} | "
+        f"pending: {analytics_summary['pending_statuses']}"
+    )
+
+    if analytics_summary["events"] == 0:
+        print("  Аналитика начнёт заполняться со следующего search/check.")
+
+    if analytics_summary.get("by_source"):
+        print()
+        print("Аналитика по площадкам:")
+        for line in _format_analytics_source_breakdown(analytics_summary["by_source"]):
+            print(line)
+
+    if analytics_summary.get("by_query"):
+        print()
+        print("Топ запросов:")
+        for line in _format_top_query_breakdown(analytics_summary["by_query"]):
+            print(line)
+
+    if analytics_summary.get("by_resume_variant"):
+        print()
+        print("По вариантам резюме:")
+        for line in _format_resume_variant_breakdown(analytics_summary["by_resume_variant"]):
+            print(line)
+
+    if analytics_summary.get("top_decisions"):
+        print()
+        print("Топ решений:")
+        for action, count in analytics_summary["top_decisions"]:
+            print(f"  {action:<28} {count:>4}")
+    print()
+
+
+async def do_analytics_backfill():
+    """Аккуратно подтянуть исторические hh-статусы и seen-решения в аналитику."""
+    run_id = analytics.new_run_id("analytics-backfill")
+    seen_entries = seen.all_entries()
+    seen_backfill = analytics.backfill_seen_decisions(seen_entries, run_id=run_id)
+
+    tracked_hh_ids = set()
+    tracked_hh_keys = set()
+    for vacancy_id, payload in seen_entries.items():
+        if ":" in vacancy_id:
+            source = vacancy_id.split(":", 1)[0]
+            local_id = vacancy_id.split(":", 1)[1]
+        elif str(vacancy_id).isdigit():
+            source = "hh"
+            local_id = str(vacancy_id)
+        else:
+            source = "unknown"
+            local_id = str(vacancy_id)
+
+        if source != "hh":
+            continue
+
+        tracked_hh_ids.add(local_id)
+        tracked_hh_keys.add(_vacancy_match_key(payload.get("title", ""), payload.get("company", "")))
+
+    for vacancy_id, payload in hh_pipeline.all_entries().items():
+        tracked_hh_ids.add(str(vacancy_id))
+        tracked_hh_keys.add(_vacancy_match_key(payload.get("title", ""), payload.get("company", "")))
+
+    client = HHClient()
+    filtered_statuses = []
+    filtered_invitations = []
+    try:
+        await client.start()
+
+        if not await client.is_logged_in():
+            print("❌ Не залогинен в hh.ru. Исторические статусы не подтянуты.")
+            print(f"   Seen-backfill: {seen_backfill['added']} событий")
+            return
+
+        negotiation_statuses = await client.get_negotiation_statuses()
+        filtered_statuses = [
+            item
+            for item in negotiation_statuses
+            if (
+                str(item.get("id") or "").strip() in tracked_hh_ids
+                or _vacancy_match_key(item.get("title", ""), item.get("company", "")) in tracked_hh_keys
+            )
+        ]
+        analytics.record_negotiation_statuses(filtered_statuses)
+        if hh_pipeline.enabled():
+            hh_pipeline.sync_negotiation_statuses(filtered_statuses)
+
+        negotiations = await client.check_negotiations()
+        invitations = negotiations.get("invitations", [])
+        filtered_invitations = [
+            item
+            for item in invitations
+            if (
+                str(item.get("id") or "").strip() in tracked_hh_ids
+                or _vacancy_match_key(item.get("title", ""), item.get("company", "")) in tracked_hh_keys
+            )
+        ]
+        analytics.record_invitations(filtered_invitations)
+    finally:
+        await client.stop()
+
+    print("\n🧠 Analytics backfill complete")
+    print(f"  Seen decisions backfilled: {seen_backfill['added']}")
+    print(f"  HH statuses matched:       {len(filtered_statuses)}")
+    print(f"  HH invitations matched:   {len(filtered_invitations)}")
+    if seen_backfill["by_decision"]:
+        print("  Historical decisions:")
+        for action, count in list(seen_backfill["by_decision"].items())[:8]:
+            print(f"    {action:<28} {count:>4}")
     print()
 
 
@@ -1642,6 +2139,7 @@ async def main():
     group.add_argument("--check", action="store_true", help="Проверить приглашения")
     group.add_argument("--daemon", action="store_true", help="Демон: поиск + проверка в цикле")
     group.add_argument("--stats", action="store_true", help="Статистика")
+    group.add_argument("--analytics-backfill", action="store_true", help="Подтянуть историю в аналитику")
     group.add_argument("--dry-run", action="store_true", help="Поиск без откликов")
     group.add_argument("--grab-resume", action="store_true", help="Скачать резюме с hh.ru")
 
@@ -1667,6 +2165,8 @@ async def main():
             await do_daemon()
         elif args.stats:
             await do_stats()
+        elif args.analytics_backfill:
+            await do_analytics_backfill()
         elif args.dry_run:
             result = await do_search(dry_run=True)
             print(f"\n🔍 [DRY RUN] Найдено: {result['found']} | Подходящих: {result['applied']} | Отфильтровано: {result['skipped']}")

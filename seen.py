@@ -53,6 +53,11 @@ def mark_seen(vacancy_id: str, vacancy: dict, action: str = "applied"):
     _save()
 
 
+def all_entries() -> dict:
+    """Копия текущего seen-state для аналитики и внешних сервисов."""
+    return dict(_load())
+
+
 def stats() -> dict:
     """Статистика по обработанным вакансиям."""
     data = _load()

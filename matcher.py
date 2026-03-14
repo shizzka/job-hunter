@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 from openai import AsyncOpenAI
 
 import config
@@ -29,6 +30,64 @@ def _load_resume() -> str:
     return f"(Резюме не найдено — заполни {config.RESUME_FILE})"
 
 
+ONE_YEAR_EXPERIENCE_PATTERNS = [
+    r"\b1\s*\+?\s*year\b",
+    r"\b1\s*\+?\s*years\b",
+    r"\bone year\b",
+    r"\bjunior\b",
+    r"\bmiddle\b",
+    r"\bmid-level\b",
+    r"\bmid level\b",
+    r"\bопыт\s+от\s+1\s+года\b",
+    r"\bопыт\s+работы\s+от\s+1\s+года\b",
+    r"\bот\s+1\s+года\b",
+    r"\b1\s*[-–]\s*3\s*года\b",
+    r"\b1\s*[-–]\s*3\s*years\b",
+    r"\bдо\s+1\s+года\b",
+    r"\bмидл\b",
+    r"\bмиддл\b",
+    r"\bmiddle\s+qa\b",
+    r"\bqa\s+middle\b",
+]
+
+SENIOR_EXPERIENCE_PATTERNS = [
+    r"\bsenior\b",
+    r"\blead\b",
+    r"\bprincipal\b",
+    r"\bstaff\b",
+    r"\bстарш(ий|ая)\b",
+    r"\bведущ(ий|ая)\b",
+    r"\bsenior\s+qa\b",
+    r"\bqa\s+senior\b",
+]
+
+
+def _is_one_year_experience_vacancy(vacancy: dict, details: str = "") -> bool:
+    haystack = " ".join(
+        part
+        for part in (
+            vacancy.get("title", ""),
+            vacancy.get("snippet", ""),
+            details or "",
+        )
+        if part
+    ).lower()
+    return any(re.search(pattern, haystack) for pattern in ONE_YEAR_EXPERIENCE_PATTERNS)
+
+
+def _is_senior_experience_vacancy(vacancy: dict, details: str = "") -> bool:
+    haystack = " ".join(
+        part
+        for part in (
+            vacancy.get("title", ""),
+            vacancy.get("snippet", ""),
+            details or "",
+        )
+        if part
+    ).lower()
+    return any(re.search(pattern, haystack) for pattern in SENIOR_EXPERIENCE_PATTERNS)
+
+
 async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
     """
     Оценить вакансию на релевантность.
@@ -42,6 +101,9 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
     }
     """
     resume = _load_resume()
+
+    allow_one_year_override = _is_one_year_experience_vacancy(vacancy, details)
+    force_senior_reject = _is_senior_experience_vacancy(vacancy, details)
 
     prompt = f"""Ты — ассистент по поиску работы. Оцени подходит ли вакансия для кандидата.
 
@@ -74,6 +136,20 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
 
 Красные флаги: неадекватная зарплата, мошенники, MLM, требуют деньги от кандидата, вакансия-ловушка."""
 
+    if allow_one_year_override:
+        prompt += """
+
+Дополнительное правило:
+- Требование опыта до 1 года, junior/middle-уровень или диапазон 1-3 года НЕ считать причиной для отказа само по себе.
+- Если вакансия в целом QA/тестовая и выглядит адекватной, всё равно рекомендуй отклик."""
+
+    if force_senior_reject:
+        prompt += """
+
+Дополнительное правило:
+- Senior / Lead / Principal-уровень считать несоответствием профилю кандидата.
+- Такие вакансии не рекомендовать к отклику, если только текст явно не противоречит senior-метке."""
+
     try:
         client = _get_client()
         resp = await client.chat.completions.create(
@@ -96,6 +172,22 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
         if result["score"] < 50:
             result["should_apply"] = False
         result.setdefault("red_flags", [])
+        if (
+            allow_one_year_override
+            and not result["red_flags"]
+            and result["score"] >= 40
+        ):
+            result["score"] = max(result["score"], 50)
+            result["should_apply"] = True
+            reason = result.get("reason", "").strip()
+            note = "Не режем вакансию только из-за требования опыта до 1 года."
+            result["reason"] = f"{reason} {note}".strip()
+        if force_senior_reject:
+            result["score"] = min(result.get("score", 0), 39)
+            result["should_apply"] = False
+            reason = result.get("reason", "").strip()
+            note = "Senior/Lead-уровень считаем слишком высоким для текущего профиля."
+            result["reason"] = f"{reason} {note}".strip()
         return result
 
     except Exception as e:

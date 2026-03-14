@@ -36,6 +36,11 @@ def _infer_superjob_client_id(secret_key: str) -> int:
 
 
 JOB_HUNTER_HOME = os.path.expanduser(os.getenv("JOB_HUNTER_HOME", "~/.job-hunter"))
+LOG_FILE = os.getenv("JOB_HUNTER_LOG_FILE", "/tmp/job-hunter.log").strip() or "/tmp/job-hunter.log"
+ERROR_LOG_FILE = (
+    os.getenv("JOB_HUNTER_ERROR_LOG_FILE", os.path.join(JOB_HUNTER_HOME, "job-hunter-errors.log")).strip()
+    or os.path.join(JOB_HUNTER_HOME, "job-hunter-errors.log")
+)
 
 
 # ── hh.ru ────────────────────────────────────────────────────────────────
@@ -43,6 +48,7 @@ HH_ENABLED = _env_flag("HH_ENABLED", "1")
 HH_BASE_URL = "https://hh.ru"
 HH_COOKIES_FILE = os.path.join(JOB_HUNTER_HOME, "hh_cookies.json")
 HH_STATE_DIR = os.path.join(JOB_HUNTER_HOME, "state")
+HH_RESUME_PIPELINE_FILE = os.path.join(JOB_HUNTER_HOME, "hh_resume_pipeline.json")
 
 # Поисковые запросы (каждый будет искаться отдельно)
 SEARCH_QUERIES = _env_list("HH_SEARCH_QUERIES", [
@@ -69,6 +75,14 @@ SEARCH_EXPERIENCE = ""   # "" = любой, "noExperience", "between1And3", "bet
 SEARCH_SALARY = 0        # минимальная зарплата (0 = не фильтровать)
 SEARCH_ONLY_WITH_SALARY = False  # только с указанной зарплатой
 SEARCH_PAGES = 3                 # сколько страниц листать (hh.ru даёт ~50 на страницу)
+HH_RESUME_PIPELINE_ENABLED = _env_flag("HH_RESUME_PIPELINE_ENABLED", "0")
+HH_PRIMARY_RESUME_TITLE = os.getenv("HH_PRIMARY_RESUME_TITLE", "").strip()
+HH_PRIMARY_RESUME_ID = os.getenv("HH_PRIMARY_RESUME_ID", "").strip()
+HH_SECONDARY_RESUME_TITLE = os.getenv("HH_SECONDARY_RESUME_TITLE", "").strip()
+HH_SECONDARY_RESUME_ID = os.getenv("HH_SECONDARY_RESUME_ID", "").strip()
+HH_TERTIARY_RESUME_TITLE = os.getenv("HH_TERTIARY_RESUME_TITLE", "").strip()
+HH_TERTIARY_RESUME_ID = os.getenv("HH_TERTIARY_RESUME_ID", "").strip()
+HH_RESUME_RETRY_DELAY_HOURS = _env_int("HH_RESUME_RETRY_DELAY_HOURS", "24")
 
 # Максимум автооткликов за один прогон по всем площадкам.
 # 0 = без общего лимита.
@@ -86,6 +100,11 @@ MAX_AUTO_APPLICATIONS_PER_SOURCE = _env_int(
 SEEN_VACANCIES_FILE = os.path.join(JOB_HUNTER_HOME, "seen_vacancies.json")
 RUNTIME_STATUS_FILE = os.path.join(JOB_HUNTER_HOME, "runtime_status.json")
 RUN_HISTORY_FILE = os.path.join(JOB_HUNTER_HOME, "run_history.jsonl")
+ANALYTICS_ENABLED = _env_flag("ANALYTICS_ENABLED", "1")
+ANALYTICS_EVENTS_FILE = os.path.join(JOB_HUNTER_HOME, "analytics_events.jsonl")
+ANALYTICS_STATE_FILE = os.path.join(JOB_HUNTER_HOME, "analytics_state.json")
+ANALYTICS_RECENT_DAYS = _env_int("ANALYTICS_RECENT_DAYS", "30")
+ANALYTICS_MAX_DETAILS_CHARS = _env_int("ANALYTICS_MAX_DETAILS_CHARS", "12000")
 
 # ── LLM (для оценки релевантности и cover letter) ────────────────────────
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")

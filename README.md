@@ -167,6 +167,7 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 ./run.sh check
 ./run.sh daemon
 ./run.sh stats
+./run.sh analytics-backfill
 
 ./run.sh superjob-dry-run
 ./run.sh superjob-search
@@ -184,6 +185,8 @@ Runtime state is intentionally stored outside the repository, by default in `~/.
 - downloaded resume
 - `seen_vacancies.json`
 - `run_history.jsonl`
+- `analytics_events.jsonl`
+- `analytics_state.json`
 - runtime status
 - Playwright debug screenshots and HTML dumps
 
@@ -201,6 +204,7 @@ Telegram notifications and AI Office integration are both optional. If you leave
 - per-source breakdown (`hh.ru`, `Habr Career`, `GeekJob`, `SuperJob`);
 - top action types such as `applied`, `skipped_low_score`, `manual_*`;
 - the last few search runs from `run_history.jsonl`.
+- rolling analytics from `analytics_events.jsonl`: queries, resume variants, and `hh` negotiation outcomes.
 
 ## Known Limitations
 

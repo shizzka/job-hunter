@@ -9,6 +9,7 @@ set -euo pipefail
 #   ./run.sh check       — проверка приглашений
 #   ./run.sh daemon      — демон (в фоне)
 #   ./run.sh stats       — статистика
+#   ./run.sh analytics-backfill — подтянуть историю в аналитику
 #   ./run.sh dry-run     — поиск без откликов
 
 cd "$(dirname "$0")"
@@ -55,6 +56,9 @@ case "$MODE" in
     stats)
         $VENV agent.py --stats
         ;;
+    analytics-backfill|backfill)
+        $VENV agent.py --analytics-backfill
+        ;;
     dry-run|dryrun)
         $VENV agent.py --dry-run
         ;;
@@ -83,7 +87,7 @@ case "$MODE" in
         pkill -f "agent.py --daemon" && echo "Stopped" || echo "Not running"
         ;;
     *)
-        echo "Usage: $0 {login|superjob-login|habr-login|geekjob-login|search|check|daemon|stats|dry-run|superjob-dry-run|superjob-search|habr-dry-run|habr-search|geekjob-dry-run|geekjob-search|grab-resume|stop}"
+        echo "Usage: $0 {login|superjob-login|habr-login|geekjob-login|search|check|daemon|stats|analytics-backfill|dry-run|superjob-dry-run|superjob-search|habr-dry-run|habr-search|geekjob-dry-run|geekjob-search|grab-resume|stop}"
         exit 1
         ;;
 esac

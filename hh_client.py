@@ -38,6 +38,10 @@ def _absolute_hh_url(url: str) -> str:
     return f"{config.HH_BASE_URL}{url}"
 
 
+def _normalize_text(value: str) -> str:
+    return " ".join((value or "").split()).casefold()
+
+
 class HHClient:
     """Управляет браузерной сессией hh.ru."""
 
@@ -416,6 +420,8 @@ class HHClient:
         vacancy_url: str,
         cover_letter: str = "",
         response_url: str = "",
+        preferred_resume_title: str = "",
+        preferred_resume_id: str = "",
     ) -> dict:
         """
         Откликнуться на вакансию.
@@ -464,7 +470,7 @@ class HHClient:
                 submit_btn = await self._page.query_selector(
                     "button:has-text('Откликнуться'), "
                     "button:has-text('Отправить')"
-                )
+            )
             return (
                 current_url,
                 questions_header,
@@ -473,6 +479,112 @@ class HHClient:
                 letter_field,
                 submit_btn,
             )
+
+        async def select_preferred_resume() -> bool:
+            title_norm = _normalize_text(preferred_resume_title)
+            id_norm = (preferred_resume_id or "").strip()
+
+            if not resume_select and not title_norm and not id_norm:
+                return True
+
+            async def collect_resume_items():
+                return await self._page.query_selector_all(
+                    "[data-magritte-select-option], "
+                    "[data-qa^='magritte-select-option-'], "
+                    "[data-qa*='resume-item'], "
+                    "[data-qa='vacancy-response-popup-form-resume'], "
+                    "[data-qa='resume-select'] [role='button'][tabindex='0'], "
+                    "[data-qa='resume-select'] [data-qa='cell'], "
+                    "[data-qa='resume-select'] label, "
+                    "label[data-qa='cell'], "
+                    "[data-qa='resume-title'], "
+                    "[data-qa='resume-detail'], "
+                    "[data-qa='cell-text-content']"
+                )
+
+            async def has_resume_choices() -> bool:
+                resume_items = await collect_resume_items()
+                seen_texts = set()
+                meaningful = 0
+                for item in resume_items:
+                    try:
+                        text = _normalize_text(await item.inner_text())
+                    except Exception:
+                        continue
+                    if not text or text in seen_texts:
+                        continue
+                    seen_texts.add(text)
+                    if len(text) >= 6:
+                        meaningful += 1
+                    if meaningful >= 2:
+                        return True
+                return False
+
+            async def expand_resume_picker():
+                toggles = [
+                    "[data-qa='resume-select'] [role='button'][tabindex='0']",
+                    "[role='dialog'] [role='button'][tabindex='0']",
+                    "form[name='vacancy_response'] [role='button'][tabindex='0']",
+                    "[data-qa='vacancy-response-popup-form-resume']",
+                    "[data-qa='resume-select'] [data-qa='cell']",
+                    "[data-qa='resume-title']",
+                    "[data-qa='resume-detail']",
+                    "[data-qa='cell']",
+                ]
+                for selector in toggles:
+                    handle = await self._page.query_selector(selector)
+                    if not handle:
+                        continue
+                    if await self._click_with_fallbacks(handle, f"resume_toggle:{selector}"):
+                        await self._page.wait_for_timeout(1000)
+                        if await has_resume_choices():
+                            return True
+                return False
+
+            if resume_select:
+                await self._click_with_fallbacks(resume_select, "resume_select")
+                await self._page.wait_for_timeout(1000)
+
+            resume_items = await collect_resume_items()
+
+            if not resume_items and (title_norm or id_norm):
+                page_text = _normalize_text(
+                    await self._page.evaluate("() => document.body.innerText.slice(0, 4000)")
+                )
+                if (title_norm and title_norm in page_text) or (id_norm and id_norm in page_text):
+                    return True
+                return False
+
+            if not title_norm and not id_norm:
+                if resume_items:
+                    return await self._click_with_fallbacks(resume_items[0], "resume_item_default")
+                return True
+
+            async def find_matching_item(items):
+                for item in items:
+                    try:
+                        text = _normalize_text(await item.inner_text())
+                    except Exception:
+                        continue
+                    if not text:
+                        continue
+                    if id_norm and id_norm in text:
+                        return item
+                    if title_norm and title_norm in text:
+                        return item
+                return None
+
+            best_item = await find_matching_item(resume_items)
+            if best_item is None:
+                expanded = await expand_resume_picker()
+                if expanded:
+                    resume_items = await collect_resume_items()
+                    best_item = await find_matching_item(resume_items)
+
+            if best_item is None:
+                return False
+
+            return await self._click_with_fallbacks(best_item, "resume_item_preferred")
 
         try:
             await self._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=30000)
@@ -501,6 +613,8 @@ class HHClient:
 
         # Ищем кнопку "Откликнуться" — собираем все data-qa для дебага
         apply_btn = await self._page.query_selector(
+            "[data-qa='vacancy-response-link-top-again'], "
+            "[data-qa='vacancy-response-link-bottom-again'], "
             "[data-qa='vacancy-response-link-top'], "
             "[data-qa='vacancy-response-link-bottom'], "
             "a[data-qa*='response-link'], "
@@ -576,9 +690,15 @@ class HHClient:
             log.info("Vacancy requires employer questions — skipping")
             return {"ok": False, "message": "Требуются доп. вопросы работодателя — пропускаем"}
 
-        if resume_select:
-            log.info("Resume selection popup found, clicking first resume")
-            await self._click_with_fallbacks(resume_select, "resume_select")
+        if resume_select or preferred_resume_title or preferred_resume_id:
+            log.info(
+                "Selecting resume in hh apply flow (title=%r, id=%r)",
+                preferred_resume_title,
+                preferred_resume_id,
+            )
+            selected = await select_preferred_resume()
+            if not selected:
+                return {"ok": False, "message": "Не удалось выбрать нужное резюме"}
             await self._page.wait_for_timeout(1000)
 
         if not letter_field:
@@ -615,13 +735,20 @@ class HHClient:
         if success:
             return {"ok": True, "message": "Отклик отправлен"}
 
+        success_notification = await self._page.query_selector(
+            "[data-qa='vacancy-response-success-standard-notification'], "
+            "[data-qa*='success-standard-notification']"
+        )
+        if success_notification:
+            return {"ok": True, "message": "Отклик отправлен (success notification)"}
+
         # Проверяем: страница изменилась (перешли на negotiations)
         current_url = self._page.url
         if "/negotiations" in current_url:
             return {"ok": True, "message": "Отклик отправлен (negotiations page)"}
 
         # Проверяем: может появилось сообщение об успешном отклике
-        page_text = await self._page.evaluate("() => document.body.innerText.slice(0, 2000)")
+        page_text = await self._page.evaluate("() => document.body.innerText")
         if "отклик" in page_text.lower() and ("отправлен" in page_text.lower() or "откликнулись" in page_text.lower()):
             # Отклик прошёл! Теперь попробуем добавить сопроводительное
             if cover_letter:
@@ -727,6 +854,48 @@ class HHClient:
                     pass
 
         return result
+
+    async def get_negotiation_statuses(self) -> list[dict]:
+        """Прочитать видимые статусы откликов на странице переговоров."""
+        await self._page.goto(
+            f"{config.HH_BASE_URL}/applicant/negotiations",
+            wait_until="domcontentloaded",
+            timeout=20000,
+        )
+        await self._page.wait_for_timeout(3000)
+
+        items = []
+        cards = await self._page.query_selector_all(
+            "[data-qa='negotiations-item'], "
+            ".negotiations-item, "
+            ".resume-negotiations-item"
+        )
+        for card in cards:
+            try:
+                text = (await card.inner_text()).strip()
+                if not text:
+                    continue
+                lines = [line.strip() for line in text.splitlines() if line.strip()]
+                if len(lines) < 3:
+                    continue
+                link = await card.query_selector("a[href*='/vacancy/']")
+                href = await link.get_attribute("href") if link else ""
+                href = _absolute_hh_url(href or "")
+                vacancy_id = ""
+                if "/vacancy/" in href:
+                    vacancy_id = href.split("/vacancy/")[-1].split("?")[0].split("/")[0]
+                items.append(
+                    {
+                        "id": vacancy_id,
+                        "status": lines[0],
+                        "title": lines[1],
+                        "company": lines[2],
+                        "url": href,
+                    }
+                )
+            except Exception:
+                pass
+        return items
 
     # ── Получить список резюме ────────────────────────────────────────────
 
