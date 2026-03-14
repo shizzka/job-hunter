@@ -205,6 +205,8 @@ Telegram notifications and AI Office integration are both optional. If you leave
 - top action types such as `applied`, `skipped_low_score`, `manual_*`;
 - the last few search runs from `run_history.jsonl`.
 - rolling analytics from `analytics_events.jsonl`: queries, resume variants, and `hh` negotiation outcomes.
+- application funnel: applied → viewed → pending / rejected / positive, with response and conversion rates.
+- A/B resume comparison: per-variant application count, viewed, positive, rejected, response rate, conversion rate.
 
 ## Known Limitations
 

@@ -147,18 +147,30 @@ def _format_resume_variant_breakdown(by_resume_variant: dict) -> list[str]:
     items = sorted(
         by_resume_variant.items(),
         key=lambda item: (
+            -item[1].get("positive_rate", 0),
             -item[1].get("positive", 0),
             -item[1].get("applications", 0),
             item[0],
         ),
     )
-    return [
-        "  "
-        f"{variant:<12} app {bucket.get('applications', 0):>3} | "
-        f"pos {bucket.get('positive', 0):>3} | "
-        f"rej {bucket.get('rejected', 0):>3}"
-        for variant, bucket in items
-    ]
+    lines = []
+    for variant, bucket in items:
+        apps = bucket.get("applications", 0)
+        viewed = bucket.get("viewed", 0)
+        positive = bucket.get("positive", 0)
+        rejected = bucket.get("rejected", 0)
+        resp_rate = bucket.get("response_rate", 0)
+        pos_rate = bucket.get("positive_rate", 0)
+        lines.append(
+            "  "
+            f"{variant:<12} app {apps:>3} | "
+            f"viewed {viewed:>3} | "
+            f"pos {positive:>3} | "
+            f"rej {rejected:>3} | "
+            f"resp {resp_rate:>5.1f}% | "
+            f"conv {pos_rate:>5.1f}%"
+        )
+    return lines
 
 
 def load_recent_run_history(limit: int = 5) -> list[dict]:
@@ -261,16 +273,26 @@ def print_stats():
         for line in _format_analytics_source_breakdown(analytics_summary["by_source"]):
             print(line)
 
+    funnel = analytics_summary.get("funnel", {})
+    if funnel.get("applied", 0) > 0:
+        print()
+        print("Воронка откликов:")
+        print(f"  откликов:    {funnel['applied']:>4}")
+        print(f"  просмотрено: {funnel['viewed']:>4}  ({funnel['response_rate']:.1f}%)")
+        print(f"  ожидание:    {funnel['pending']:>4}")
+        print(f"  отказ:       {funnel['rejected']:>4}")
+        print(f"  позитив:     {funnel['positive']:>4}  ({funnel['positive_rate']:.1f}% от откликов)")
+
+    if analytics_summary.get("by_resume_variant"):
+        print()
+        print("A/B резюме:")
+        for line in _format_resume_variant_breakdown(analytics_summary["by_resume_variant"]):
+            print(line)
+
     if analytics_summary.get("by_query"):
         print()
         print("Топ запросов:")
         for line in _format_top_query_breakdown(analytics_summary["by_query"]):
-            print(line)
-
-    if analytics_summary.get("by_resume_variant"):
-        print()
-        print("По вариантам резюме:")
-        for line in _format_resume_variant_breakdown(analytics_summary["by_resume_variant"]):
             print(line)
 
     if analytics_summary.get("top_decisions"):

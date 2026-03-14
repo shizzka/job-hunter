@@ -525,4 +525,52 @@ def summarize(days: int | None = None) -> dict:
                 variant_bucket["rejected"] += 1
 
     summary["top_decisions"] = decision_counter.most_common(8)
+
+    # ── Воронка ──
+    funnel_applied = summary["auto_applied"]
+    funnel_viewed = 0
+    funnel_rejected = summary["rejected_statuses"]
+    funnel_positive = summary["positive_statuses"]
+    funnel_pending = summary["pending_statuses"]
+    for status_event in latest_status_by_vacancy.values():
+        bucket = status_event.get("status_bucket", "unknown")
+        if bucket in ("positive", "rejected", "pending"):
+            funnel_viewed += 1
+    summary["funnel"] = {
+        "applied": funnel_applied,
+        "viewed": funnel_viewed,
+        "pending": funnel_pending,
+        "rejected": funnel_rejected,
+        "positive": funnel_positive,
+        "response_rate": round(funnel_viewed / funnel_applied * 100, 1) if funnel_applied else 0,
+        "positive_rate": round(funnel_positive / funnel_applied * 100, 1) if funnel_applied else 0,
+    }
+
+    # ── A/B resume: добавляем viewed/pending и conversion rates ──
+    for vacancy_key, status_event in latest_status_by_vacancy.items():
+        apply_event = latest_apply_by_vacancy.get(vacancy_key)
+        if not apply_event:
+            continue
+        resume_variant = apply_event.get("resume_variant", "")
+        if not resume_variant:
+            continue
+        variant_bucket = summary["by_resume_variant"].setdefault(
+            resume_variant,
+            {"applications": 0, "positive": 0, "rejected": 0},
+        )
+        bucket = status_event.get("status_bucket", "unknown")
+        variant_bucket.setdefault("viewed", 0)
+        variant_bucket.setdefault("pending", 0)
+        if bucket in ("positive", "rejected", "pending"):
+            variant_bucket["viewed"] += 1
+        if bucket == "pending":
+            variant_bucket["pending"] += 1
+
+    for variant_bucket in summary["by_resume_variant"].values():
+        apps = variant_bucket.get("applications", 0)
+        viewed = variant_bucket.get("viewed", 0)
+        positive = variant_bucket.get("positive", 0)
+        variant_bucket["response_rate"] = round(viewed / apps * 100, 1) if apps else 0
+        variant_bucket["positive_rate"] = round(positive / apps * 100, 1) if apps else 0
+
     return summary
