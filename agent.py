@@ -578,6 +578,54 @@ async def do_grab_resume():
         await client.stop()
 
 
+async def _mark_manual(
+    status_msg: str,
+    seen_action: str,
+    decision: str,
+    note: str,
+    v: dict,
+    vid: str,
+    score: int,
+    reason: str,
+    evaluation: dict,
+    details: str,
+    result: dict,
+    bucket: dict,
+    run_id: str,
+    set_hunter_status,
+    resume_variant: dict | None = None,
+    **extra_analytics,
+) -> None:
+    """Общий хелпер для пометки вакансии как manual (ручной разбор)."""
+    source = v.get("source", "unknown")
+    source_label = v.get("source_label") or _source_label(source)
+    await set_hunter_status("search_manual", status_msg, "busy")
+    seen.mark_seen(vid, v, seen_action)
+    result["skipped"] += 1
+    bucket["manual"] += 1
+    analytics.record_decision(
+        run_id=run_id,
+        vacancy=v,
+        decision=decision,
+        evaluation=evaluation,
+        details=details,
+        resume_variant=resume_variant,
+        **extra_analytics,
+    )
+    create_task(
+        f"Ручной отклик: {v['title']} @ {v['company']}",
+        (
+            f"Источник: {source_label}\n"
+            f"Score: {score}/100\n"
+            f"{reason}\n"
+            f"URL: {v.get('url', '')}\n"
+            f"Причина: {note}"
+        ),
+        "medium",
+    )
+    await notify_needs_manual(v, score, reason, note=note)
+
+
 async def do_search(dry_run: bool = False) -> dict:
     """
     Один прогон поиска + откликов.
@@ -964,734 +1012,149 @@ async def do_search(dry_run: bool = False) -> dict:
                 )
                 continue
 
-            if source == "superjob":
-                if superjob_client is None or not config.SUPERJOB_AUTO_APPLY:
-                    await set_hunter_status("search_manual", "Ручной SJ: выкл", "busy")
-                    seen.mark_seen(vid, v, "manual_superjob")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="manual_superjob_disabled",
-                        evaluation=evaluation,
-                        details=details,
-                    )
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: SuperJob\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note="SuperJob отключён для автоотклика.",
-                    )
-                    continue
+            # ── Единый apply-flow для всех источников ──
+            source_label = v.get("source_label") or _source_label(source)
+            short_label = _source_label(source, short=True)
 
+            # 1. Проверяем, включён ли автоотклик для источника
+            auto_apply_enabled = {
+                "hh": True,  # hh всегда enabled если дошли сюда
+                "superjob": config.SUPERJOB_AUTO_APPLY,
+                "habr": config.HABR_AUTO_APPLY,
+                "geekjob": config.GEEKJOB_AUTO_APPLY,
+            }.get(source, False)
+
+            source_client = {
+                "hh": hh_client,
+                "superjob": superjob_client,
+                "habr": habr_client,
+                "geekjob": geekjob_client,
+            }.get(source)
+
+            if source_client is None or not auto_apply_enabled:
+                await _mark_manual(
+                    f"Ручной {short_label}: выкл",
+                    f"manual_{source}", f"manual_{source}_disabled",
+                    f"{source_label} отключён для автоотклика.",
+                    v, vid, score, reason, evaluation, details,
+                    result, bucket, run_id, set_hunter_status,
+                    resume_variant=hh_resume_variant,
+                )
+                continue
+
+            # 2. Проверяем готовность сессии
+            if source == "superjob":
                 if superjob_ready is None:
                     try:
                         superjob_ready = await superjob_client.is_auto_apply_ready()
                     except Exception as e:
-                        log.warning("SuperJob readiness check failed before apply: %s", e)
+                        log.warning("SuperJob readiness check failed: %s", e)
                         superjob_ready = False
-
                 if not superjob_ready:
-                    await set_hunter_status("search_manual", "Ручной SJ: сессия", "busy")
-                    seen.mark_seen(vid, v, "manual_superjob")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="manual_superjob_session",
-                        evaluation=evaluation,
-                        details=details,
-                    )
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: SuperJob\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            "Причина: нет активной сессии SuperJob или не выбрано резюме"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note="Нет активной сессии SuperJob. Запусти ./run.sh superjob-login.",
+                    await _mark_manual(
+                        f"Ручной {short_label}: сессия",
+                        f"manual_{source}", f"manual_{source}_session",
+                        f"Нет активной сессии SuperJob. Запусти ./run.sh superjob-login.",
+                        v, vid, score, reason, evaluation, details,
+                        result, bucket, run_id, set_hunter_status,
+                        resume_variant=hh_resume_variant,
                     )
                     continue
-
-                if (
-                    config.MAX_AUTO_APPLICATIONS_PER_SOURCE > 0
-                    and auto_applied_count_by_source[source] >= config.MAX_AUTO_APPLICATIONS_PER_SOURCE
-                ):
-                    await set_hunter_status("search_manual", "Ручной SJ: лимит", "busy")
-                    seen.mark_seen(vid, v, "manual_superjob")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="manual_superjob_limit",
-                        evaluation=evaluation,
-                        details=details,
-                    )
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: SuperJob\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Причина: достигнут лимит автооткликов ({config.MAX_AUTO_APPLICATIONS_PER_SOURCE})"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note=(
-                            "Достигнут лимит автооткликов по SuperJob "
-                            f"({config.MAX_AUTO_APPLICATIONS_PER_SOURCE} за прогон)."
-                        ),
+            elif source == "habr":
+                if habr_logged_in is None:
+                    try:
+                        habr_logged_in = await habr_client.is_logged_in()
+                    except Exception as e:
+                        log.warning("Habr login check failed: %s", e)
+                        habr_logged_in = False
+                if not habr_logged_in:
+                    await _mark_manual(
+                        f"Ручной {short_label}: сессия",
+                        f"manual_{source}", f"manual_{source}_session",
+                        f"Нет активной сессии Хабр Карьеры. Запусти ./run.sh habr-login.",
+                        v, vid, score, reason, evaluation, details,
+                        result, bucket, run_id, set_hunter_status,
+                        resume_variant=hh_resume_variant,
                     )
                     continue
-
-                await set_hunter_status(
-                    "search_apply",
-                    _format_source_progress("Отклик", source, source_index, source_total),
-                    "working",
-                )
-                cover = await generate_cover_letter(v, details)
-                if len(cover) > 1900:
-                    cover = cover[:1900]
-                log.info("  SuperJob cover letter: %s", cover[:100] if cover else "(empty)")
-
-                try:
-                    apply_result = await superjob_client.apply_to_vacancy(v, cover)
-                except Exception as e:
-                    await set_hunter_status("search_manual", "Ручной SJ: ошибка", "busy")
-                    seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="apply_failed_exception",
-                        evaluation=evaluation,
-                        details=details,
-                        note=f"superjob:{type(e).__name__}",
-                    )
-                    log.exception("  SuperJob apply crashed for %s: %s", vid, e)
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: SuperJob\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Автоотклик упал: {type(e).__name__}: {e}"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note=f"Автоотклик SuperJob упал: {type(e).__name__}. Проверь вручную.",
-                    )
-                    continue
-
-                log.info("  SuperJob apply result: %s", apply_result)
-                if apply_result.get("ok"):
-                    seen.mark_seen(vid, v, "applied")
-                    result["applied"] += 1
-                    applied_count += 1
-                    bucket["applied"] += 1
-                    auto_applied_count_by_source[source] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="applied_auto",
-                        evaluation=evaluation,
-                        details=details,
-                    )
-                    await set_hunter_status(
-                        "search_apply_done",
-                        f"Отправил SJ {auto_applied_count_by_source[source]}",
-                        "working",
-                    )
-
-                    task_id = create_task(
-                        f"Отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: SuperJob\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Cover: {cover}"
-                        ),
-                        "low",
-                    )
-                    if task_id:
-                        await task_complete(task_id, f"Отклик SuperJob отправлен (score {score})")
-
-                    await notify_application(v, score, cover)
-                else:
-                    await set_hunter_status("search_manual", "Ручной SJ: не ушёл", "busy")
-                    seen.mark_seen(vid, v, f"apply_failed:{apply_result.get('message', 'unknown')}")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="apply_failed",
-                        evaluation=evaluation,
-                        details=details,
-                        note=f"superjob:{apply_result.get('message', 'unknown')}",
-                    )
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: SuperJob\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Автоотклик не завершился: {apply_result.get('message', 'unknown')}"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note=f"Автоотклик SuperJob не завершился: {apply_result.get('message', 'unknown')}",
-                    )
-                continue
-
-            if source == "geekjob":
-                if geekjob_client is None or not config.GEEKJOB_AUTO_APPLY:
-                    await set_hunter_status("search_manual", "Ручной GJ: выкл", "busy")
-                    seen.mark_seen(vid, v, "manual_geekjob")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="manual_geekjob_disabled",
-                        evaluation=evaluation,
-                        details=details,
-                    )
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: GeekJob\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note="GeekJob отключён для автоотклика.",
-                    )
-                    continue
-
+            elif source == "geekjob":
                 if geekjob_ready is None:
                     try:
                         geekjob_ready, geekjob_ready_message = await geekjob_client.is_auto_apply_ready(
                             v.get("url", "")
                         )
                     except Exception as e:
-                        log.warning("GeekJob readiness check failed before apply: %s", e)
+                        log.warning("GeekJob readiness check failed: %s", e)
                         geekjob_ready = False
                         geekjob_ready_message = f"Не удалось проверить GeekJob: {e}"
-
                 if not geekjob_ready:
-                    await set_hunter_status("search_manual", "Ручной GJ: сессия", "busy")
-                    seen.mark_seen(vid, v, "manual_geekjob")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="manual_geekjob_session",
-                        evaluation=evaluation,
-                        details=details,
+                    await _mark_manual(
+                        f"Ручной {short_label}: сессия",
+                        f"manual_{source}", f"manual_{source}_session",
+                        geekjob_ready_message or "Нет активной сессии GeekJob. Запусти ./run.sh geekjob-login.",
+                        v, vid, score, reason, evaluation, details,
+                        result, bucket, run_id, set_hunter_status,
+                        resume_variant=hh_resume_variant,
                         note=geekjob_ready_message,
                     )
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: GeekJob\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Причина: {geekjob_ready_message or 'нет активной сессии GeekJob'}"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note=(
-                            geekjob_ready_message
-                            or "Нет активной сессии GeekJob. Запусти ./run.sh geekjob-login."
-                        ),
-                    )
                     continue
 
-                if (
-                    config.MAX_AUTO_APPLICATIONS_PER_SOURCE > 0
-                    and auto_applied_count_by_source[source] >= config.MAX_AUTO_APPLICATIONS_PER_SOURCE
-                ):
-                    await set_hunter_status("search_manual", "Ручной GJ: лимит", "busy")
-                    seen.mark_seen(vid, v, "manual_geekjob")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="manual_geekjob_limit",
-                        evaluation=evaluation,
-                        details=details,
-                    )
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: GeekJob\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Причина: достигнут лимит автооткликов ({config.MAX_AUTO_APPLICATIONS_PER_SOURCE})"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note=(
-                            "Достигнут лимит автооткликов по GeekJob "
-                            f"({config.MAX_AUTO_APPLICATIONS_PER_SOURCE} за прогон)."
-                        ),
-                    )
-                    continue
-
-                await set_hunter_status(
-                    "search_apply",
-                    _format_source_progress("Отклик", source, source_index, source_total),
-                    "working",
-                )
-                cover = await generate_cover_letter(v, details)
-                log.info("  GeekJob cover letter: %s", cover[:100] if cover else "(empty)")
-
-                try:
-                    apply_result = await geekjob_client.apply_to_vacancy(v, cover)
-                except Exception as e:
-                    await set_hunter_status("search_manual", "Ручной GJ: ошибка", "busy")
-                    seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="apply_failed_exception",
-                        evaluation=evaluation,
-                        details=details,
-                        note=f"geekjob:{type(e).__name__}",
-                    )
-                    log.exception("  GeekJob apply crashed for %s: %s", vid, e)
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: GeekJob\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Автоотклик упал: {type(e).__name__}: {e}"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note=f"Автоотклик GeekJob упал: {type(e).__name__}. Проверь вручную.",
-                    )
-                    continue
-
-                log.info("  GeekJob apply result: %s", apply_result)
-                if apply_result.get("ok"):
-                    seen.mark_seen(vid, v, "applied")
-                    result["applied"] += 1
-                    applied_count += 1
-                    bucket["applied"] += 1
-                    auto_applied_count_by_source[source] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="applied_auto",
-                        evaluation=evaluation,
-                        details=details,
-                    )
-                    await set_hunter_status(
-                        "search_apply_done",
-                        f"Отправил GJ {auto_applied_count_by_source[source]}",
-                        "working",
-                    )
-
-                    task_id = create_task(
-                        f"Отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: GeekJob\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Cover: {cover}"
-                        ),
-                        "low",
-                    )
-                    if task_id:
-                        await task_complete(task_id, f"Отклик GeekJob отправлен (score {score})")
-
-                    await notify_application(v, score, cover)
-                else:
-                    apply_message = apply_result.get("message", "unknown")
-                    if "не авториз" in apply_message.lower() or "не гик" in apply_message.lower():
-                        geekjob_ready = False
-                        geekjob_ready_message = apply_message
-
-                    await set_hunter_status("search_manual", "Ручной GJ: не ушёл", "busy")
-                    seen.mark_seen(vid, v, f"apply_failed:{apply_message}")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="apply_failed",
-                        evaluation=evaluation,
-                        details=details,
-                        note=f"geekjob:{apply_message}",
-                    )
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: GeekJob\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Автоотклик не завершился: {apply_message}"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note=f"Автоотклик GeekJob не завершился: {apply_message}",
-                    )
-                continue
-
-            if source == "habr":
-                if habr_client is None or not config.HABR_AUTO_APPLY:
-                    await set_hunter_status("search_manual", "Ручной Хабр: выкл", "busy")
-                    seen.mark_seen(vid, v, "manual_habr")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="manual_habr_disabled",
-                        evaluation=evaluation,
-                        details=details,
-                    )
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: {v.get('source_label', source)}\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note="Хабр Карьера отключена для автоотклика.",
-                    )
-                    continue
-
-                if habr_logged_in is None:
-                    try:
-                        habr_logged_in = await habr_client.is_logged_in()
-                    except Exception as e:
-                        log.warning("Habr login check failed before apply: %s", e)
-                        habr_logged_in = False
-
-                if not habr_logged_in:
-                    await set_hunter_status("search_manual", "Ручной Хабр: сессия", "busy")
-                    seen.mark_seen(vid, v, "manual_habr")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="manual_habr_session",
-                        evaluation=evaluation,
-                        details=details,
-                    )
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: Хабр Карьера\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            "Причина: нет активной сессии Хабр Карьеры"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note="Нет активной сессии Хабр Карьеры. Запусти ./run.sh habr-login.",
-                    )
-                    continue
-
-                if (
-                    config.MAX_AUTO_APPLICATIONS_PER_SOURCE > 0
-                    and auto_applied_count_by_source[source] >= config.MAX_AUTO_APPLICATIONS_PER_SOURCE
-                ):
-                    await set_hunter_status("search_manual", "Ручной Хабр: лимит", "busy")
-                    seen.mark_seen(vid, v, "manual_habr")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="manual_habr_limit",
-                        evaluation=evaluation,
-                        details=details,
-                    )
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: Хабр Карьера\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Причина: достигнут лимит автооткликов ({config.MAX_AUTO_APPLICATIONS_PER_SOURCE})"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note=(
-                            "Достигнут лимит автооткликов по Хабр Карьере "
-                            f"({config.MAX_AUTO_APPLICATIONS_PER_SOURCE} за прогон)."
-                        ),
-                    )
-                    continue
-
-                await set_hunter_status(
-                    "search_apply",
-                    _format_source_progress("Отклик", source, source_index, source_total),
-                    "working",
-                )
-                cover = await generate_cover_letter(v, details)
-                if len(cover) > 1500:
-                    cover = cover[:1500]
-                log.info("  Habr cover letter: %s", cover[:100] if cover else "(empty)")
-
-                await wait_before_auto_apply(
-                    source,
-                    config.HABR_MIN_SECONDS_BETWEEN_APPLICATIONS,
-                )
-                last_apply_attempt_started_at_by_source[source] = asyncio.get_running_loop().time()
-                try:
-                    apply_result = await habr_client.apply_to_vacancy(v["url"], cover)
-                except Exception as e:
-                    await set_hunter_status("search_manual", "Ручной Хабр: ошибка", "busy")
-                    seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="apply_failed_exception",
-                        evaluation=evaluation,
-                        details=details,
-                        note=f"habr:{type(e).__name__}",
-                    )
-                    log.exception("  Habr apply crashed for %s: %s", vid, e)
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: Хабр Карьера\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Автоотклик упал: {type(e).__name__}: {e}"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note=f"Автоотклик Хабр Карьеры упал: {type(e).__name__}. Проверь вручную.",
-                    )
-                    continue
-
-                log.info("  Habr apply result: %s", apply_result)
-                if apply_result.get("ok"):
-                    seen.mark_seen(vid, v, "applied")
-                    result["applied"] += 1
-                    applied_count += 1
-                    bucket["applied"] += 1
-                    auto_applied_count_by_source[source] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="applied_auto",
-                        evaluation=evaluation,
-                        details=details,
-                    )
-                    await set_hunter_status(
-                        "search_apply_done",
-                        f"Отправил Хабр {auto_applied_count_by_source[source]}",
-                        "working",
-                    )
-
-                    task_id = create_task(
-                        f"Отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: Хабр Карьера\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Cover: {cover}"
-                        ),
-                        "low",
-                    )
-                    if task_id:
-                        await task_complete(task_id, f"Отклик Хабр Карьеры отправлен (score {score})")
-
-                    await notify_application(v, score, cover)
-                else:
-                    await set_hunter_status("search_manual", "Ручной Хабр: не ушёл", "busy")
-                    seen.mark_seen(vid, v, f"apply_failed:{apply_result.get('message', 'unknown')}")
-                    result["skipped"] += 1
-                    bucket["manual"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision="apply_failed",
-                        evaluation=evaluation,
-                        details=details,
-                        note=f"habr:{apply_result.get('message', 'unknown')}",
-                    )
-                    create_task(
-                        f"Ручной отклик: {v['title']} @ {v['company']}",
-                        (
-                            f"Источник: Хабр Карьера\n"
-                            f"Score: {score}/100\n"
-                            f"{reason}\n"
-                            f"URL: {v.get('url', '')}\n"
-                            f"Автоотклик не завершился: {apply_result.get('message', 'unknown')}"
-                        ),
-                        "medium",
-                    )
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note=f"Автоотклик Хабр Карьеры не завершился: {apply_result.get('message', 'unknown')}",
-                    )
-                continue
-
-            # Генерируем сопроводительное (hh.ru лимит — 2000 символов)
+            # 3. Проверяем лимит автооткликов
             if (
                 config.MAX_AUTO_APPLICATIONS_PER_SOURCE > 0
                 and auto_applied_count_by_source[source] >= config.MAX_AUTO_APPLICATIONS_PER_SOURCE
             ):
-                await set_hunter_status("search_manual", "Ручной hh: лимит", "busy")
-                seen.mark_seen(vid, v, "manual_hh")
-                result["skipped"] += 1
-                bucket["manual"] += 1
-                analytics.record_decision(
-                    run_id=run_id,
-                    vacancy=v,
-                    decision="manual_hh_limit",
-                    evaluation=evaluation,
-                    details=details,
-                    resume_variant=hh_resume_variant,
-                )
-                create_task(
-                    f"Ручной отклик: {v['title']} @ {v['company']}",
+                await _mark_manual(
+                    f"Ручной {short_label}: лимит",
+                    f"manual_{source}", f"manual_{source}_limit",
                     (
-                        f"Источник: hh.ru\n"
-                        f"Score: {score}/100\n"
-                        f"{reason}\n"
-                        f"URL: {v.get('url', '')}\n"
-                        f"Причина: достигнут лимит автооткликов ({config.MAX_AUTO_APPLICATIONS_PER_SOURCE})"
-                    ),
-                    "medium",
-                )
-                await notify_needs_manual(
-                    v,
-                    score,
-                    reason,
-                    note=(
-                        "Достигнут лимит автооткликов по hh.ru "
+                        f"Достигнут лимит автооткликов по {source_label} "
                         f"({config.MAX_AUTO_APPLICATIONS_PER_SOURCE} за прогон)."
                     ),
+                    v, vid, score, reason, evaluation, details,
+                    result, bucket, run_id, set_hunter_status,
+                    resume_variant=hh_resume_variant,
                 )
                 continue
 
+            # 4. Генерируем cover letter
             await set_hunter_status(
                 "search_apply",
                 _format_source_progress("Отклик", source, source_index, source_total),
                 "working",
             )
+            cover_limit = 1500 if source == "habr" else 1900
             cover = await generate_cover_letter(v, details)
-            if len(cover) > 1900:
-                cover = cover[:1900]
-            log.info("  Cover letter: %s", cover[:100] if cover else "(empty)")
+            if len(cover) > cover_limit:
+                cover = cover[:cover_limit]
+            log.info("  %s cover letter: %s", source_label, cover[:100] if cover else "(empty)")
 
+            # 5. Пауза перед откликом (habr)
+            if source == "habr":
+                await wait_before_auto_apply(source, config.HABR_MIN_SECONDS_BETWEEN_APPLICATIONS)
+                last_apply_attempt_started_at_by_source[source] = asyncio.get_running_loop().time()
+
+            # 6. Отправляем отклик
             try:
-                apply_result = await hh_client.apply_to_vacancy(
-                    v["url"],
-                    cover,
-                    response_url=v.get("response_url", ""),
-                    preferred_resume_title=(hh_resume_variant or {}).get("title", ""),
-                    preferred_resume_id=(hh_resume_variant or {}).get("id", ""),
-                )
+                if source == "hh":
+                    apply_result = await hh_client.apply_to_vacancy(
+                        v["url"],
+                        cover,
+                        response_url=v.get("response_url", ""),
+                        preferred_resume_title=(hh_resume_variant or {}).get("title", ""),
+                        preferred_resume_id=(hh_resume_variant or {}).get("id", ""),
+                    )
+                elif source == "superjob":
+                    apply_result = await superjob_client.apply_to_vacancy(v, cover)
+                elif source == "habr":
+                    apply_result = await habr_client.apply_to_vacancy(v["url"], cover)
+                elif source == "geekjob":
+                    apply_result = await geekjob_client.apply_to_vacancy(v, cover)
+                else:
+                    log.warning("Unknown source %s, skipping apply", source)
+                    continue
             except Exception as e:
-                await set_hunter_status("search_manual", "Ручной hh: ошибка", "busy")
+                await set_hunter_status("search_manual", f"Ручной {short_label}: ошибка", "busy")
                 seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
                 result["skipped"] += 1
                 bucket["manual"] += 1
@@ -1702,13 +1165,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     evaluation=evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
-                    note=f"hh:{type(e).__name__}",
+                    note=f"{source}:{type(e).__name__}",
                 )
-                log.exception("  Apply crashed for %s: %s", vid, e)
+                log.exception("  %s apply crashed for %s: %s", source_label, vid, e)
                 create_task(
                     f"Ручной отклик: {v['title']} @ {v['company']}",
                     (
-                        f"Источник: hh.ru\n"
+                        f"Источник: {source_label}\n"
                         f"Score: {score}/100\n"
                         f"{reason}\n"
                         f"URL: {v.get('url', '')}\n"
@@ -1717,15 +1180,15 @@ async def do_search(dry_run: bool = False) -> dict:
                     "medium",
                 )
                 await notify_needs_manual(
-                    v,
-                    score,
-                    reason,
-                    note=f"Автоотклик hh.ru упал: {type(e).__name__}. Проверь вручную.",
+                    v, score, reason,
+                    note=f"Автоотклик {source_label} упал: {type(e).__name__}. Проверь вручную.",
                 )
                 continue
-            log.info("  Apply result: %s", apply_result)
 
-            if "пропускаем" in apply_result.get("message", "").lower():
+            log.info("  %s apply result: %s", source_label, apply_result)
+
+            # 7. hh-специфика: вопросы работодателя
+            if source == "hh" and "пропускаем" in apply_result.get("message", "").lower():
                 await set_hunter_status("search_manual", "Ручной hh: вопросы", "busy")
                 seen.mark_seen(vid, v, "skipped_questions")
                 result["skipped"] += 1
@@ -1742,9 +1205,10 @@ async def do_search(dry_run: bool = False) -> dict:
                 await notify_needs_manual(v, score, reason)
                 continue
 
-            if apply_result["ok"]:
+            # 8. Обработка результата
+            if apply_result.get("ok"):
                 seen.mark_seen(vid, v, "applied")
-                if hh_resume_variant is not None:
+                if source == "hh" and hh_resume_variant is not None:
                     hh_pipeline.record_successful_apply(v, hh_resume_variant)
                 result["applied"] += 1
                 applied_count += 1
@@ -1760,24 +1224,36 @@ async def do_search(dry_run: bool = False) -> dict:
                 )
                 await set_hunter_status(
                     "search_apply_done",
-                    f"Отправил hh {auto_applied_count_by_source[source]}",
+                    f"Отправил {short_label} {auto_applied_count_by_source[source]}",
                     "working",
                 )
 
-                # AI Office: создаём задачу
                 task_id = create_task(
                     f"Отклик: {v['title']} @ {v['company']}",
-                    f"Score: {score}/100\n{reason}\nURL: {v.get('url', '')}\nCover: {cover}",
+                    (
+                        f"Источник: {source_label}\n"
+                        f"Score: {score}/100\n"
+                        f"{reason}\n"
+                        f"URL: {v.get('url', '')}\n"
+                        f"Cover: {cover}"
+                    ),
                     "low",
                 )
                 if task_id:
-                    await task_complete(task_id, f"Отклик отправлен (score {score})")
+                    await task_complete(task_id, f"Отклик {source_label} отправлен (score {score})")
 
-                # Telegram
                 await notify_application(v, score, cover)
             else:
-                await set_hunter_status("search_manual", "Ручной hh: не ушёл", "busy")
-                seen.mark_seen(vid, v, f"apply_failed:{apply_result['message']}")
+                apply_message = apply_result.get("message", "unknown")
+                # geekjob-специфика: сброс готовности при ошибке авторизации
+                if source == "geekjob" and (
+                    "не авториз" in apply_message.lower() or "не гик" in apply_message.lower()
+                ):
+                    geekjob_ready = False
+                    geekjob_ready_message = apply_message
+
+                await set_hunter_status("search_manual", f"Ручной {short_label}: не ушёл", "busy")
+                seen.mark_seen(vid, v, f"apply_failed:{apply_message}")
                 result["skipped"] += 1
                 bucket["manual"] += 1
                 analytics.record_decision(
@@ -1787,14 +1263,23 @@ async def do_search(dry_run: bool = False) -> dict:
                     evaluation=evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
-                    note=f"hh:{apply_result['message']}",
+                    note=f"{source}:{apply_message}",
                 )
-                log.warning("  Apply failed: %s", apply_result["message"])
+                log.warning("  %s apply failed: %s", source_label, apply_message)
+                create_task(
+                    f"Ручной отклик: {v['title']} @ {v['company']}",
+                    (
+                        f"Источник: {source_label}\n"
+                        f"Score: {score}/100\n"
+                        f"{reason}\n"
+                        f"URL: {v.get('url', '')}\n"
+                        f"Автоотклик не завершился: {apply_message}"
+                    ),
+                    "medium",
+                )
                 await notify_needs_manual(
-                    v,
-                    score,
-                    reason,
-                    note=f"Автоотклик hh.ru не завершился: {apply_result['message']}",
+                    v, score, reason,
+                    note=f"Автоотклик {source_label} не завершился: {apply_message}",
                 )
 
             # Пауза между откликами
