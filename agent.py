@@ -112,10 +112,11 @@ def _append_run_history(entry: dict) -> None:
 
 
 def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -> None:
+    mode = "dry-run" if dry_run else "search"
     entry = {
         "kind": "search",
         "ok": ok,
-        "mode": "dry-run" if dry_run else "search",
+        "mode": mode,
         "found": result.get("found", 0),
         "applied": result.get("applied", 0),
         "skipped": result.get("skipped", 0),
@@ -124,6 +125,11 @@ def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
     _append_run_history(entry)
+    analytics.record_search_finished(
+        run_id=result.get("_run_id", ""),
+        mode=mode,
+        result={**result, "ok": ok},
+    )
 
 
 
@@ -295,7 +301,7 @@ async def do_search(dry_run: bool = False) -> dict:
     Один прогон поиска + откликов.
     Возвращает {"found": int, "applied": int, "skipped": int}
     """
-    result = {"found": 0, "applied": 0, "skipped": 0, "source_stats": {}}
+    result: dict = {"found": 0, "applied": 0, "skipped": 0, "source_stats": {}, "_run_id": ""}
     hh_client: HHClient | None = HHClient() if config.HH_ENABLED else None
     superjob_client: SuperJobClient | None = SuperJobClient() if config.SUPERJOB_ENABLED else None
     habr_client: HabrCareerClient | None = HabrCareerClient() if config.HABR_ENABLED else None
@@ -303,6 +309,7 @@ async def do_search(dry_run: bool = False) -> dict:
     last_office_status: tuple[str, str, str] | None = None
     runtime_mode = "dry-run" if dry_run else "search"
     run_id = analytics.new_run_id(runtime_mode)
+    result["_run_id"] = run_id
     last_apply_attempt_started_at_by_source = defaultdict(float)
     hh_retry_vacancies: list[dict] = []
 
@@ -364,16 +371,23 @@ async def do_search(dry_run: bool = False) -> dict:
                 log.warning("Failed to prepare hh staged resume pipeline: %s", e)
 
         await set_hunter_status("search_start", "Старт поиска", "working")
+        enabled_sources = []
+        if config.HH_ENABLED:
+            enabled_sources.append("hh.ru")
+        if config.SUPERJOB_ENABLED:
+            enabled_sources.append("SuperJob")
+        if config.HABR_ENABLED:
+            enabled_sources.append("Хабр Карьера")
+        if config.GEEKJOB_ENABLED:
+            enabled_sources.append("GeekJob")
+
+        analytics.record_search_started(
+            run_id=run_id,
+            mode=runtime_mode,
+            enabled_sources=enabled_sources,
+        )
+
         if not dry_run:
-            enabled_sources = []
-            if config.HH_ENABLED:
-                enabled_sources.append("hh.ru")
-            if config.SUPERJOB_ENABLED:
-                enabled_sources.append("SuperJob")
-            if config.HABR_ENABLED:
-                enabled_sources.append("Хабр Карьера")
-            if config.GEEKJOB_ENABLED:
-                enabled_sources.append("GeekJob")
             await notify_search_started(enabled_sources)
 
         all_vacancies = await search_pipeline.collect_all(

@@ -121,6 +121,46 @@ def _resume_variant_payload(resume_variant: dict | None) -> dict:
     }
 
 
+def record_search_started(
+    *,
+    run_id: str,
+    mode: str,
+    enabled_sources: list[str],
+) -> None:
+    """EVT-001: начало поискового прогона."""
+    if not config.ANALYTICS_ENABLED:
+        return
+    _append_event({
+        "event": "search_started",
+        "created_at": _now().isoformat(timespec="seconds"),
+        "run_id": run_id,
+        "mode": mode,
+        "enabled_sources": enabled_sources,
+    })
+
+
+def record_search_finished(
+    *,
+    run_id: str,
+    mode: str,
+    result: dict,
+) -> None:
+    """EVT-002: завершение поискового прогона."""
+    if not config.ANALYTICS_ENABLED:
+        return
+    _append_event({
+        "event": "search_finished",
+        "created_at": _now().isoformat(timespec="seconds"),
+        "run_id": run_id,
+        "mode": mode,
+        "found": result.get("found", 0),
+        "applied": result.get("applied", 0),
+        "manual": result.get("manual", 0),
+        "source_stats": result.get("source_stats", {}),
+        "ok": result.get("ok", True),
+    })
+
+
 def record_decision(
     *,
     run_id: str,
@@ -379,8 +419,10 @@ def summarize(days: int | None = None) -> dict:
     summary = {
         "days": days,
         "events": len(events),
+        "search_runs": 0,
         "decisions": 0,
         "auto_applied": 0,
+        "dry_run_matched": 0,
         "manual": 0,
         "keyword_filtered": 0,
         "red_flagged": 0,
@@ -401,7 +443,9 @@ def summarize(days: int | None = None) -> dict:
 
     for event in events:
         event_type = event.get("event")
-        if event_type == "decision":
+        if event_type == "search_finished":
+            summary["search_runs"] += 1
+        elif event_type == "decision":
             summary["decisions"] += 1
             decision = event.get("decision", "")
             decision_counter[decision or "unknown"] += 1
@@ -427,6 +471,8 @@ def summarize(days: int | None = None) -> dict:
                 summary["red_flagged"] += 1
             elif decision == "skipped_low_score":
                 summary["low_score"] += 1
+            elif decision == "dry_run_match":
+                summary["dry_run_matched"] += 1
 
             if decision == "applied_auto":
                 summary["auto_applied"] += 1

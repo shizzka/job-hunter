@@ -245,11 +245,14 @@ def print_stats():
     print(f"Аналитика за {analytics_summary['days']} дн.:")
     print(
         "  "
-        f"Событий: {analytics_summary['events']} | "
+        f"Прогонов: {analytics_summary.get('search_runs', 0)} | "
+        f"событий: {analytics_summary['events']} | "
         f"решений: {analytics_summary['decisions']} | "
         f"автооткликов: {analytics_summary['auto_applied']} | "
         f"manual: {analytics_summary['manual']}"
     )
+    if analytics_summary.get("dry_run_matched", 0) > 0:
+        print(f"  dry-run совпадений: {analytics_summary['dry_run_matched']}")
     print(
         "  "
         f"keyword skip: {analytics_summary['keyword_filtered']} | "
