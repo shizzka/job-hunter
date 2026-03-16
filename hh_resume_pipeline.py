@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timedelta
 
 import config
+from outcome import status_bucket as _status_bucket
 
 
 def _now() -> datetime:
@@ -218,17 +219,6 @@ def _retry_eta_from_last_attempt(entry: dict) -> datetime | None:
     if not last_attempt_at:
         return None
     return last_attempt_at + timedelta(hours=config.HH_RESUME_RETRY_DELAY_HOURS)
-
-
-def _status_bucket(status_text: str) -> str:
-    text = (status_text or "").strip().casefold()
-    if any(token in text for token in ("приглаш", "собесед", "выход на работу", "оффер")):
-        return "positive"
-    if "отказ" in text:
-        return "rejected"
-    if any(token in text for token in ("не просмотрен", "просмотрен", "ожидание")):
-        return "pending"
-    return "unknown"
 
 
 def sync_negotiation_statuses(items: list[dict]) -> None:

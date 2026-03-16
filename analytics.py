@@ -8,6 +8,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
 import config
+from outcome import status_bucket as _status_bucket
 
 log = logging.getLogger("analytics")
 
@@ -208,17 +209,6 @@ def record_decision(
     }
     payload.update(_resume_variant_payload(resume_variant))
     _append_event(payload)
-
-
-def _status_bucket(status_text: str) -> str:
-    text = (status_text or "").strip().casefold()
-    if any(token in text for token in ("приглаш", "собесед", "оффер", "выход на работу")):
-        return "positive"
-    if "отказ" in text:
-        return "rejected"
-    if any(token in text for token in ("не просмотрен", "просмотрен", "ожидание")):
-        return "pending"
-    return "unknown"
 
 
 def record_negotiation_statuses(items: list[dict]) -> None:
