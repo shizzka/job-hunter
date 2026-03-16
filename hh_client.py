@@ -131,9 +131,25 @@ class HHClient:
         if "/account/captcha" in current_url:
             return True
 
+        # Проверяем наличие iframe капчи (reCAPTCHA, hCaptcha, Yandex SmartCaptcha)
+        try:
+            captcha_frame = await self._page.query_selector(
+                "iframe[src*='captcha'], "
+                "iframe[src*='recaptcha'], "
+                "iframe[src*='hcaptcha'], "
+                "iframe[src*='smartcaptcha'], "
+                "[class*='captcha' i], "
+                "[id*='captcha' i], "
+                "[data-qa='captcha']"
+            )
+            if captcha_frame:
+                return True
+        except Exception:
+            pass
+
         try:
             body_text = await self._page.evaluate(
-                "() => document.body.innerText.slice(0, 1000)"
+                "() => document.body.innerText.slice(0, 2000)"
             )
         except Exception:
             return False
@@ -142,6 +158,8 @@ class HHClient:
         return (
             "подтвердите, что вы не робот" in body_lower
             or "текст с картинки" in body_lower
+            or "i'm not a robot" in body_lower
+            or "verify you are human" in body_lower
         )
 
     async def save_session(self):
@@ -244,6 +262,11 @@ class HHClient:
                 log.info("Search debug saved: %s", debug_path)
             except Exception:
                 pass
+
+        # Captcha check перед парсингом
+        if await self._is_captcha_page():
+            log.warning("hh.ru captcha on search page: %s", self._page.url)
+            return []
 
         vacancies = []
 
@@ -779,13 +802,29 @@ class HHClient:
 
         # Проверяем: может появилось сообщение об успешном отклике
         page_text = await self._page.evaluate("() => document.body.innerText")
-        if "отклик" in page_text.lower() and ("отправлен" in page_text.lower() or "откликнулись" in page_text.lower()):
-            # Отклик прошёл! Теперь попробуем добавить сопроводительное
+        page_lower = page_text.lower()
+        if "отклик" in page_lower and ("отправлен" in page_lower or "откликнулись" in page_lower):
             if cover_letter:
                 await self._fill_cover_letter_post_apply(cover_letter)
             return {"ok": True, "message": "Отклик отправлен (по тексту страницы)"}
 
+        # Captcha после submit
+        if await self._is_captcha_page():
+            log.warning("Captcha appeared after apply submit")
+            return {"ok": False, "message": "hh.ru показал captcha после отклика"}
+
+        # Ошибка rate limit / блокировки
+        if "слишком много" in page_lower or "too many" in page_lower:
+            log.warning("Rate limit detected after apply")
+            return {"ok": False, "message": "hh.ru rate limit — слишком много откликов"}
+
+        # Ошибка на стороне hh
+        if "что-то пошло не так" in page_lower or "ошибка" in page_lower:
+            log.warning("hh.ru error page after apply. URL: %s", current_url)
+            return {"ok": False, "message": "hh.ru показал ошибку после отклика"}
+
         log.warning("Apply verification failed. URL: %s", current_url)
+        await save_debug_snapshot("debug_apply_verification_failed")
         return {"ok": False, "message": "Не удалось подтвердить отклик"}
 
     async def _fill_cover_letter_post_apply(self, cover_letter: str):
