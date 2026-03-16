@@ -13,6 +13,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 MODULES = [
     "agent",
     "apply_orchestrator",
+    "invitation_sync",
     "outcome",
     "search_pipeline",
     "hh_client",

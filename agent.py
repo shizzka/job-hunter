@@ -29,6 +29,16 @@ import seen
 import analytics
 import search_pipeline
 import apply_orchestrator
+import invitation_sync
+from outcome import (
+    DECISION_APPLIED_AUTO,
+    DECISION_APPLY_FAILED,
+    DECISION_APPLY_FAILED_EXCEPTION,
+    DECISION_DRY_RUN_MATCH,
+    DECISION_QUESTIONS_REQUIRED,
+    DECISION_SKIPPED_LOW_SCORE,
+    DECISION_SKIPPED_RED_FLAGS,
+)
 from geekjob_client import GeekJobClient
 from habr_career_client import HabrCareerClient
 from hh_client import HHClient
@@ -496,7 +506,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 analytics.record_decision(
                     run_id=run_id,
                     vacancy=v,
-                    decision="skipped_red_flags",
+                    decision=DECISION_SKIPPED_RED_FLAGS,
                     evaluation=evaluation,
                     details=details,
                 )
@@ -510,7 +520,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 analytics.record_decision(
                     run_id=run_id,
                     vacancy=v,
-                    decision="skipped_low_score",
+                    decision=DECISION_SKIPPED_LOW_SCORE,
                     evaluation=evaluation,
                     details=details,
                 )
@@ -531,7 +541,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 analytics.record_decision(
                     run_id=run_id,
                     vacancy=v,
-                    decision="dry_run_match",
+                    decision=DECISION_DRY_RUN_MATCH,
                     evaluation=evaluation,
                     details=details,
                     dry_run=True,
@@ -677,7 +687,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 analytics.record_decision(
                     run_id=run_id,
                     vacancy=v,
-                    decision="apply_failed_exception",
+                    decision=DECISION_APPLY_FAILED_EXCEPTION,
                     evaluation=evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
@@ -712,7 +722,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 analytics.record_decision(
                     run_id=run_id,
                     vacancy=v,
-                    decision="questions_required",
+                    decision=DECISION_QUESTIONS_REQUIRED,
                     evaluation=evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
@@ -733,7 +743,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 analytics.record_decision(
                     run_id=run_id,
                     vacancy=v,
-                    decision="applied_auto",
+                    decision=DECISION_APPLIED_AUTO,
                     evaluation=evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
@@ -775,7 +785,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 analytics.record_decision(
                     run_id=run_id,
                     vacancy=v,
-                    decision="apply_failed",
+                    decision=DECISION_APPLY_FAILED,
                     evaluation=evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
@@ -844,17 +854,8 @@ async def do_check_invitations():
         _write_runtime_status("check_invitations", "Проверяю инвайты", "thinking", "check")
         await office_log("check_invitations", "Проверяю инвайты", "thinking")
 
-        try:
-            negotiation_statuses = await client.get_negotiation_statuses()
-            analytics.record_negotiation_statuses(negotiation_statuses)
-            if hh_pipeline.enabled():
-                hh_pipeline.sync_negotiation_statuses(negotiation_statuses)
-        except Exception as e:
-            log.warning("Failed to sync hh staged resume statuses during check: %s", e)
-
-        negotiations = await client.check_negotiations()
-        invitations = negotiations.get("invitations", [])
-        analytics.record_invitations(invitations)
+        sync_result = await invitation_sync.check_invitations(client)
+        invitations = sync_result["invitations"]
 
         if invitations:
             log.info("Found %d invitations!", len(invitations))
@@ -871,16 +872,12 @@ async def do_check_invitations():
             )
 
             for inv in invitations:
-                # AI Office: задача с высоким приоритетом
-                task_id = create_task(
+                create_task(
                     f"🎉 Приглашение: {inv['title']} @ {inv['company']}",
                     f"URL: {inv.get('url', '')}\nОтветить и назначить время!",
                     "urgent",
                 )
-
-                # Telegram: срочное уведомление
                 await notify_invitation(inv)
-
                 log.info("  Invitation: %s @ %s", inv["title"], inv["company"])
         else:
             log.info("No new invitations")
