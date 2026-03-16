@@ -1,0 +1,13 @@
+{
+  "id": 1099001,
+  "title": "QA Automation Engineer",
+  "href": "/vacancies/1099001",
+  "company": {"title": "Яндекс"},
+  "salary": {"formatted": "от 200 000 до 350 000 ₽"},
+  "locations": [{"title": "Москва"}, {"title": "Санкт-Петербург"}],
+  "remoteWork": true,
+  "divisions": [{"title": "Тестирование"}, {"title": "Автоматизация"}],
+  "skills": [{"title": "Python"}, {"title": "Selenium"}, {"title": "CI/CD"}],
+  "salaryQualification": {"title": "Middle+"},
+  "publishedDate": "2026-03-15T10:00:00Z"
+}

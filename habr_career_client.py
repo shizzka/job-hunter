@@ -419,5 +419,9 @@ class HabrCareerClient:
             "details": details,
             "location": ", ".join(part for part in location_titles if part),
             "apply_mode": "manual",
-            "published_at": (item.get("publishedDate") or {}).get("date"),
+            "published_at": (
+                item["publishedDate"].get("date")
+                if isinstance(item.get("publishedDate"), dict)
+                else item.get("publishedDate")
+            ),
         }

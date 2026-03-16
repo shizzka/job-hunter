@@ -1,0 +1,16 @@
+{
+  "id": 55001,
+  "profession": "QA Engineer",
+  "firm_name": "ТестКорп",
+  "town": {"id": 4, "title": "Москва"},
+  "place_of_work": {"id": 2, "title": "Удаленная работа"},
+  "payment_from": 120000,
+  "payment_to": 200000,
+  "currency": "rub",
+  "agreement": false,
+  "candidat": "Опыт автоматизации тестирования от 2 лет. Знание Python, Selenium.",
+  "work": "Автоматизация UI и API тестов. Code review тестов.",
+  "compensation": "ДМС, обучение, гибкий график.",
+  "link": "https://www.superjob.ru/vakansii/qa-engineer-55001.html",
+  "date_published": 1742140800
+}
