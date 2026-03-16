@@ -15,15 +15,51 @@ The architecture is intentionally simple:
 
 ### `agent.py`
 
+CLI entrypoint and top-level orchestrator. Handles argument parsing, profile activation, and command dispatch. Delegates the search lifecycle to `search_pipeline.py` and `apply_orchestrator.py`.
+
+### `search_pipeline.py`
+
 Owns the search lifecycle:
 
 - source collection
-- deduplication
+- deduplication (normalized key from title + company + location)
 - keyword pre-filter
 - LLM scoring
-- auto-apply/manual fallback
-- runtime status updates
 - summary reporting
+
+### `apply_orchestrator.py`
+
+Handles the application phase:
+
+- auto-apply dispatching per source
+- cover letter length limits
+- manual-review fallback when auto-apply fails
+- source-specific enable/disable logic
+
+### `profile.py`
+
+Multi-profile system:
+
+- `Profile` dataclass with nested source configs (`HHConfig`, `SuperJobConfig`, etc.)
+- `activate(name)` loads profile and patches `config.*` module attributes
+- OS-level `fcntl` file locks prevent concurrent use of the same profile
+- `create_profile()`, `list_profiles()`, `load_profile()`
+
+### `setup_profile.py`
+
+Interactive CLI wizard for profile onboarding:
+
+- search queries, resume upload, platform account setup
+- platform logic: no account → disabled, account without resume → manual_review
+- optional LLM resume analysis and platform login
+
+### `resume_analyzer.py`
+
+LLM-powered resume analysis:
+
+- loads prompt from `~/.job-hunter/resume_prompt.md` (not committed)
+- system/user prompts separated by `---`
+- returns full analysis with recommendations
 
 ### `hh_client.py`
 
@@ -62,6 +98,14 @@ Hybrid client:
 
 Search uses SSR HTML parsing, while apply uses the site's own JSON endpoint with a saved browser session.
 
+### `filters.py`
+
+Keyword pre-filter applied before LLM scoring:
+
+- relevance check based on title/snippet keywords
+- configurable red flag filters
+- returns rejection reason or `None` if passed
+
 ### `matcher.py`
 
 OpenAI-compatible LLM layer:
@@ -75,6 +119,34 @@ OpenAI-compatible LLM layer:
 
 Idempotency store. It prevents repeated processing of the same vacancy across runs.
 
+### `analytics.py`
+
+JSONL event logging and analytics:
+
+- event taxonomy: `search_started`, `search_finished`, `vacancy_applied`, etc.
+- application funnel tracking
+- A/B resume variant statistics
+- negotiation outcome tracking (hh.ru)
+
+### `reporting.py`
+
+Human-readable stat formatting:
+
+- source labels and short labels
+- compact source counts
+- funnel and A/B resume reports
+
+### `invitation_sync.py`
+
+Synchronizes hh.ru invitation/negotiation statuses with analytics state.
+
+### `hh_resume_pipeline.py`
+
+Staged A/B testing for hh.ru resume variants:
+
+- rotates between resume versions
+- tracks per-variant application and outcome counts
+
 ### `notifier.py`
 
 Telegram notifications:
@@ -84,6 +156,7 @@ Telegram notifications:
 - manual review required
 - invitation received
 - summary by source
+- digest with funnel and A/B stats
 
 ### `office_bridge.py`
 
@@ -178,6 +251,8 @@ Important files:
 
 - `seen_vacancies.json`
 - `run_history.jsonl`
+- `analytics_events.jsonl` / `analytics_state.json`
+- `hh_resume_pipeline.json`
 - `resume.md`
 - `runtime_status.json`
 - `hh_cookies.json`
@@ -185,6 +260,8 @@ Important files:
 - `geekjob_cookies.json`
 - `superjob_cookies.json`
 - `state/debug_*.html|png`
+
+Named profiles store their state in `~/.job-hunter/profiles/<name>/` with the same file layout. Each profile's `activate()` call patches `config.*` to point at the profile's state directory.
 
 This design keeps personal state outside the repository and makes public sharing safe.
 

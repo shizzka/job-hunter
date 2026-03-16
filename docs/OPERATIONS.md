@@ -115,7 +115,52 @@ Optional extras:
 - Telegram notifications
 - AI Office logging/task bridge
 
+## Profile Setup
+
+### Interactive wizard (recommended)
+
+```bash
+./run.sh setup
+```
+
+The wizard guides you through:
+
+1. Profile name and search queries.
+2. Resume upload (paste text or provide a file path).
+3. Platform accounts — for each source: has account? has resume uploaded?
+4. Optional LLM resume analysis.
+5. Optional platform login.
+
+### Named profiles
+
+Create separate profiles for different users or search configurations:
+
+```bash
+./run.sh setup                    # creates a named profile via wizard
+./run.sh --profile john search    # run search under a specific profile
+./run.sh --profile john stats     # view stats for a profile
+./run.sh profiles                 # list all profiles
+```
+
+Each profile gets isolated state, cookies, and configuration. OS-level file locks prevent two processes from using the same profile concurrently.
+
+### Resume analysis
+
+```bash
+./run.sh analyze-resume
+```
+
+Analyzes the current profile's resume through the LLM, saves the result to a file, and optionally sends it to Telegram. The analysis prompt is loaded from `~/.job-hunter/resume_prompt.md` (not included in the repository).
+
 ## First Run Checklist
+
+### With wizard
+
+1. Configure LLM credentials in `~/.job-hunter/job-hunter.env`.
+2. Run `./run.sh setup`.
+3. Run `./run.sh dry-run` before `./run.sh search`.
+
+### Manual
 
 1. Configure env.
 2. Run `./run.sh login` for `hh.ru`.

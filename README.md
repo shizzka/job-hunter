@@ -1,10 +1,10 @@
-# Job Hunter v0.2.0 OBT
+# Job Hunter v0.3.0
 
 Russian version: [README.ru.md](README.ru.md)
 
 `Job Hunter` is a Python automation tool for searching QA/testing vacancies across multiple job boards, scoring them with an LLM, and sending auto-applications where the platform allows it.
 
-It is designed for personal use first, but the repository is now structured so other people can clone it, configure their own accounts, and run it on their own machine.
+It supports isolated user profiles, LLM-powered resume analysis, application funnels with A/B resume testing, and an interactive setup wizard — making it usable both as a personal tool and as a foundation for a multi-user service.
 
 Current public status: `OBT` (open beta testing). Expect selector drift, captcha limits, and platform-specific edge cases.
 
@@ -17,6 +17,10 @@ Current public status: `OBT` (open beta testing). Expect selector drift, captcha
 - Generates a short cover letter for relevant matches
 - Sends auto-applications where supported
 - Falls back to manual-review tasks and Telegram notifications when auto-apply is not possible
+- Tracks application funnel: applied → viewed → pending / rejected / positive
+- Supports A/B resume testing with per-variant statistics
+- Analyzes your resume with an LLM and sends recommendations to Telegram
+- Supports isolated user profiles for multi-user setups
 - Persists `seen` vacancies, cookies, runtime status, and debug artifacts outside the repository
 
 ## Supported Sources
@@ -53,13 +57,26 @@ The scoring step and cover-letter generation both use this provider.
 
 ## Quick Start
 
-1. Create and activate a virtual environment.
-2. Install dependencies.
-3. Install the Playwright browser.
-4. Create your local env file from the example.
-5. Fill in your own credentials and optional integrations.
-6. Log in to the platforms that require browser sessions.
-7. Run a dry run first, then a real search.
+### Option A: Interactive Setup (recommended)
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
+
+mkdir -p ~/.job-hunter
+cp job-hunter.env.example ~/.job-hunter/job-hunter.env
+# fill in LLM_BASE_URL, JOB_HUNTER_LLM_KEY, LLM_MODEL at minimum
+
+./run.sh setup            # interactive wizard: profile, resume, platforms
+./run.sh dry-run
+./run.sh search
+```
+
+The wizard walks you through search queries, resume upload, platform accounts, and optional LLM resume analysis.
+
+### Option B: Manual Setup
 
 ```bash
 python3 -m venv venv
@@ -156,12 +173,19 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 ## Commands
 
 ```bash
+# Profile management
+./run.sh setup                  # interactive profile wizard
+./run.sh profiles               # list all profiles
+./run.sh analyze-resume         # LLM resume analysis → file + Telegram
+
+# Login (interactive, opens browser)
 ./run.sh login
 ./run.sh superjob-login
 ./run.sh habr-login
 ./run.sh geekjob-login
 ./run.sh grab-resume
 
+# Search and apply
 ./run.sh dry-run
 ./run.sh search
 ./run.sh check
@@ -170,6 +194,7 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 ./run.sh digest
 ./run.sh analytics-backfill
 
+# Per-source runs
 ./run.sh superjob-dry-run
 ./run.sh superjob-search
 ./run.sh habr-dry-run
@@ -177,6 +202,25 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 ./run.sh geekjob-dry-run
 ./run.sh geekjob-search
 ```
+
+Use `--profile <name>` with any command to run under a specific profile:
+
+```bash
+./run.sh --profile john search
+./run.sh --profile john stats
+```
+
+## Profiles
+
+`Job Hunter` supports isolated user profiles. Each profile gets its own state directory, cookies, seen vacancies, analytics, and configuration.
+
+```
+~/.job-hunter/                  # default profile state
+~/.job-hunter/profiles/john/    # named profile: config + state
+~/.job-hunter/profiles/anna/    # another named profile
+```
+
+Profiles are protected by OS-level file locks — two daemons cannot run the same profile concurrently.
 
 ## State and Privacy
 
@@ -186,8 +230,8 @@ Runtime state is intentionally stored outside the repository, by default in `~/.
 - downloaded resume
 - `seen_vacancies.json`
 - `run_history.jsonl`
-- `analytics_events.jsonl`
-- `analytics_state.json`
+- `analytics_events.jsonl` / `analytics_state.json`
+- `hh_resume_pipeline.json` — A/B resume test state
 - runtime status
 - Playwright debug screenshots and HTML dumps
 
