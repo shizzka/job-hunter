@@ -24,6 +24,8 @@ node_modules/
 state/
 .job-hunter/
 *_cookies.json
+resume_prompt.md
+*_analysis.md
 seen_vacancies.json
 runtime_status.json
 

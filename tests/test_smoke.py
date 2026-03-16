@@ -29,6 +29,8 @@ MODULES = [
     "office_bridge",
     "hh_resume_pipeline",
     "config",
+    "profile",
+    "resume_analyzer",
 ]
 
 

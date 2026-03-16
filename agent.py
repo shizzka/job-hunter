@@ -24,6 +24,7 @@ from datetime import datetime
 import config
 import filters
 import hh_resume_pipeline as hh_pipeline
+import profile as profile_mod
 import reporting
 import seen
 import analytics
@@ -1043,6 +1044,10 @@ async def main():
     parser = argparse.ArgumentParser(
         description="Job Hunter Agent — автопоиск работы на hh.ru, SuperJob, Хабр Карьере и GeekJob"
     )
+    parser.add_argument(
+        "--profile", default="default",
+        help="Имя профиля (default = из env vars; иначе из ~/.job-hunter/profiles/<name>/profile.env)",
+    )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--login", action="store_true", help="Ручной логин (сохранение cookies)")
     group.add_argument("--superjob-login", action="store_true", help="Логин в SuperJob")
@@ -1056,8 +1061,45 @@ async def main():
     group.add_argument("--analytics-backfill", action="store_true", help="Подтянуть историю в аналитику")
     group.add_argument("--dry-run", action="store_true", help="Поиск без откликов")
     group.add_argument("--grab-resume", action="store_true", help="Скачать резюме с hh.ru")
+    group.add_argument("--create-profile", metavar="NAME", help="Создать новый профиль")
+    group.add_argument("--list-profiles", action="store_true", help="Список профилей")
+    group.add_argument("--analyze-resume", action="store_true", help="Анализ резюме (LLM)")
 
     args = parser.parse_args()
+
+    # Команды управления профилями (не требуют активации)
+    if args.create_profile:
+        try:
+            p = profile_mod.create_profile(args.create_profile)
+            print(f"✅ Профиль '{p.name}' создан: {p.home_dir}")
+            print(f"   Настройки: {p.home_dir}/profile.env")
+            print(f"\nСледующие шаги:")
+            print(f"  1. Отредактируй profile.env (запросы, источники, уведомления)")
+            print(f"  2. Залогинься: ./run.sh --profile {p.name} login")
+            print(f"  3. Запусти:    ./run.sh --profile {p.name} search")
+        except (ValueError, FileExistsError) as e:
+            print(f"❌ {e}")
+            sys.exit(1)
+        return
+
+    if args.list_profiles:
+        profiles = profile_mod.list_profiles()
+        print(f"Профили ({len(profiles)}):")
+        for name in profiles:
+            marker = " (активный)" if name == "default" else ""
+            p = profile_mod.load_profile(name)
+            sources = []
+            if p.hh.enabled: sources.append("hh")
+            if p.superjob.enabled: sources.append("sj")
+            if p.habr.enabled: sources.append("habr")
+            if p.geekjob.enabled: sources.append("geekjob")
+            print(f"  {name}{marker} — {', '.join(sources) or 'нет источников'} — {p.home_dir}")
+        return
+
+    # Активируем профиль (патчит config.* для всех модулей)
+    if args.profile != "default":
+        log.info("Activating profile: %s", args.profile)
+    profile_mod.activate(args.profile)
 
     try:
         if args.login:
@@ -1083,6 +1125,26 @@ async def main():
             await do_digest()
         elif args.analytics_backfill:
             await do_analytics_backfill()
+        elif args.analyze_resume:
+            import resume_analyzer
+            resume_path = config.RESUME_FILE
+            if not os.path.isfile(resume_path):
+                print(f"❌ Резюме не найдено: {resume_path}")
+                print(f"   Загрузи резюме: ./run.sh --profile {args.profile} grab-resume")
+                print(f"   Или положи файл вручную: {resume_path}")
+                sys.exit(1)
+            print(f"Анализирую резюме: {resume_path}")
+            print(f"Модель: {config.LLM_MODEL}")
+            print("Это может занять 30-60 секунд...\n")
+            result_text = await resume_analyzer.analyze_resume_file(resume_path)
+            print(result_text)
+            # Сохраняем анализ рядом с резюме
+            analysis_path = resume_path.replace(".md", "_analysis.md")
+            if analysis_path == resume_path:
+                analysis_path = resume_path + ".analysis.md"
+            with open(analysis_path, "w", encoding="utf-8") as f:
+                f.write(result_text)
+            print(f"\n📄 Анализ сохранён: {analysis_path}")
         elif args.dry_run:
             result = await do_search(dry_run=True)
             print(f"\n🔍 [DRY RUN] Найдено: {result['found']} | Подходящих: {result['applied']} | Отфильтровано: {result['skipped']}")
