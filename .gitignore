@@ -13,6 +13,7 @@ venv/
 job-hunter.env
 
 CODEX.md
+CLAUDE.md
 
 .claude/
 web/
