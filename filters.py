@@ -39,6 +39,17 @@ EXCLUDE_KEYWORDS = {
     "уборщ", "грузчик", "кладовщик",
 }
 
+# Всё, связанное с войной, СВО, боевыми действиями, ВПК — жёсткий отсев
+MILITARY_KEYWORDS = {
+    "сво", "военн", "боевых действий", "боевые действия",
+    "мобилизац", "оборонн", "военкомат", "впк",
+    "вооружен", "армейск", "армии", "минобороны",
+    "ракетн", "артиллер", "бронетехн", "военнослужащ",
+    "контрактн", "контракт на службу", "служба по контракту",
+    "оборонзаказ", "гособоронзаказ", "росгвард",
+    "нацгвард", "ополчен", "добровольч", "фронт",
+}
+
 
 def check_vacancy(vacancy: dict) -> str | None:
     """
@@ -54,6 +65,9 @@ def check_vacancy(vacancy: dict) -> str | None:
 
     if any(ex in combined for ex in EXCLUDE_KEYWORDS):
         return "exclude_keywords"
+
+    if any(kw in combined for kw in MILITARY_KEYWORDS):
+        return "military_redflag"
 
     source = vacancy.get("source", "")
 

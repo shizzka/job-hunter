@@ -119,6 +119,30 @@ class TestFilters:
         result = check_vacancy(v)
         assert result is not None  # Должен быть отклонён
 
+    def test_check_vacancy_military_title(self):
+        from filters import check_vacancy
+
+        v = {"title": "Тестировщик ПО", "company": "Оборонный завод", "snippet": "работа в сфере ВПК", "source": "hh"}
+        assert check_vacancy(v) == "military_redflag"
+
+    def test_check_vacancy_military_svo(self):
+        from filters import check_vacancy
+
+        v = {"title": "QA Engineer", "snippet": "участие в СВО приветствуется", "source": "hh"}
+        assert check_vacancy(v) == "military_redflag"
+
+    def test_check_vacancy_military_contract(self):
+        from filters import check_vacancy
+
+        v = {"title": "Служба по контракту", "snippet": "военнослужащий", "source": "hh"}
+        assert check_vacancy(v) == "military_redflag"
+
+    def test_check_vacancy_not_military(self):
+        from filters import check_vacancy
+
+        v = {"title": "QA автоматизатор", "company": "Яндекс", "snippet": "автотесты python", "source": "hh"}
+        assert check_vacancy(v) is None
+
 
 class TestReporting:
     """Smoke для reporting.py."""
