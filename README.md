@@ -55,6 +55,16 @@ More detail: [Architecture](docs/ARCHITECTURE.md)
 
 The scoring step and cover-letter generation both use this provider.
 
+## AI-Assisted Setup (easiest)
+
+If you use an AI coding assistant (Claude Code, Cursor, Windsurf, etc.), just give it this prompt:
+
+> Clone https://github.com/shizzka/job-hunter and follow the instructions in SETUP_AGENT.md — go through all the steps in order, asking me questions at each stage.
+
+The AI will install everything, explain what Job Hunter does, help you pick an LLM provider, set up Telegram notifications, and walk you through the entire configuration interactively.
+
+See [SETUP_AGENT.md](SETUP_AGENT.md) for the full guide.
+
 ## Quick Start
 
 ### Option A: Interactive Setup (recommended)
