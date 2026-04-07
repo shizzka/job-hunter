@@ -57,12 +57,35 @@ class TestStatusBucket:
         assert status_bucket("отказ") == "rejected"
 
 
+class TestStatusDetailBucket:
+    def test_interview(self):
+        from outcome import status_detail_bucket
+        assert status_detail_bucket("Приглашение на собеседование") == "interview"
+
+    def test_offer(self):
+        from outcome import status_detail_bucket
+        assert status_detail_bucket("Оффер") == "offer"
+
+    def test_test_task(self):
+        from outcome import status_detail_bucket
+        assert status_detail_bucket("Тестовое задание") == "test_task"
+
+    def test_pending_viewed(self):
+        from outcome import status_detail_bucket
+        assert status_detail_bucket("Просмотрен") == "pending_viewed"
+
+    def test_pending_new(self):
+        from outcome import status_detail_bucket
+        assert status_detail_bucket("Не просмотрен") == "pending_new"
+
+
 class TestDecisionConstants:
     """D-002: decision-константы импортируются и группируются."""
 
     def test_constants_exist(self):
         from outcome import (
             DECISION_APPLIED_AUTO,
+            DECISION_ALREADY_APPLIED,
             DECISION_SKIPPED_KEYWORD,
             DECISION_SKIPPED_RED_FLAGS,
             DECISION_SKIPPED_LOW_SCORE,
@@ -71,6 +94,7 @@ class TestDecisionConstants:
             DECISION_DRY_RUN_MATCH,
         )
         assert DECISION_APPLIED_AUTO == "applied_auto"
+        assert DECISION_ALREADY_APPLIED == "already_applied"
         assert DECISION_SKIPPED_KEYWORD == "skipped_keyword_filter"
 
     def test_groups_no_overlap(self):
@@ -185,3 +209,23 @@ class TestResumePipeline:
             resolved = resolve_variants(resumes)
             assert resolved[0]["id"] == "aaa"
             assert resolved[1]["id"] == "bbb"
+
+    def test_remember_resolved_variants_preserves_known_ids(self):
+        from hh_resume_pipeline import remember_resolved_variants, get_resolved_variants
+
+        remember_resolved_variants(
+            [
+                {"name": "normal", "title": "QA Engineer Resume", "id": "aaa"},
+                {"name": "fun", "title": "Fun Resume", "id": "bbb"},
+            ]
+        )
+        remember_resolved_variants(
+            [
+                {"name": "normal", "title": "QA Engineer Resume", "id": ""},
+                {"name": "fun", "title": "Fun Resume", "id": ""},
+            ]
+        )
+
+        resolved = get_resolved_variants()
+        assert resolved[0]["id"] == "aaa"
+        assert resolved[1]["id"] == "bbb"

@@ -6,6 +6,7 @@ import re
 from openai import AsyncOpenAI
 
 import config
+import proxy_utils
 
 log = logging.getLogger("matcher")
 
@@ -18,6 +19,7 @@ def _get_client() -> AsyncOpenAI:
         _client = AsyncOpenAI(
             base_url=config.LLM_BASE_URL,
             api_key=config.LLM_API_KEY or "no-key",
+            http_client=proxy_utils.llm_http_client(),
         )
     return _client
 

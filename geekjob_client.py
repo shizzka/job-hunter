@@ -11,6 +11,7 @@ import aiohttp
 from playwright.async_api import BrowserContext, Page, async_playwright
 
 import config
+import proxy_utils
 
 log = logging.getLogger("geekjob_client")
 
@@ -85,26 +86,33 @@ class GeekJobClient:
 
     def __init__(self):
         self._session: aiohttp.ClientSession | None = None
+        self._session_uses_env_proxy = True
         self._pw = None
         self._browser = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._apply_context_cache: dict[str, dict] = {}
 
-    async def start(self):
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (X11; Linux x86_64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0 Safari/537.36"
-                    ),
-                    "Accept-Language": "ru,en;q=0.9",
-                },
-                timeout=aiohttp.ClientTimeout(total=20),
-                trust_env=True,
-            )
+    async def start(self, *, trust_env: bool = True):
+        if self._session and not self._session.closed:
+            if self._session_uses_env_proxy == trust_env:
+                return
+            await self._session.close()
+            self._session = None
+
+        self._session = aiohttp.ClientSession(
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0 Safari/537.36"
+                ),
+                "Accept-Language": "ru,en;q=0.9",
+            },
+            timeout=aiohttp.ClientTimeout(total=20),
+            trust_env=trust_env,
+        )
+        self._session_uses_env_proxy = trust_env
 
     async def stop(self):
         if self._session and not self._session.closed:
@@ -127,6 +135,7 @@ class GeekJobClient:
         if proxy_url:
             launch_opts["proxy"] = {"server": proxy_url}
             log.info("Using proxy for GeekJob browser: %s", proxy_url)
+        launch_opts["env"] = proxy_utils.browser_launch_env(proxy_url)
 
         self._browser = await self._pw.chromium.launch(**launch_opts)
         self._context = await self._browser.new_context(
@@ -167,8 +176,7 @@ class GeekJobClient:
             _save_cookies(cookies)
             log.info("GeekJob session saved (%d cookies)", len(cookies))
 
-    async def _get_text(self, url: str) -> str:
-        await self.start()
+    async def _get_text_once(self, url: str) -> str:
         assert self._session is not None
         async with self._session.get(url, ssl=False) as resp:
             if resp.status != 200:
@@ -176,7 +184,18 @@ class GeekJobClient:
                 raise RuntimeError(f"GeekJob error {resp.status}: {text[:300]}")
             return await resp.text()
 
-    async def _request_json(
+    async def _get_text(self, url: str) -> str:
+        await self.start()
+        try:
+            return await self._get_text_once(url)
+        except Exception as exc:
+            if self._session_uses_env_proxy and proxy_utils.is_proxy_error(exc):
+                log.warning("GeekJob proxy failed, retrying direct: %s", exc)
+                await self.start(trust_env=False)
+                return await self._get_text_once(url)
+            raise
+
+    async def _request_json_once(
         self,
         method: str,
         url: str,
@@ -184,7 +203,6 @@ class GeekJobClient:
         payload: dict | None = None,
         referer: str | None = None,
     ) -> dict:
-        await self.start()
         assert self._session is not None
 
         full_url = url if url.startswith("http") else f"{config.GEEKJOB_BASE_URL}{url}"
@@ -214,6 +232,34 @@ class GeekJobClient:
                 raise RuntimeError(
                     f"GeekJob returned non-JSON for {full_url}: {raw[:300]}"
                 ) from exc
+
+    async def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        payload: dict | None = None,
+        referer: str | None = None,
+    ) -> dict:
+        await self.start()
+        try:
+            return await self._request_json_once(
+                method,
+                url,
+                payload=payload,
+                referer=referer,
+            )
+        except Exception as exc:
+            if self._session_uses_env_proxy and proxy_utils.is_proxy_error(exc):
+                log.warning("GeekJob proxy failed, retrying direct: %s", exc)
+                await self.start(trust_env=False)
+                return await self._request_json_once(
+                    method,
+                    url,
+                    payload=payload,
+                    referer=referer,
+                )
+            raise
 
     def _build_list_url(self, page: int) -> str:
         if page <= 1:

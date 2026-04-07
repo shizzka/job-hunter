@@ -1,4 +1,4 @@
-# Job Hunter v0.3.0
+# Job Hunter v0.4.0
 
 English version: [README.md](README.md)
 

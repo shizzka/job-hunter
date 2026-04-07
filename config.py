@@ -83,6 +83,17 @@ HH_SECONDARY_RESUME_ID = os.getenv("HH_SECONDARY_RESUME_ID", "").strip()
 HH_TERTIARY_RESUME_TITLE = os.getenv("HH_TERTIARY_RESUME_TITLE", "").strip()
 HH_TERTIARY_RESUME_ID = os.getenv("HH_TERTIARY_RESUME_ID", "").strip()
 HH_RESUME_RETRY_DELAY_HOURS = _env_int("HH_RESUME_RETRY_DELAY_HOURS", "24")
+HH_AUTO_ANSWER_SIMPLE_QUESTIONS = _env_flag("HH_AUTO_ANSWER_SIMPLE_QUESTIONS", "1")
+HH_AUTO_ANSWER_USE_LLM = _env_flag("HH_AUTO_ANSWER_USE_LLM", "1")
+HH_AUTO_ANSWER_MAX_QUESTIONS = _env_int("HH_AUTO_ANSWER_MAX_QUESTIONS", "3")
+HH_AUTO_ANSWER_SALARY_TEXT = os.getenv("HH_AUTO_ANSWER_SALARY_TEXT", "").strip()
+HH_AUTO_ANSWER_SALARY_NUMBER = os.getenv("HH_AUTO_ANSWER_SALARY_NUMBER", "").strip()
+HH_AUTO_ANSWER_MAX_CHARS = _env_int("HH_AUTO_ANSWER_MAX_CHARS", "280")
+HH_MIN_SECONDS_BETWEEN_APPLICATIONS = _env_int("HH_MIN_SECONDS_BETWEEN_APPLICATIONS", "12")
+HH_AUTO_APPLY_MAX_PER_24H = _env_int("HH_AUTO_APPLY_MAX_PER_24H", "45")
+HH_ANTI_BOT_COOLDOWN_HOURS = _env_int("HH_ANTI_BOT_COOLDOWN_HOURS", "6")
+HH_SKIP_SEARCH_ON_ANTI_BOT = _env_flag("HH_SKIP_SEARCH_ON_ANTI_BOT", "1")
+HH_GUARD_STATE_FILE = os.path.join(JOB_HUNTER_HOME, "hh_guard_state.json")
 
 # Максимум автооткликов за один прогон по всем площадкам.
 # 0 = без общего лимита.
@@ -100,6 +111,10 @@ MAX_AUTO_APPLICATIONS_PER_SOURCE = _env_int(
 SEEN_VACANCIES_FILE = os.path.join(JOB_HUNTER_HOME, "seen_vacancies.json")
 RUNTIME_STATUS_FILE = os.path.join(JOB_HUNTER_HOME, "runtime_status.json")
 RUN_HISTORY_FILE = os.path.join(JOB_HUNTER_HOME, "run_history.jsonl")
+DAEMON_PID_FILE = os.path.join(JOB_HUNTER_HOME, "job-hunter-daemon.pid")
+TELEGRAM_BOT_PID_FILE = os.path.join(JOB_HUNTER_HOME, "telegram-bot.pid")
+TELEGRAM_BOT_STATE_FILE = os.path.join(JOB_HUNTER_HOME, "telegram-bot-state.json")
+TELEGRAM_BOT_RUNTIME_FILE = os.path.join(JOB_HUNTER_HOME, "telegram-bot-runtime.json")
 ANALYTICS_ENABLED = _env_flag("ANALYTICS_ENABLED", "1")
 ANALYTICS_EVENTS_FILE = os.path.join(JOB_HUNTER_HOME, "analytics_events.jsonl")
 ANALYTICS_STATE_FILE = os.path.join(JOB_HUNTER_HOME, "analytics_state.json")
@@ -202,8 +217,35 @@ AGENT_ID = os.getenv("AGENT_ID", "hunter").strip() or "hunter"
 # ── Telegram ──────────────────────────────────────────────────────────────
 # Уведомления полностью опциональны.
 NOTIFY_CHAT_ID = _env_int("NOTIFY_CHAT_ID", os.getenv("OWNER_CHAT_ID", "0"))
-TELEGRAM_BOT_TOKEN = os.getenv("HUNTER_BOT_TOKEN", "")
+TELEGRAM_CONTROL_BOT_TOKEN = os.getenv("HUNTER_CONTROL_BOT_TOKEN", "").strip()
+TELEGRAM_BOT_TOKEN = (
+    os.getenv("HUNTER_NOTIFY_BOT_TOKEN", TELEGRAM_CONTROL_BOT_TOKEN or os.getenv("HUNTER_BOT_TOKEN", "")).strip()
+)
+if not TELEGRAM_CONTROL_BOT_TOKEN:
+    TELEGRAM_CONTROL_BOT_TOKEN = TELEGRAM_BOT_TOKEN
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "")
+TELEGRAM_ACCESS_FILE = (
+    os.getenv("JOB_HUNTER_TELEGRAM_ACCESS_FILE", os.path.join(JOB_HUNTER_HOME, "telegram-users.json")).strip()
+    or os.path.join(JOB_HUNTER_HOME, "telegram-users.json")
+)
+TELEGRAM_CLIENTS_FILE = (
+    os.getenv("JOB_HUNTER_TELEGRAM_CLIENTS_FILE", os.path.join(JOB_HUNTER_HOME, "telegram-clients.json")).strip()
+    or os.path.join(JOB_HUNTER_HOME, "telegram-clients.json")
+)
+TELEGRAM_AI_LIMITS_FILE = (
+    os.getenv("JOB_HUNTER_TELEGRAM_AI_LIMITS_FILE", os.path.join(JOB_HUNTER_HOME, "telegram-ai-limits.json")).strip()
+    or os.path.join(JOB_HUNTER_HOME, "telegram-ai-limits.json")
+)
+TELEGRAM_AI_FREE_ANALYSES = _env_int("JOB_HUNTER_TELEGRAM_AI_FREE_ANALYSES", "1")
+TELEGRAM_BOT_LOG_FILE = (
+    os.getenv("JOB_HUNTER_BOT_LOG_FILE", "/tmp/job-hunter-bot.log").strip()
+    or "/tmp/job-hunter-bot.log"
+)
+TELEGRAM_BOT_DEBUG_LOG_FILE = (
+    os.getenv("JOB_HUNTER_BOT_DEBUG_LOG_FILE", os.path.join(JOB_HUNTER_HOME, "telegram-bot-debug.jsonl")).strip()
+    or os.path.join(JOB_HUNTER_HOME, "telegram-bot-debug.jsonl")
+)
+TELEGRAM_BOT_POLL_TIMEOUT = _env_int("TELEGRAM_BOT_POLL_TIMEOUT", "50")
 
 # ── Таймеры ───────────────────────────────────────────────────────────────
 SEARCH_INTERVAL_MIN = 30      # поиск каждые N минут

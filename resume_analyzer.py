@@ -10,11 +10,11 @@ import os
 from openai import AsyncOpenAI
 
 import config
+import proxy_utils
 
 log = logging.getLogger("resume_analyzer")
-
-# Путь к файлу с промтом (вне репозитория)
-PROMPT_FILE = os.path.join(config.JOB_HUNTER_HOME, "resume_prompt.md")
+PROMPT_FILE_NAME = "resume_prompt.md"
+_client: AsyncOpenAI | None = None
 
 # Минимальный fallback, если файл не найден
 _FALLBACK_SYSTEM = "Ты — карьерный консультант и ATS-аналитик. Проанализируй резюме, укажи слабые места, предложи улучшения."
@@ -31,6 +31,27 @@ _FALLBACK_USER = """Резюме:
 {level}"""
 
 
+def _profile_prompt_file() -> str:
+    return os.path.join(config.JOB_HUNTER_HOME, PROMPT_FILE_NAME)
+
+
+def _shared_prompt_file() -> str:
+    home = os.path.abspath(config.JOB_HUNTER_HOME)
+    parent = os.path.dirname(home)
+    if os.path.basename(parent) != "profiles":
+        return ""
+    root_home = os.path.dirname(parent)
+    return os.path.join(root_home, PROMPT_FILE_NAME)
+
+
+def _prompt_candidates() -> list[str]:
+    candidates = [_profile_prompt_file()]
+    shared_prompt = _shared_prompt_file()
+    if shared_prompt and shared_prompt not in candidates:
+        candidates.append(shared_prompt)
+    return candidates
+
+
 def _load_prompt() -> tuple[str, str]:
     """
     Загрузить промт из файла.
@@ -41,30 +62,41 @@ def _load_prompt() -> tuple[str, str]:
 
     Возвращает (system_prompt, user_prompt_template).
     """
-    if not os.path.isfile(PROMPT_FILE):
-        log.warning(
-            "Файл промта не найден: %s — используется базовый промт. "
-            "Положи свой промт в этот файл для полного анализа.",
-            PROMPT_FILE,
-        )
-        return _FALLBACK_SYSTEM, _FALLBACK_USER
+    for prompt_file in _prompt_candidates():
+        if not os.path.isfile(prompt_file):
+            continue
+        with open(prompt_file, encoding="utf-8") as f:
+            content = f.read()
 
-    with open(PROMPT_FILE, encoding="utf-8") as f:
-        content = f.read()
+        if "\n---\n" in content:
+            system_part, user_part = content.split("\n---\n", 1)
+            return system_part.strip(), user_part.strip()
 
-    if "\n---\n" in content:
-        system_part, user_part = content.split("\n---\n", 1)
-        return system_part.strip(), user_part.strip()
+        # Весь файл — system prompt
+        return content.strip(), _FALLBACK_USER
 
-    # Весь файл — system prompt
-    return content.strip(), _FALLBACK_USER
+    profile_prompt_file = _profile_prompt_file()
+    shared_prompt_file = _shared_prompt_file()
+    searched = [profile_prompt_file]
+    if shared_prompt_file:
+        searched.append(shared_prompt_file)
+    log.warning(
+        "Файл промта не найден (%s) — используется базовый промт. "
+        "Положи свой промт в этот файл для полного анализа.",
+        ", ".join(searched),
+    )
+    return _FALLBACK_SYSTEM, _FALLBACK_USER
 
 
 def _get_client() -> AsyncOpenAI:
-    return AsyncOpenAI(
-        base_url=config.LLM_BASE_URL,
-        api_key=config.LLM_API_KEY or "no-key",
-    )
+    global _client
+    if _client is None:
+        _client = AsyncOpenAI(
+            base_url=config.LLM_BASE_URL,
+            api_key=config.LLM_API_KEY or "no-key",
+            http_client=proxy_utils.llm_http_client(),
+        )
+    return _client
 
 
 async def analyze_resume(

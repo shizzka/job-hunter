@@ -1,5 +1,56 @@
 # Changelog
 
+## v0.4.0
+
+### Telegram-бот управления (`telegram_bot.py`, `job_hunter_ctl.py`)
+- Полноценный Telegram-бот для управления Job Hunter: запуск/остановка поиска, статистика, дайджест — всё из чата
+- `job_hunter_ctl.py` — контроллер процессов: `daemon-start/stop`, `bot-start/stop`, `status`
+- `runtime_control.py` — PID-файлы и состояние демонов
+- `run.sh` — новые команды: `bot`, `bot-daemon`, `status`, `bot-status`, `bot-stop`
+- Поддержка дефолтного профиля через `JOB_HUNTER_DEFAULT_PROFILE`
+- Systemd unit для автозапуска бота (`deploy/systemd/`)
+- Скрипт установки user-service (`scripts/install_job_hunter_bot_user_service.sh`)
+
+### Защита от бана hh.ru (`hh_guard.py`)
+- Rolling лимит автооткликов за 24 часа (`HH_AUTO_APPLY_MAX_PER_24H`, по умолчанию 45)
+- Минимальная пауза между откликами (`HH_MIN_SECONDS_BETWEEN_APPLICATIONS`, 12 сек)
+- Детекция anti-bot сигналов (captcha, блокировки) с автоматическим cooldown
+- Пропуск поиска на hh.ru при активном cooldown (`HH_SKIP_SEARCH_ON_ANTI_BOT`)
+- Персистентное состояние guard в `hh_guard_state.json`
+
+### Автоответы на вопросы работодателя при отклике (`hh_client.py`)
+- Автоматическое заполнение вопросов работодателя при отклике на hh.ru
+- LLM-генерация ответов на открытые вопросы (на основе резюме и вакансии)
+- Авто-определение вопросов о зарплате (`HH_AUTO_ANSWER_SALARY_TEXT/NUMBER`)
+- Настройки: `HH_AUTO_ANSWER_SIMPLE_QUESTIONS`, `HH_AUTO_ANSWER_USE_LLM`, `HH_AUTO_ANSWER_MAX_QUESTIONS`
+
+### Мульти-клиентская система (`telegram_clients.py`, `telegram_access.py`)
+- Реестр Telegram-клиентов с онбордингом и статусами
+- Контроль доступа: привязка клиентов к профилям
+- `client_hh_auth.py` — авторизация hh.ru и импорт резюме для клиентских профилей
+- Лимиты AI-анализов резюме (`telegram_resume_limits.py`)
+
+### Уведомления
+- Мульти-адресат: уведомления уходят привязанным к профилю Telegram-пользователям
+- Раздельные токены: `HUNTER_CONTROL_BOT_TOKEN` (управление) и `HUNTER_NOTIFY_BOT_TOKEN` (уведомления)
+- Proxy per-profile в notifier
+
+### Улучшения пайплайна
+- `search_pipeline.py` — детальная статистика по источникам (fetched/seen/new/applied)
+- `agent.py` — информативные заметки при отсутствии новых вакансий, `DECISION_ALREADY_APPLIED`
+- `profile.py` — PID-файлы, лог-файлы, интервалы поиска per-profile
+- `seen.py`, `analytics.py`, `outcome.py` — расширения для новых сценариев
+- `proxy_utils.py` — утилиты для работы с прокси
+- `resume_analyzer.py` — улучшения анализа резюме
+
+### Тесты
+- 14 новых тест-файлов: hh_guard, hh_client, search_pipeline, proxy_utils, telegram_bot, telegram_clients, telegram_access, seen, и др.
+
+### Документация
+- `docs/BOT_SERVICE.md` — документация по Telegram-боту как сервису
+- `SETUP_AGENT.md` — интерактивная инструкция для AI-агентов по установке и настройке
+- Ссылки на AI-assisted setup в README.md и README.ru.md
+
 ## v0.3.0
 
 ### Multi-profile система (F-001, F-002)

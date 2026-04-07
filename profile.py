@@ -16,12 +16,15 @@ import atexit
 import fcntl
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import config
 
 log = logging.getLogger("profile")
+
+_profiles_root_home = os.path.expanduser(getattr(config, "JOB_HUNTER_HOME", "~/.job-hunter"))
 
 
 @dataclass
@@ -102,6 +105,8 @@ class Profile:
     # Лимиты
     max_applications_per_run: int = 0
     max_auto_applications_per_source: int = 20
+    search_interval_min: int = 30
+    invite_check_interval_min: int = 60
 
     # Резюме
     resume_file: str = ""
@@ -121,6 +126,14 @@ class Profile:
     analytics_state_file: str = ""
     run_history_file: str = ""
     runtime_status_file: str = ""
+    daemon_pid_file: str = ""
+    telegram_bot_pid_file: str = ""
+    telegram_bot_state_file: str = ""
+    telegram_bot_runtime_file: str = ""
+    log_file: str = ""
+    error_log_file: str = ""
+    telegram_bot_log_file: str = ""
+    telegram_bot_debug_log_file: str = ""
     state_dir: str = ""
 
     def __post_init__(self):
@@ -141,6 +154,22 @@ class Profile:
             self.run_history_file = os.path.join(home, "run_history.jsonl")
         if not self.runtime_status_file:
             self.runtime_status_file = os.path.join(home, "runtime_status.json")
+        if not self.daemon_pid_file:
+            self.daemon_pid_file = os.path.join(home, "job-hunter-daemon.pid")
+        if not self.telegram_bot_pid_file:
+            self.telegram_bot_pid_file = os.path.join(home, "telegram-bot.pid")
+        if not self.telegram_bot_state_file:
+            self.telegram_bot_state_file = os.path.join(home, "telegram-bot-state.json")
+        if not self.telegram_bot_runtime_file:
+            self.telegram_bot_runtime_file = os.path.join(home, "telegram-bot-runtime.json")
+        if not self.log_file:
+            self.log_file = os.path.join(home, "job-hunter.log")
+        if not self.error_log_file:
+            self.error_log_file = os.path.join(home, "job-hunter-errors.log")
+        if not self.telegram_bot_log_file:
+            self.telegram_bot_log_file = os.path.join(home, "telegram-bot.log")
+        if not self.telegram_bot_debug_log_file:
+            self.telegram_bot_debug_log_file = os.path.join(home, "telegram-bot-debug.jsonl")
         if not self.state_dir:
             self.state_dir = os.path.join(home, "state")
         if not self.resume_file:
@@ -163,7 +192,27 @@ def active() -> Profile:
     return _active_profile
 
 
+def _profiles_root() -> str:
+    """Корень каталога профилей, не зависящий от активированного именованного профиля."""
+    global _profiles_root_home
+    env_home = os.getenv("JOB_HUNTER_HOME", "").strip()
+    if env_home:
+        _profiles_root_home = os.path.expanduser(env_home)
+        return _profiles_root_home
+
+    current_home = os.path.expanduser(getattr(config, "JOB_HUNTER_HOME", "") or "~/.job-hunter")
+    active_home = os.path.expanduser(getattr(_active_profile, "home_dir", "") or "")
+    if not active_home or current_home != active_home:
+        _profiles_root_home = current_home
+    return _profiles_root_home
+
+
 def activate(name: str = "default") -> Profile:
+    """Активировать профиль с эксклюзивным lock-файлом."""
+    return _activate(name, acquire_lock=True)
+
+
+def _activate(name: str = "default", acquire_lock: bool = True) -> Profile:
     """
     Загрузить профиль и сделать его активным.
 
@@ -175,10 +224,18 @@ def activate(name: str = "default") -> Profile:
     """
     global _active_profile
     p = load_profile(name)
-    _acquire_lock(p)
+    if acquire_lock:
+        _acquire_lock(p)
+    else:
+        _release_lock()
     _active_profile = p
     _patch_config(p)
     return p
+
+
+def activate_no_lock(name: str = "default") -> Profile:
+    """Активировать профиль без lock-файла для read-only/control процессов."""
+    return _activate(name, acquire_lock=False)
 
 
 def _lock_path(p: Profile) -> str:
@@ -241,12 +298,22 @@ def _patch_config(p: Profile):
     config.ANALYTICS_STATE_FILE = p.analytics_state_file
     config.RUN_HISTORY_FILE = p.run_history_file
     config.RUNTIME_STATUS_FILE = p.runtime_status_file
+    config.DAEMON_PID_FILE = p.daemon_pid_file
+    config.TELEGRAM_BOT_PID_FILE = p.telegram_bot_pid_file
+    config.TELEGRAM_BOT_STATE_FILE = p.telegram_bot_state_file
+    config.TELEGRAM_BOT_RUNTIME_FILE = p.telegram_bot_runtime_file
+    config.LOG_FILE = p.log_file
+    config.ERROR_LOG_FILE = p.error_log_file
+    config.TELEGRAM_BOT_LOG_FILE = p.telegram_bot_log_file
+    config.TELEGRAM_BOT_DEBUG_LOG_FILE = p.telegram_bot_debug_log_file
     config.HH_STATE_DIR = p.state_dir
     config.RESUME_FILE = p.resume_file
 
     # Limits
     config.MAX_APPLICATIONS_PER_RUN = p.max_applications_per_run
     config.MAX_AUTO_APPLICATIONS_PER_SOURCE = p.max_auto_applications_per_source
+    config.SEARCH_INTERVAL_MIN = p.search_interval_min
+    config.INVITE_CHECK_INTERVAL_MIN = p.invite_check_interval_min
 
     # HH
     config.HH_ENABLED = p.hh.enabled
@@ -312,7 +379,13 @@ def load_default_profile() -> Profile:
         home_dir=config.JOB_HUNTER_HOME,
         max_applications_per_run=config.MAX_APPLICATIONS_PER_RUN,
         max_auto_applications_per_source=config.MAX_AUTO_APPLICATIONS_PER_SOURCE,
+        search_interval_min=config.SEARCH_INTERVAL_MIN,
+        invite_check_interval_min=config.INVITE_CHECK_INTERVAL_MIN,
         resume_file=config.RESUME_FILE,
+        log_file=config.LOG_FILE,
+        error_log_file=config.ERROR_LOG_FILE,
+        telegram_bot_log_file=config.TELEGRAM_BOT_LOG_FILE,
+        telegram_bot_debug_log_file=config.TELEGRAM_BOT_DEBUG_LOG_FILE,
         hh=HHConfig(
             enabled=config.HH_ENABLED,
             auto_apply=True,  # hh всегда auto
@@ -380,7 +453,7 @@ def load_profile(name: str = "default") -> Profile:
     if name == "default":
         return load_default_profile()
 
-    profiles_dir = os.path.join(config.JOB_HUNTER_HOME, "profiles", name)
+    profiles_dir = os.path.join(_profiles_root(), "profiles", name)
     env_file = os.path.join(profiles_dir, "profile.env")
 
     if not os.path.isfile(env_file):
@@ -401,6 +474,14 @@ def load_profile(name: str = "default") -> Profile:
     profile.analytics_state_file = ""
     profile.run_history_file = ""
     profile.runtime_status_file = ""
+    profile.daemon_pid_file = ""
+    profile.telegram_bot_pid_file = ""
+    profile.telegram_bot_state_file = ""
+    profile.telegram_bot_runtime_file = ""
+    profile.log_file = ""
+    profile.error_log_file = ""
+    profile.telegram_bot_log_file = ""
+    profile.telegram_bot_debug_log_file = ""
     profile.state_dir = ""
     profile.resume_file = ""
     profile._resolve_state_paths()
@@ -417,6 +498,13 @@ def load_profile(name: str = "default") -> Profile:
     _apply_env_overrides(profile, profile_env)
 
     return profile
+
+
+def profile_env_path(name: str) -> str:
+    """Абсолютный путь к env-файлу именованного профиля."""
+    if not name or name == "default":
+        raise ValueError("Для default нет отдельного profile.env")
+    return os.path.join(_profiles_root(), "profiles", name, "profile.env")
 
 
 def create_profile(name: str, search_queries: list[str] | None = None) -> Profile:
@@ -437,7 +525,7 @@ def create_profile(name: str, search_queries: list[str] | None = None) -> Profil
             "Допустимы: латинские буквы, цифры, дефис, подчёркивание."
         )
 
-    profiles_dir = os.path.join(config.JOB_HUNTER_HOME, "profiles", name)
+    profiles_dir = os.path.join(_profiles_root(), "profiles", name)
     env_file = os.path.join(profiles_dir, "profile.env")
 
     if os.path.isfile(env_file):
@@ -468,6 +556,10 @@ def create_profile(name: str, search_queries: list[str] | None = None) -> Profil
         f"# Лимиты\n"
         f"MAX_AUTO_APPLICATIONS_PER_SOURCE=20\n"
         f"# MAX_APPLICATIONS_PER_RUN=0\n"
+        f"\n"
+        f"# Расписание демона\n"
+        f"SEARCH_INTERVAL_MIN=480\n"
+        f"INVITE_CHECK_INTERVAL_MIN=480\n"
     )
 
     with open(env_file, "w") as f:
@@ -479,14 +571,55 @@ def create_profile(name: str, search_queries: list[str] | None = None) -> Profil
 
 def list_profiles() -> list[str]:
     """Список доступных профилей."""
-    profiles = ["default"]
-    profiles_dir = os.path.join(config.JOB_HUNTER_HOME, "profiles")
+    profiles = []
+    profiles_dir = os.path.join(_profiles_root(), "profiles")
     if os.path.isdir(profiles_dir):
         for entry in sorted(os.listdir(profiles_dir)):
             env_file = os.path.join(profiles_dir, entry, "profile.env")
             if os.path.isfile(env_file):
                 profiles.append(entry)
-    return profiles
+    if not profiles:
+        return ["default"]
+    ordered = sorted(profiles, key=lambda item: (item != "qa", item))
+    ordered.append("default")
+    return ordered
+
+
+def update_profile_env(name: str, updates: dict[str, str | int]) -> str:
+    """Обновить profile.env именованного профиля, сохраняя остальное содержимое."""
+    env_file = profile_env_path(name)
+    if not os.path.isfile(env_file):
+        raise FileNotFoundError(f"Профиль '{name}' не найден: {env_file}")
+
+    with open(env_file, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    key_to_index: dict[str, int] = {}
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, _ = stripped.partition("=")
+        key_to_index[key.strip()] = idx
+
+    for key, value in updates.items():
+        rendered = f"{key}={_normalize_env_value(value)}"
+        if key in key_to_index:
+            lines[key_to_index[key]] = rendered
+        else:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.append(rendered)
+
+    with open(env_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines).rstrip() + "\n")
+
+    return env_file
+
+
+def _normalize_env_value(value: str | int | None) -> str:
+    raw = "" if value is None else str(value)
+    return re.sub(r"\s+", " ", raw).strip()
 
 
 def _parse_env_file(path: str) -> dict[str, str]:
@@ -541,6 +674,8 @@ def _apply_env_overrides(profile: Profile, env: dict[str, str]):
     queries = _list("HH_SEARCH_QUERIES")
     if queries is not None:
         profile.hh.search_queries = queries
+    if "HH_SEARCH_PAGES" in env:
+        profile.hh.search_pages = _int("HH_SEARCH_PAGES", profile.hh.search_pages)
     if "HH_PRIMARY_RESUME_ID" in env:
         profile.hh.primary_resume_id = env["HH_PRIMARY_RESUME_ID"].strip()
     if "HH_PRIMARY_RESUME_TITLE" in env:
@@ -564,6 +699,8 @@ def _apply_env_overrides(profile: Profile, env: dict[str, str]):
     sj_queries = _list("SUPERJOB_SEARCH_QUERIES")
     if sj_queries is not None:
         profile.superjob.search_queries = sj_queries
+    if "SUPERJOB_SEARCH_PAGES" in env:
+        profile.superjob.search_pages = _int("SUPERJOB_SEARCH_PAGES", profile.superjob.search_pages)
     if "SUPERJOB_RESUME_ID" in env:
         profile.superjob.resume_id = _int("SUPERJOB_RESUME_ID")
     if "SUPERJOB_API_KEY" in env:
@@ -577,12 +714,16 @@ def _apply_env_overrides(profile: Profile, env: dict[str, str]):
     habr_paths = _list("HABR_SEARCH_PATHS")
     if habr_paths is not None:
         profile.habr.search_paths = habr_paths
+    if "HABR_SEARCH_PAGES" in env:
+        profile.habr.search_pages = _int("HABR_SEARCH_PAGES", profile.habr.search_pages)
 
     # GeekJob
     if "GEEKJOB_ENABLED" in env:
         profile.geekjob.enabled = _flag("GEEKJOB_ENABLED", profile.geekjob.enabled)
     if "GEEKJOB_AUTO_APPLY" in env:
         profile.geekjob.auto_apply = _flag("GEEKJOB_AUTO_APPLY", profile.geekjob.auto_apply)
+    if "GEEKJOB_SEARCH_PAGES" in env:
+        profile.geekjob.search_pages = _int("GEEKJOB_SEARCH_PAGES", profile.geekjob.search_pages)
     if "GEEKJOB_RESUME_ID" in env:
         profile.geekjob.resume_id = env["GEEKJOB_RESUME_ID"].strip()
 
@@ -597,3 +738,7 @@ def _apply_env_overrides(profile: Profile, env: dict[str, str]):
         profile.max_applications_per_run = _int("MAX_APPLICATIONS_PER_RUN")
     if "MAX_AUTO_APPLICATIONS_PER_SOURCE" in env:
         profile.max_auto_applications_per_source = _int("MAX_AUTO_APPLICATIONS_PER_SOURCE")
+    if "SEARCH_INTERVAL_MIN" in env:
+        profile.search_interval_min = _int("SEARCH_INTERVAL_MIN", profile.search_interval_min)
+    if "INVITE_CHECK_INTERVAL_MIN" in env:
+        profile.invite_check_interval_min = _int("INVITE_CHECK_INTERVAL_MIN", profile.invite_check_interval_min)

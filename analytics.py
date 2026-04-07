@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
 import config
-from outcome import status_bucket as _status_bucket
+from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket
 
 log = logging.getLogger("analytics")
 
@@ -240,6 +240,7 @@ def record_negotiation_statuses(items: list[dict]) -> None:
             "url": item.get("url", ""),
             "status": status_text,
             "status_bucket": _status_bucket(status_text),
+            "status_detail_bucket": _status_detail_bucket(status_text),
             "prev_status": prev_status,
         }
         _append_event(payload)
@@ -375,13 +376,14 @@ def backfill_seen_decisions(entries: dict, run_id: str = "") -> dict:
     }
 
 
-def _iter_events() -> list[dict]:
-    if not os.path.exists(config.ANALYTICS_EVENTS_FILE):
+def _iter_events(events_file: str | None = None) -> list[dict]:
+    path = events_file or config.ANALYTICS_EVENTS_FILE
+    if not os.path.exists(path):
         return []
 
     events = []
     try:
-        with open(config.ANALYTICS_EVENTS_FILE, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -396,18 +398,21 @@ def _iter_events() -> list[dict]:
     return events
 
 
-def summarize(days: int | None = None) -> dict:
+def summarize(days: int | None = None, *, events_file: str | None = None, all_time: bool = False) -> dict:
     days = days if days is not None else config.ANALYTICS_RECENT_DAYS
-    cutoff = _now() - timedelta(days=max(0, days))
+    cutoff = None if all_time else (_now() - timedelta(days=max(0, days)))
     events = []
-    for event in _iter_events():
+    for event in _iter_events(events_file):
         created_at = _parse_dt(event.get("created_at"))
-        if created_at is None or created_at < cutoff:
+        if created_at is None:
+            continue
+        if cutoff is not None and created_at < cutoff:
             continue
         events.append(event)
 
     summary = {
         "days": days,
+        "all_time": all_time,
         "events": len(events),
         "search_runs": 0,
         "decisions": 0,
@@ -421,6 +426,12 @@ def summarize(days: int | None = None) -> dict:
         "positive_statuses": 0,
         "rejected_statuses": 0,
         "pending_statuses": 0,
+        "interview_statuses": 0,
+        "offer_statuses": 0,
+        "test_task_statuses": 0,
+        "positive_other_statuses": 0,
+        "pending_new_statuses": 0,
+        "pending_viewed_statuses": 0,
         "by_source": {},
         "by_query": {},
         "by_resume_variant": {},
@@ -468,6 +479,8 @@ def summarize(days: int | None = None) -> dict:
                 summary["auto_applied"] += 1
                 source_bucket["auto_applied"] += 1
                 latest_apply_by_vacancy[_vacancy_key(event)] = event
+            elif decision == "already_applied":
+                source_bucket["rejected"] += 1
             elif decision.startswith("manual_") or decision in {
                 "questions_required",
                 "apply_failed",
@@ -505,6 +518,7 @@ def summarize(days: int | None = None) -> dict:
 
     for vacancy_key, status_event in latest_status_by_vacancy.items():
         bucket = status_event.get("status_bucket", "unknown")
+        detail_bucket = status_event.get("status_detail_bucket") or _status_detail_bucket(status_event.get("status", ""))
         apply_event = latest_apply_by_vacancy.get(vacancy_key)
         if bucket == "positive":
             summary["positive_statuses"] += 1
@@ -512,6 +526,19 @@ def summarize(days: int | None = None) -> dict:
             summary["rejected_statuses"] += 1
         elif bucket == "pending":
             summary["pending_statuses"] += 1
+
+        if detail_bucket == "interview":
+            summary["interview_statuses"] += 1
+        elif detail_bucket == "offer":
+            summary["offer_statuses"] += 1
+        elif detail_bucket == "test_task":
+            summary["test_task_statuses"] += 1
+        elif detail_bucket == "positive_other":
+            summary["positive_other_statuses"] += 1
+        elif detail_bucket == "pending_new":
+            summary["pending_new_statuses"] += 1
+        elif detail_bucket == "pending_viewed":
+            summary["pending_viewed_statuses"] += 1
 
         if not apply_event:
             continue
@@ -565,13 +592,21 @@ def summarize(days: int | None = None) -> dict:
     # ── Воронка ──
     funnel_applied = summary["auto_applied"]
     funnel_viewed = 0
-    funnel_rejected = summary["rejected_statuses"]
-    funnel_positive = summary["positive_statuses"]
-    funnel_pending = summary["pending_statuses"]
-    for status_event in latest_status_by_vacancy.values():
+    funnel_rejected = 0
+    funnel_positive = 0
+    funnel_pending = 0
+    for vacancy_key, status_event in latest_status_by_vacancy.items():
+        if vacancy_key not in latest_apply_by_vacancy:
+            continue
         bucket = status_event.get("status_bucket", "unknown")
         if bucket in ("positive", "rejected", "pending"):
             funnel_viewed += 1
+        if bucket == "positive":
+            funnel_positive += 1
+        elif bucket == "rejected":
+            funnel_rejected += 1
+        elif bucket == "pending":
+            funnel_pending += 1
     summary["funnel"] = {
         "applied": funnel_applied,
         "viewed": funnel_viewed,

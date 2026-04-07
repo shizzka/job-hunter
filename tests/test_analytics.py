@@ -120,6 +120,7 @@ class TestSummarize:
         self._seed_events(isolated_analytics, [
             {"event": "search_finished", "run_id": "r1", "mode": "search"},
             {"event": "decision", "decision": "applied_auto", "source": "hh", "search_query": "QA"},
+            {"event": "decision", "decision": "already_applied", "source": "hh"},
             {"event": "decision", "decision": "skipped_keyword_filter", "source": "hh"},
             {"event": "decision", "decision": "skipped_red_flags", "source": "habr"},
             {"event": "decision", "decision": "skipped_low_score", "source": "geekjob"},
@@ -128,13 +129,14 @@ class TestSummarize:
         ])
         s = analytics.summarize(days=30)
         assert s["search_runs"] == 1
-        assert s["decisions"] == 5
+        assert s["decisions"] == 6
         assert s["auto_applied"] == 1
         assert s["keyword_filtered"] == 1
         assert s["red_flagged"] == 1
         assert s["low_score"] == 1
         assert s["dry_run_matched"] == 1
         assert s["invitations"] == 1
+        assert s["by_source"]["hh"]["rejected"] == 1
         assert "hh" in s["by_source"]
         assert "QA" in s["by_query"]
 
@@ -150,3 +152,35 @@ class TestSummarize:
         assert s["funnel"]["applied"] == 1
         assert s["funnel"]["positive"] == 1
         assert s["funnel"]["positive_rate"] == 100.0
+        assert s["interview_statuses"] == 1
+
+    def test_summarize_detail_buckets(self, isolated_analytics):
+        self._seed_events(isolated_analytics, [
+            {"event": "negotiation_status", "vacancy_id": "hh:1", "source": "hh", "status": "Собеседование", "status_bucket": "positive"},
+            {"event": "negotiation_status", "vacancy_id": "hh:2", "source": "hh", "status": "Оффер", "status_bucket": "positive"},
+            {"event": "negotiation_status", "vacancy_id": "hh:3", "source": "hh", "status": "Тестовое задание", "status_bucket": "positive"},
+            {"event": "negotiation_status", "vacancy_id": "hh:4", "source": "hh", "status": "Не просмотрен", "status_bucket": "pending"},
+            {"event": "negotiation_status", "vacancy_id": "hh:5", "source": "hh", "status": "Просмотрен", "status_bucket": "pending"},
+        ])
+        s = analytics.summarize(days=30)
+        assert s["interview_statuses"] == 1
+        assert s["offer_statuses"] == 1
+        assert s["test_task_statuses"] == 1
+        assert s["pending_new_statuses"] == 1
+        assert s["pending_viewed_statuses"] == 1
+
+    def test_funnel_ignores_unlinked_statuses(self, isolated_analytics):
+        self._seed_events(isolated_analytics, [
+            {"event": "decision", "decision": "applied_auto", "source": "hh",
+             "vacancy_id": "hh:1", "title": "QA", "company": "A", "url": "https://hh.ru/1"},
+            {"event": "negotiation_status", "vacancy_id": "hh:1", "source": "hh",
+             "status": "Собеседование", "status_bucket": "positive"},
+            {"event": "negotiation_status", "vacancy_id": "hh:2", "source": "hh",
+             "status": "Просмотрен", "status_bucket": "pending"},
+        ])
+        s = analytics.summarize(days=30)
+        assert s["funnel"]["applied"] == 1
+        assert s["funnel"]["viewed"] == 1
+        assert s["funnel"]["positive"] == 1
+        assert s["funnel"]["pending"] == 0
+        assert s["funnel"]["response_rate"] == 100.0

@@ -240,6 +240,8 @@ def print_stats():
         print(f"    {_format_run_source_stats(run.get('source_stats', {}))}")
         if run.get("error"):
             print(f"    error: {run['error']}")
+        elif run.get("note"):
+            print(f"    note: {run['note']}")
 
     print()
     print(f"Аналитика за {analytics_summary['days']} дн.:")
@@ -265,6 +267,12 @@ def print_stats():
         f"positive: {analytics_summary['positive_statuses']} | "
         f"rejected: {analytics_summary['rejected_statuses']} | "
         f"pending: {analytics_summary['pending_statuses']}"
+    )
+    print(
+        "  "
+        f"собесы: {analytics_summary.get('interview_statuses', 0)} | "
+        f"офферы: {analytics_summary.get('offer_statuses', 0)} | "
+        f"тестовые: {analytics_summary.get('test_task_statuses', 0)}"
     )
 
     if analytics_summary["events"] == 0:

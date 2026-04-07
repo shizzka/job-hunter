@@ -10,6 +10,7 @@ import aiohttp
 from playwright.async_api import async_playwright, BrowserContext, Page
 
 import config
+import proxy_utils
 
 log = logging.getLogger("habr_career_client")
 
@@ -72,25 +73,32 @@ class HabrCareerClient:
 
     def __init__(self):
         self._session: aiohttp.ClientSession | None = None
+        self._session_uses_env_proxy = True
         self._pw = None
         self._browser = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
 
-    async def start(self):
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (X11; Linux x86_64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0 Safari/537.36"
-                    ),
-                    "Accept-Language": "ru,en;q=0.9",
-                },
-                timeout=aiohttp.ClientTimeout(total=20),
-                trust_env=True,
-            )
+    async def start(self, *, trust_env: bool = True):
+        if self._session and not self._session.closed:
+            if self._session_uses_env_proxy == trust_env:
+                return
+            await self._session.close()
+            self._session = None
+
+        self._session = aiohttp.ClientSession(
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0 Safari/537.36"
+                ),
+                "Accept-Language": "ru,en;q=0.9",
+            },
+            timeout=aiohttp.ClientTimeout(total=20),
+            trust_env=trust_env,
+        )
+        self._session_uses_env_proxy = trust_env
 
     async def stop(self):
         if self._session and not self._session.closed:
@@ -113,6 +121,7 @@ class HabrCareerClient:
         if proxy_url:
             launch_opts["proxy"] = {"server": proxy_url}
             log.info("Using proxy for Habr Career: %s", proxy_url)
+        launch_opts["env"] = proxy_utils.browser_launch_env(proxy_url)
 
         self._browser = await self._pw.chromium.launch(**launch_opts)
         self._context = await self._browser.new_context(
@@ -325,13 +334,24 @@ class HabrCareerClient:
 
         return {"ok": True, "message": "Отклик, вероятно, отправлен"}
 
-    async def _get_text(self, url: str) -> str:
-        await self.start()
+    async def _get_text_once(self, url: str) -> str:
+        assert self._session is not None
         async with self._session.get(url) as resp:
             if resp.status != 200:
                 text = await resp.text()
                 raise RuntimeError(f"Habr Career error {resp.status}: {text[:300]}")
             return await resp.text()
+
+    async def _get_text(self, url: str) -> str:
+        await self.start()
+        try:
+            return await self._get_text_once(url)
+        except Exception as exc:
+            if self._session_uses_env_proxy and proxy_utils.is_proxy_error(exc):
+                log.warning("Habr Career proxy failed, retrying direct: %s", exc)
+                await self.start(trust_env=False)
+                return await self._get_text_once(url)
+            raise
 
     def _extract_ssr_state(self, page: str) -> dict:
         return _extract_json_block(

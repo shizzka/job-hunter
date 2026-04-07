@@ -80,6 +80,19 @@ def _run_agent(args: list[str], home: Path, timeout: int = 30) -> subprocess.Com
     )
 
 
+def _run_python(script: str, args: list[str], home: Path, timeout: int = 30) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["JOB_HUNTER_HOME"] = str(home)
+    return subprocess.run(
+        [str(PROJECT_ROOT / "venv" / "bin" / "python"), script] + args,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        cwd=str(PROJECT_ROOT),
+        env=env,
+    )
+
+
 class TestCLIHealth:
     """Smoke-S1: CLI запускается и не падает."""
 
@@ -87,6 +100,16 @@ class TestCLIHealth:
         r = _run_agent(["--help"], isolated_home)
         assert r.returncode == 0
         assert "Job Hunter" in r.stdout or "usage" in r.stdout.lower()
+
+    def test_telegram_bot_help(self, isolated_home):
+        r = _run_python("telegram_bot.py", ["--help"], isolated_home)
+        assert r.returncode == 0
+        assert "Telegram bot" in r.stdout or "usage" in r.stdout.lower()
+
+    def test_control_help(self, isolated_home):
+        r = _run_python("job_hunter_ctl.py", ["--help"], isolated_home)
+        assert r.returncode == 0
+        assert "process control" in r.stdout.lower() or "usage" in r.stdout.lower()
 
     def test_stats_empty(self, isolated_home):
         r = _run_agent(["--stats"], isolated_home)

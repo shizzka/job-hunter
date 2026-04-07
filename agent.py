@@ -16,16 +16,20 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sys
 from collections import defaultdict
+from pathlib import Path
 from datetime import datetime
 
 import config
 import filters
 import hh_resume_pipeline as hh_pipeline
+import hh_guard
 import profile as profile_mod
 import reporting
+import runtime_control
 import seen
 import analytics
 import search_pipeline
@@ -33,6 +37,7 @@ import apply_orchestrator
 import invitation_sync
 from outcome import (
     DECISION_APPLIED_AUTO,
+    DECISION_ALREADY_APPLIED,
     DECISION_APPLY_FAILED,
     DECISION_APPLY_FAILED_EXCEPTION,
     DECISION_DRY_RUN_MATCH,
@@ -46,6 +51,7 @@ from hh_client import HHClient
 from matcher import evaluate_vacancy, generate_cover_letter
 from office_bridge import office_log, create_task, task_progress, task_complete
 from office_bridge import close_session as close_office_session
+import notifier
 from notifier import (
     notify_application, notify_invitation, notify_search_started, notify_summary, notify_digest, notify_needs_manual,
     close_session as close_notify_session,
@@ -73,11 +79,16 @@ def _build_logging_handlers() -> list[logging.Handler]:
     return handlers
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    handlers=_build_logging_handlers(),
-)
+def _configure_logging(force: bool = False) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        handlers=_build_logging_handlers(),
+        force=force,
+    )
+
+
+_configure_logging()
 log = logging.getLogger("agent")
 SOURCE_ORDER = reporting.SOURCE_ORDER
 _source_label = reporting.source_label
@@ -132,6 +143,7 @@ def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -
         "applied": result.get("applied", 0),
         "skipped": result.get("skipped", 0),
         "source_stats": result.get("source_stats", {}),
+        "note": result.get("note", ""),
         "error": error,
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -144,6 +156,96 @@ def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -
 
 
 
+
+
+def _format_no_new_vacancies_note(source_stats: dict | None) -> str:
+    if not source_stats:
+        return "Новых вакансий нет"
+
+    lines = []
+    for source in SOURCE_ORDER:
+        bucket = (source_stats or {}).get(source)
+        if not bucket:
+            continue
+        fetched = int(bucket.get("fetched", 0) or 0)
+        already_seen = int(bucket.get("already_seen", 0) or 0)
+        if fetched <= 0 and already_seen <= 0:
+            continue
+        label = bucket.get("label") or source
+        parts = [f"{label}: просмотрено {fetched}"]
+        if already_seen > 0:
+            parts.append(f"уже обработано {already_seen}")
+        lines.append(", ".join(parts))
+    if not lines:
+        return "Новых вакансий нет"
+    return "Новых вакансий нет. По источникам: " + "; ".join(lines)
+
+
+def _snapshot_slug(value: object, max_length: int = 80) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(value or "").strip()).strip("._-")
+    if not slug:
+        return "unknown"
+    return slug[:max_length]
+
+
+async def _save_autoapply_failure_snapshot(
+    source: str,
+    vacancy_id: str,
+    page,
+) -> dict[str, str]:
+    if page is None:
+        return {}
+
+    state_dir = Path(config.HH_STATE_DIR)
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name = (
+        f"autoapply_failed_{stamp}_"
+        f"{_snapshot_slug(source, max_length=24)}_"
+        f"{_snapshot_slug(vacancy_id, max_length=64)}"
+    )
+    screenshot_path = state_dir / f"{base_name}.png"
+    html_path = state_dir / f"{base_name}.html"
+    saved: dict[str, str] = {}
+
+    try:
+        await page.screenshot(path=str(screenshot_path), full_page=True)
+        saved["screenshot"] = str(screenshot_path)
+    except Exception as exc:
+        log.warning("Failed to save auto-apply screenshot for %s/%s: %s", source, vacancy_id, exc)
+
+    try:
+        html = await page.content()
+        html_path.write_text(html, encoding="utf-8")
+        saved["html"] = str(html_path)
+    except Exception as exc:
+        log.warning("Failed to save auto-apply HTML for %s/%s: %s", source, vacancy_id, exc)
+
+    if saved:
+        log.warning(
+            "Saved auto-apply failure snapshot for %s/%s: %s",
+            source,
+            vacancy_id,
+            ", ".join(saved.values()),
+        )
+    return saved
+
+
+def _autoapply_page_for_source(
+    source: str,
+    hh_client: HHClient | None,
+    superjob_client: SuperJobClient | None,
+    habr_client: HabrCareerClient | None,
+    geekjob_client: GeekJobClient | None,
+):
+    client = {
+        "hh": hh_client,
+        "superjob": superjob_client,
+        "habr": habr_client,
+        "geekjob": geekjob_client,
+    }.get(source)
+    return getattr(client, "_page", None) if client is not None else None
 
 
 async def do_login():
@@ -263,7 +365,7 @@ async def _mark_manual(
     status_msg: str,
     seen_action: str,
     decision: str,
-    note: str,
+    manual_note: str,
     v: dict,
     vid: str,
     score: int,
@@ -275,6 +377,7 @@ async def _mark_manual(
     run_id: str,
     set_hunter_status,
     resume_variant: dict | None = None,
+    analytics_note: str = "",
     **extra_analytics,
 ) -> None:
     """Общий хелпер для пометки вакансии как manual (ручной разбор)."""
@@ -291,6 +394,7 @@ async def _mark_manual(
         evaluation=evaluation,
         details=details,
         resume_variant=resume_variant,
+        note=analytics_note,
         **extra_analytics,
     )
     create_task(
@@ -300,11 +404,11 @@ async def _mark_manual(
             f"Score: {score}/100\n"
             f"{reason}\n"
             f"URL: {v.get('url', '')}\n"
-            f"Причина: {note}"
+            f"Причина: {manual_note}"
         ),
         "medium",
     )
-    await notify_needs_manual(v, score, reason, note=note)
+    await notify_needs_manual(v, score, reason, note=manual_note)
 
 
 async def do_search(dry_run: bool = False) -> dict:
@@ -312,7 +416,8 @@ async def do_search(dry_run: bool = False) -> dict:
     Один прогон поиска + откликов.
     Возвращает {"found": int, "applied": int, "skipped": int}
     """
-    result: dict = {"found": 0, "applied": 0, "skipped": 0, "source_stats": {}, "_run_id": ""}
+    result: dict = {"found": 0, "applied": 0, "skipped": 0, "source_stats": {}, "note": "", "_run_id": ""}
+    await notifier.notify_stale_cookies()
     hh_client: HHClient | None = HHClient() if config.HH_ENABLED else None
     superjob_client: SuperJobClient | None = SuperJobClient() if config.SUPERJOB_ENABLED else None
     habr_client: HabrCareerClient | None = HabrCareerClient() if config.HABR_ENABLED else None
@@ -323,6 +428,7 @@ async def do_search(dry_run: bool = False) -> dict:
     result["_run_id"] = run_id
     last_apply_attempt_started_at_by_source = defaultdict(float)
     hh_retry_vacancies: list[dict] = []
+    hh_auto_apply_guard_note = ""
 
     async def set_hunter_status(action: str, message: str, status: str) -> None:
         nonlocal last_office_status
@@ -404,6 +510,7 @@ async def do_search(dry_run: bool = False) -> dict:
         all_vacancies = await search_pipeline.collect_all(
             hh_client, superjob_client, habr_client, geekjob_client,
             hh_retry_vacancies=hh_retry_vacancies,
+            source_stats=result["source_stats"],
             status_callback=set_hunter_status,
         )
 
@@ -451,9 +558,15 @@ async def do_search(dry_run: bool = False) -> dict:
         )
 
         if not all_vacancies:
-            await set_hunter_status("search_done", "Новых вакансий нет", "idle")
+            result["note"] = _format_no_new_vacancies_note(result["source_stats"])
+            await set_hunter_status("search_done", result["note"], "idle")
             _record_search_run(result, dry_run=dry_run, ok=True)
             return result
+
+        if config.HH_ENABLED:
+            hh_can_auto_apply, hh_guard_note = hh_guard.can_auto_apply()
+            if not hh_can_auto_apply:
+                hh_auto_apply_guard_note = hh_guard_note
 
         applied_count = 0
         auto_applied_count_by_source = defaultdict(int)
@@ -569,6 +682,23 @@ async def do_search(dry_run: bool = False) -> dict:
                 "geekjob": geekjob_client,
             }.get(source)
 
+            if source == "hh":
+                if not hh_auto_apply_guard_note:
+                    hh_can_auto_apply, hh_guard_note = hh_guard.can_auto_apply()
+                    if not hh_can_auto_apply:
+                        hh_auto_apply_guard_note = hh_guard_note
+                if hh_auto_apply_guard_note:
+                    await _mark_manual(
+                        f"Ручной {short_label}: guard",
+                        f"manual_{source}", f"manual_{source}_guard",
+                        hh_auto_apply_guard_note,
+                        v, vid, score, reason, evaluation, details,
+                        result, bucket, run_id, set_hunter_status,
+                        resume_variant=hh_resume_variant,
+                        analytics_note=hh_auto_apply_guard_note,
+                    )
+                    continue
+
             if source_client is None or not auto_apply_enabled:
                 await _mark_manual(
                     f"Ручной {short_label}: выкл",
@@ -633,7 +763,7 @@ async def do_search(dry_run: bool = False) -> dict:
                         v, vid, score, reason, evaluation, details,
                         result, bucket, run_id, set_hunter_status,
                         resume_variant=hh_resume_variant,
-                        note=geekjob_ready_message,
+                        analytics_note=geekjob_ready_message,
                     )
                     continue
 
@@ -667,8 +797,11 @@ async def do_search(dry_run: bool = False) -> dict:
                 cover = cover[:cover_limit]
             log.info("  %s cover letter: %s", source_label, cover[:100] if cover else "(empty)")
 
-            # 5. Пауза перед откликом (habr)
-            if source == "habr":
+            # 5. Пауза перед откликом
+            if source == "hh":
+                await wait_before_auto_apply(source, config.HH_MIN_SECONDS_BETWEEN_APPLICATIONS)
+                last_apply_attempt_started_at_by_source[source] = asyncio.get_running_loop().time()
+            elif source == "habr":
                 await wait_before_auto_apply(source, config.HABR_MIN_SECONDS_BETWEEN_APPLICATIONS)
                 last_apply_attempt_started_at_by_source[source] = asyncio.get_running_loop().time()
 
@@ -681,6 +814,33 @@ async def do_search(dry_run: bool = False) -> dict:
                     preferred_resume_id=(hh_resume_variant or {}).get("id", ""),
                 )
             except Exception as e:
+                snapshot = await _save_autoapply_failure_snapshot(
+                    source,
+                    vid,
+                    _autoapply_page_for_source(
+                        source,
+                        hh_client,
+                        superjob_client,
+                        habr_client,
+                        geekjob_client,
+                    ),
+                )
+                snapshot_hint = (
+                    f"\nСнимок: {snapshot['screenshot']}"
+                    if snapshot.get("screenshot")
+                    else ""
+                )
+                guard_suffix = ""
+                if source == "hh":
+                    anti_bot_kind = hh_guard.detect_antibot_kind(f"{type(e).__name__}: {e}")
+                    if anti_bot_kind:
+                        hh_status = hh_guard.record_antibot(
+                            kind=anti_bot_kind,
+                            raw_message=f"{type(e).__name__}: {e}",
+                            stage="apply_exception",
+                        )
+                        hh_auto_apply_guard_note = hh_guard.format_block_note(hh_status)
+                        guard_suffix = f"\n{hh_auto_apply_guard_note}"
                 await set_hunter_status("search_manual", f"Ручной {short_label}: ошибка", "busy")
                 seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
                 result["skipped"] += 1
@@ -692,7 +852,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     evaluation=evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
-                    note=f"{source}:{type(e).__name__}",
+                    note=f"{source}:{type(e).__name__}" + (f"; {hh_auto_apply_guard_note}" if guard_suffix else ""),
                 )
                 log.exception("  %s apply crashed for %s: %s", source_label, vid, e)
                 create_task(
@@ -703,19 +863,38 @@ async def do_search(dry_run: bool = False) -> dict:
                         f"{reason}\n"
                         f"URL: {v.get('url', '')}\n"
                         f"Автоотклик упал: {type(e).__name__}: {e}"
+                        f"{snapshot_hint}"
+                        f"{guard_suffix}"
                     ),
                     "medium",
                 )
                 await notify_needs_manual(
                     v, score, reason,
-                    note=f"Автоотклик {source_label} упал: {type(e).__name__}. Проверь вручную.",
+                    note=(
+                        f"Автоотклик {source_label} упал: {type(e).__name__}. Проверь вручную."
+                        + (f" {hh_auto_apply_guard_note}" if guard_suffix else "")
+                        + (f" Снимок: {snapshot['screenshot']}" if snapshot.get("screenshot") else "")
+                    ),
                 )
                 continue
 
             log.info("  %s apply result: %s", source_label, apply_result)
+            apply_notes = apply_result.get("notes") or []
+            apply_note_text = "; ".join(str(item) for item in apply_notes if item)
 
             # 7. hh-специфика: вопросы работодателя
             if source == "hh" and "пропускаем" in apply_result.get("message", "").lower():
+                snapshot = await _save_autoapply_failure_snapshot(
+                    source,
+                    vid,
+                    _autoapply_page_for_source(
+                        source,
+                        hh_client,
+                        superjob_client,
+                        habr_client,
+                        geekjob_client,
+                    ),
+                )
                 await set_hunter_status("search_manual", "Ручной hh: вопросы", "busy")
                 seen.mark_seen(vid, v, "skipped_questions")
                 result["skipped"] += 1
@@ -729,14 +908,46 @@ async def do_search(dry_run: bool = False) -> dict:
                     resume_variant=hh_resume_variant,
                 )
                 log.info("  Skipped: employer requires extra questions")
-                await notify_needs_manual(v, score, reason)
+                await notify_needs_manual(
+                    v,
+                    score,
+                    reason,
+                    note=(
+                        f"Нужен ручной отклик: работодатель добавил вопросы."
+                        + (f" {apply_note_text}." if apply_note_text else "")
+                        + (f" Снимок: {snapshot['screenshot']}" if snapshot.get("screenshot") else "")
+                    ),
+                )
                 continue
 
             # 8. Обработка результата
+            if apply_result.get("already_applied"):
+                seen.mark_seen(vid, v, "already_applied")
+                result["skipped"] += 1
+                bucket["rejected"] += 1
+                analytics.record_decision(
+                    run_id=run_id,
+                    vacancy=v,
+                    decision=DECISION_ALREADY_APPLIED,
+                    evaluation=evaluation,
+                    details=details,
+                    resume_variant=hh_resume_variant,
+                    note=f"{source}:{apply_result.get('message', 'already applied')}",
+                )
+                await set_hunter_status(
+                    "search_skip_existing",
+                    f"Уже откликался {short_label}",
+                    "working",
+                )
+                log.info("  %s vacancy already has a response: %s", source_label, apply_result.get("message", "already applied"))
+                continue
+
             if apply_result.get("ok"):
                 seen.mark_seen(vid, v, "applied")
                 if source == "hh" and hh_resume_variant is not None:
                     hh_pipeline.record_successful_apply(v, hh_resume_variant)
+                if source == "hh":
+                    hh_guard.record_apply_success()
                 result["applied"] += 1
                 applied_count += 1
                 bucket["applied"] += 1
@@ -748,6 +959,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     evaluation=evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
+                    note=f"{source}:{apply_note_text}" if apply_note_text else "",
                 )
                 await set_hunter_status(
                     "search_apply_done",
@@ -763,15 +975,43 @@ async def do_search(dry_run: bool = False) -> dict:
                         f"{reason}\n"
                         f"URL: {v.get('url', '')}\n"
                         f"Cover: {cover}"
+                        + (f"\nAuto-answer: {apply_note_text}" if apply_note_text else "")
                     ),
                     "low",
                 )
                 if task_id:
                     await task_complete(task_id, f"Отклик {source_label} отправлен (score {score})")
 
-                await notify_application(v, score, cover)
+                await notify_application(v, score, cover, note=apply_note_text or None)
             else:
                 apply_message = apply_result.get("message", "unknown")
+                snapshot = await _save_autoapply_failure_snapshot(
+                    source,
+                    vid,
+                    _autoapply_page_for_source(
+                        source,
+                        hh_client,
+                        superjob_client,
+                        habr_client,
+                        geekjob_client,
+                    ),
+                )
+                snapshot_hint = (
+                    f"\nСнимок: {snapshot['screenshot']}"
+                    if snapshot.get("screenshot")
+                    else ""
+                )
+                guard_suffix = ""
+                if source == "hh":
+                    anti_bot_kind = apply_result.get("anti_bot_kind") or hh_guard.detect_antibot_kind(apply_message)
+                    if anti_bot_kind:
+                        hh_status = hh_guard.record_antibot(
+                            kind=anti_bot_kind,
+                            raw_message=apply_message,
+                            stage="apply_result",
+                        )
+                        hh_auto_apply_guard_note = hh_guard.format_block_note(hh_status)
+                        guard_suffix = f"\n{hh_auto_apply_guard_note}"
                 # geekjob-специфика: сброс готовности при ошибке авторизации
                 if source == "geekjob" and (
                     "не авториз" in apply_message.lower() or "не гик" in apply_message.lower()
@@ -790,7 +1030,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     evaluation=evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
-                    note=f"{source}:{apply_message}",
+                    note=f"{source}:{apply_message}" + (f"; {hh_auto_apply_guard_note}" if guard_suffix else ""),
                 )
                 log.warning("  %s apply failed: %s", source_label, apply_message)
                 create_task(
@@ -801,12 +1041,18 @@ async def do_search(dry_run: bool = False) -> dict:
                         f"{reason}\n"
                         f"URL: {v.get('url', '')}\n"
                         f"Автоотклик не завершился: {apply_message}"
+                        f"{snapshot_hint}"
+                        f"{guard_suffix}"
                     ),
                     "medium",
                 )
                 await notify_needs_manual(
                     v, score, reason,
-                    note=f"Автоотклик {source_label} не завершился: {apply_message}",
+                    note=(
+                        f"Автоотклик {source_label} не завершился: {apply_message}"
+                        + (f" {hh_auto_apply_guard_note}" if guard_suffix else "")
+                        + (f" Снимок: {snapshot['screenshot']}" if snapshot.get("screenshot") else "")
+                    ),
                 )
 
             # Пауза между откликами
@@ -897,56 +1143,62 @@ async def do_daemon():
     log.info("Starting daemon mode")
     log.info("  Search interval: %d min", config.SEARCH_INTERVAL_MIN)
     log.info("  Invite check interval: %d min", config.INVITE_CHECK_INTERVAL_MIN)
+    runtime_control.register_current_process(
+        config.DAEMON_PID_FILE,
+        expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
+    )
+    try:
+        _write_runtime_status("daemon_start", "Job Hunter запущен в режиме демона", "idle", "daemon")
+        await office_log("daemon_start", "Job Hunter запущен в режиме демона", "idle")
 
-    _write_runtime_status("daemon_start", "Job Hunter запущен в режиме демона", "idle", "daemon")
-    await office_log("daemon_start", "Job Hunter запущен в режиме демона", "idle")
+        search_interval = config.SEARCH_INTERVAL_MIN * 60
+        invite_interval = config.INVITE_CHECK_INTERVAL_MIN * 60
 
-    search_interval = config.SEARCH_INTERVAL_MIN * 60
-    invite_interval = config.INVITE_CHECK_INTERVAL_MIN * 60
+        last_search = 0
+        last_invite_check = 0
 
-    last_search = 0
-    last_invite_check = 0
+        stop_event = asyncio.Event()
 
-    stop_event = asyncio.Event()
+        def _signal_handler(*_):
+            log.info("Received stop signal")
+            stop_event.set()
 
-    def _signal_handler(*_):
-        log.info("Received stop signal")
-        stop_event.set()
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _signal_handler)
 
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _signal_handler)
+        while not stop_event.is_set():
+            now = asyncio.get_event_loop().time()
 
-    while not stop_event.is_set():
-        now = asyncio.get_event_loop().time()
+            # Поиск
+            if now - last_search >= search_interval:
+                log.info("Running search cycle...")
+                try:
+                    await do_search()
+                except Exception as e:
+                    log.error("Search cycle failed: %s", e)
+                last_search = asyncio.get_event_loop().time()
 
-        # Поиск
-        if now - last_search >= search_interval:
-            log.info("Running search cycle...")
+            # Проверка приглашений
+            if now - last_invite_check >= invite_interval:
+                log.info("Running invitation check...")
+                try:
+                    await do_check_invitations()
+                except Exception as e:
+                    log.error("Invite check failed: %s", e)
+                last_invite_check = asyncio.get_event_loop().time()
+
+            # Ждём 60 секунд или до сигнала остановки
             try:
-                await do_search()
-            except Exception as e:
-                log.error("Search cycle failed: %s", e)
-            last_search = asyncio.get_event_loop().time()
+                await asyncio.wait_for(stop_event.wait(), timeout=60)
+            except TimeoutError:
+                pass
 
-        # Проверка приглашений
-        if now - last_invite_check >= invite_interval:
-            log.info("Running invitation check...")
-            try:
-                await do_check_invitations()
-            except Exception as e:
-                log.error("Invite check failed: %s", e)
-            last_invite_check = asyncio.get_event_loop().time()
-
-        # Ждём 60 секунд или до сигнала остановки
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=60)
-        except TimeoutError:
-            pass
-
-    _write_runtime_status("daemon_stop", "Job Hunter остановлен", "offline", "daemon")
-    await office_log("daemon_stop", "Job Hunter остановлен", "offline")
-    log.info("Daemon stopped")
+        _write_runtime_status("daemon_stop", "Job Hunter остановлен", "offline", "daemon")
+        await office_log("daemon_stop", "Job Hunter остановлен", "offline")
+        log.info("Daemon stopped")
+    finally:
+        runtime_control.unregister_current_process(config.DAEMON_PID_FILE)
 
 
 async def do_digest():
@@ -1084,9 +1336,10 @@ async def main():
 
     if args.list_profiles:
         profiles = profile_mod.list_profiles()
+        default_profile = (os.getenv("JOB_HUNTER_DEFAULT_PROFILE", "default") or "default").strip() or "default"
         print(f"Профили ({len(profiles)}):")
         for name in profiles:
-            marker = " (активный)" if name == "default" else ""
+            marker = " (активный)" if name == default_profile else ""
             p = profile_mod.load_profile(name)
             sources = []
             if p.hh.enabled: sources.append("hh")
@@ -1097,9 +1350,10 @@ async def main():
         return
 
     # Активируем профиль (патчит config.* для всех модулей)
-    if args.profile != "default":
-        log.info("Activating profile: %s", args.profile)
     profile_mod.activate(args.profile)
+    _configure_logging(force=True)
+    if args.profile != "default":
+        log.info("Activated profile: %s", args.profile)
 
     try:
         if args.login:
@@ -1115,6 +1369,8 @@ async def main():
         elif args.search:
             result = await do_search()
             print(f"\n✅ Найдено: {result['found']} | Откликов: {result['applied']} | Пропущено: {result['skipped']}")
+            if result.get("note"):
+                print(f"ℹ️ {result['note']}")
         elif args.check:
             await do_check_invitations()
         elif args.daemon:
@@ -1148,6 +1404,8 @@ async def main():
         elif args.dry_run:
             result = await do_search(dry_run=True)
             print(f"\n🔍 [DRY RUN] Найдено: {result['found']} | Подходящих: {result['applied']} | Отфильтровано: {result['skipped']}")
+            if result.get("note"):
+                print(f"ℹ️ {result['note']}")
     finally:
         await close_office_session()
         await close_notify_session()

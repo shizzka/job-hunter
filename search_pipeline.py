@@ -3,6 +3,7 @@
 
 Извлечено из agent.py (A-001).
 """
+import inspect
 import logging
 import re
 from typing import Callable, Awaitable
@@ -11,6 +12,7 @@ import config
 import filters
 import seen
 import analytics
+import hh_guard
 from office_bridge import office_log
 
 from hh_client import HHClient
@@ -45,11 +47,16 @@ def vacancy_match_key(title: str, company: str) -> str:
 
 # ── Сбор вакансий ──
 
-async def collect_hh_vacancies(client: HHClient | None) -> list[dict]:
+async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | None = None) -> list[dict]:
     if client is None:
         return []
     if not config.HH_ENABLED:
         log.info("HH_ENABLED=0, skipping hh.ru source")
+        return []
+    can_collect, collect_note = hh_guard.can_collect()
+    if not can_collect:
+        log.warning("Skipping hh.ru collection during cooldown: %s", collect_note)
+        await office_log("hh_skipped", collect_note, "thinking")
         return []
 
     if not await client.is_logged_in():
@@ -58,6 +65,21 @@ async def collect_hh_vacancies(client: HHClient | None) -> list[dict]:
         return []
 
     all_vacancies = []
+    bucket = None
+    if scan_stats is not None:
+        bucket = scan_stats.setdefault(
+            "hh",
+            {
+                "label": "hh.ru",
+                "fetched": 0,
+                "already_seen": 0,
+                "new": 0,
+                "relevant": 0,
+                "applied": 0,
+                "manual": 0,
+                "rejected": 0,
+            },
+        )
     for profile in config.SEARCH_PROFILES:
         area = profile["area"]
         schedule = profile.get("schedule", "")
@@ -68,11 +90,28 @@ async def collect_hh_vacancies(client: HHClient | None) -> list[dict]:
                 vacancies = await client.search_vacancies(
                     query, page=page_num, area=area, schedule=schedule,
                 )
+                anti_bot_signal = client.consume_antibot_signal()
+                if anti_bot_signal:
+                    status = hh_guard.record_antibot(
+                        kind=anti_bot_signal.get("kind", ""),
+                        raw_message=anti_bot_signal.get("message", ""),
+                        stage=anti_bot_signal.get("stage", "search"),
+                    )
+                    collect_note = hh_guard.format_block_note(status)
+                    log.warning("Stopping hh.ru collection after anti-bot signal: %s", collect_note)
+                    await office_log("hh_skipped", collect_note, "thinking")
+                    return all_vacancies
+                if bucket is not None:
+                    bucket["fetched"] += len(vacancies)
 
                 new_on_page = 0
                 for vacancy in vacancies:
                     vid = vacancy.get("id")
-                    if not vid or seen.is_seen(vid):
+                    if not vid:
+                        continue
+                    if seen.is_seen(vid):
+                        if bucket is not None:
+                            bucket["already_seen"] += 1
                         continue
                     vacancy["source"] = "hh"
                     vacancy["source_label"] = "hh.ru"
@@ -82,13 +121,13 @@ async def collect_hh_vacancies(client: HHClient | None) -> list[dict]:
                     all_vacancies.append(vacancy)
                     new_on_page += 1
 
-                if len(vacancies) < 10 or new_on_page == 0:
+                if len(vacancies) < 10:
                     break
 
     return all_vacancies
 
 
-async def collect_superjob_vacancies(client: SuperJobClient | None) -> list[dict]:
+async def collect_superjob_vacancies(client: SuperJobClient | None, *, scan_stats: dict | None = None) -> list[dict]:
     if client is None:
         return []
     if not config.SUPERJOB_ENABLED:
@@ -98,17 +137,38 @@ async def collect_superjob_vacancies(client: SuperJobClient | None) -> list[dict
         return []
 
     all_vacancies = []
+    bucket = None
+    if scan_stats is not None:
+        bucket = scan_stats.setdefault(
+            "superjob",
+            {
+                "label": "SuperJob",
+                "fetched": 0,
+                "already_seen": 0,
+                "new": 0,
+                "relevant": 0,
+                "applied": 0,
+                "manual": 0,
+                "rejected": 0,
+            },
+        )
     for profile in config.SUPERJOB_SEARCH_PROFILES:
         profile_label = profile.get("label", "default")
         for query in config.SUPERJOB_SEARCH_QUERIES:
             for page_num in range(config.SUPERJOB_SEARCH_PAGES):
                 log.info("SuperJob search: %s [%s] page %d", query, profile_label, page_num)
                 vacancies, more = await client.search_vacancies(query, page=page_num, profile=profile)
+                if bucket is not None:
+                    bucket["fetched"] += len(vacancies)
 
                 new_on_page = 0
                 for vacancy in vacancies:
                     vid = vacancy.get("id")
-                    if not vid or seen.is_seen(vid):
+                    if not vid:
+                        continue
+                    if seen.is_seen(vid):
+                        if bucket is not None:
+                            bucket["already_seen"] += 1
                         continue
                     vacancy["_search_query"] = query
                     vacancy["_search_profile"] = profile_label
@@ -121,13 +181,28 @@ async def collect_superjob_vacancies(client: SuperJobClient | None) -> list[dict
     return all_vacancies
 
 
-async def collect_habr_vacancies(client: HabrCareerClient | None) -> list[dict]:
+async def collect_habr_vacancies(client: HabrCareerClient | None, *, scan_stats: dict | None = None) -> list[dict]:
     if client is None:
         return []
     if not config.HABR_ENABLED:
         return []
 
     all_vacancies = []
+    bucket = None
+    if scan_stats is not None:
+        bucket = scan_stats.setdefault(
+            "habr",
+            {
+                "label": "Хабр Карьера",
+                "fetched": 0,
+                "already_seen": 0,
+                "new": 0,
+                "relevant": 0,
+                "applied": 0,
+                "manual": 0,
+                "rejected": 0,
+            },
+        )
     for path in config.HABR_SEARCH_PATHS:
         total_pages = 1
         for page_num in range(1, config.HABR_SEARCH_PAGES + 1):
@@ -136,11 +211,17 @@ async def collect_habr_vacancies(client: HabrCareerClient | None) -> list[dict]:
 
             log.info("Habr Career search: %s page %d", path, page_num)
             vacancies, total_pages = await client.search_vacancies(path=path, page=page_num)
+            if bucket is not None:
+                bucket["fetched"] += len(vacancies)
 
             new_on_page = 0
             for vacancy in vacancies:
                 vid = vacancy.get("id")
-                if not vid or seen.is_seen(vid):
+                if not vid:
+                    continue
+                if seen.is_seen(vid):
+                    if bucket is not None:
+                        bucket["already_seen"] += 1
                     continue
                 vacancy["_search_path"] = path
                 vacancy["_search_profile"] = path
@@ -153,13 +234,28 @@ async def collect_habr_vacancies(client: HabrCareerClient | None) -> list[dict]:
     return all_vacancies
 
 
-async def collect_geekjob_vacancies(client: GeekJobClient | None) -> list[dict]:
+async def collect_geekjob_vacancies(client: GeekJobClient | None, *, scan_stats: dict | None = None) -> list[dict]:
     if client is None:
         return []
     if not config.GEEKJOB_ENABLED:
         return []
 
     all_vacancies = []
+    bucket = None
+    if scan_stats is not None:
+        bucket = scan_stats.setdefault(
+            "geekjob",
+            {
+                "label": "GeekJob",
+                "fetched": 0,
+                "already_seen": 0,
+                "new": 0,
+                "relevant": 0,
+                "applied": 0,
+                "manual": 0,
+                "rejected": 0,
+            },
+        )
     total_pages = 1
     for page_num in range(1, config.GEEKJOB_SEARCH_PAGES + 1):
         if page_num > total_pages:
@@ -167,11 +263,17 @@ async def collect_geekjob_vacancies(client: GeekJobClient | None) -> list[dict]:
 
         log.info("GeekJob search: page %d", page_num)
         vacancies, total_pages = await client.search_vacancies(page=page_num)
+        if bucket is not None:
+            bucket["fetched"] += len(vacancies)
 
         new_on_page = 0
         for vacancy in vacancies:
             vid = vacancy.get("id")
-            if not vid or seen.is_seen(vid):
+            if not vid:
+                continue
+            if seen.is_seen(vid):
+                if bucket is not None:
+                    bucket["already_seen"] += 1
                 continue
             vacancy["_search_profile"] = f"page={page_num}"
             all_vacancies.append(vacancy)
@@ -192,6 +294,8 @@ def get_source_bucket(stats: dict, vacancy: dict) -> dict:
         source,
         {
             "label": label,
+            "fetched": 0,
+            "already_seen": 0,
             "new": 0,
             "relevant": 0,
             "applied": 0,
@@ -248,28 +352,70 @@ async def collect_all(
     habr_client: HabrCareerClient | None,
     geekjob_client: GeekJobClient | None,
     hh_retry_vacancies: list[dict] | None = None,
+    source_stats: dict | None = None,
     status_callback: Callable[[str, str, str], Awaitable[None]] | None = None,
 ) -> list[dict]:
     """Собрать вакансии из всех включённых источников."""
+    scan_stats = source_stats if source_stats is not None else {}
+
     async def _status(action: str, msg: str, status: str) -> None:
         if status_callback:
             await status_callback(action, msg, status)
 
-    if config.HH_ENABLED:
-        await _status("search_collect", "Собираю hh.ru", "working")
-    hh_vacancies = await collect_hh_vacancies(hh_client)
+    async def _invoke_collector(collector, client) -> list[dict]:
+        try:
+            params = inspect.signature(collector).parameters
+        except (TypeError, ValueError):
+            params = {}
+        if "scan_stats" in params:
+            return await collector(client, scan_stats=scan_stats)
+        return await collector(client)
 
-    if config.SUPERJOB_ENABLED:
-        await _status("search_collect", "Собираю SuperJob", "working")
-    superjob_vacancies = await collect_superjob_vacancies(superjob_client)
+    async def _collect_source(
+        *,
+        source_key: str,
+        enabled: bool,
+        label: str,
+        collector,
+    ) -> list[dict]:
+        if enabled:
+            await _status("search_collect", f"Собираю {label}", "working")
+        try:
+            return await collector()
+        except Exception as exc:
+            log.warning("%s collection failed: %s", label, exc, exc_info=True)
+            await office_log(f"{source_key}_collect_failed", f"{label} пропущен: {exc}", "warning")
+            if enabled:
+                await _status("search_collect_error", f"{label}: ошибка, продолжаю без источника", "working")
+            return []
 
-    if config.HABR_ENABLED:
-        await _status("search_collect", "Собираю Хабр", "working")
-    habr_vacancies = await collect_habr_vacancies(habr_client)
+    hh_vacancies = await _collect_source(
+        source_key="hh",
+        enabled=config.HH_ENABLED,
+        label="hh.ru",
+        collector=lambda: _invoke_collector(collect_hh_vacancies, hh_client),
+    )
 
-    if config.GEEKJOB_ENABLED:
-        await _status("search_collect", "Собираю GeekJob", "working")
-    geekjob_vacancies = await collect_geekjob_vacancies(geekjob_client)
+    superjob_vacancies = await _collect_source(
+        source_key="superjob",
+        enabled=config.SUPERJOB_ENABLED,
+        label="SuperJob",
+        collector=lambda: _invoke_collector(collect_superjob_vacancies, superjob_client),
+    )
+
+    habr_vacancies = await _collect_source(
+        source_key="habr",
+        enabled=config.HABR_ENABLED,
+        label="Хабр",
+        collector=lambda: _invoke_collector(collect_habr_vacancies, habr_client),
+    )
+
+    geekjob_vacancies = await _collect_source(
+        source_key="geekjob",
+        enabled=config.GEEKJOB_ENABLED,
+        label="GeekJob",
+        collector=lambda: _invoke_collector(collect_geekjob_vacancies, geekjob_client),
+    )
 
     all_vacancies = (
         hh_vacancies

@@ -28,6 +28,16 @@ def _load() -> dict:
     return _seen
 
 
+def _load_from_file(path: str) -> dict:
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 def _save():
     if _seen is None:
         return
@@ -61,6 +71,16 @@ def all_entries() -> dict:
 def stats() -> dict:
     """Статистика по обработанным вакансиям."""
     data = _load()
+    return stats_from_data(data)
+
+
+def stats_from_file(path: str) -> dict:
+    """Статистика по произвольному seen-файлу."""
+    return stats_from_data(_load_from_file(path))
+
+
+def stats_from_data(data: dict) -> dict:
+    """Статистика по обработанным вакансиям из уже загруженного словаря."""
     summary = {
         "total": len(data),
         "applied": 0,
@@ -99,6 +119,9 @@ def stats() -> dict:
             summary["manual"] += 1
             summary["skipped"] += 1
             bucket["manual"] += 1
+            bucket["skipped"] += 1
+        elif action == "already_applied":
+            summary["skipped"] += 1
             bucket["skipped"] += 1
         elif action.startswith(("skipped", "apply_failed")):
             summary["skipped"] += 1

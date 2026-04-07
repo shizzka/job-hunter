@@ -29,6 +29,37 @@ def _from_iso(value: str | None) -> datetime | None:
 _state: dict | None = None
 
 
+def _merge_variant_lists(primary: list[dict] | None, fallback: list[dict] | None) -> list[dict]:
+    fallback_by_name = {
+        str(item.get("name") or "").strip(): item
+        for item in (fallback or [])
+        if str(item.get("name") or "").strip()
+    }
+
+    merged: list[dict] = []
+    seen_names: set[str] = set()
+
+    for item in primary or []:
+        name = str(item.get("name") or "").strip()
+        merged_item = dict(item)
+        fallback_item = fallback_by_name.get(name, {})
+        if not merged_item.get("title") and fallback_item.get("title"):
+            merged_item["title"] = fallback_item["title"]
+        if not merged_item.get("id") and fallback_item.get("id"):
+            merged_item["id"] = fallback_item["id"]
+        merged.append(merged_item)
+        if name:
+            seen_names.add(name)
+
+    for item in fallback or []:
+        name = str(item.get("name") or "").strip()
+        if name and name in seen_names:
+            continue
+        merged.append(dict(item))
+
+    return merged
+
+
 def _load() -> dict:
     global _state
     if _state is not None:
@@ -114,7 +145,10 @@ def resolve_variants(resumes: list[dict]) -> list[dict]:
 
 def remember_resolved_variants(resolved_variants: list[dict]) -> None:
     state = _load()
-    state["_resolved_variants"] = resolved_variants
+    state["_resolved_variants"] = _merge_variant_lists(
+        resolved_variants,
+        get_resolved_variants(),
+    )
     state["_resolved_at"] = _to_iso(_now())
     _save()
 
@@ -123,7 +157,7 @@ def get_resolved_variants() -> list[dict]:
     state = _load()
     resolved = state.get("_resolved_variants")
     if isinstance(resolved, list) and resolved:
-        return resolved
+        return _merge_variant_lists(resolved, get_variants())
     return get_variants()
 
 

@@ -22,7 +22,9 @@ from profile import (
     load_profile,
     list_profiles,
     create_profile,
+    update_profile_env,
     activate,
+    activate_no_lock,
     active,
     _acquire_lock,
     _release_lock,
@@ -46,6 +48,14 @@ class TestProfileModel:
         assert p.analytics_state_file == str(tmp_path / "analytics_state.json")
         assert p.run_history_file == str(tmp_path / "run_history.jsonl")
         assert p.runtime_status_file == str(tmp_path / "runtime_status.json")
+        assert p.daemon_pid_file == str(tmp_path / "job-hunter-daemon.pid")
+        assert p.telegram_bot_pid_file == str(tmp_path / "telegram-bot.pid")
+        assert p.telegram_bot_state_file == str(tmp_path / "telegram-bot-state.json")
+        assert p.telegram_bot_runtime_file == str(tmp_path / "telegram-bot-runtime.json")
+        assert p.log_file == str(tmp_path / "job-hunter.log")
+        assert p.error_log_file == str(tmp_path / "job-hunter-errors.log")
+        assert p.telegram_bot_log_file == str(tmp_path / "telegram-bot.log")
+        assert p.telegram_bot_debug_log_file == str(tmp_path / "telegram-bot-debug.jsonl")
         assert p.state_dir == str(tmp_path / "state")
         assert p.resume_file == str(tmp_path / "resume.md")
 
@@ -199,6 +209,7 @@ class TestLoadProfile:
             "HH_ENABLED=0\n"
             "SUPERJOB_ENABLED=1\n"
             "HH_SEARCH_QUERIES=Python developer\n"
+            "HH_SEARCH_PAGES=5\n"
             "NOTIFY_CHAT_ID=42\n"
         )
 
@@ -207,11 +218,47 @@ class TestLoadProfile:
         assert p.home_dir == str(profile_dir)
         assert p.hh.enabled is False
         assert p.hh.search_queries == ["Python developer"]
+        assert p.hh.search_pages == 5
         assert p.notify.chat_id == 42
+        assert p.search_interval_min == 30
         # Cookies в профильной директории
         assert str(profile_dir) in p.hh.cookies_file
         # State файлы тоже в профильной директории
         assert str(profile_dir) in p.seen_file
+
+    def test_named_profile_schedule_overrides(self, tmp_path, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
+
+        profile_dir = tmp_path / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "profile.env").write_text(
+            "SEARCH_INTERVAL_MIN=480\n"
+            "INVITE_CHECK_INTERVAL_MIN=1440\n"
+        )
+
+        p = load_profile("alice")
+        assert p.search_interval_min == 480
+        assert p.invite_check_interval_min == 1440
+
+    def test_named_profile_recomputes_daemon_and_bot_runtime_paths(self, tmp_path, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
+
+        profile_dir = tmp_path / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "profile.env").write_text("HH_ENABLED=1\n")
+
+        p = load_profile("alice")
+
+        assert p.daemon_pid_file == str(profile_dir / "job-hunter-daemon.pid")
+        assert p.telegram_bot_pid_file == str(profile_dir / "telegram-bot.pid")
+        assert p.telegram_bot_state_file == str(profile_dir / "telegram-bot-state.json")
+        assert p.telegram_bot_runtime_file == str(profile_dir / "telegram-bot-runtime.json")
+        assert p.log_file == str(profile_dir / "job-hunter.log")
+        assert p.error_log_file == str(profile_dir / "job-hunter-errors.log")
+        assert p.telegram_bot_log_file == str(profile_dir / "telegram-bot.log")
+        assert p.telegram_bot_debug_log_file == str(profile_dir / "telegram-bot-debug.jsonl")
 
 
 class TestListProfiles:
@@ -234,6 +281,7 @@ class TestListProfiles:
         assert "default" in profiles
         assert "alice" in profiles
         assert "bob" in profiles
+        assert profiles[-1] == "default"
 
     def test_ignores_dirs_without_env(self, tmp_path, monkeypatch):
         import config
@@ -244,6 +292,18 @@ class TestListProfiles:
 
         profiles = list_profiles()
         assert "broken" not in profiles
+
+    def test_prefers_qa_before_other_named_profiles(self, tmp_path, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
+
+        for name in ["electrician", "qa"]:
+            d = tmp_path / "profiles" / name
+            d.mkdir(parents=True)
+            (d / "profile.env").write_text(f"# {name}\n")
+
+        profiles = list_profiles()
+        assert profiles == ["qa", "electrician", "default"]
 
 
 class TestActivateProfile:
@@ -280,7 +340,51 @@ class TestActivateProfile:
         assert config.NOTIFY_CHAT_ID == 777
         assert config.MAX_APPLICATIONS_PER_RUN == 42
         assert config.SEEN_VACANCIES_FILE == p.seen_file
+        assert config.DAEMON_PID_FILE == p.daemon_pid_file
+        assert config.TELEGRAM_BOT_PID_FILE == p.telegram_bot_pid_file
+        assert config.LOG_FILE == p.log_file
+        assert config.ERROR_LOG_FILE == p.error_log_file
+        assert config.TELEGRAM_BOT_LOG_FILE == p.telegram_bot_log_file
+        assert config.TELEGRAM_BOT_DEBUG_LOG_FILE == p.telegram_bot_debug_log_file
         assert str(profile_dir) in config.SEEN_VACANCIES_FILE
+
+    def test_activate_no_lock(self, tmp_path, monkeypatch):
+        import config
+        import profile as profile_mod
+
+        monkeypatch.setattr(profile_mod, "_active_profile", None)
+        monkeypatch.setattr(profile_mod, "_lock_fd", None)
+        monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
+
+        profile_dir = tmp_path / "profiles" / "botuser"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "profile.env").write_text("HH_ENABLED=1\n")
+
+        p = activate_no_lock("botuser")
+
+        assert p.name == "botuser"
+        assert profile_mod._lock_fd is None
+        assert config.JOB_HUNTER_HOME == str(profile_dir)
+
+    def test_can_load_another_named_profile_after_activation(self, tmp_path, monkeypatch):
+        import config
+        import profile as profile_mod
+
+        monkeypatch.setattr(profile_mod, "_active_profile", None)
+        monkeypatch.setattr(profile_mod, "_lock_fd", None)
+        monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
+
+        for name in ("alice", "bob"):
+            profile_dir = tmp_path / "profiles" / name
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "profile.env").write_text(f"# {name}\n")
+
+        activated = activate_no_lock("alice")
+        loaded = load_profile("bob")
+
+        assert activated.name == "alice"
+        assert loaded.name == "bob"
+        assert loaded.home_dir == str(tmp_path / "profiles" / "bob")
 
     def test_activate_isolates_cookies(self, tmp_path, monkeypatch):
         import config
@@ -427,6 +531,15 @@ class TestCreateProfile:
         assert "Python developer" in env_content
         assert "Django" in env_content
 
+    def test_env_contains_explicit_schedule_defaults(self, tmp_path, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
+
+        create_profile("frank")
+        env_content = (tmp_path / "profiles" / "frank" / "profile.env").read_text()
+        assert "SEARCH_INTERVAL_MIN=480" in env_content
+        assert "INVITE_CHECK_INTERVAL_MIN=480" in env_content
+
     def test_duplicate_raises(self, tmp_path, monkeypatch):
         import config
         monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
@@ -463,3 +576,36 @@ class TestCreateProfile:
         p = load_profile("eve")
         assert p.name == "eve"
         assert p.hh.enabled is True
+
+
+class TestUpdateProfileEnv:
+    def test_updates_existing_and_new_keys(self, tmp_path, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
+
+        profile_dir = tmp_path / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)
+        env_file = profile_dir / "profile.env"
+        env_file.write_text("HH_ENABLED=1\n")
+
+        result = update_profile_env("alice", {"SEARCH_INTERVAL_MIN": 480, "HH_ENABLED": 0})
+        content = env_file.read_text()
+
+        assert result == str(env_file)
+        assert "HH_ENABLED=0" in content
+        assert "SEARCH_INTERVAL_MIN=480" in content
+
+    def test_sanitizes_multiline_values(self, tmp_path, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
+
+        profile_dir = tmp_path / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)
+        env_file = profile_dir / "profile.env"
+        env_file.write_text("HH_ENABLED=1\n")
+
+        update_profile_env("alice", {"HH_PRIMARY_RESUME_TITLE": "QA Resume\nОбновлено вчера"})
+        content = env_file.read_text()
+
+        assert "HH_PRIMARY_RESUME_TITLE=QA Resume Обновлено вчера" in content
+        assert "HH_PRIMARY_RESUME_TITLE=QA Resume\nОбновлено вчера" not in content

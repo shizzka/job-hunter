@@ -13,6 +13,7 @@ import aiohttp
 from playwright.async_api import async_playwright, BrowserContext, Page
 
 import config
+import proxy_utils
 
 log = logging.getLogger("superjob_client")
 
@@ -115,22 +116,29 @@ class SuperJobClient:
 
     def __init__(self):
         self._session: aiohttp.ClientSession | None = None
+        self._session_uses_env_proxy = True
         self._auth: dict | None = None
         self._pw = None
         self._browser = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
 
-    async def start(self):
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                headers={
-                    "X-Api-App-Id": config.SUPERJOB_API_KEY,
-                    "Accept": "application/json",
-                },
-                timeout=aiohttp.ClientTimeout(total=20),
-                trust_env=True,
-            )
+    async def start(self, *, trust_env: bool = True):
+        if self._session and not self._session.closed:
+            if self._session_uses_env_proxy == trust_env:
+                return
+            await self._session.close()
+            self._session = None
+
+        self._session = aiohttp.ClientSession(
+            headers={
+                "X-Api-App-Id": config.SUPERJOB_API_KEY,
+                "Accept": "application/json",
+            },
+            timeout=aiohttp.ClientTimeout(total=20),
+            trust_env=trust_env,
+        )
+        self._session_uses_env_proxy = trust_env
 
     async def stop(self):
         if self._session and not self._session.closed:
@@ -153,6 +161,7 @@ class SuperJobClient:
         if proxy_url:
             launch_opts["proxy"] = {"server": proxy_url}
             log.info("Using proxy for SuperJob browser: %s", proxy_url)
+        launch_opts["env"] = proxy_utils.browser_launch_env(proxy_url)
 
         self._browser = await self._pw.chromium.launch(**launch_opts)
         self._context = await self._browser.new_context(
@@ -266,7 +275,7 @@ class SuperJobClient:
                 return str(message)
         return fallback
 
-    async def _request(
+    async def _request_once(
         self,
         method: str,
         path: str,
@@ -279,7 +288,6 @@ class SuperJobClient:
         if not config.SUPERJOB_API_KEY:
             raise RuntimeError("SUPERJOB_API_KEY is not configured")
 
-        await self.start()
         headers = {}
         if auth:
             if not await self.ensure_auth():
@@ -303,7 +311,7 @@ class SuperJobClient:
                 and self._get_auth().get("refresh_token")
             ):
                 if await self.refresh_access_token():
-                    return await self._request(
+                    return await self._request_once(
                         method,
                         path,
                         params=params,
@@ -319,6 +327,40 @@ class SuperJobClient:
                 raise RuntimeError(self._extract_error_message(payload, fallback))
 
             return payload
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict | None = None,
+        data: dict | None = None,
+        auth: bool = False,
+        retry_on_auth_error: bool = True,
+    ) -> dict | list | None:
+        await self.start()
+        try:
+            return await self._request_once(
+                method,
+                path,
+                params=params,
+                data=data,
+                auth=auth,
+                retry_on_auth_error=retry_on_auth_error,
+            )
+        except Exception as exc:
+            if self._session_uses_env_proxy and proxy_utils.is_proxy_error(exc):
+                log.warning("SuperJob proxy failed, retrying direct: %s", exc)
+                await self.start(trust_env=False)
+                return await self._request_once(
+                    method,
+                    path,
+                    params=params,
+                    data=data,
+                    auth=auth,
+                    retry_on_auth_error=retry_on_auth_error,
+                )
+            raise
 
     async def password_login(self, login: str, password: str):
         if not config.SUPERJOB_CLIENT_ID:

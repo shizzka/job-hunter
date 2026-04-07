@@ -1,4 +1,4 @@
-# Job Hunter v0.3.0
+# Job Hunter v0.4.0
 
 Russian version: [README.ru.md](README.ru.md)
 

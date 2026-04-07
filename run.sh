@@ -8,6 +8,8 @@ set -euo pipefail
 #   ./run.sh search      — один прогон
 #   ./run.sh check       — проверка приглашений
 #   ./run.sh daemon      — демон (в фоне)
+#   ./run.sh bot         — Telegram bot (foreground)
+#   ./run.sh bot-daemon  — Telegram bot (в фоне)
 #   ./run.sh stats       — статистика
 #   ./run.sh analytics-backfill — подтянуть историю в аналитику
 #   ./run.sh dry-run     — поиск без откликов
@@ -28,12 +30,25 @@ fi
 
 # Поддержка --profile <name>: ./run.sh --profile alice search
 PROFILE_ARG=""
+PROFILE_EXPLICIT=0
 if [ "${1:-}" = "--profile" ]; then
     PROFILE_ARG="--profile ${2:?Profile name required}"
+    PROFILE_EXPLICIT=1
     shift 2
 fi
 
 MODE="${1:-search}"
+DEFAULT_PROFILE="${JOB_HUNTER_DEFAULT_PROFILE:-}"
+
+if [ "$PROFILE_EXPLICIT" -eq 0 ] && [ -n "$DEFAULT_PROFILE" ]; then
+    case "$MODE" in
+        profiles|list-profiles|create-profile|setup)
+            ;;
+        *)
+            PROFILE_ARG="--profile $DEFAULT_PROFILE"
+            ;;
+    esac
+fi
 
 case "$MODE" in
     login)
@@ -55,10 +70,13 @@ case "$MODE" in
         $VENV agent.py $PROFILE_ARG --check
         ;;
     daemon)
-        echo "Starting Job Hunter daemon..."
-        nohup $VENV agent.py $PROFILE_ARG --daemon >> /tmp/job-hunter.log 2>&1 &
-        echo "PID: $!"
-        echo "Log: /tmp/job-hunter.log"
+        $VENV job_hunter_ctl.py $PROFILE_ARG daemon-start
+        ;;
+    bot)
+        $VENV telegram_bot.py $PROFILE_ARG
+        ;;
+    bot-daemon|botd)
+        $VENV job_hunter_ctl.py $PROFILE_ARG bot-start
         ;;
     stats)
         $VENV agent.py $PROFILE_ARG --stats
@@ -106,11 +124,20 @@ case "$MODE" in
     setup)
         $VENV setup_profile.py
         ;;
+    status)
+        $VENV job_hunter_ctl.py $PROFILE_ARG status
+        ;;
+    bot-status)
+        $VENV job_hunter_ctl.py $PROFILE_ARG bot-status
+        ;;
+    bot-stop)
+        $VENV job_hunter_ctl.py $PROFILE_ARG bot-stop
+        ;;
     stop)
-        pkill -f "agent.py --daemon" && echo "Stopped" || echo "Not running"
+        $VENV job_hunter_ctl.py $PROFILE_ARG daemon-stop
         ;;
     *)
-        echo "Usage: $0 [--profile <name>] {login|search|check|daemon|stats|digest|dry-run|grab-resume|create-profile|profiles|stop}"
+        echo "Usage: $0 [--profile <name>] {login|search|check|daemon|bot|bot-daemon|status|bot-status|stats|digest|dry-run|grab-resume|create-profile|profiles|bot-stop|stop}"
         exit 1
         ;;
 esac

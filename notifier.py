@@ -1,50 +1,147 @@
 """Telegram-уведомления о вакансиях и приглашениях."""
+import json
 import logging
+import os
+import time
 import aiohttp
 
 import config
+import profile as profile_mod
+import telegram_access
 
 log = logging.getLogger("notifier")
 
 _session: aiohttp.ClientSession | None = None
+_session_uses_proxy = False
+_session_proxy_url = ""
 
 
-async def _get_session() -> aiohttp.ClientSession:
-    global _session
-    if _session is None or _session.closed:
-        connector = None
-        if config.TELEGRAM_PROXY:
+def _build_connector(use_proxy: bool, proxy_url: str) -> tuple[aiohttp.BaseConnector | None, bool]:
+    if use_proxy and proxy_url:
+        try:
+            from aiohttp_socks import ProxyConnector
+            return ProxyConnector.from_url(proxy_url), True
+        except ImportError:
+            log.warning("aiohttp-socks not installed, proxy disabled")
+    return None, False
+
+
+def _active_profile():
+    try:
+        return profile_mod.active()
+    except Exception:
+        return None
+
+
+def _resolve_target_chat_ids(profile) -> list[int]:
+    profile_name = str(getattr(profile, "name", "") or "").strip()
+    if profile_name:
+        matched = []
+        for item in telegram_access.list_users():
             try:
-                from aiohttp_socks import ProxyConnector
-                connector = ProxyConnector.from_url(config.TELEGRAM_PROXY)
-            except ImportError:
-                log.warning("aiohttp-socks not installed, proxy disabled")
-        _session = aiohttp.ClientSession(
-            connector=connector,
-            timeout=aiohttp.ClientTimeout(total=15),
-        )
+                user_id = int(item.get("user_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if user_id <= 0 or not item.get("enabled", True):
+                continue
+            if str(item.get("profile") or "").strip() == profile_name:
+                matched.append(user_id)
+        if matched:
+            return sorted(set(matched))
+
+    configured_chat_id = 0
+    try:
+        configured_chat_id = int(getattr(getattr(profile, "notify", None), "chat_id", 0) or 0)
+    except (TypeError, ValueError):
+        configured_chat_id = 0
+    if configured_chat_id > 0:
+        return [configured_chat_id]
+
+    fallback_chat_id = int(config.NOTIFY_CHAT_ID or 0)
+    return [fallback_chat_id] if fallback_chat_id > 0 else []
+
+
+def _resolve_bot_token(profile) -> str:
+    token = str(getattr(getattr(profile, "notify", None), "bot_token", "") or "").strip()
+    if token:
+        return token
+    token = str(config.TELEGRAM_BOT_TOKEN or "").strip()
+    if token:
+        return token
+    return str(getattr(config, "TELEGRAM_CONTROL_BOT_TOKEN", "") or "").strip()
+
+
+def _resolve_proxy_url(profile) -> str:
+    proxy_url = str(getattr(getattr(profile, "notify", None), "proxy", "") or "").strip()
+    if proxy_url:
+        return proxy_url
+    return str(config.TELEGRAM_PROXY or "").strip()
+
+
+async def _get_session(use_proxy: bool = True, proxy_url: str = "") -> aiohttp.ClientSession:
+    global _session, _session_uses_proxy, _session_proxy_url
+    connector, session_uses_proxy = _build_connector(use_proxy, proxy_url)
+    expected_proxy_url = proxy_url if session_uses_proxy else ""
+    if _session and not _session.closed:
+        if _session_uses_proxy == session_uses_proxy and _session_proxy_url == expected_proxy_url:
+            return _session
+        await _session.close()
+    _session = aiohttp.ClientSession(
+        connector=connector,
+        timeout=aiohttp.ClientTimeout(total=15),
+    )
+    _session_uses_proxy = session_uses_proxy
+    _session_proxy_url = expected_proxy_url
     return _session
+
+
+async def _deliver(url: str, payload: dict, use_proxy: bool, proxy_url: str) -> bool:
+    session = await _get_session(use_proxy=use_proxy, proxy_url=proxy_url)
+    async with session.post(url, json=payload) as resp:
+        if resp.status != 200:
+            data = await resp.text()
+            log.error("Telegram send failed: %s %s", resp.status, data[:200])
+            return False
+    return True
 
 
 async def send_message(text: str, parse_mode: str = "HTML"):
     """Отправить сообщение в Telegram."""
-    if not config.TELEGRAM_BOT_TOKEN or not config.NOTIFY_CHAT_ID:
-        log.warning("Telegram not configured (no token or chat_id)")
+    profile = _active_profile()
+    bot_token = _resolve_bot_token(profile)
+    chat_ids = _resolve_target_chat_ids(profile)
+    if not bot_token or not chat_ids:
+        log.warning("Telegram not configured (no token or targets)")
         return
 
+    proxy_url = _resolve_proxy_url(profile)
     try:
-        session = await _get_session()
-        url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": config.NOTIFY_CHAT_ID,
-            "text": text[:4096],
-            "parse_mode": parse_mode,
-            "disable_web_page_preview": True,
-        }
-        async with session.post(url, json=payload) as resp:
-            if resp.status != 200:
-                data = await resp.text()
-                log.error("Telegram send failed: %s %s", resp.status, data[:200])
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        delivered_any = False
+        for chat_id in chat_ids:
+            payload = {
+                "chat_id": chat_id,
+                "text": text[:4096],
+                "parse_mode": parse_mode,
+                "disable_web_page_preview": True,
+            }
+            use_proxy = bool(proxy_url)
+            try:
+                delivered = await _deliver(url, payload, use_proxy=use_proxy, proxy_url=proxy_url)
+            except Exception as e:
+                if not use_proxy:
+                    log.error("Telegram notification failed for chat %s: %s", chat_id, e)
+                    continue
+                log.warning("Telegram proxy failed for chat %s, retrying direct: %s", chat_id, e)
+                try:
+                    delivered = await _deliver(url, payload, use_proxy=False, proxy_url="")
+                except Exception as direct_error:
+                    log.error("Telegram notification failed for chat %s: %s", chat_id, direct_error)
+                    continue
+            if delivered:
+                delivered_any = True
+        if delivered_any:
+            return
     except Exception as e:
         log.error("Telegram notification failed: %s", e)
 
@@ -63,7 +160,12 @@ async def notify_search_started(source_labels: list[str]):
     await send_message(text)
 
 
-async def notify_application(vacancy: dict, score: int, cover_letter: str):
+async def notify_application(
+    vacancy: dict,
+    score: int,
+    cover_letter: str,
+    note: str | None = None,
+):
     """Уведомить об отклике на вакансию."""
     text = (
         f"📨 <b>Отклик отправлен</b>\n\n"
@@ -76,6 +178,8 @@ async def notify_application(vacancy: dict, score: int, cover_letter: str):
     )
     if cover_letter:
         text += f"\n\n💬 <i>{cover_letter[:300]}</i>"
+    if note:
+        text += f"\n\n🧠 {note[:400]}"
     await send_message(text)
 
 
@@ -203,14 +307,14 @@ def _format_ab_resume(by_resume_variant: dict) -> str:
             f"{b.get('viewed', 0)} просм, "
             f"{b.get('positive', 0)} пос, "
             f"{b.get('rejected', 0)} отк — "
-            f"resp {b.get('response_rate', 0):.0f}% conv {b.get('positive_rate', 0):.0f}%"
+            f"ответ {b.get('response_rate', 0):.0f}% успех {b.get('positive_rate', 0):.0f}%"
         )
     return "\n\n🔬 <b>A/B резюме</b>\n" + "\n".join(lines)
 
 
 async def notify_digest(analytics_summary: dict):
     """Отправить полный дайджест с воронкой и A/B в Telegram."""
-    if not config.TELEGRAM_BOT_TOKEN or not config.NOTIFY_CHAT_ID:
+    if not _resolve_bot_token(_active_profile()) or not _resolve_target_chat_ids(_active_profile()):
         return
 
     days = analytics_summary.get("days", 30)
@@ -218,10 +322,10 @@ async def notify_digest(analytics_summary: dict):
         f"📈 <b>Дайджест за {days} дн.</b>\n\n"
         f"решений: {analytics_summary.get('decisions', 0)} | "
         f"автооткликов: {analytics_summary.get('auto_applied', 0)} | "
-        f"manual: {analytics_summary.get('manual', 0)}\n"
+        f"ручных: {analytics_summary.get('manual', 0)}\n"
         f"фильтр: {analytics_summary.get('keyword_filtered', 0)} | "
-        f"red flags: {analytics_summary.get('red_flagged', 0)} | "
-        f"low score: {analytics_summary.get('low_score', 0)}"
+        f"красных флагов: {analytics_summary.get('red_flagged', 0)} | "
+        f"низкий балл: {analytics_summary.get('low_score', 0)}"
     )
 
     funnel = analytics_summary.get("funnel", {})
@@ -231,8 +335,62 @@ async def notify_digest(analytics_summary: dict):
     await send_message(text)
 
 
+_COOKIE_WARN_FILE = os.path.join(os.path.expanduser("~"), ".job-hunter", "cookie_warn_sent.json")
+_COOKIE_WARN_INTERVAL = 24 * 3600  # раз в сутки
+_COOKIE_STALE_DAYS = 7
+
+
+async def notify_stale_cookies():
+    """Отправить уведомление если куки площадок устарели (>7 дней)."""
+    sources = {
+        "hh.ru": config.HH_COOKIES_FILE,
+        "SuperJob": config.SUPERJOB_COOKIES_FILE,
+        "Habr Career": config.HABR_COOKIES_FILE,
+        "GeekJob": config.GEEKJOB_COOKIES_FILE,
+    }
+    now = time.time()
+    stale = []
+    for name, path in sources.items():
+        if not os.path.exists(path):
+            stale.append(f"❌ {name}: файл куки не найден")
+            continue
+        age_days = (now - os.path.getmtime(path)) / 86400
+        if age_days >= _COOKIE_STALE_DAYS:
+            stale.append(f"⚠️ {name}: {age_days:.0f} дн. без обновления")
+
+    if not stale:
+        return
+
+    # Не спамить чаще раза в сутки
+    try:
+        state = json.loads(open(_COOKIE_WARN_FILE).read()) if os.path.exists(_COOKIE_WARN_FILE) else {}
+    except Exception:
+        state = {}
+    if now - state.get("sent_at", 0) < _COOKIE_WARN_INTERVAL:
+        return
+
+    text = (
+        "🍪 <b>Куки площадок устарели</b>\n\n"
+        + "\n".join(stale)
+        + "\n\n<b>Обновить:</b>\n"
+        "<code>./run.sh login</code>\n"
+        "<code>./run.sh habr-login</code>\n"
+        "<code>./run.sh superjob-login</code>\n"
+        "<code>./run.sh geekjob-login</code>"
+    )
+    await send_message(text)
+
+    try:
+        with open(_COOKIE_WARN_FILE, "w") as f:
+            json.dump({"sent_at": now, "stale": stale}, f)
+    except Exception:
+        pass
+
+
 async def close_session():
-    global _session
+    global _session, _session_uses_proxy, _session_proxy_url
     if _session and not _session.closed:
         await _session.close()
         _session = None
+    _session_uses_proxy = False
+    _session_proxy_url = ""
