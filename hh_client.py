@@ -937,8 +937,10 @@ class HHClient:
     async def is_logged_in(self) -> bool:
         """Проверить залогинен ли пользователь."""
         try:
-            await self._page.goto(f"{config.HH_BASE_URL}/applicant/resumes", wait_until="domcontentloaded", timeout=15000)
+            await self._page.goto(f"{config.HH_BASE_URL}/applicant/resumes", wait_until="domcontentloaded", timeout=30000)
             await self._page.wait_for_timeout(2000)
+            # Закрыть модалку "Резюме стали компактнее" (whats-new-modal) если есть
+            await self._dismiss_whats_new_modal()
             url = (self._page.url or "").casefold()
             # Если редиректнуло на логин — не залогинен
             if "/account/login" in url or "/auth/" in url:
@@ -946,12 +948,23 @@ class HHClient:
             html = _compact_text(await self._page.content())
             if '"usertype":"anonymous"' in html or '"luxpagename":"forbiddenpage"' in html:
                 return False
-            # Проверяем наличие элемента резюме
-            resumes = await self._page.query_selector_all("[data-qa='resume']")
+            # Проверяем наличие элемента резюме (новый дизайн: resume-card-link-*)
+            resumes = await self._page.query_selector_all("[data-qa='resume'], [data-qa^='resume-card-link-']")
             return len(resumes) > 0 or "/applicant/resumes" in url
         except Exception as e:
             log.warning("Login check failed: %s", e)
             return False
+
+    async def _dismiss_whats_new_modal(self):
+        """Закрыть модалку 'Резюме стали компактнее' (whats-new-modal) если появилась."""
+        try:
+            btn = await self._page.query_selector("[data-qa='whats-new-modal-confirm']")
+            if btn:
+                await btn.click()
+                await self._page.wait_for_timeout(500)
+                log.info("Dismissed whats-new-modal popup")
+        except Exception:
+            pass
 
     async def is_logged_in_passive(self) -> bool:
         """Проверить логин без навигации текущей страницы."""
@@ -2004,6 +2017,7 @@ class HHClient:
             log.warning("Resume page navigation issue: %s", e)
 
         await self._page.wait_for_timeout(4000)
+        await self._dismiss_whats_new_modal()
 
         # Дебаг: скриншот и URL
         current_url = self._page.url
@@ -2028,9 +2042,9 @@ class HHClient:
 
         resumes = []
 
-        # Стратегия 1: data-qa селекторы
-        cards = await self._page.query_selector_all("[data-qa='resume']")
-        log.info("Strategy 1 (data-qa='resume'): %d cards", len(cards))
+        # Стратегия 1: data-qa селекторы (новый дизайн: resume-card-link-*)
+        cards = await self._page.query_selector_all("[data-qa='resume'], [data-qa^='resume-card-link-']")
+        log.info("Strategy 1 (data-qa='resume'/resume-card-link): %d cards", len(cards))
 
         # Стратегия 2: ссылки с /resume/ в href
         if not cards:
