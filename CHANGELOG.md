@@ -1,5 +1,91 @@
 # Changelog
 
+## v0.5.0 — 2026-05-23
+
+Большая итерация по hh.ru auto-apply: автоответ на сложные анкеты,
+интерактивный captcha-solver через vision-LLM + Telegram-bridge,
+кастомизация ответов под конкретного кандидата, рефакторинг кодовой базы.
+
+### Авто-ответ на анкеты работодателя (`hh_client.py`)
+- **Поддержка radio / checkbox / select** — раньше формы с этими полями целиком отвергались («автоответ пропущен: есть неподдерживаемые поля»), теперь LLM выбирает один или несколько вариантов из списка
+  - JS-инспектор `_inspect_employer_questions` достаёт все варианты (label, value, index, признак «Свой вариант») и кладёт в `fields[]`, а не в `unsupported_items`
+  - Новый `_answer_choice_with_llm`: LLM получает вопрос + перечень опций, возвращает индексы выбора + опциональный `custom_text` для «Свой вариант»
+  - JS-заполнитель `_fill_employer_question_answers` умеет кликать radio-member по индексу, тогглить checkbox, выставлять `<select>`-value, а также заполнять связанный текстовый input при выборе «Свой вариант» (эвристика `findCustomTextNear`)
+- **Retry без SKIP** для radio/select — если первая попытка вернула `status=skip`, делается второй заход с директивой «лучше угадай чем пропустить отклик» (отмечается `[best-guess]` в notes)
+- **Контекст вакансии в промпте** — `apply_to_vacancy(... vacancy_context: str = "")` пробрасывается из `apply_orchestrator.dispatch_apply` (склейка `title + company + details[:1800]`); закрывает кейсы где placeholder вроде «Писать тут» не давал LLM понять что отвечать
+- **Каноничный профиль кандидата** — новый env `HH_AUTO_ANSWER_PROFILE_NOTE` подкладывается в промпт первым, приоритетным блоком; решает проблему когда LLM путает общий стаж (13 лет инженер) с QA-стажем (<1 года) и пишет ложь в auto-cover
+- **Зарплатная подсказка** — `HH_AUTO_ANSWER_SALARY_BASELINE` + `HH_AUTO_ANSWER_SALARY_RULE` в env даёт LLM базовую планку + правила корректировки (вахта/командировки/ВПК/удалёнка) — без жёсткого значения, чтобы число подстраивалось под конкретную вакансию
+- **Лимит полей** `HH_AUTO_ANSWER_MAX_QUESTIONS` 3 → 10
+- **Robust JSON-парсинг ответов LLM** — `_parse_llm_json` чинит markdown-fence и thinking-токены вокруг JSON-объекта (через сбалансированный поиск `{…}` с учётом строк/эскейпов)
+
+### Captcha-solver (`captcha_solver.py`, `captcha_bridge.py`)
+
+Текстовая captcha hh.ru («Подтвердите, что вы не робот: введите буквы с картинки») теперь решается автоматически или с минимальным участием.
+
+- **Stage 0 — vision-LLM OCR**: `qwen3-vl:235b-instruct` через тот же Ollama-ключ. Бесплатная модель, на реальной captcha hh.ru показала точность близкую к 100%. Конфигурируется через `HH_CAPTCHA_VISION_MODEL` + `HH_CAPTCHA_VISION_RETRIES` (default 2). До эскалации делается до N попыток (на каждую — свежий скрин, hh.ru сам обновляет картинку)
+- **Stage 1 — TG-bridge**: если vision не справился — скрин уходит в админ-чат бота через новый `notifier.send_photo`, бот ждёт текстовый ответ человека до `HH_CAPTCHA_HUMAN_WINDOW_S` секунд (default 300 = 5 мин, в пределах ожидаемого TTL hh.ru-токена)
+  - `captcha_bridge.py` — file-based IPC между search-процессом и telegram_bot-процессом (атомарные write через tmp+rename, JSON-файлы `captcha_pending.json`/`captcha_response.json` в profile state-dir)
+  - В `telegram_bot._handle_update` — перехват входящего текста от админа: если есть pending captcha и сообщение не похоже на menu-кнопку, ответ пишется в `captcha_response.json`, search его подхватывает
+- **Two-stage timeout flow** (предложено Eugene): по таймауту 5 мин — `hh_guard.record_soft_cooldown(15 min)` (вместо жёстких 6 ч) + follow-up сообщение «токен истёк, нажми кнопку» с inline-`callback_data="captcha_retry:<request_id>"`. При нажатии — handler в `_handle_callback_query` вызывает `hh_guard.clear_cooldown()` + `subprocess.Popen(["./run.sh", "search"])` под flock — новый search генерирует свежий токен, человек уже видит уведомление и быстро отвечает
+- 3 попытки на одну captcha-сессию суммарно (между vision и TG)
+
+### Анти-бот гигиена
+- `HH_MIN_SECONDS_BETWEEN_APPLICATIONS`: 12 → **90 сек**
+- `HH_AUTO_APPLY_MAX_PER_24H`: 45 → **15**
+- `playwright-stealth` 2.x применён к `BrowserContext` после старта — скрывает `navigator.webdriver` и прочие headless-маркеры. Добавлен в `requirements.txt`
+
+### Structured facts о кандидате (`facts.py`)
+- Новый модуль с `extract_facts_from_resume()` (LLM-extraction, system-prompt «strict JSON»), `load_facts()`, `format_facts_for_prompt()` для подкладывания структурированных фактов в LLM-промпт
+- CLI: `./run.sh extract-facts` (`agent.py --extract-facts`) — один раз сгенерировать `~/.job-hunter/profiles/<name>/facts.json` из текущего `resume.md`. Файл бэкапится при перезаписи
+- Поля рекомендованы (location, willing_remote, english_level, tools_used/not_used, experience_years, current_position и т.п.), но LLM волен добавить свои; всё пустое игнорируется в формате промпта
+- `prompt_blocks.build_facts_block()` подкладывает блок в `_answer_question_with_llm` и `_answer_choice_with_llm` перед резюме
+
+### `hh_guard` расширен
+- `record_soft_cooldown(minutes, reason)` — короткий cooldown (минуты вместо часов) для случая «captcha ждёт человека, но окно вышло»; не использует `HH_ANTI_BOT_COOLDOWN_HOURS=6`
+- `clear_cooldown()` — снять `blocked_until` (для ручного перезапуска из TG-кнопки)
+
+### Унифицированный notifier
+- `send_message`, `send_message_with_markup`, `send_photo` — все три метода теперь делегируют в общий `_send_to_chats(method, build_request, multipart=…)` с резолвом профиля/токена/чатов и автоматическим `proxy → direct` fallback
+- Builders `_build_text_payload` / `_build_photo_form` создают payload/FormData на каждый chat и каждый retry (file-handle одноразовый в aiohttp)
+- ~80 строк дубликатов убрано
+
+### Рефакторинг (без поведенческих изменений)
+- **`llm_utils.py`** — единый `parse_llm_json` + `extract_first_json_object` (раньше дублировались в `matcher.py`, `hh_client.py`, `facts.py`)
+- **`prompt_blocks.py`** — `build_salary_rule_block`, `build_facts_block`, `build_profile_note_block`, `build_vacancy_context_block` (раньше inline в `hh_client.py`)
+- **`captcha_solver.py`** — `solve_captcha_with_vision_llm`, `try_solve_captcha_interactively`, `handle_anti_bot_with_solver` (раньше методы `HHClient`, ~250 строк)
+- **`captcha_bridge.py`** — отдельный IPC модуль (CB2)
+- `hh_client.apply_to_vacancy` — closures `save_debug_snapshot` и `detect_response_controls` подняты в методы класса `_save_debug_snapshot` и `_detect_response_controls` (closures с мутируемым outer-scope `cover_letter_filled`/`auto_answer_notes` оставлены внутри — их вынос требует переоформления через dataclass-state, риск регрессии)
+
+### Apply-orchestrator
+- `dispatch_apply` собирает `vacancy_context` из `vacancy["title"/"company"/"details"]` и пробрасывает в `hh_client.apply_to_vacancy(... vacancy_context=...)` (был только URL)
+
+### matcher
+- `evaluate_vacancy` использует robust `_parse_llm_json` (закрыл 6 ошибок `Expecting value: line 2 column 15` за один прогон 23 мая)
+- В промпт добавлено явное «Первым символом ответа должен быть `{`, последним `}`» — снижает thinking-токены от gpt-oss
+
+### Tests
+- `tests/test_hh_client.py:test_apply_to_vacancy_autoanswers_resume_question_with_llm` — мок `fake_llm_answer` обновлён под новую сигнатуру `(field, resume_text, page_text, vacancy_context)`
+- 3 новых smoke-скрипта (без браузера/с LLM) перенесены в `scripts/smoke/`:
+  - `choice_prompt_offline.py` — 6 синтетических hh-вопросов, проверка `_answer_choice_with_llm`. На 2026-05-23 после фиксов: **picked=6/6, skipped=0, failed=0** (с 33% на стартовой итерации)
+  - `choice_model_compare.py` — `gpt-oss:120b` vs `qwen3-coder:480b` на тех же 6 кейсах
+  - `question_inspector_smoke.py` — JS-инспектор на сохранённой captcha-HTML
+- Pytest: **289 passed** (4 pre-existing analytics-фейла не из этой итерации)
+
+### Новые env-параметры (`config.py`)
+- `HH_AUTO_ANSWER_SALARY_BASELINE` — базовая планка зарплаты (руб)
+- `HH_AUTO_ANSWER_SALARY_RULE` — текстовое правило корректировки под условия вакансии
+- `HH_AUTO_ANSWER_PROFILE_NOTE` — каноничный профиль (приоритет в промпте)
+- `HH_CAPTCHA_VISION_MODEL` — vision-LLM для OCR (default `qwen3-vl:235b-instruct`)
+- `HH_CAPTCHA_VISION_RETRIES` — попыток vision перед эскалацией (default 2)
+- `HH_CAPTCHA_HUMAN_WINDOW_S` — окно ожидания ответа от человека в TG (default 300)
+- `HH_AUTO_ANSWER_MAX_QUESTIONS` дефолт 3 → 6 (env override: 10)
+
+### Зависимости
+- `playwright-stealth>=2.0,<3` добавлен в `requirements.txt`
+
+### Стратегия проекта
+- jobhunter переходит в режим **freeware**. Коммерциализация невозможна из-за hh.ru captcha-mitigation: продукт для платных пользователей небезопасен, hh.ru может закрутить гайки в любой момент. Защита `.git/info/commercial-paths` сохранена, но фактически не используется (push через `ALLOW_COMMERCIAL_PUSH=1`).
+
 ## v0.4.0
 
 ### Telegram-бот управления (`telegram_bot.py`, `job_hunter_ctl.py`)
