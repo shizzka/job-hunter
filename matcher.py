@@ -159,7 +159,7 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
     try:
         client = _get_client()
         resp = await client.chat.completions.create(
-            model=config.LLM_MODEL,
+            model=config.HH_MATCHER_MODEL or config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=800,
@@ -254,7 +254,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     try:
         client = _get_client()
         resp = await client.chat.completions.create(
-            model=config.LLM_MODEL,
+            model=config.HH_COVER_LETTER_MODEL or config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=2000,

@@ -83,6 +83,14 @@ HH_SECONDARY_RESUME_ID = os.getenv("HH_SECONDARY_RESUME_ID", "").strip()
 HH_TERTIARY_RESUME_TITLE = os.getenv("HH_TERTIARY_RESUME_TITLE", "").strip()
 HH_TERTIARY_RESUME_ID = os.getenv("HH_TERTIARY_RESUME_ID", "").strip()
 HH_RESUME_RETRY_DELAY_HOURS = _env_int("HH_RESUME_RETRY_DELAY_HOURS", "24")
+# Per-task LLM-модели. Если задано — переопределяет LLM_MODEL для соответствующей роли.
+# Пустая строка = fallback на LLM_MODEL. См. scripts/smoke/model_bench.py для бенчмарка.
+HH_MATCHER_MODEL = os.getenv("HH_MATCHER_MODEL", "").strip()
+HH_COVER_LETTER_MODEL = os.getenv("HH_COVER_LETTER_MODEL", "").strip()
+HH_QUESTION_MODEL = os.getenv("HH_QUESTION_MODEL", "").strip()
+HH_CHOICE_MODEL = os.getenv("HH_CHOICE_MODEL", "").strip()
+HH_FACTS_EXTRACT_MODEL = os.getenv("HH_FACTS_EXTRACT_MODEL", "").strip()
+
 HH_AUTO_ANSWER_SIMPLE_QUESTIONS = _env_flag("HH_AUTO_ANSWER_SIMPLE_QUESTIONS", "1")
 HH_AUTO_ANSWER_USE_LLM = _env_flag("HH_AUTO_ANSWER_USE_LLM", "1")
 HH_AUTO_ANSWER_MAX_QUESTIONS = _env_int("HH_AUTO_ANSWER_MAX_QUESTIONS", "3")

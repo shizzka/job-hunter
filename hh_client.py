@@ -823,7 +823,7 @@ class HHClient:
         try:
             client = _get_question_answer_client()
             response = await client.chat.completions.create(
-                model=config.LLM_MODEL,
+                model=config.HH_QUESTION_MODEL or config.LLM_MODEL,
                 messages=[
                     {"role": "system", "content": "Ты отвечаешь строго в формате JSON. Не пиши никакого текста до или после JSON-объекта."},
                     {"role": "user", "content": prompt},
@@ -932,7 +932,7 @@ class HHClient:
             try:
                 client = _get_question_answer_client()
                 response = await client.chat.completions.create(
-                    model=config.LLM_MODEL,
+                    model=config.HH_CHOICE_MODEL or config.LLM_MODEL,
                     messages=[
                         {"role": "system", "content": "Ты отвечаешь строго в формате JSON. Не пиши никакого текста до или после JSON-объекта."},
                         {"role": "user", "content": user_prompt},

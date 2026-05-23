@@ -131,7 +131,7 @@ async def extract_facts_from_resume(resume_text: str) -> dict[str, Any]:
 
     client = _get_llm_client()
     resp = await client.chat.completions.create(
-        model=config.LLM_MODEL,
+        model=config.HH_FACTS_EXTRACT_MODEL or config.LLM_MODEL,
         messages=[
             {"role": "system", "content": "Ты отвечаешь строго в формате JSON. Не пиши никакого текста до или после JSON-объекта."},
             {"role": "user", "content": prompt},
