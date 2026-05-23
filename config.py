@@ -88,6 +88,24 @@ HH_AUTO_ANSWER_USE_LLM = _env_flag("HH_AUTO_ANSWER_USE_LLM", "1")
 HH_AUTO_ANSWER_MAX_QUESTIONS = _env_int("HH_AUTO_ANSWER_MAX_QUESTIONS", "3")
 HH_AUTO_ANSWER_SALARY_TEXT = os.getenv("HH_AUTO_ANSWER_SALARY_TEXT", "").strip()
 HH_AUTO_ANSWER_SALARY_NUMBER = os.getenv("HH_AUTO_ANSWER_SALARY_NUMBER", "").strip()
+# Базовая планка зарплаты (рубли). Используется как минимум, если LLM-промпт
+# просит назначить число с учётом контекста вакансии (например — рост за тяжёлые условия).
+HH_AUTO_ANSWER_SALARY_BASELINE = os.getenv("HH_AUTO_ANSWER_SALARY_BASELINE", "").strip()
+# Свободно-текстовое правило для LLM, чем оперировать при расчёте зарплаты.
+# Пример: "180000 baseline; +20% за командировки; +30% за ночные/смены; +50% за ВПК/оборонку".
+HH_AUTO_ANSWER_SALARY_RULE = os.getenv("HH_AUTO_ANSWER_SALARY_RULE", "").strip()
+# Канонический «профиль кандидата» — текст подкладывается в LLM-промпт первым приоритетным
+# блоком. Используется чтобы LLM не путала фактический QA-стаж с общим инженерным.
+HH_AUTO_ANSWER_PROFILE_NOTE = os.getenv("HH_AUTO_ANSWER_PROFILE_NOTE", "").strip()
+# Vision-LLM для авто-распознавания текстовой captcha (этап 0 перед эскалацией в TG).
+# Пустая строка = отключено, эскалация сразу.
+HH_CAPTCHA_VISION_MODEL = os.getenv("HH_CAPTCHA_VISION_MODEL", "qwen3-vl:235b-instruct").strip()
+# Сколько раз пытаемся через vision-LLM перед эскалацией.
+HH_CAPTCHA_VISION_RETRIES = _env_int("HH_CAPTCHA_VISION_RETRIES", "2")
+# Окно ожидания ответа от человека на captcha (секунды). По умолчанию 5 мин —
+# в пределах ожидаемого TTL hh.ru-токена captchaState. После таймаута бот шлёт
+# follow-up с retry-кнопкой; новый search создаст свежий токен.
+HH_CAPTCHA_HUMAN_WINDOW_S = _env_int("HH_CAPTCHA_HUMAN_WINDOW_S", "300")
 HH_AUTO_ANSWER_MAX_CHARS = _env_int("HH_AUTO_ANSWER_MAX_CHARS", "280")
 HH_MIN_SECONDS_BETWEEN_APPLICATIONS = _env_int("HH_MIN_SECONDS_BETWEEN_APPLICATIONS", "12")
 HH_AUTO_APPLY_MAX_PER_24H = _env_int("HH_AUTO_APPLY_MAX_PER_24H", "45")

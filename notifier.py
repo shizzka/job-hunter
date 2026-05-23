@@ -96,6 +96,7 @@ async def _get_session(use_proxy: bool = True, proxy_url: str = "") -> aiohttp.C
 
 
 async def _deliver(url: str, payload: dict, use_proxy: bool, proxy_url: str) -> bool:
+    """Прямой POST с JSON-телом. Используется для sendMessage и т.п."""
     session = await _get_session(use_proxy=use_proxy, proxy_url=proxy_url)
     async with session.post(url, json=payload) as resp:
         if resp.status != 200:
@@ -105,45 +106,110 @@ async def _deliver(url: str, payload: dict, use_proxy: bool, proxy_url: str) -> 
     return True
 
 
-async def send_message(text: str, parse_mode: str = "HTML"):
-    """Отправить сообщение в Telegram."""
+async def _deliver_multipart(url: str, form: "aiohttp.FormData", use_proxy: bool, proxy_url: str) -> bool:
+    """POST с multipart/form-data — для sendPhoto/sendDocument."""
+    session = await _get_session(use_proxy=use_proxy, proxy_url=proxy_url)
+    async with session.post(url, data=form) as resp:
+        if resp.status != 200:
+            data = await resp.text()
+            log.error("Telegram multipart send failed: %s %s", resp.status, data[:200])
+            return False
+    return True
+
+
+async def _send_to_chats(method: str, build_request, *, multipart: bool = False) -> bool:
+    """Универсальная отправка в Telegram-API с резолвом профиля/токена/чатов и
+    автоматическим proxy→direct retry.
+
+    ``build_request(chat_id)`` возвращает либо dict (json-payload) либо
+    ``aiohttp.FormData`` (multipart). Вызывается заново для каждого chat_id и для
+    каждой попытки (proxy/direct), потому что file-handle в FormData одноразовый.
+    """
     profile = _active_profile()
     bot_token = _resolve_bot_token(profile)
     chat_ids = _resolve_target_chat_ids(profile)
     if not bot_token or not chat_ids:
         log.warning("Telegram not configured (no token or targets)")
-        return
+        return False
 
     proxy_url = _resolve_proxy_url(profile)
-    try:
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        delivered_any = False
-        for chat_id in chat_ids:
-            payload = {
-                "chat_id": chat_id,
-                "text": text[:4096],
-                "parse_mode": parse_mode,
-                "disable_web_page_preview": True,
-            }
-            use_proxy = bool(proxy_url)
+    url = f"https://api.telegram.org/bot{bot_token}/{method}"
+    proxy_modes = [(True, proxy_url)] if proxy_url else []
+    proxy_modes.append((False, ""))  # direct fallback всегда есть
+
+    delivered_any = False
+    for chat_id in chat_ids:
+        for use_proxy, proxy_arg in proxy_modes:
             try:
-                delivered = await _deliver(url, payload, use_proxy=use_proxy, proxy_url=proxy_url)
+                payload = build_request(chat_id)
+                if multipart:
+                    ok = await _deliver_multipart(url, payload, use_proxy=use_proxy, proxy_url=proxy_arg)
+                else:
+                    ok = await _deliver(url, payload, use_proxy=use_proxy, proxy_url=proxy_arg)
             except Exception as e:
-                if not use_proxy:
-                    log.error("Telegram notification failed for chat %s: %s", chat_id, e)
-                    continue
-                log.warning("Telegram proxy failed for chat %s, retrying direct: %s", chat_id, e)
-                try:
-                    delivered = await _deliver(url, payload, use_proxy=False, proxy_url="")
-                except Exception as direct_error:
-                    log.error("Telegram notification failed for chat %s: %s", chat_id, direct_error)
-                    continue
-            if delivered:
+                log.warning("Telegram %s error (use_proxy=%s) chat=%s: %s", method, use_proxy, chat_id, e)
+                continue
+            if ok:
                 delivered_any = True
-        if delivered_any:
-            return
-    except Exception as e:
-        log.error("Telegram notification failed: %s", e)
+                break  # success — следующий чат
+    return delivered_any
+
+
+def _build_text_payload(text: str, parse_mode: str, reply_markup: dict | None):
+    """Фабрика payload-словаря для sendMessage."""
+    def build(chat_id):
+        payload = {
+            "chat_id": chat_id,
+            "text": text[:4096],
+            "parse_mode": parse_mode,
+            "disable_web_page_preview": True,
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        return payload
+    return build
+
+
+def _build_photo_form(photo_path: str, caption: str, parse_mode: str, reply_markup: dict | None):
+    """Фабрика FormData для sendPhoto. Открывает файл заново на каждый вызов."""
+    def build(chat_id):
+        form = aiohttp.FormData()
+        form.add_field("chat_id", str(chat_id))
+        if caption:
+            form.add_field("caption", caption[:1024])
+            form.add_field("parse_mode", parse_mode)
+        if reply_markup:
+            form.add_field("reply_markup", json.dumps(reply_markup, ensure_ascii=False))
+        form.add_field(
+            "photo",
+            open(photo_path, "rb"),
+            filename=os.path.basename(photo_path),
+            content_type="image/png",
+        )
+        return form
+    return build
+
+
+async def send_message(text: str, parse_mode: str = "HTML") -> bool:
+    """Простое текстовое уведомление."""
+    return await _send_to_chats("sendMessage", _build_text_payload(text, parse_mode, None))
+
+
+async def send_message_with_markup(text: str, reply_markup: dict | None = None, parse_mode: str = "HTML") -> bool:
+    """Текстовое сообщение с inline-клавиатурой."""
+    return await _send_to_chats("sendMessage", _build_text_payload(text, parse_mode, reply_markup))
+
+
+async def send_photo(photo_path: str, caption: str = "", parse_mode: str = "HTML", reply_markup: dict | None = None) -> bool:
+    """Отправить фото с опциональной подписью и клавиатурой."""
+    if not os.path.exists(photo_path):
+        log.warning("send_photo: file not found %s", photo_path)
+        return False
+    return await _send_to_chats(
+        "sendPhoto",
+        _build_photo_form(photo_path, caption, parse_mode, reply_markup),
+        multipart=True,
+    )
 
 
 async def notify_search_started(source_labels: list[str]):

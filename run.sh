@@ -114,6 +114,9 @@ case "$MODE" in
     analyze-resume|analyze)
         $VENV agent.py $PROFILE_ARG --analyze-resume
         ;;
+    extract-facts|facts)
+        $VENV agent.py $PROFILE_ARG --extract-facts
+        ;;
     profiles|list-profiles)
         $VENV agent.py --list-profiles
         ;;

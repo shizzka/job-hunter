@@ -302,11 +302,26 @@ async def do_geekjob_login():
 async def _save_resume_from_client(client: HHClient):
     """Скачать и сохранить резюме через уже открытый клиент."""
     import os
+    import hh_resume_pipeline
 
     resumes = await client.get_resume_ids()
     if not resumes:
         print("❌ Резюме не найдены на hh.ru")
         return
+
+    # Профильный фильтр: если включён HH-резюме-пайплайн с заданными тайтлами,
+    # оставляем только резюме, попавшие в варианты профиля. Остальные
+    # (например, резюме другого профиля в том же hh-аккаунте) скрываем.
+    if hh_resume_pipeline.enabled():
+        resolved = hh_resume_pipeline.resolve_variants(resumes)
+        expected_ids = {v["id"] for v in resolved if v.get("id")}
+        if expected_ids:
+            filtered = [r for r in resumes if str(r.get("id", "")) in expected_ids]
+            if filtered:
+                hidden = len(resumes) - len(filtered)
+                if hidden > 0:
+                    print(f"ℹ️  Скрыто резюме не из профиля: {hidden}")
+                resumes = filtered
 
     # Если несколько — даём выбрать
     chosen = resumes[0]
@@ -688,15 +703,14 @@ async def do_search(dry_run: bool = False) -> dict:
                     if not hh_can_auto_apply:
                         hh_auto_apply_guard_note = hh_guard_note
                 if hh_auto_apply_guard_note:
-                    await _mark_manual(
-                        f"Ручной {short_label}: guard",
-                        f"manual_{source}", f"manual_{source}_guard",
-                        hh_auto_apply_guard_note,
-                        v, vid, score, reason, evaluation, details,
-                        result, bucket, run_id, set_hunter_status,
-                        resume_variant=hh_resume_variant,
-                        analytics_note=hh_auto_apply_guard_note,
+                    # hh на anti-bot cooldown: тихо откладываем без manual-задачи и notify.
+                    # Не помечаем seen → вакансия подхватится на следующем прогоне после паузы.
+                    log.info(
+                        "  hh deferred (cooldown): %s @ %s",
+                        v.get("title", ""), v.get("company", ""),
                     )
+                    result["skipped"] += 1
+                    bucket["deferred"] = bucket.get("deferred", 0) + 1
                     continue
 
             if source_client is None or not auto_apply_enabled:
@@ -772,6 +786,23 @@ async def do_search(dry_run: bool = False) -> dict:
                 config.MAX_AUTO_APPLICATIONS_PER_SOURCE > 0
                 and auto_applied_count_by_source[source] >= config.MAX_AUTO_APPLICATIONS_PER_SOURCE
             ):
+                if source == "hh":
+                    # Лимит по hh достигнут — активируем guard на остаток прогона:
+                    # все последующие hh-вакансии тихо уйдут в deferred (без notify, без seen),
+                    # подхватятся на следующем прогоне.
+                    if not hh_auto_apply_guard_note:
+                        hh_auto_apply_guard_note = (
+                            f"hh: лимит автооткликов за прогон достигнут "
+                            f"({config.MAX_AUTO_APPLICATIONS_PER_SOURCE}). "
+                            "Остальные отложены до следующего прогона."
+                        )
+                    log.info(
+                        "  hh deferred (per-run limit): %s @ %s",
+                        v.get("title", ""), v.get("company", ""),
+                    )
+                    result["skipped"] += 1
+                    bucket["deferred"] = bucket.get("deferred", 0) + 1
+                    continue
                 await _mark_manual(
                     f"Ручной {short_label}: лимит",
                     f"manual_{source}", f"manual_{source}_limit",
@@ -831,6 +862,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     else ""
                 )
                 guard_suffix = ""
+                anti_bot_kind = None
                 if source == "hh":
                     anti_bot_kind = hh_guard.detect_antibot_kind(f"{type(e).__name__}: {e}")
                     if anti_bot_kind:
@@ -841,6 +873,16 @@ async def do_search(dry_run: bool = False) -> dict:
                         )
                         hh_auto_apply_guard_note = hh_guard.format_block_note(hh_status)
                         guard_suffix = f"\n{hh_auto_apply_guard_note}"
+                if source == "hh" and anti_bot_kind:
+                    # Captcha во время apply — guard уже включился, остальные hh-вакансии
+                    # уйдут в deferred. Эту тоже тихо откладываем (без notify, без seen).
+                    log.info(
+                        "  hh deferred (captcha during apply): %s @ %s",
+                        v.get("title", ""), v.get("company", ""),
+                    )
+                    result["skipped"] += 1
+                    bucket["deferred"] = bucket.get("deferred", 0) + 1
+                    continue
                 await set_hunter_status("search_manual", f"Ручной {short_label}: ошибка", "busy")
                 seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
                 result["skipped"] += 1
@@ -1002,6 +1044,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     else ""
                 )
                 guard_suffix = ""
+                anti_bot_kind = None
                 if source == "hh":
                     anti_bot_kind = apply_result.get("anti_bot_kind") or hh_guard.detect_antibot_kind(apply_message)
                     if anti_bot_kind:
@@ -1018,6 +1061,16 @@ async def do_search(dry_run: bool = False) -> dict:
                 ):
                     geekjob_ready = False
                     geekjob_ready_message = apply_message
+
+                if source == "hh" and anti_bot_kind:
+                    # Captcha при отклике — guard уже включился, тихо откладываем эту вакансию.
+                    log.info(
+                        "  hh deferred (captcha at apply): %s @ %s",
+                        v.get("title", ""), v.get("company", ""),
+                    )
+                    result["skipped"] += 1
+                    bucket["deferred"] = bucket.get("deferred", 0) + 1
+                    continue
 
                 await set_hunter_status("search_manual", f"Ручной {short_label}: не ушёл", "busy")
                 seen.mark_seen(vid, v, f"apply_failed:{apply_message}")
@@ -1316,6 +1369,7 @@ async def main():
     group.add_argument("--create-profile", metavar="NAME", help="Создать новый профиль")
     group.add_argument("--list-profiles", action="store_true", help="Список профилей")
     group.add_argument("--analyze-resume", action="store_true", help="Анализ резюме (LLM)")
+    group.add_argument("--extract-facts", action="store_true", help="LLM извлекает структурированные факты из резюме в facts.json")
 
     args = parser.parse_args()
 
@@ -1381,6 +1435,9 @@ async def main():
             await do_digest()
         elif args.analytics_backfill:
             await do_analytics_backfill()
+        elif args.extract_facts:
+            import facts as facts_mod
+            await facts_mod.do_extract_facts()
         elif args.analyze_resume:
             import resume_analyzer
             resume_path = config.RESUME_FILE

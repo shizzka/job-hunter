@@ -654,7 +654,7 @@ def test_apply_to_vacancy_autoanswers_resume_question_with_llm(monkeypatch):
         control="textarea",
     )
 
-    async def fake_llm_answer(field: dict, resume_text: str, page_text: str = "") -> str | None:
+    async def fake_llm_answer(field: dict, resume_text: str, page_text: str = "", vacancy_context: str = "") -> str | None:
         return "Есть опыт API-тестирования через Postman и проверки JSON-ответов."
 
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))

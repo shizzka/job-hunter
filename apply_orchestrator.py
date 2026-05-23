@@ -60,12 +60,24 @@ async def dispatch_apply(
     source = vacancy.get("source", "hh")
 
     if source == "hh" and hh_client is not None:
+        title = (vacancy.get("title") or "").strip()
+        company = (vacancy.get("company") or "").strip()
+        details = (vacancy.get("details") or "").strip()
+        context_parts = []
+        if title:
+            context_parts.append(f"Должность: {title}")
+        if company:
+            context_parts.append(f"Компания: {company}")
+        if details:
+            context_parts.append(f"Описание: {details[:1800]}")
+        vacancy_context = "\n".join(context_parts)
         return await hh_client.apply_to_vacancy(
             vacancy["url"],
             cover_letter,
             response_url=vacancy.get("response_url", ""),
             preferred_resume_title=preferred_resume_title,
             preferred_resume_id=preferred_resume_id,
+            vacancy_context=vacancy_context,
         )
     elif source == "superjob" and superjob_client is not None:
         return await superjob_client.apply_to_vacancy(vacancy, cover_letter)

@@ -1,6 +1,7 @@
 """Playwright-based клиент для hh.ru — поиск, отклик, мониторинг приглашений."""
 import json
 import os
+import time
 import asyncio
 import logging
 import re
@@ -8,6 +9,13 @@ from pathlib import Path
 from urllib.parse import urlencode
 from openai import AsyncOpenAI
 from playwright.async_api import async_playwright, BrowserContext, Page
+
+try:
+    from playwright_stealth import Stealth  # type: ignore
+    _STEALTH_AVAILABLE = True
+except ImportError:
+    Stealth = None  # type: ignore
+    _STEALTH_AVAILABLE = False
 
 import config
 import proxy_utils
@@ -128,11 +136,14 @@ def _truncate_text(value: str, limit: int) -> str:
     return value[: max(0, limit - 1)].rstrip() + "…"
 
 
-def _strip_markdown_fence(value: str) -> str:
-    text = (value or "").strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    return text
+from llm_utils import parse_llm_json as _parse_llm_json, strip_markdown_fence as _strip_markdown_fence
+
+
+from prompt_blocks import (  # noqa: E402
+    build_salary_rule_block as _build_salary_rule_block,
+    build_facts_block as _build_facts_block,
+    build_profile_note_block as _build_profile_note_block,
+)
 
 
 def _anti_bot_label(kind: str) -> str:
@@ -203,6 +214,16 @@ class HHClient:
             await self._context.add_cookies(cookies)
             log.info("Loaded %d cookies", len(cookies))
         self._page = await self._context.new_page()
+
+        # Anti-bot: применяем stealth-патчи к контексту/странице, чтобы hh.ru
+        # не палил navigator.webdriver и прочие headless-маркеры.
+        if _STEALTH_AVAILABLE:
+            try:
+                stealth = Stealth()
+                await stealth.apply_stealth_async(self._context)
+                log.info("playwright-stealth applied to context")
+            except Exception as exc:
+                log.warning("playwright-stealth failed: %s", exc)
 
     async def stop(self):
         """Закрыть браузер."""
@@ -360,7 +381,7 @@ class HHClient:
                         const rect = el.getBoundingClientRect();
                         return rect.width > 0 && rect.height > 0;
                     };
-                    const seen = new Set();
+                    const seenGroups = new Set();
                     let seq = 0;
                     let unsupported = 0;
                     const unsupportedItems = [];
@@ -410,33 +431,130 @@ class HHClient:
                         };
                     };
 
+                    const optionLabel = (input) => {
+                        const lbl = input.closest("label");
+                        if (lbl) {
+                            // collect text but skip the input's own value
+                            const clone = lbl.cloneNode(true);
+                            clone.querySelectorAll("input, textarea, select").forEach((node) => node.remove());
+                            const text = clean(clone.innerText);
+                            if (text) return text;
+                        }
+                        // fallback: associated label[for=id]
+                        if (input.id) {
+                            const ext = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
+                            if (ext) {
+                                const t = clean(ext.innerText);
+                                if (t) return t;
+                            }
+                        }
+                        // fallback: aria-label or value attribute
+                        return clean(input.getAttribute("aria-label") || input.value || "");
+                    };
+
+                    const radioGroupQuestionText = (anyInput) => {
+                        const fieldset = anyInput.closest("fieldset");
+                        if (fieldset) {
+                            const legend = fieldset.querySelector("legend");
+                            if (legend) {
+                                const t = clean(legend.innerText);
+                                if (t) return t;
+                            }
+                        }
+                        // fallback to standard prompt collector on the first input
+                        const parts = collectPromptTexts(anyInput);
+                        return clean(parts.join(" ")).slice(0, 500);
+                    };
+
+                    const isCustomOption = (text) => {
+                        const lc = (text || "").toLowerCase();
+                        return lc.includes("свой вариант") || lc.includes("другое") || lc.includes("своя версия");
+                    };
+
                     for (const el of nodes) {
                         const tag = (el.tagName || "").toLowerCase();
                         const inputType = tag === "input"
                             ? ((el.getAttribute("type") || "text").toLowerCase())
                             : tag;
 
-                        if (inputType === "radio" || inputType === "checkbox" || tag === "select") {
-                            const groupKey = `${tag}:${el.getAttribute("name") || el.id || el.value || seq}`;
-                            if (!seen.has(groupKey)) {
-                                seen.add(groupKey);
-                                unsupported += 1;
-                                const optionText = tag === "select"
-                                    ? Array.from(el.querySelectorAll("option")).map((option) => clean(option.innerText)).filter(Boolean)
-                                    : Array.from(document.querySelectorAll(`${tag}[name="${el.getAttribute("name") || ""}"]`))
-                                        .map((option) => clean(option.closest("label")?.innerText || option.value || ""))
-                                        .filter(Boolean);
-                                const promptParts = collectPromptTexts(el);
-                                unsupportedItems.push({
-                                    control: tag,
-                                    input_type: inputType,
-                                    question_text: clean(promptParts.join(" ")).slice(0, 500),
-                                    options: optionText.slice(0, 8),
-                                });
+                        // ---- radio / checkbox groups ----
+                        if (inputType === "radio" || inputType === "checkbox") {
+                            const groupName = el.getAttribute("name") || "";
+                            const groupKey = `${inputType}:${groupName || el.id || (`__nameless_${seq}`)}`;
+                            if (seenGroups.has(groupKey)) continue;
+                            seenGroups.add(groupKey);
+
+                            let members;
+                            if (groupName) {
+                                members = Array.from(
+                                    document.querySelectorAll(`input[type="${inputType}"][name="${CSS.escape(groupName)}"]`)
+                                ).filter(visible);
+                            } else {
+                                members = [el];
                             }
+                            if (!members.length) continue;
+
+                            const autoId = el.getAttribute("data-codex-auto-field-id") || `codex-auto-field-${++seq}`;
+                            // anchor id stored on first input of the group
+                            members[0].setAttribute("data-codex-auto-field-id", autoId);
+
+                            const options = members.map((m, idx) => {
+                                const label = optionLabel(m);
+                                return {
+                                    index: idx,
+                                    value: m.value || "",
+                                    label: label.slice(0, 200),
+                                    is_custom: isCustomOption(label),
+                                };
+                            });
+
+                            fields.push({
+                                field_id: autoId,
+                                control: inputType,            // "radio" | "checkbox"
+                                input_type: inputType,
+                                group_name: groupName,
+                                question_text: radioGroupQuestionText(el).slice(0, 500),
+                                placeholder: "",
+                                options: options.slice(0, 12),
+                                max_length: 0,
+                            });
                             continue;
                         }
 
+                        // ---- select ----
+                        if (tag === "select") {
+                            const groupKey = `select:${el.getAttribute("name") || el.id || seq}`;
+                            if (seenGroups.has(groupKey)) continue;
+                            seenGroups.add(groupKey);
+
+                            const autoId = el.getAttribute("data-codex-auto-field-id") || `codex-auto-field-${++seq}`;
+                            el.setAttribute("data-codex-auto-field-id", autoId);
+
+                            const opts = Array.from(el.querySelectorAll("option"))
+                                .filter((o) => !o.disabled)
+                                .map((o, idx) => ({
+                                    index: idx,
+                                    value: o.value || "",
+                                    label: clean(o.innerText || o.value).slice(0, 200),
+                                    is_custom: isCustomOption(o.innerText),
+                                }))
+                                .filter((o) => o.label && o.value !== ""); // drop placeholder "выберите"
+
+                            const described = describeField(el);
+                            fields.push({
+                                field_id: autoId,
+                                control: "select",
+                                input_type: "select",
+                                group_name: el.getAttribute("name") || "",
+                                question_text: described.question_text,
+                                placeholder: described.placeholder,
+                                options: opts.slice(0, 12),
+                                max_length: 0,
+                            });
+                            continue;
+                        }
+
+                        // ---- text / textarea / number / etc ----
                         const autoId = el.getAttribute("data-codex-auto-field-id") || `codex-auto-field-${++seq}`;
                         el.setAttribute("data-codex-auto-field-id", autoId);
                         const described = describeField(el);
@@ -493,18 +611,127 @@ class HHClient:
                         dispatch(el, "change");
                     };
 
+                    const findGroupMembers = (anchor, control) => {
+                        const name = anchor.getAttribute("name");
+                        if (!name) return [anchor];
+                        const sel = `input[type="${control}"][name="${CSS.escape(name)}"]`;
+                        return Array.from(document.querySelectorAll(sel));
+                    };
+
+                    // Find the "custom-text" companion input near a "Свой вариант" radio.
+                    // Heuristic: look in the radio's <label> for textarea/input, then in the
+                    // closest fieldset / parent block for an unbound text input that
+                    // appears AFTER the radio.
+                    const findCustomTextNear = (radio) => {
+                        const label = radio.closest("label");
+                        if (label) {
+                            const inner = label.querySelector("input[type='text'], textarea");
+                            if (inner) return inner;
+                        }
+                        const parent = radio.closest("fieldset") || radio.parentElement?.parentElement;
+                        if (!parent) return null;
+                        const candidates = Array.from(parent.querySelectorAll("input[type='text'], textarea"));
+                        // pick first that is NOT a radio's label-embedded text input of another option
+                        for (const c of candidates) {
+                            if (c.disabled) continue;
+                            // skip if it is in a *different* option's label
+                            const cLabel = c.closest("label");
+                            if (cLabel && cLabel.querySelector("input[type='radio'], input[type='checkbox']")) {
+                                // text input INSIDE a label that wraps a radio — accept only if that radio is `radio`
+                                const ownerRadio = cLabel.querySelector("input[type='radio'], input[type='checkbox']");
+                                if (ownerRadio === radio) return c;
+                                continue;
+                            }
+                            return c;
+                        }
+                        return null;
+                    };
+
+                    const clickOption = (input) => {
+                        try {
+                            input.focus();
+                        } catch (e) {}
+                        if (!input.checked) {
+                            input.click();
+                            dispatch(input, "input");
+                            dispatch(input, "change");
+                        }
+                    };
+
                     const result = { filled: 0, errors: [] };
                     for (const item of plan || []) {
                         const selector = `[data-codex-auto-field-id="${item.field_id}"]`;
-                        const el = document.querySelector(selector);
-                        if (!el) {
+                        const anchor = document.querySelector(selector);
+                        if (!anchor) {
                             result.errors.push(`field ${item.field_id} not found`);
                             continue;
                         }
                         try {
-                            el.focus();
-                            setValue(el, String(item.answer ?? ""));
-                            result.filled += 1;
+                            const control = (item.control || "").toLowerCase();
+                            if (control === "radio" || control === "checkbox") {
+                                const members = findGroupMembers(anchor, control);
+                                if (!members.length) {
+                                    result.errors.push(`field ${item.field_id} no members`);
+                                    continue;
+                                }
+                                const selIndices = Array.isArray(item.selected_indices) ? item.selected_indices : [];
+                                if (!selIndices.length) {
+                                    result.errors.push(`field ${item.field_id} no selection`);
+                                    continue;
+                                }
+                                // For radio: uncheck not needed, native; for checkbox: clear others if exclusive flag?
+                                // We follow "select only what LLM picked" — uncheck members not in selIndices.
+                                if (control === "checkbox") {
+                                    members.forEach((m, idx) => {
+                                        const wantChecked = selIndices.includes(idx);
+                                        if (m.checked !== wantChecked) {
+                                            m.click();
+                                            dispatch(m, "input");
+                                            dispatch(m, "change");
+                                        }
+                                    });
+                                } else {
+                                    const idx = selIndices[0];
+                                    if (idx < 0 || idx >= members.length) {
+                                        result.errors.push(`field ${item.field_id} index ${idx} out of range`);
+                                        continue;
+                                    }
+                                    clickOption(members[idx]);
+                                }
+                                // If LLM provided custom_text and the chosen option is "Свой вариант"-style,
+                                // fill the companion text input.
+                                if (item.custom_text) {
+                                    const idx = selIndices[0];
+                                    const ownerRadio = members[idx] || anchor;
+                                    const txt = findCustomTextNear(ownerRadio);
+                                    if (txt) {
+                                        txt.focus();
+                                        setValue(txt, String(item.custom_text));
+                                    }
+                                }
+                                result.filled += 1;
+                            } else if (control === "select") {
+                                const selIndices = Array.isArray(item.selected_indices) ? item.selected_indices : [];
+                                if (!selIndices.length) {
+                                    result.errors.push(`field ${item.field_id} no selection`);
+                                    continue;
+                                }
+                                const opts = Array.from(anchor.querySelectorAll("option"));
+                                const idx = selIndices[0];
+                                if (idx < 0 || idx >= opts.length) {
+                                    result.errors.push(`field ${item.field_id} select index ${idx} out of range`);
+                                    continue;
+                                }
+                                anchor.focus();
+                                anchor.value = opts[idx].value;
+                                dispatch(anchor, "input");
+                                dispatch(anchor, "change");
+                                result.filled += 1;
+                            } else {
+                                anchor.focus();
+                                setValue(anchor, String(item.answer ?? ""));
+                                result.filled += 1;
+                            }
                         } catch (err) {
                             result.errors.push(String(err));
                         }
@@ -544,6 +771,7 @@ class HHClient:
         field: dict,
         resume_text: str,
         page_text: str = "",
+        vacancy_context: str = "",
     ) -> str | None:
         if not config.HH_AUTO_ANSWER_USE_LLM or not config.LLM_API_KEY or not resume_text.strip():
             return None
@@ -558,20 +786,28 @@ class HHClient:
         if field_max_length > 0:
             max_chars = min(max_chars, field_max_length)
 
+        vacancy_block = (
+            f"Контекст вакансии (на неё откликаемся):\n{_truncate_text(vacancy_context, 1500)}\n\n"
+            if vacancy_context else ""
+        )
+        salary_block = _build_salary_rule_block()
+        facts_block = _build_facts_block()
+        profile_note_block = _build_profile_note_block()
+
         prompt = f"""Ты отвечаешь на вопрос работодателя на hh.ru от имени кандидата.
 
-Используй только факты из резюме. Ничего не выдумывай.
-Если из резюме нельзя ответить уверенно, верни status=skip.
+Опирайся на канонический профиль (приоритет), структурированные факты, факты из резюме и контекст вакансии. Ничего не выдумывай.
+Если ни в фактах ни в резюме нельзя ответить уверенно — верни status=skip.
 
 Тип поля: {field_type}
 Максимум символов: {max_chars}
 Вопрос: {question_text}
 Контекст формы: {_truncate_text(page_text, 1200) if page_text else "(нет)"}
 
-Резюме кандидата:
+{profile_note_block}{salary_block}{facts_block}{vacancy_block}Резюме кандидата:
 {resume_text[:6000]}
 
-Верни только JSON без markdown:
+Верни ТОЛЬКО валидный JSON, без markdown-обёртки, без рассуждений до или после. Первым символом ответа должен быть `{{`, последним `}}`. Формат:
 {{
   "status": "answer" | "skip",
   "answer": "..."
@@ -580,18 +816,23 @@ class HHClient:
 Правила:
 - для text/textarea: коротко и по делу, без приветствий, до {max_chars} символов;
 - для number: только число, без слов и знаков валюты;
-- если ответ неочевиден или в резюме нет фактов, верни status=skip."""
+- если поле выглядит как свободное (placeholder вроде "Писать тут", "Сообщение") и явного вопроса нет — напиши краткое сопроводительное под вакансию из резюме (3–5 предложений), это не повод для skip;
+- если ответ неочевиден и из резюме фактов нет — status=skip;
+- НЕ объясняй свой ответ за пределами JSON."""
 
         try:
             client = _get_question_answer_client()
             response = await client.chat.completions.create(
                 model=config.LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": "Ты отвечаешь строго в формате JSON. Не пиши никакого текста до или после JSON-объекта."},
+                    {"role": "user", "content": prompt},
+                ],
                 temperature=0.1,
-                max_tokens=200,
+                max_tokens=600,
             )
             raw_text = response.choices[0].message.content or ""
-            parsed = json.loads(_strip_markdown_fence(raw_text))
+            parsed = _parse_llm_json(raw_text)
         except Exception as exc:
             log.warning("LLM question answer failed: %s", exc)
             return None
@@ -611,7 +852,158 @@ class HHClient:
 
         return _truncate_text(answer, max_chars)
 
-    async def _try_auto_answer_questions(self) -> dict:
+    async def _answer_choice_with_llm(
+        self,
+        field: dict,
+        resume_text: str,
+        page_text: str = "",
+        vacancy_context: str = "",
+    ) -> dict | None:
+        """Picks one (or several for checkbox) option(s) for a radio/checkbox/select field.
+
+        Returns dict {"selected": [{"index": int, "custom_text": str | None}], "is_skip": bool}
+        or None on error.
+        """
+        if not config.HH_AUTO_ANSWER_USE_LLM or not config.LLM_API_KEY or not resume_text.strip():
+            return None
+
+        control = (field.get("control") or "").strip().lower()
+        if control not in ("radio", "checkbox", "select"):
+            return None
+
+        options = field.get("options") or []
+        if not options:
+            return None
+
+        question_text = (field.get("question_text") or field.get("placeholder") or "").strip()
+        options_block = "\n".join(
+            f"  {opt.get('index', i)}: {opt.get('label','')[:200]}"
+            + (" [СВОЙ ВАРИАНТ — можно указать свой текст]" if opt.get("is_custom") else "")
+            for i, opt in enumerate(options)
+        )
+
+        vacancy_block = (
+            f"Контекст вакансии (на неё откликаемся):\n{_truncate_text(vacancy_context, 1500)}\n\n"
+            if vacancy_context else ""
+        )
+        salary_block = _build_salary_rule_block()
+        facts_block = _build_facts_block()
+        profile_note_block = _build_profile_note_block()
+
+        multi_hint = (
+            "Если уверен в нескольких — верни их в массиве selected."
+            if control == "checkbox" else
+            "Можно выбрать только ОДИН вариант."
+        )
+
+        prompt = f"""Ты выбираешь ответ работодателя на hh.ru от имени кандидата.
+
+Опирайся на структурированные факты, факты из резюме и контекст вакансии. Ничего не выдумывай.
+{multi_hint}
+Если в вариантах есть «Свой вариант» (помечен [СВОЙ ВАРИАНТ]) — выбирай его и пиши свой текст ТОЛЬКО когда ни один из готовых не подходит, но из фактов/резюме можно ответить.
+
+Тип поля: {control}
+Вопрос: {question_text}
+Контекст формы: {_truncate_text(page_text, 1000) if page_text else "(нет)"}
+
+Варианты ответа:
+{options_block}
+
+{profile_note_block}{salary_block}{facts_block}{vacancy_block}Резюме кандидата:
+{resume_text[:5000]}
+
+Верни ТОЛЬКО валидный JSON, без markdown-обёртки, без рассуждений до или после. Первым символом ответа должен быть `{{`, последним `}}`. Формат:
+{{
+  "status": "answer" | "skip",
+  "selected": [
+    {{"index": 0, "custom_text": null}}
+  ]
+}}
+
+Правила:
+- index — номер варианта (целое, как в списке выше);
+- custom_text — заполняй ТОЛЬКО если выбран вариант с [СВОЙ ВАРИАНТ], иначе null. Держи custom_text короче 200 символов;
+- для radio/select selected содержит ровно один элемент;
+- для checkbox — один или несколько элементов;
+- если из резюме нельзя выбрать уверенно — status=skip;
+- НЕ объясняй свой выбор за пределами JSON."""
+
+        async def _call_llm(user_prompt: str) -> dict | None:
+            try:
+                client = _get_question_answer_client()
+                response = await client.chat.completions.create(
+                    model=config.LLM_MODEL,
+                    messages=[
+                        {"role": "system", "content": "Ты отвечаешь строго в формате JSON. Не пиши никакого текста до или после JSON-объекта."},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.1,
+                    max_tokens=600,
+                )
+                return _parse_llm_json(response.choices[0].message.content or "")
+            except Exception as exc:
+                log.warning("LLM choice answer failed: %s", exc)
+                return None
+
+        def _normalize(parsed: dict | None, best_guess: bool) -> dict | None:
+            if not parsed:
+                return None
+            if parsed.get("status") != "answer":
+                return {"selected": [], "is_skip": True}
+            sel = parsed.get("selected") or []
+            if not isinstance(sel, list) or not sel:
+                return None
+            normalized = []
+            max_chars = config.HH_AUTO_ANSWER_MAX_CHARS
+            for item in sel:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    idx = int(item.get("index"))
+                except (TypeError, ValueError):
+                    continue
+                if idx < 0 or idx >= len(options):
+                    continue
+                custom_text = item.get("custom_text")
+                if isinstance(custom_text, str):
+                    custom_text = _truncate_text(custom_text.strip(), max_chars)
+                    if not custom_text:
+                        custom_text = None
+                else:
+                    custom_text = None
+                normalized.append({"index": idx, "custom_text": custom_text})
+            if not normalized:
+                return None
+            if control != "checkbox":
+                normalized = normalized[:1]
+            return {"selected": normalized, "is_skip": False, "best_guess": best_guess}
+
+        # First attempt — обычный промпт с разрешённым SKIP.
+        result = _normalize(await _call_llm(prompt), best_guess=False)
+        if result is None:
+            return None
+        if not result.get("is_skip"):
+            return result
+
+        # Second attempt — best-guess (SKIP запрещён). Только для radio/select; для checkbox
+        # отказ от ответа допустим (можно ничего не выбирать).
+        if control == "checkbox":
+            return result
+
+        log.info("choice LLM said skip, retrying with best-guess directive")
+        retry_prompt = (
+            prompt
+            + "\n\nВНИМАНИЕ: предыдущая попытка вернула skip. SKIP теперь ЗАПРЕЩЁН. "
+            "Возьми лучшее предположение из готовых вариантов (или «Свой вариант» с осторожным "
+            "нейтральным текстом). Допустимо ошибиться, лучше прикинуть чем потерять отклик."
+        )
+        retry = _normalize(await _call_llm(retry_prompt), best_guess=True)
+        if retry is None or retry.get("is_skip"):
+            # сдаёмся
+            return {"selected": [], "is_skip": True}
+        return retry
+
+    async def _try_auto_answer_questions(self, vacancy_context: str = "") -> dict:
         if not config.HH_AUTO_ANSWER_SIMPLE_QUESTIONS:
             return {
                 "handled": True,
@@ -635,6 +1027,8 @@ class HHClient:
                 "notes": [],
             }
 
+        # unsupported_fields теперь почти всегда 0 (C1 переводит radio/checkbox/select в fields).
+        # Оставляем early-return только если есть реально неподдерживаемые поля (file/etc.).
         if unsupported_fields:
             unsupported_summary = []
             for item in unsupported_items[:2]:
@@ -648,7 +1042,7 @@ class HHClient:
                 "ok": False,
                 "message": "Требуются доп. вопросы работодателя — пропускаем (есть неподдерживаемые поля)",
                 "notes": [
-                    "автоответ пропущен: в форме есть select/radio/checkbox"
+                    "автоответ пропущен: неподдерживаемое поле в форме"
                     + (f" ({'; '.join(unsupported_summary)})" if unsupported_summary else "")
                 ],
             }
@@ -671,7 +1065,45 @@ class HHClient:
         for field in fields:
             question_text = (field.get("question_text") or field.get("placeholder") or "").strip()
             input_type = (field.get("input_type") or "text").strip().lower()
+            control = (field.get("control") or "").strip().lower()
 
+            # ---- choice fields (radio / checkbox / select) ----
+            if control in ("radio", "checkbox", "select"):
+                choice = await self._answer_choice_with_llm(
+                    field, resume_text, page_text, vacancy_context
+                )
+                if not choice or choice.get("is_skip") or not choice.get("selected"):
+                    short_question = _truncate_text(question_text or "вопрос по резюме", 100)
+                    return {
+                        "handled": True,
+                        "ok": False,
+                        "message": "Требуются доп. вопросы работодателя — пропускаем (нет уверенного выбора)",
+                        "notes": [f"автоответ пропущен: {short_question}"],
+                    }
+                selected = choice["selected"]
+                selected_indices = [s["index"] for s in selected]
+                # exactly one custom_text per field (first non-null)
+                custom_text = next((s.get("custom_text") for s in selected if s.get("custom_text")), None)
+                answers.append({
+                    "field_id": field["field_id"],
+                    "control": control,
+                    "selected_indices": selected_indices,
+                    "custom_text": custom_text,
+                })
+                options = field.get("options") or []
+                picked_labels = [
+                    (options[i].get("label") if i < len(options) else f"#{i}")
+                    for i in selected_indices
+                ]
+                bg_mark = " [best-guess]" if choice.get("best_guess") else ""
+                notes.append(
+                    f"автоответ hh ({control}){bg_mark}: {_truncate_text(question_text or 'вопрос', 80)} -> "
+                    + _truncate_text(", ".join(picked_labels), 120)
+                    + (f" + custom: {_truncate_text(custom_text, 80)}" if custom_text else "")
+                )
+                continue
+
+            # ---- text / textarea / number ----
             if _is_salary_question(question_text):
                 answer = salary_number if input_type == "number" else (salary_text or salary_number)
                 if not answer:
@@ -683,7 +1115,7 @@ class HHClient:
                     }
                 notes.append(f"автоответ hh: зарплатные ожидания -> {answer}")
             else:
-                answer = await self._answer_question_with_llm(field, resume_text, page_text)
+                answer = await self._answer_question_with_llm(field, resume_text, page_text, vacancy_context)
                 if not answer:
                     short_question = _truncate_text(question_text or "вопрос по резюме", 100)
                     return {
@@ -718,6 +1150,7 @@ class HHClient:
         await self._page.wait_for_timeout(4000)
 
         anti_bot_kind = await self._detect_anti_bot_kind()
+        anti_bot_kind = await self._handle_anti_bot_with_solver(anti_bot_kind, stage="questions_submit")
         if anti_bot_kind:
             message = _anti_bot_message(anti_bot_kind, "после автоответа на вопросы")
             self._remember_antibot_signal(anti_bot_kind, "questions_submit", message)
@@ -886,6 +1319,14 @@ class HHClient:
 
     async def _is_captcha_page(self) -> bool:
         return bool(await self._detect_anti_bot_kind())
+
+    async def _handle_anti_bot_with_solver(self, kind: str, stage: str = "") -> str:
+        """Тонкая обёртка над captcha_solver (R5)."""
+        import captcha_solver
+        return await captcha_solver.handle_anti_bot_with_solver(
+            self, _get_question_answer_client, kind, stage
+        )
+
 
     async def save_session(self):
         """Сохранить текущие cookies."""
@@ -1209,6 +1650,70 @@ class HHClient:
 
     # ── Отклик на вакансию ────────────────────────────────────────────────
 
+    async def _save_debug_snapshot(self, prefix: str) -> None:
+        """Сохранить скриншот + HTML текущей страницы в state-dir (для отладки)."""
+        try:
+            debug_path = os.path.join(config.HH_STATE_DIR, f"{prefix}.png")
+            debug_html = os.path.join(config.HH_STATE_DIR, f"{prefix}.html")
+            await self._page.screenshot(path=debug_path)
+            with open(debug_html, "w") as f:
+                f.write(await self._page.content())
+        except Exception:
+            pass
+
+    async def _detect_response_controls(self):
+        """Обнаружить элементы формы отклика на текущей странице.
+
+        Возвращает кортеж (current_url, response_header, questions_required,
+        resume_select, letter_field, submit_btn). Используется в apply_to_vacancy
+        чтобы определить состояние страницы после очередного шага.
+        """
+        current_url = self._page.url
+        response_header = await self._page.query_selector(
+            "h1:has-text('Отклик на вакансию'), "
+            "h2:has-text('Отклик на вакансию')"
+        )
+        questions_required = await self._response_requires_questions(current_url)
+        resume_select = await self._page.query_selector(
+            "[data-qa='resume-select'], "
+            "[data-qa*='resume-item'], "
+            "[data-qa='vacancy-response-popup-form-resume']"
+        )
+        letter_field = await self._page.query_selector(
+            "[data-qa='vacancy-response-popup-form-letter-input'], "
+            "textarea[name='letter'], "
+            "textarea[data-qa*='letter'], "
+            ".vacancy-response-popup textarea, "
+            "textarea"
+        )
+        submit_btn = await self._page.query_selector(
+            "[data-qa='vacancy-response-submit-popup'], "
+            "[data-qa='vacancy-response-letter-submit'], "
+            "button[data-qa*='submit'], "
+            "[data-qa='vacancy-response-link-top-again'], "
+            "[data-qa='vacancy-response-link-bottom-again'], "
+            "[data-qa='vacancy-response-link-top'], "
+            "[data-qa='vacancy-response-link-bottom'], "
+            "a[data-qa*='response-link']"
+        )
+        if not submit_btn:
+            # Some hh flows collapse back to the vacancy page after resume selection
+            # and expose only a link-style "Откликнуться" control.
+            submit_btn = await self._page.query_selector(
+                "button:has-text('Откликнуться'), "
+                "button:has-text('Отправить'), "
+                "a:has-text('Откликнуться'), "
+                "a:has-text('Отправить')"
+            )
+        return (
+            current_url,
+            response_header,
+            questions_required,
+            resume_select,
+            letter_field,
+            submit_btn,
+        )
+
     async def apply_to_vacancy(
         self,
         vacancy_url: str,
@@ -1216,6 +1721,7 @@ class HHClient:
         response_url: str = "",
         preferred_resume_title: str = "",
         preferred_resume_id: str = "",
+        vacancy_context: str = "",
     ) -> dict:
         """
         Откликнуться на вакансию.
@@ -1224,15 +1730,7 @@ class HHClient:
         vacancy_url = _absolute_hh_url(vacancy_url)
         response_url = _absolute_hh_url(response_url)
 
-        async def save_debug_snapshot(prefix: str):
-            try:
-                debug_path = os.path.join(config.HH_STATE_DIR, f"{prefix}.png")
-                debug_html = os.path.join(config.HH_STATE_DIR, f"{prefix}.html")
-                await self._page.screenshot(path=debug_path)
-                with open(debug_html, "w") as f:
-                    f.write(await self._page.content())
-            except Exception:
-                pass
+        save_debug_snapshot = self._save_debug_snapshot
 
         cover_letter_filled = False
         auto_answer_notes: list[str] = []
@@ -1252,55 +1750,10 @@ class HHClient:
                 result["notes"] = notes
             return result
 
-        async def detect_response_controls():
-            current_url = self._page.url
-            response_header = await self._page.query_selector(
-                "h1:has-text('Отклик на вакансию'), "
-                "h2:has-text('Отклик на вакансию')"
-            )
-            questions_required = await self._response_requires_questions(current_url)
-            resume_select = await self._page.query_selector(
-                "[data-qa='resume-select'], "
-                "[data-qa*='resume-item'], "
-                "[data-qa='vacancy-response-popup-form-resume']"
-            )
-            letter_field = await self._page.query_selector(
-                "[data-qa='vacancy-response-popup-form-letter-input'], "
-                "textarea[name='letter'], "
-                "textarea[data-qa*='letter'], "
-                ".vacancy-response-popup textarea, "
-                "textarea"
-            )
-            submit_btn = await self._page.query_selector(
-                "[data-qa='vacancy-response-submit-popup'], "
-                "[data-qa='vacancy-response-letter-submit'], "
-                "button[data-qa*='submit'], "
-                "[data-qa='vacancy-response-link-top-again'], "
-                "[data-qa='vacancy-response-link-bottom-again'], "
-                "[data-qa='vacancy-response-link-top'], "
-                "[data-qa='vacancy-response-link-bottom'], "
-                "a[data-qa*='response-link']"
-            )
-            if not submit_btn:
-                # Some hh flows collapse back to the vacancy page after resume selection
-                # and expose only a link-style "Откликнуться" control.
-                submit_btn = await self._page.query_selector(
-                    "button:has-text('Откликнуться'), "
-                    "button:has-text('Отправить'), "
-                    "a:has-text('Откликнуться'), "
-                    "a:has-text('Отправить')"
-            )
-            return (
-                current_url,
-                response_header,
-                questions_required,
-                resume_select,
-                letter_field,
-                submit_btn,
-            )
+        detect_response_controls = self._detect_response_controls
 
         async def refetch_response_controls():
-            return await detect_response_controls()
+            return await self._detect_response_controls()
 
         async def refetch_letter_field():
             for _ in range(3):
@@ -1479,6 +1932,7 @@ class HHClient:
                 await self._page.wait_for_timeout(3000)
                 await save_debug_snapshot("debug_apply_response_page")
         anti_bot_kind = await self._detect_anti_bot_kind()
+        anti_bot_kind = await self._handle_anti_bot_with_solver(anti_bot_kind, stage="vacancy_page")
         if anti_bot_kind:
             message = _anti_bot_message(anti_bot_kind, "на странице вакансии")
             self._remember_antibot_signal(anti_bot_kind, "vacancy_page", message)
@@ -1537,7 +1991,7 @@ class HHClient:
 
             if questions_required:
                 log.info("Vacancy requires employer questions — trying auto-answer")
-                auto_question_result = await self._try_auto_answer_questions()
+                auto_question_result = await self._try_auto_answer_questions(vacancy_context=vacancy_context)
                 auto_answer_notes.extend(auto_question_result.get("notes") or [])
                 if auto_question_result.get("ok"):
                     return await finalize_success(
@@ -1587,7 +2041,7 @@ class HHClient:
 
         if questions_required:
             log.info("Vacancy requires employer questions — trying auto-answer")
-            auto_question_result = await self._try_auto_answer_questions()
+            auto_question_result = await self._try_auto_answer_questions(vacancy_context=vacancy_context)
             auto_answer_notes.extend(auto_question_result.get("notes") or [])
             if auto_question_result.get("ok"):
                 return await finalize_success(
@@ -1683,6 +2137,7 @@ class HHClient:
         await save_debug_snapshot("debug_apply_after_submit")
 
         anti_bot_kind = await self._detect_anti_bot_kind()
+        anti_bot_kind = await self._handle_anti_bot_with_solver(anti_bot_kind, stage="apply_submit")
         if anti_bot_kind:
             message = _anti_bot_message(anti_bot_kind, "после отклика")
             log.warning("HH anti-bot (%s) appeared after apply submit", anti_bot_kind)
@@ -1691,7 +2146,7 @@ class HHClient:
 
         if await self._response_requires_questions():
             log.info("Vacancy requires employer questions after submit — trying auto-answer")
-            auto_question_result = await self._try_auto_answer_questions()
+            auto_question_result = await self._try_auto_answer_questions(vacancy_context=vacancy_context)
             auto_answer_notes.extend(auto_question_result.get("notes") or [])
             if auto_question_result.get("ok"):
                 return await finalize_success(
@@ -1725,6 +2180,7 @@ class HHClient:
             if retried:
                 await self._page.wait_for_timeout(4000)
                 anti_bot_kind = await self._detect_anti_bot_kind()
+                anti_bot_kind = await self._handle_anti_bot_with_solver(anti_bot_kind, stage="apply_submit_retry")
                 if anti_bot_kind:
                     message = _anti_bot_message(anti_bot_kind, "после отклика")
                     log.warning("HH anti-bot (%s) appeared after DOM submit fallback", anti_bot_kind)
@@ -1732,7 +2188,7 @@ class HHClient:
                     return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind}
                 if await self._response_requires_questions():
                     log.info("Vacancy requires employer questions after retry — trying auto-answer")
-                    auto_question_result = await self._try_auto_answer_questions()
+                    auto_question_result = await self._try_auto_answer_questions(vacancy_context=vacancy_context)
                     auto_answer_notes.extend(auto_question_result.get("notes") or [])
                     if auto_question_result.get("ok"):
                         return await finalize_success(
@@ -2066,19 +2522,27 @@ class HHClient:
             return resumes
 
         # Стратегия 1 продолжение: парсим карточки
+        # Селектор хватает и контейнер [data-qa='resume'], и ссылку
+        # [data-qa^='resume-card-link-'] внутри той же карточки → дедуп по id.
+        seen_ids: set[str] = set()
         for card in cards:
             title_el = await card.query_selector(
                 "[data-qa='resume-title'], "
                 "a[data-qa*='title'], "
                 "a[href*='/resume/']"
             )
-            if title_el:
-                title = (await title_el.inner_text()).strip()
-                href = await title_el.get_attribute("href") or ""
-                resume_id = ""
-                if "/resume/" in href:
-                    resume_id = href.split("/resume/")[-1].split("?")[0].split("/")[0]
-                resumes.append({"id": resume_id, "title": title, "url": href})
+            if not title_el:
+                continue
+            title = (await title_el.inner_text()).strip()
+            href = await title_el.get_attribute("href") or ""
+            resume_id = ""
+            if "/resume/" in href:
+                resume_id = href.split("/resume/")[-1].split("?")[0].split("/")[0]
+            if resume_id and resume_id in seen_ids:
+                continue
+            if resume_id:
+                seen_ids.add(resume_id)
+            resumes.append({"id": resume_id, "title": title, "url": href})
 
         return resumes
 

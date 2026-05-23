@@ -277,3 +277,29 @@ def record_antibot(
     normalized = _normalize_state(state, now=now)
     _save_state(normalized)
     return get_status(now=now)
+
+
+def record_soft_cooldown(*, minutes: int = 15, reason: str = "captcha_human_timeout", now: datetime | None = None) -> dict:
+    """Короткий cooldown (минуты) для случая 'captcha ждёт человека, но timeout вышел'.
+    В отличие от record_antibot не использует HH_ANTI_BOT_COOLDOWN_HOURS (6h)."""
+    now = now or _now()
+    state = _load_state(now=now)
+    state["blocked_until"] = _format_datetime(now + timedelta(minutes=max(1, minutes)))
+    state["last_kind"] = "captcha"
+    state["last_reason"] = reason
+    state["last_stage"] = "human_timeout"
+    state["last_detected_at"] = _format_datetime(now)
+    normalized = _normalize_state(state, now=now)
+    _save_state(normalized)
+    return get_status(now=now)
+
+
+def clear_cooldown(*, now: datetime | None = None) -> dict:
+    """Снять blocked_until (для ручного перезапуска из TG-кнопки)."""
+    now = now or _now()
+    state = _load_state(now=now)
+    state["blocked_until"] = ""
+    state["last_stage"] = (state.get("last_stage") or "") + "+manual_clear"
+    normalized = _normalize_state(state, now=now)
+    _save_state(normalized)
+    return get_status(now=now)
