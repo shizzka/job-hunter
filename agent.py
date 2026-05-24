@@ -1123,6 +1123,22 @@ async def do_search(dry_run: bool = False) -> dict:
             await notify_digest(analytics.summarize())
         _record_search_run(result, dry_run=dry_run, ok=True)
 
+        # После поиска — заодно отвечаем в hh-чатах AI-помощникам,
+        # пока браузер уже открыт. Включается флагом HH_CHAT_RESPONDER_ENABLED.
+        if not dry_run and config.HH_CHAT_RESPONDER_ENABLED and hh_client is not None:
+            try:
+                import hh_chat_responder as cr
+                chat_summary = await cr.process_all(hh_client)
+                log.info(
+                    "chat-respond piggyback: scanned=%d with_ai=%d sent=%d skipped=%d",
+                    chat_summary.get("chats_scanned", 0),
+                    chat_summary.get("with_ai", 0),
+                    chat_summary.get("answers_sent", 0),
+                    chat_summary.get("skipped", 0),
+                )
+            except Exception as exc:
+                log.warning("chat-responder failed: %s", exc)
+
     except Exception as e:
         log.error("Search failed: %s", e, exc_info=True)
         await set_hunter_status("error", f"Ошибка поиска: {e}", "idle")
