@@ -57,3 +57,56 @@ def build_vacancy_context_block(vacancy_context: str, limit: int = 1500) -> str:
     if not vacancy_context:
         return ""
     return f"Контекст вакансии (на неё откликаемся):\n{_truncate(vacancy_context, limit)}\n\n"
+
+
+def _knowledge_dir() -> str:
+    """Папка knowledge/ рядом с resume.md (per-profile)."""
+    import os
+    import config
+    home = os.path.dirname(config.RESUME_FILE) or os.path.expanduser("~/.job-hunter")
+    return os.path.join(home, "knowledge")
+
+
+def build_knowledge_base_block(limit_chars: int = 12000) -> str:
+    """Подгрузить все .md/.txt из profile/<name>/knowledge/ и склеить как
+    приоритетный блок «База знаний кандидата».
+
+    Файлы сортируются по имени (alphabetically), склеиваются с заголовком
+    «### <filename>». Общая длина обрезается до limit_chars (по умолчанию ~12 KB).
+    """
+    import os
+    knowledge_dir = _knowledge_dir()
+    if not os.path.isdir(knowledge_dir):
+        return ""
+    parts = []
+    total = 0
+    for fname in sorted(os.listdir(knowledge_dir)):
+        if not (fname.endswith(".md") or fname.endswith(".txt")):
+            continue
+        path = os.path.join(knowledge_dir, fname)
+        try:
+            with open(path, encoding="utf-8") as f:
+                content = f.read().strip()
+        except Exception as exc:
+            log.debug("knowledge read %s failed: %s", fname, exc)
+            continue
+        if not content:
+            continue
+        chunk = f"### {fname}\n{content}\n"
+        if total + len(chunk) > limit_chars:
+            # обрезать chunk до оставшегося лимита
+            remaining = limit_chars - total
+            if remaining > 200:
+                chunk = chunk[:remaining - 1] + "…\n"
+                parts.append(chunk)
+            break
+        parts.append(chunk)
+        total += len(chunk)
+    if not parts:
+        return ""
+    block = (
+        "📚 БАЗА ЗНАНИЙ КАНДИДАТА (приоритетный источник фактов, перекрывает резюме):\n\n"
+        + "\n".join(parts)
+        + "\n"
+    )
+    return block

@@ -203,10 +203,16 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
 async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     """Сгенерировать сопроводительное письмо для вакансии."""
     resume = _load_resume()
+    from prompt_blocks import (
+        build_profile_note_block,
+        build_knowledge_base_block,
+    )
+    profile_note = build_profile_note_block()
+    knowledge = build_knowledge_base_block(limit_chars=8000)  # cover letter — поджимаем
 
     prompt = f"""Ты — ассистент по поиску работы. Напиши короткое сопроводительное письмо.
 
-## Резюме кандидата:
+{profile_note}{knowledge}## Резюме кандидата:
 {resume}
 
 ## Вакансия:

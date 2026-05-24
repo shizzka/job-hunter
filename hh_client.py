@@ -143,6 +143,7 @@ from prompt_blocks import (  # noqa: E402
     build_salary_rule_block as _build_salary_rule_block,
     build_facts_block as _build_facts_block,
     build_profile_note_block as _build_profile_note_block,
+    build_knowledge_base_block as _build_knowledge_base_block,
 )
 
 
@@ -793,6 +794,7 @@ class HHClient:
         salary_block = _build_salary_rule_block()
         facts_block = _build_facts_block()
         profile_note_block = _build_profile_note_block()
+        knowledge_block = _build_knowledge_base_block()
 
         prompt = f"""Ты отвечаешь на вопрос работодателя на hh.ru от имени кандидата.
 
@@ -804,7 +806,7 @@ class HHClient:
 Вопрос: {question_text}
 Контекст формы: {_truncate_text(page_text, 1200) if page_text else "(нет)"}
 
-{profile_note_block}{salary_block}{facts_block}{vacancy_block}Резюме кандидата:
+{profile_note_block}{knowledge_block}{salary_block}{facts_block}{vacancy_block}Резюме кандидата:
 {resume_text[:6000]}
 
 Верни ТОЛЬКО валидный JSON, без markdown-обёртки, без рассуждений до или после. Первым символом ответа должен быть `{{`, последним `}}`. Формат:
@@ -889,6 +891,7 @@ class HHClient:
         salary_block = _build_salary_rule_block()
         facts_block = _build_facts_block()
         profile_note_block = _build_profile_note_block()
+        knowledge_block = _build_knowledge_base_block()
 
         multi_hint = (
             "Если уверен в нескольких — верни их в массиве selected."
@@ -909,7 +912,7 @@ class HHClient:
 Варианты ответа:
 {options_block}
 
-{profile_note_block}{salary_block}{facts_block}{vacancy_block}Резюме кандидата:
+{profile_note_block}{knowledge_block}{salary_block}{facts_block}{vacancy_block}Резюме кандидата:
 {resume_text[:5000]}
 
 Верни ТОЛЬКО валидный JSON, без markdown-обёртки, без рассуждений до или после. Первым символом ответа должен быть `{{`, последним `}}`. Формат:

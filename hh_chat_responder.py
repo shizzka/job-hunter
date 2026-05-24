@@ -232,10 +232,12 @@ async def generate_answer(
         build_profile_note_block,
         build_facts_block,
         build_salary_rule_block,
+        build_knowledge_base_block,
     )
     profile_note = build_profile_note_block()
     facts = build_facts_block()
     salary = build_salary_rule_block()
+    knowledge = build_knowledge_base_block()
 
     vacancy_block = ""
     if vacancy.get("title") or vacancy.get("company"):
@@ -257,7 +259,7 @@ async def generate_answer(
 
 Длина ответа: 2-4 предложения, конкретика. Без приветствий («Здравствуйте» — не нужно, мы уже в диалоге). Без шаблонных оборотов «активно», «успешно», «эффективно», «глубокий опыт».
 
-{profile_note}{facts}{salary}{vacancy_block}История диалога (последние 10 реплик):
+{profile_note}{knowledge}{facts}{salary}{vacancy_block}История диалога (последние 10 реплик):
 {dialog_block}
 
 Текущий вопрос AI-помощника:
