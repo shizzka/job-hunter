@@ -1370,6 +1370,7 @@ async def main():
     group.add_argument("--list-profiles", action="store_true", help="Список профилей")
     group.add_argument("--analyze-resume", action="store_true", help="Анализ резюме (LLM)")
     group.add_argument("--extract-facts", action="store_true", help="LLM извлекает структурированные факты из резюме в facts.json")
+    group.add_argument("--chat-respond", action="store_true", help="Ответить на сообщения AI-помощника в чатах hh.ru (dry-run если HH_CHAT_AUTOSEND=0)")
 
     args = parser.parse_args()
 
@@ -1438,6 +1439,30 @@ async def main():
         elif args.extract_facts:
             import facts as facts_mod
             await facts_mod.do_extract_facts()
+        elif args.chat_respond:
+            import hh_chat_responder as cr
+            client = HHClient()
+            try:
+                summary = await cr.process_all(client)
+            finally:
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
+            print("📋 Chat-respond summary:")
+            print(f"  Чатов проверено: {summary.get('chats_scanned', 0)}")
+            print(f"  С AI-помощником: {summary.get('with_ai', 0)}")
+            print(f"  Подготовлено ответов: {summary.get('answers_drafted', 0)}")
+            print(f"  Отправлено: {summary.get('answers_sent', 0)}")
+            print(f"  Пропущено: {summary.get('skipped', 0)}")
+            for d in summary.get("details", []):
+                print(f"\n  → {d.get('vacancy')} @ {d.get('company')} ({d.get('chat_id')})")
+                print(f"    AI: {d.get('question','')[:140]}")
+                print(f"    Ответ: {d.get('answer','')[:140]}")
+                if d.get("dry_run"):
+                    print(f"    [DRY-RUN, скрин: {d.get('preview',{}).get('screenshot_path','-')}]")
+                elif d.get("sent"):
+                    print("    [SENT ✓]")
         elif args.analyze_resume:
             import resume_analyzer
             resume_path = config.RESUME_FILE

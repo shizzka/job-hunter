@@ -117,6 +117,9 @@ case "$MODE" in
     extract-facts|facts)
         $VENV agent.py $PROFILE_ARG --extract-facts
         ;;
+    chat-respond|chats|chat)
+        $VENV agent.py $PROFILE_ARG --chat-respond
+        ;;
     profiles|list-profiles)
         $VENV agent.py --list-profiles
         ;;

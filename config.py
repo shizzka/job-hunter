@@ -83,6 +83,13 @@ HH_SECONDARY_RESUME_ID = os.getenv("HH_SECONDARY_RESUME_ID", "").strip()
 HH_TERTIARY_RESUME_TITLE = os.getenv("HH_TERTIARY_RESUME_TITLE", "").strip()
 HH_TERTIARY_RESUME_ID = os.getenv("HH_TERTIARY_RESUME_ID", "").strip()
 HH_RESUME_RETRY_DELAY_HOURS = _env_int("HH_RESUME_RETRY_DELAY_HOURS", "24")
+# --- Chat responder (AI-помощник hh.ru) ---
+HH_CHAT_RESPONDER_ENABLED = _env_flag("HH_CHAT_RESPONDER_ENABLED", "0")
+HH_CHAT_AUTOSEND = _env_flag("HH_CHAT_AUTOSEND", "0")  # 0 = dry-run + preview в TG
+HH_CHAT_MAX_REPLIES_PER_CHAT = _env_int("HH_CHAT_MAX_REPLIES_PER_CHAT", "5")
+HH_CHAT_REPLY_COOLDOWN_S = _env_int("HH_CHAT_REPLY_COOLDOWN_S", "30")
+HH_CHAT_RESPONDER_MODEL = os.getenv("HH_CHAT_RESPONDER_MODEL", "").strip()
+
 # Per-task LLM-модели. Если задано — переопределяет LLM_MODEL для соответствующей роли.
 # Пустая строка = fallback на LLM_MODEL. См. scripts/smoke/model_bench.py для бенчмарка.
 HH_MATCHER_MODEL = os.getenv("HH_MATCHER_MODEL", "").strip()
