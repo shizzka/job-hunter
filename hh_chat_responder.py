@@ -40,8 +40,14 @@ from llm_utils import parse_llm_json
 log = logging.getLogger("chat_responder")
 
 CHATIK_ROOT = "https://chatik.hh.ru"
-AI_ASSISTANT_AVATAR_URL = "https://hhcdn.ru/file/18274603.png"  # уникальный asset бота
-AI_NAME = "ИИ-помощник"
+# Известные аватарки системных ботов hh.ru (whitelist).
+# Если найдётся новый бот — добавь сюда его URL.
+AI_ASSISTANT_AVATAR_URLS = {
+    "https://hhcdn.ru/file/18274603.png",  # «ИИ-помощник»
+}
+# Известные имена. Также детектится substring «помощник» в alt/author
+# (см. JS-логику в get_messages).
+AI_NAMES = {"ИИ-помощник", "Робот-помощник", "Бот-помощник"}
 
 STATE_FILENAME = "chat_responder_state.json"
 
@@ -124,9 +130,17 @@ async def get_messages(page, chat_id: str) -> list[dict]:
     await page.goto(url, wait_until="domcontentloaded", timeout=60000)
     await page.wait_for_timeout(3500)
 
-    msgs = await page.evaluate("""() => {
-        const ai_avatar = 'https://hhcdn.ru/file/18274603.png';
-        const ai_name = 'ИИ-помощник';
+    msgs = await page.evaluate("""(ai_meta) => {
+        const ai_avatars = new Set(ai_meta.avatars);
+        const ai_names = new Set(ai_meta.names);
+        const looksLikeBot = (label) => {
+            if (!label) return false;
+            if (ai_names.has(label.trim())) return true;
+            const lc = label.toLowerCase();
+            // substring-детект на любого «<что-то>-помощник» (ИИ-помощник, Робот-помощник, …)
+            if (lc.includes('помощник') && (lc.includes('ии') || lc.includes('робот') || lc.includes('бот'))) return true;
+            return false;
+        };
         // основные bubbles
         const bubbles = [...document.querySelectorAll('[data-qa^="chatik-chat-message-"]')]
             .filter(el => /^chatik-chat-message-\\d+$/.test(el.getAttribute('data-qa') || ''));
@@ -147,12 +161,9 @@ async def get_messages(page, chat_id: str) -> list[dict]:
             const avatarImg = b.querySelector('img[alt]');
             const avatarAlt = avatarImg ? (avatarImg.getAttribute('alt') || '') : '';
             const avatarSrc = avatarImg ? avatarImg.src : '';
-            // эвристика "моё" vs "их": у моих сообщений нет аватарки + название author'a
-            const cls = (b.className || '').toString();
-            const is_ai = avatarAlt === ai_name || avatarSrc === ai_avatar || author === ai_name;
-            // moy: ни AI, ни employer-аватарки.  Точная эвристика: класс с 'own' / выравнивание справа.
-            // hh.ru использует флекс выравнивание; зависит от вёрстки. Простой proxy: bubble без аватарки и
-            // без author label — это own.
+            // bot-детект: whitelisted avatar URL ИЛИ имя из списка ИЛИ substring «помощник + (ии|робот|бот)»
+            const is_ai = ai_avatars.has(avatarSrc) || looksLikeBot(avatarAlt) || looksLikeBot(author);
+            // moy: ни AI, ни employer-аватарки.
             const is_me = !avatarImg && !author;
             out.push({
                 id: mid,
@@ -175,7 +186,7 @@ async def get_messages(page, chat_id: str) -> list[dict]:
             company: headerCompany.trim(),
         };
         return {messages: out, vacancy};
-    }""")
+    }""", {"avatars": sorted(AI_ASSISTANT_AVATAR_URLS), "names": sorted(AI_NAMES)})
     return msgs  # {messages, vacancy}
 
 
