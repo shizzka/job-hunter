@@ -1,27 +1,56 @@
-# Job Hunter v0.4.0
+# Job Hunter v0.5.0
 
 Russian version: [README.ru.md](README.ru.md)
 
 `Job Hunter` is a Python automation tool for searching QA/testing vacancies across multiple job boards, scoring them with an LLM, and sending auto-applications where the platform allows it.
 
-It supports isolated user profiles, LLM-powered resume analysis, application funnels with A/B resume testing, and an interactive setup wizard — making it usable both as a personal tool and as a foundation for a multi-user service.
+It supports isolated user profiles, LLM-powered resume analysis, application funnels with A/B resume testing, an interactive setup wizard, **auto-answer for employer questionnaires (radio/checkbox/select)**, **hh.ru captcha solver (vision-LLM + Telegram-bridge)**, and **AI-recruiter auto-reply for hh.ru chats**.
 
-Current public status: `OBT` (open beta testing). Expect selector drift, captcha limits, and platform-specific edge cases.
+Current public status: `OBT` (open beta testing) → freeware. Expect selector drift, captcha limits, and platform-specific edge cases.
 
 ## What It Does
 
+### Search & apply
 - Searches vacancies from multiple sources in one run
 - Deduplicates results between platforms
 - Applies a fast keyword filter before calling the LLM
-- Scores each vacancy against your resume
+- Scores each vacancy against your resume + structured facts + knowledge base
 - Generates a short cover letter for relevant matches
 - Sends auto-applications where supported
+
+### Employer questionnaires (hh.ru)
+- Auto-answers post-application forms: text/textarea/number, **radio/checkbox/select** (including "Custom option" with custom text)
+- Vacancy context and canonical candidate profile injected into the LLM prompt
+- Retry-without-skip for radio/select (LLM makes a best-guess instead of giving up)
+- Auto-answers are forwarded to the Telegram application notification alongside the questions
+
+### hh.ru captcha (hybrid solver)
+- Stage 0: vision-LLM (`qwen3-vl:235b-instruct`) recognises text from the captcha image automatically
+- Stage 1: if vision fails — a screenshot + an inline "🔁 Restart search" button are sent to Telegram; you type the characters as text → the bot fills the form
+- Soft cooldown of 15 minutes instead of a 6-hour ban when the human timeout expires
+
+### AI chats on hh.ru
+- Polls chats on `chatik.hh.ru` every 30 minutes (cron)
+- Detects hh.ru bots ("ИИ-помощник", "Робот-помощник") via avatar + alt-name
+- Auto-reply through LLM with vacancy context + filtered knowledge base
+- Safety: max 5 replies per chat, cooldown between replies, Telegram notification on every sent reply
+
+### Candidate knowledge base
+- `profiles/<name>/knowledge/*.md` — structured documents about experience, skills, projects
+- 2-pass LLM filter: for each vacancy the 5 most relevant sections are picked (e.g. for Mobile-QA — API/Charles/SQL, no 3D-printing fluff)
+- Used in cover letters, questionnaire answers, AI-chat replies
+
+### Anti-bot hygiene
+- 90 seconds between applications, 30 applications per 24 hours by default
+- `playwright-stealth` hides headless markers from hh.ru anti-bot detection
+
+### Misc
 - Falls back to manual-review tasks and Telegram notifications when auto-apply is not possible
 - Tracks application funnel: applied → viewed → pending / rejected / positive
 - Supports A/B resume testing with per-variant statistics
 - Analyzes your resume with an LLM and sends recommendations to Telegram
 - Supports isolated user profiles for multi-user setups
-- Persists `seen` vacancies, cookies, runtime status, and debug artifacts outside the repository
+- Persists `seen`, cookies, runtime status, knowledge base, and debug artifacts outside the repository
 
 ## Supported Sources
 
@@ -117,13 +146,47 @@ Important variables:
 
 - `JOB_HUNTER_LLM_KEY`: API key for your OpenAI-compatible provider
 - `LLM_BASE_URL`: provider base URL
-- `LLM_MODEL`: model used for scoring and cover letters
+- `LLM_MODEL`: default model (used as a fallback)
 - `SUPERJOB_API_KEY`: required for SuperJob search
 - `HUNTER_BOT_TOKEN`: optional Telegram bot token for notifications
 - `NOTIFY_CHAT_ID`: optional Telegram chat ID for notifications
 - `OFFICE_URL`: optional AI Office HTTP API base URL
 - `OFFICE_DB`: optional AI Office SQLite database path
 - `JOB_HUNTER_HOME`: directory for cookies, resume, seen state, runtime status, screenshots
+
+### Per-task LLM models (optional)
+
+Each task can use its own model for better speed/accuracy. Empty value falls back to `LLM_MODEL`:
+
+- `HH_MATCHER_MODEL`: vacancy relevance scoring (recommended: `cogito-2.1:671b`)
+- `HH_COVER_LETTER_MODEL`: cover letter generation
+- `HH_QUESTION_MODEL`: free-text answers to hh.ru questionnaires
+- `HH_CHOICE_MODEL`: radio/checkbox/select selection (recommended: `qwen3-coder:480b` — fast & accurate)
+- `HH_FACTS_EXTRACT_MODEL`: structured facts extraction from resume (`./run.sh extract-facts`)
+- `HH_CHAT_RESPONDER_MODEL`: AI-recruiter chat replies
+- `HH_CAPTCHA_VISION_MODEL`: vision-LLM for captcha OCR (default `qwen3-vl:235b-instruct`)
+
+See `scripts/smoke/model_bench.py` for the 6-models × 4-tasks benchmark.
+
+### Anti-bot & captcha
+
+- `HH_MIN_SECONDS_BETWEEN_APPLICATIONS=90`: pause between applies
+- `HH_AUTO_APPLY_MAX_PER_24H=30`: daily apply limit
+- `HH_ANTI_BOT_COOLDOWN_HOURS=6`: pause after captcha block
+- `HH_CAPTCHA_VISION_RETRIES=2`: vision-OCR attempts before escalating to TG
+- `HH_CAPTCHA_HUMAN_WINDOW_S=300`: human reply window in TG (then 15-min soft cooldown)
+
+### Auto-answer & chats
+
+- `HH_AUTO_ANSWER_SIMPLE_QUESTIONS=1`: enable auto-answer
+- `HH_AUTO_ANSWER_USE_LLM=1`: use LLM for free text
+- `HH_AUTO_ANSWER_MAX_QUESTIONS=10`: max form fields
+- `HH_AUTO_ANSWER_SALARY_BASELINE=80000`: baseline salary (RUB)
+- `HH_AUTO_ANSWER_SALARY_RULE`: free-form rule for adjusting salary per vacancy
+- `HH_AUTO_ANSWER_PROFILE_NOTE`: canonical candidate profile (top priority in prompt)
+- `HH_CHAT_RESPONDER_ENABLED=1`: enable AI-chat auto-reply
+- `HH_CHAT_AUTOSEND=1`: actually send (0 = dry-run + preview in TG)
+- `HH_CHAT_MAX_REPLIES_PER_CHAT=5`: safety limit per chat
 
 See the full template in [job-hunter.env.example](job-hunter.env.example).
 
@@ -187,6 +250,7 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 ./run.sh setup                  # interactive profile wizard
 ./run.sh profiles               # list all profiles
 ./run.sh analyze-resume         # LLM resume analysis → file + Telegram
+./run.sh extract-facts          # LLM extracts structured facts.json from resume.md
 
 # Login (interactive, opens browser)
 ./run.sh login
@@ -204,6 +268,9 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 ./run.sh digest
 ./run.sh analytics-backfill
 
+# hh.ru AI chats
+./run.sh chat-respond           # check chats, reply to AI-assistants
+
 # Per-source runs
 ./run.sh superjob-dry-run
 ./run.sh superjob-search
@@ -211,7 +278,21 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 ./run.sh habr-search
 ./run.sh geekjob-dry-run
 ./run.sh geekjob-search
+
+# Telegram bot
+./run.sh bot                    # foreground (debug)
+./run.sh bot-daemon             # background
 ```
+
+### Cron (recommended schedule)
+
+```
+30 07,14 * * * cd /home/q/job-hunter && /usr/bin/flock -n /tmp/job-hunter-search.lock ./run.sh search >> /tmp/job-hunter.log 2>&1
+00 23 * * * cd /home/q/job-hunter && /usr/bin/flock -n /tmp/job-hunter-search.lock ./run.sh search >> /tmp/job-hunter.log 2>&1
+*/30 * * * * cd /home/q/job-hunter && /usr/bin/flock -n /tmp/job-hunter-search.lock ./run.sh chat-respond >> /tmp/job-hunter-chat.log 2>&1
+```
+
+Search 3 times a day + chat-respond every 30 minutes. Shared flock — `search` wins priority, `chat-respond` is skipped while search runs (and is piggybacked at the end of the search cycle anyway).
 
 Use `--profile <name>` with any command to run under a specific profile:
 
@@ -242,10 +323,26 @@ Runtime state is intentionally stored outside the repository, by default in `~/.
 - `run_history.jsonl`
 - `analytics_events.jsonl` / `analytics_state.json`
 - `hh_resume_pipeline.json` — A/B resume test state
+- `facts.json` — structured candidate facts (from `./run.sh extract-facts`)
+- `knowledge/*.md` — user-managed knowledge base (about_me, qa_kb, etc.)
+- `chat_responder_state.json` — last_replied_msg_id + replies_count per chat
+- `hh_guard_state.json` — apply counter + anti-bot blocks
 - runtime status
-- Playwright debug screenshots and HTML dumps
+- Playwright debug screenshots and HTML dumps (including `captcha_*.png` and `chat_preview_*.png`)
 
 That keeps the repository safe to publish while preserving personal state locally.
+
+## Candidate Knowledge Base
+
+In `~/.job-hunter/profiles/<name>/knowledge/` you can drop `.md`/`.txt` files with structured facts about the candidate: "about me", "technical knowledge base", "experience with specific tools", etc.
+
+When generating a cover letter / questionnaire answer / AI-chat reply, the module does a **2-pass LLM filter**: the first small call picks the 5 most relevant sections (by `## NN. Title` headers inside files), the second call uses only those sections in context. This:
+
+- saves tokens (12 KB full KB → ~8 KB relevant);
+- improves accuracy (no electrical-engineering fluff in a Mobile-QA prompt);
+- gives detailed, factual answers instead of generic phrasing.
+
+Files can be updated any time — the next run picks them up automatically.
 
 ## Optional Integrations
 
@@ -266,10 +363,12 @@ Telegram notifications and AI Office integration are both optional. If you leave
 ## Known Limitations
 
 - `hh.ru` and `Habr Career` DOM can change and break selectors.
-- `hh.ru` can trigger captcha after many consecutive auto-applications.
+- `hh.ru` can trigger captcha after many consecutive auto-applications. The hybrid solver (vision-LLM + TG-bridge) usually handles it, but it's not guaranteed.
 - `GeekJob` auto-apply depends on a saved specialist session and can fail if GeekJob changes its JSON/API flow.
-- search defaults are QA-oriented until you override them in env or `config.py`.
-- LLM quality depends entirely on your prompt provider, model, and resume quality.
+- Search defaults are QA-oriented until you override them in env or `config.py`.
+- LLM quality depends entirely on your prompt provider, model, and resume/knowledge base.
+- The AI-chat responder only detects hh.ru system bots ("ИИ-помощник", "Робот-помощник"). It does not reply to live HR recruiters (by design, for safety).
+- Ollama Cloud has weekly quotas — if you hit it, temporarily switch keys (see `~/.job-hunter/llm-providers.env`) or use a different model.
 
 ## Docs
 
