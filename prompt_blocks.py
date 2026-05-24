@@ -67,6 +67,169 @@ def _knowledge_dir() -> str:
     return os.path.join(home, "knowledge")
 
 
+_SECTION_HEADER_RE = None
+
+
+def _parse_kb_sections(md_text: str) -> list[dict]:
+    """Разбить markdown по '## NN. Title' → list of {num, title, content}.
+    Игнорирует preface до первого '## NN.'.
+    """
+    import re
+    global _SECTION_HEADER_RE
+    if _SECTION_HEADER_RE is None:
+        _SECTION_HEADER_RE = re.compile(r"^## (\d+)\.\s+(.+?)\s*$", re.MULTILINE)
+    matches = list(_SECTION_HEADER_RE.finditer(md_text))
+    if not matches:
+        return []
+    out = []
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(md_text)
+        content = md_text[start:end].strip()
+        out.append({
+            "num": int(m.group(1)),
+            "title": m.group(2).strip(),
+            "content": content,
+        })
+    return out
+
+
+def _load_kb_filterable() -> tuple[str, list[dict]]:
+    """Возвращает (about_me_text, qa_kb_sections).
+    about_me.md грузим целиком как «общий блок».
+    qa_kb.md парсим на секции и возвращаем — внешний код их фильтрует.
+    Прочие .md/.txt из knowledge/ возвращаются в about_me_text как single block."""
+    import os
+    knowledge_dir = _knowledge_dir()
+    about_parts = []
+    qa_sections: list[dict] = []
+    if not os.path.isdir(knowledge_dir):
+        return "", []
+    for fname in sorted(os.listdir(knowledge_dir)):
+        path = os.path.join(knowledge_dir, fname)
+        if not os.path.isfile(path):
+            continue
+        if not (fname.endswith(".md") or fname.endswith(".txt")):
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                txt = f.read().strip()
+        except Exception:
+            continue
+        if not txt:
+            continue
+        if fname.lower().startswith("qa_kb") or fname.lower().startswith("kb_"):
+            qa_sections = _parse_kb_sections(txt)
+        else:
+            about_parts.append(f"### {fname}\n{txt}")
+    return ("\n\n".join(about_parts), qa_sections)
+
+
+def _format_kb_block(about_text: str, sections: list[dict], limit_chars: int = 10000) -> str:
+    """Собрать финальный блок из about_text + перечня секций."""
+    parts = ["📚 БАЗА ЗНАНИЙ КАНДИДАТА (приоритетный источник фактов, перекрывает резюме):"]
+    if about_text:
+        parts.append(about_text)
+    for s in sections:
+        parts.append(f"### {s['num']}. {s['title']}\n{s['content']}")
+    block = "\n\n".join(parts) + "\n"
+    if len(block) > limit_chars:
+        block = block[:limit_chars - 1] + "…\n"
+    return block
+
+
+async def select_kb_sections(
+    vacancy_context: str,
+    sections: list[dict],
+    llm_client,
+    max_sections: int = 5,
+    model: str | None = None,
+) -> list[int]:
+    """Первый из 2-pass LLM: спросить какие из секций релевантны вакансии.
+    Возвращает список section_num (int).
+    """
+    if not sections or not vacancy_context:
+        return []
+    import config
+    from llm_utils import parse_llm_json
+    titles_block = "\n".join(f"{s['num']}. {s['title']}" for s in sections)
+    selector_model = (model or "").strip() or config.LLM_MODEL
+    prompt = f"""Из списка секций базы знаний QA-кандидата выбери {max_sections} наиболее релевантных для конкретной вакансии. Релевантные — те которые помогут написать качественный ответ работодателю/cover letter.
+
+Контекст вакансии:
+{vacancy_context[:1500]}
+
+Секции базы знаний:
+{titles_block}
+
+Верни ТОЛЬКО валидный JSON. Первый символ `{{`, последний `}}`. Формат:
+{{"selected": [<номер_секции>, <номер_секции>, ...]}}
+
+Правила:
+- Выбирай только из приведённых номеров.
+- Максимум {max_sections} секций.
+- Если в вакансии явно про API — обязательно секция «API-тестирование».
+- Если про SQL — обязательно секция «SQL».
+- Секции про инженерный/maker-бэкграунд (электрика, 3D-печать) — только если в вакансии есть hint на технический бэкграунд."""
+    try:
+        resp = await llm_client.chat.completions.create(
+            model=selector_model,
+            messages=[
+                {"role": "system", "content": "Ты отвечаешь строго JSON. Никакого текста до или после."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=200,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        parsed = parse_llm_json(raw)
+    except Exception as exc:
+        log.warning("kb section selection failed: %s", exc)
+        return []
+    sel = parsed.get("selected") or []
+    if not isinstance(sel, list):
+        return []
+    out = []
+    for x in sel:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out[:max_sections]
+
+
+async def build_filtered_kb_block(
+    vacancy_context: str,
+    llm_client,
+    max_sections: int = 5,
+    limit_chars: int = 10000,
+    selector_model: str | None = None,
+) -> str:
+    """2-pass: парсим KB → выбираем релевантные секции через LLM → формируем блок.
+    Если LLM-фильтр не сработал или vacancy_context пуст — fallback на полный
+    (обрезанный) блок через build_knowledge_base_block."""
+    about_text, sections = _load_kb_filterable()
+    if not about_text and not sections:
+        return ""
+    if not sections:
+        return _format_kb_block(about_text, [], limit_chars=limit_chars)
+    if not vacancy_context:
+        # без контекста берём первые 5 секций (основное позиционирование)
+        return _format_kb_block(about_text, sections[:5], limit_chars=limit_chars)
+    selected_nums = await select_kb_sections(
+        vacancy_context, sections, llm_client, max_sections=max_sections, model=selector_model
+    )
+    if not selected_nums:
+        # fallback на старое поведение
+        return build_knowledge_base_block(limit_chars=limit_chars)
+    by_num = {s["num"]: s for s in sections}
+    picked = [by_num[n] for n in selected_nums if n in by_num]
+    if not picked:
+        return build_knowledge_base_block(limit_chars=limit_chars)
+    log.info("KB filter picked sections: %s", [f"{s['num']}.{s['title'][:30]}" for s in picked])
+    return _format_kb_block(about_text, picked, limit_chars=limit_chars)
+
+
 def build_knowledge_base_block(limit_chars: int = 12000) -> str:
     """Подгрузить все .md/.txt из profile/<name>/knowledge/ и склеить как
     приоритетный блок «База знаний кандидата».

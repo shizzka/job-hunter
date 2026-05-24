@@ -144,6 +144,7 @@ from prompt_blocks import (  # noqa: E402
     build_facts_block as _build_facts_block,
     build_profile_note_block as _build_profile_note_block,
     build_knowledge_base_block as _build_knowledge_base_block,
+    build_filtered_kb_block as _build_filtered_kb_block,
 )
 
 
@@ -794,7 +795,15 @@ class HHClient:
         salary_block = _build_salary_rule_block()
         facts_block = _build_facts_block()
         profile_note_block = _build_profile_note_block()
-        knowledge_block = _build_knowledge_base_block()
+        # 2-pass: фильтруем KB под конкретную вакансию (если контекст есть)
+        try:
+            knowledge_block = await _build_filtered_kb_block(
+                vacancy_context, _get_question_answer_client(),
+                max_sections=5, limit_chars=8000,
+            )
+        except Exception as exc:
+            log.debug("filtered KB failed, fallback to full: %s", exc)
+            knowledge_block = _build_knowledge_base_block(limit_chars=8000)
 
         prompt = f"""Ты отвечаешь на вопрос работодателя на hh.ru от имени кандидата.
 
@@ -891,7 +900,15 @@ class HHClient:
         salary_block = _build_salary_rule_block()
         facts_block = _build_facts_block()
         profile_note_block = _build_profile_note_block()
-        knowledge_block = _build_knowledge_base_block()
+        # 2-pass: фильтруем KB под конкретную вакансию (если контекст есть)
+        try:
+            knowledge_block = await _build_filtered_kb_block(
+                vacancy_context, _get_question_answer_client(),
+                max_sections=5, limit_chars=8000,
+            )
+        except Exception as exc:
+            log.debug("filtered KB failed, fallback to full: %s", exc)
+            knowledge_block = _build_knowledge_base_block(limit_chars=8000)
 
         multi_hint = (
             "Если уверен в нескольких — верни их в массиве selected."

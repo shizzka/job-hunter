@@ -205,10 +205,24 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     resume = _load_resume()
     from prompt_blocks import (
         build_profile_note_block,
+        build_filtered_kb_block,
         build_knowledge_base_block,
     )
     profile_note = build_profile_note_block()
-    knowledge = build_knowledge_base_block(limit_chars=8000)  # cover letter — поджимаем
+    # 2-pass: фильтруем KB-секции под конкретную вакансию через LLM
+    vacancy_summary = (
+        f"Должность: {vacancy.get('title', '')}\n"
+        f"Компания: {vacancy.get('company', '')}\n"
+        f"Описание: {(details or vacancy.get('snippet', ''))[:1200]}"
+    )
+    try:
+        client = _get_client()
+        knowledge = await build_filtered_kb_block(
+            vacancy_summary, client, max_sections=5, limit_chars=8000,
+        )
+    except Exception as exc:
+        log.warning("filtered KB selection failed, fallback to full: %s", exc)
+        knowledge = build_knowledge_base_block(limit_chars=8000)
 
     prompt = f"""Ты — ассистент по поиску работы. Напиши короткое сопроводительное письмо.
 
