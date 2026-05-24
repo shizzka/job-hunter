@@ -226,6 +226,51 @@ async def notify_search_started(source_labels: list[str]):
     await send_message(text)
 
 
+def _format_autoanswer_notes(note: str) -> str:
+    """Красиво форматирует строку с записями автоответов на анкету hh.ru.
+
+    Принимает note в формате 'автоответ hh: вопрос -> ответ; автоответ hh (radio): ...'
+    Возвращает multiline блок с эмодзи-метками по типу контрола.
+
+    Если note не похож на список автоответов — возвращает его без изменений.
+    """
+    if not note or "автоответ hh" not in note:
+        return note[:600]
+    items = [item.strip() for item in note.split(";") if item.strip()]
+    if not items:
+        return note[:600]
+    lines = []
+    for item in items:
+        # эмодзи по типу
+        icon = "📝"
+        if "(radio)" in item:
+            icon = "🔘"
+        elif "(checkbox)" in item:
+            icon = "☑️"
+        elif "(select)" in item:
+            icon = "▾"
+        elif "зарплатные ожидания" in item.lower() or "зарплат" in item.lower():
+            icon = "💰"
+        if "[best-guess]" in item:
+            icon += "🎯"
+        # убираем технический префикс «автоответ hh [(control)] [best-guess]:» —
+        # иконка уже несёт эту инфу.
+        import re
+        clean = re.sub(
+            r"^автоответ\s+hh\s*(\([a-zA-Z]+\))?\s*(\[best-guess\])?\s*:\s*",
+            "",
+            item,
+        ).strip()
+        # обрезаем длинные строки до 220 символов
+        if len(clean) > 220:
+            clean = clean[:217] + "…"
+        lines.append(f"  {icon} {clean}")
+    block = "\n".join(lines)
+    if len(block) > 1500:
+        block = block[:1497] + "…"
+    return block
+
+
 async def notify_application(
     vacancy: dict,
     score: int,
@@ -245,7 +290,12 @@ async def notify_application(
     if cover_letter:
         text += f"\n\n💬 <i>{cover_letter[:300]}</i>"
     if note:
-        text += f"\n\n🧠 {note[:400]}"
+        formatted = _format_autoanswer_notes(note)
+        # если форматтер вернул multiline — даём отдельный заголовок «Анкета»
+        if "\n" in formatted:
+            text += f"\n\n🧠 <b>Анкета (auto-answer):</b>\n{formatted}"
+        else:
+            text += f"\n\n🧠 {formatted}"
     await send_message(text)
 
 
