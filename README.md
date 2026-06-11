@@ -1,10 +1,10 @@
-# Job Hunter v0.5.0
+# Job Hunter v0.6.0
 
 Russian version: [README.ru.md](README.ru.md)
 
 `Job Hunter` is a Python automation tool for searching QA/testing vacancies across multiple job boards, scoring them with an LLM, and sending auto-applications where the platform allows it.
 
-It supports isolated user profiles, LLM-powered resume analysis, application funnels with A/B resume testing, an interactive setup wizard, **auto-answer for employer questionnaires (radio/checkbox/select)**, **hh.ru captcha solver (vision-LLM + Telegram-bridge)**, and **AI-recruiter auto-reply for hh.ru chats**.
+It supports isolated user profiles, LLM-powered resume analysis, application funnels with A/B resume testing, an interactive setup wizard, **auto-answer for employer questionnaires (radio/checkbox/select)**, **hh.ru captcha solver (vision-LLM + Telegram-bridge)**, and **hh.ru chat replies for AI assistants plus suspicious HR/AI screening flows with Telegram approval**.
 
 Current public status: `OBT` (open beta testing) → freeware. Expect selector drift, captcha limits, and platform-specific edge cases.
 
@@ -29,11 +29,13 @@ Current public status: `OBT` (open beta testing) → freeware. Expect selector d
 - Stage 1: if vision fails — a screenshot + an inline "🔁 Restart search" button are sent to Telegram; you type the characters as text → the bot fills the form
 - Soft cooldown of 15 minutes instead of a 6-hour ban when the human timeout expires
 
-### AI chats on hh.ru
-- Polls chats on `chatik.hh.ru` every 30 minutes (cron)
-- Detects hh.ru bots ("ИИ-помощник", "Робот-помощник") via avatar + alt-name
-- Auto-reply through LLM with vacancy context + filtered knowledge base
-- Safety: max 5 replies per chat, cooldown between replies, Telegram notification on every sent reply
+### AI and screening chats on hh.ru
+- Polls chats on `chatik.hh.ru` every 30 minutes (cron) and also runs as a search piggyback
+- Detects official hh.ru bots ("ИИ-помощник", "Робот-помощник") via avatar, author labels, and self-introduction text
+- Detects suspicious scripted HR screening messages that look like AI but are sent under a normal recruiter name
+- Official AI-bot replies can be generated automatically; suspicious HR messages go through Telegram approval first
+- Telegram preview includes the generated answer, a chat link, and an **Send answer** callback button for manual confirmation
+- Safety: max replies per chat, duplicate-message guard, cooldown between replies, and deterministic safe answers for sensitive questions such as study certificates
 
 ### Candidate knowledge base
 - `profiles/<name>/knowledge/*.md` — structured documents about experience, skills, projects
@@ -268,8 +270,9 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 ./run.sh digest
 ./run.sh analytics-backfill
 
-# hh.ru AI chats
-./run.sh chat-respond           # check chats, reply to AI-assistants
+# hh.ru AI/screening chats
+./run.sh chat-respond           # check chats, reply to AI assistants or notify about suspicious HR screening
+./run.sh chat-respond-one <chat_id> [message_id]  # generate one approved reply preview for a specific chat
 
 # Per-source runs
 ./run.sh superjob-dry-run
@@ -325,7 +328,7 @@ Runtime state is intentionally stored outside the repository, by default in `~/.
 - `hh_resume_pipeline.json` — A/B resume test state
 - `facts.json` — structured candidate facts (from `./run.sh extract-facts`)
 - `knowledge/*.md` — user-managed knowledge base (about_me, qa_kb, etc.)
-- `chat_responder_state.json` — last_replied_msg_id + replies_count per chat
+- `chat_responder_state.json` — last_replied_msg_id, suspicious-message notification state, and replies_count per chat
 - `hh_guard_state.json` — apply counter + anti-bot blocks
 - runtime status
 - Playwright debug screenshots and HTML dumps (including `captcha_*.png` and `chat_preview_*.png`)
@@ -367,7 +370,7 @@ Telegram notifications and AI Office integration are both optional. If you leave
 - `GeekJob` auto-apply depends on a saved specialist session and can fail if GeekJob changes its JSON/API flow.
 - Search defaults are QA-oriented until you override them in env or `config.py`.
 - LLM quality depends entirely on your prompt provider, model, and resume/knowledge base.
-- The AI-chat responder only detects hh.ru system bots ("ИИ-помощник", "Робот-помощник"). It does not reply to live HR recruiters (by design, for safety).
+- Suspicious HR-screening detection is heuristic. It intentionally does not auto-send to normal recruiter-looking accounts; Telegram approval is required before an answer is sent.
 - Ollama Cloud has weekly quotas — if you hit it, temporarily switch keys (see `~/.job-hunter/llm-providers.env`) or use a different model.
 
 ## Docs

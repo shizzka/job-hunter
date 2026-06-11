@@ -105,9 +105,10 @@ class TestSummarize:
 
     def _seed_events(self, tmp_path, events: list[dict]):
         events_file = str(tmp_path / "analytics_events.jsonl")
+        created_at = analytics._now().isoformat(timespec="seconds")
         with open(events_file, "w") as f:
             for e in events:
-                e.setdefault("created_at", "2026-03-16T12:00:00")
+                e.setdefault("created_at", created_at)
                 f.write(json.dumps(e) + "\n")
 
     def test_empty_summarize(self, isolated_analytics):

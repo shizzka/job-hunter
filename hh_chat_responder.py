@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import logging
 import os
@@ -31,10 +32,8 @@ import re
 import time
 from typing import Any
 
-from openai import AsyncOpenAI
-
 import config
-import proxy_utils
+from llm_client import get_llm_client
 from llm_utils import parse_llm_json
 
 log = logging.getLogger("chat_responder")
@@ -45,11 +44,160 @@ CHATIK_ROOT = "https://chatik.hh.ru"
 AI_ASSISTANT_AVATAR_URLS = {
     "https://hhcdn.ru/file/18274603.png",  # «ИИ-помощник»
 }
-# Известные имена. Также детектится substring «помощник» в alt/author
-# (см. JS-логику в get_messages).
-AI_NAMES = {"ИИ-помощник", "Робот-помощник", "Бот-помощник"}
+# Известные имена. Дополнительно детектятся AI-ish роли в alt/author
+# и явная самопрезентация в тексте сообщения.
+AI_NAMES = {
+    "ИИ-помощник",
+    "Робот-помощник",
+    "Бот-помощник",
+    "AI-рекрутер",
+    "ИИ-рекрутер",
+    "AI-ассистент",
+    "ИИ-ассистент",
+}
+
+AI_RECRUITER_TEXT_PATTERNS = (
+    re.compile(
+        r"\bя\s+(?:ваш\s+)?(?:(?:виртуальн\w*|цифров\w*)\s+)?"
+        r"(ассистент|помощник)\s+рекрутера\s+на\s+базе\s+(ai|ии)\b",
+        re.I,
+    ),
+    re.compile(r"\bя\s+(?:ваш\s+)?(ai|ии)[-\s]*(ассистент|помощник|рекрутер)\b", re.I),
+    re.compile(
+        r"\bя\s+(?:ваш\s+)?(виртуальн\w*|цифров\w*)\s+"
+        r"(ассистент|помощник)\s+рекрутера\b",
+        re.I,
+    ),
+)
+
+SUSPICIOUS_SCREENING_TEXT_PATTERNS = (
+    re.compile(r"\bответьте\s+(?:пожалуйста,\s+)?на\s+(?:несколько\s+)?вопрос", re.I),
+    re.compile(r"\b(?:пройти|заполнить)\s+(?:небольш\w+\s+)?(?:опрос|анкет)", re.I),
+    re.compile(r"\b(?:для|чтобы)\s+(?:продолжить|мы\s+могли\s+продолжить|работодатель\s+узнал)", re.I),
+    re.compile(r"\b(?:готов[ы]?|рассматриваете|сможе(?:те|шь))\s+ли\s+(?:вы|ты)\b", re.I),
+    re.compile(r"\b(?:какие|какой)\s+у\s+(?:вас|тебя)\s+зарплатн\w+\s+ожидани", re.I),
+    re.compile(r"\b(?:какой|какие)\s+у\s+(?:вас|тебя)\s+уровень\b", re.I),
+    re.compile(r"\b(?:есть|имеется)\s+ли\s+у\s+(?:вас|тебя)\s+опыт\b", re.I),
+    re.compile(r"\b(?:подскажите|подскажи|уточните|уточни|расскажите|расскажи|напишите|напиши),?\s+пожалуйста\b", re.I),
+    re.compile(r"\b(?:почему|чем)\s+(?:вам\s+)?(?:интересн|заинтересовал)", re.I),
+)
+
+SUSPICIOUS_SCREENING_KEYWORDS = (
+    "зарплат",
+    "ожидан",
+    "опыт",
+    "тестирован",
+    "api",
+    "postman",
+    "sql",
+    "автотест",
+    "образован",
+    "обучени",
+    "учебн",
+    "учёб",
+    "стажировк",
+    "справк",
+    "pet-проект",
+    "пет-проект",
+    "хакатон",
+    "английск",
+    "удален",
+    "удалён",
+    "офис",
+    "график",
+    "приступить",
+    "релокац",
+)
 
 STATE_FILENAME = "chat_responder_state.json"
+CHATIK_NAVIGATION_ATTEMPTS = 2
+CHATIK_NAVIGATION_TIMEOUT_MS = 20000
+CHATIK_READY_TIMEOUT_MS = 12000
+CHATIK_CHAT_READY_SELECTOR = (
+    '[data-qa^="chatik-chat-message-"], '
+    'textarea[data-qa="chatik-new-message-text"]'
+)
+
+
+def _normalize_ai_marker_text(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").casefold().replace("ё", "е")).strip()
+
+
+def _looks_like_ai_label(label: str) -> bool:
+    label = (label or "").strip()
+    if not label:
+        return False
+    if label in AI_NAMES:
+        return True
+
+    text = _normalize_ai_marker_text(label)
+    has_ai_marker = bool(
+        re.search(r"(?<![a-zа-я0-9])(ии|ai|робот|бот)(?![a-zа-я0-9])", text, re.I)
+    )
+    has_ai_role = any(token in text for token in ("помощник", "ассистент", "рекрутер"))
+    return has_ai_marker and has_ai_role
+
+
+def _looks_like_ai_recruiter_text(text: str) -> bool:
+    normalized = _normalize_ai_marker_text(text)
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in AI_RECRUITER_TEXT_PATTERNS)
+
+
+def _looks_like_suspicious_screening_text(text: str) -> bool:
+    """Human-labeled HR messages that look like automated screening.
+
+    This intentionally does not mark the message as AI. It only enables a
+    Telegram approval lane, because live HRs can ask the same questions.
+    """
+    normalized = _normalize_ai_marker_text(text)
+    if len(normalized) < 35:
+        return False
+    if _looks_like_ai_recruiter_text(normalized):
+        return False
+    has_question_shape = (
+        "?" in normalized
+        or any(
+            starter in normalized
+            for starter in ("ответьте", "подскажите", "уточните", "расскажите", "напишите")
+        )
+    )
+    if not has_question_shape:
+        return False
+    if any(pattern.search(normalized) for pattern in SUSPICIOUS_SCREENING_TEXT_PATTERNS):
+        return True
+    hits = sum(1 for token in SUSPICIOUS_SCREENING_KEYWORDS if token in normalized)
+    return hits >= 2
+
+
+def _is_application_only_preview(preview: str) -> bool:
+    """HH lists fresh applications as chats before a real dialog exists."""
+    return _normalize_ai_marker_text(preview).endswith("отклик на вакансию")
+
+
+def _classify_message_author(message: dict[str, Any]) -> dict[str, Any]:
+    """Mark AI/system messages while keeping own messages out of text heuristics."""
+    avatar_src = (message.get("avatar_src") or "").split("?", 1)[0]
+    message["avatar_src"] = avatar_src
+    is_me = bool(message.get("is_me"))
+    is_ai = (
+        not is_me
+        and (
+            avatar_src in AI_ASSISTANT_AVATAR_URLS
+            or _looks_like_ai_label(message.get("avatar_alt") or "")
+            or _looks_like_ai_label(message.get("author") or "")
+            or _looks_like_ai_recruiter_text(message.get("text") or "")
+        )
+    )
+    message["is_ai"] = is_ai
+    message["is_ai_suspect"] = (
+        not is_me
+        and not is_ai
+        and _looks_like_suspicious_screening_text(message.get("text") or "")
+    )
+    message["is_other"] = not is_ai and not is_me
+    return message
 
 
 # ── State ───────────────────────────────────────────────────────────────────
@@ -83,64 +231,116 @@ def save_state(state: dict) -> None:
 
 # ── Chat listing ────────────────────────────────────────────────────────────
 
-async def list_chats(page) -> list[dict]:
-    """Открыть chatik root, скроллить весь список, вернуть список чатов с metadata."""
-    await page.goto(f"{CHATIK_ROOT}/", wait_until="domcontentloaded", timeout=60000)
-    await page.wait_for_timeout(4000)
+async def _reset_page_after_navigation_failure(page) -> None:
+    """Cancel a stuck chatik navigation before opening the next chat."""
+    try:
+        await page.goto("about:blank", wait_until="commit", timeout=10000)
+    except Exception as exc:
+        log.debug("failed to reset page after chatik navigation error: %s", exc)
 
-    # Скроллим список до конца
-    await page.evaluate("""async () => {
+
+async def _open_chatik_page(
+    page,
+    url: str,
+    ready_selector: str,
+    *,
+    settle_ms: int,
+    attempts: int = CHATIK_NAVIGATION_ATTEMPTS,
+) -> None:
+    """Open a chatik page and retry once after resetting a stuck tab."""
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            # Chatik is an SPA; DOMContentLoaded can hang even after the useful UI
+            # is rendered. Wait for the actual chatik element instead.
+            await page.goto(
+                url,
+                wait_until="commit",
+                timeout=CHATIK_NAVIGATION_TIMEOUT_MS,
+            )
+            await page.wait_for_selector(
+                ready_selector,
+                state="attached",
+                timeout=CHATIK_READY_TIMEOUT_MS,
+            )
+            await page.wait_for_timeout(settle_ms)
+            return
+        except Exception as exc:
+            last_exc = exc
+            log.warning(
+                "chatik open attempt %d/%d failed for %s: %s",
+                attempt,
+                attempts,
+                url,
+                exc,
+            )
+            await _reset_page_after_navigation_failure(page)
+
+    assert last_exc is not None
+    raise last_exc
+
+
+async def list_chats(page) -> list[dict]:
+    """Открыть chatik root и вернуть свежие чаты с metadata.
+
+    Chatik виртуализует список: в DOM присутствует только видимое окно.
+    Поэтому нельзя сначала проскроллить вниз, а потом читать DOM — так
+    теряются свежие чаты из верхнего окна.
+    """
+    await _open_chatik_page(
+        page,
+        f"{CHATIK_ROOT}/",
+        '[data-qa^="chatik-open-chat-"]',
+        settle_ms=2000,
+    )
+
+    chats = await page.evaluate("""async () => {
         const all = [...document.querySelectorAll('*')];
         const scroller = all.filter(el => {
             const cs = getComputedStyle(el);
             return (cs.overflowY === 'auto' || cs.overflowY === 'scroll')
                 && el.scrollHeight > el.clientHeight + 50;
         }).sort((a,b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0];
-        if (!scroller) return;
-        let last = -1;
-        for (let i = 0; i < 60; i++) {
-            scroller.scrollTop += 800;
-            if (scroller.scrollTop === last) break;
-            last = scroller.scrollTop;
-            await new Promise(r => setTimeout(r, 200));
-        }
-    }""")
-    await page.wait_for_timeout(1000)
+        const seen = new Map();
+        const collect = () => {
+            const items = [...document.querySelectorAll('[data-qa^="chatik-open-chat-"]')];
+            for (const el of items) {
+                const qa = el.getAttribute('data-qa') || '';
+                const idMatch = qa.match(/^chatik-open-chat-(\\d+)$/);
+                if (!idMatch) continue;
+                const id = idMatch[1];
+                if (seen.has(id)) continue;
+                const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                seen.set(id, {chat_id: id, preview: text.slice(0, 300)});
+            }
+        };
 
-    chats = await page.evaluate("""() => {
-        const items = [...document.querySelectorAll('[data-qa^="chatik-open-chat-"]')];
-        return items.map(el => {
-            const qa = el.getAttribute('data-qa') || '';
-            const idMatch = qa.match(/^chatik-open-chat-(\\d+)$/);
-            if (!idMatch) return null;
-            const id = idMatch[1];
-            const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
-            // text формат: 'Title TIME Company Last-msg-preview'
-            return {chat_id: id, preview: text.slice(0, 300)};
-        }).filter(Boolean);
+        collect();
+        if (scroller) {
+            scroller.scrollTop = 0;
+            await new Promise(r => setTimeout(r, 500));
+            collect();
+            let last = -1;
+            // Проверяем свежую верхнюю часть списка. Пустые записи новых откликов
+            // позже отфильтруются без открытия страницы чата.
+            for (let i = 0; i < 10; i++) {
+                scroller.scrollTop += Math.max(320, Math.floor(scroller.clientHeight * 0.75));
+                await new Promise(r => setTimeout(r, 250));
+                collect();
+                if (scroller.scrollTop === last) break;
+                last = scroller.scrollTop;
+            }
+        }
+        return [...seen.values()];
     }""")
     return chats
 
 
 # ── Message extraction ──────────────────────────────────────────────────────
 
-async def get_messages(page, chat_id: str) -> list[dict]:
-    """Открыть chat прямой URL, вернуть список сообщений сверху-вниз."""
-    url = f"{CHATIK_ROOT}/chat/{chat_id}"
-    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-    await page.wait_for_timeout(3500)
-
-    msgs = await page.evaluate("""(ai_meta) => {
-        const ai_avatars = new Set(ai_meta.avatars);
-        const ai_names = new Set(ai_meta.names);
-        const looksLikeBot = (label) => {
-            if (!label) return false;
-            if (ai_names.has(label.trim())) return true;
-            const lc = label.toLowerCase();
-            // substring-детект на любого «<что-то>-помощник» (ИИ-помощник, Робот-помощник, …)
-            if (lc.includes('помощник') && (lc.includes('ии') || lc.includes('робот') || lc.includes('бот'))) return true;
-            return false;
-        };
+async def _extract_messages(page) -> dict[str, Any]:
+    """Read messages from the currently open chat without navigating."""
+    data = await page.evaluate("""() => {
         // основные bubbles
         const bubbles = [...document.querySelectorAll('[data-qa^="chatik-chat-message-"]')]
             .filter(el => /^chatik-chat-message-\\d+$/.test(el.getAttribute('data-qa') || ''));
@@ -157,23 +357,30 @@ async def get_messages(page, chat_id: str) -> list[dict]:
             // author label inside the bubble
             const authorEl = b.querySelector('[data-qa="chat-bubble-author-name"]');
             const author = authorEl ? authorEl.innerText.trim() : '';
-            // avatar inside the bubble
+            // Avatar can be an img or an icon with aria-label (robot recruiter).
             const avatarImg = b.querySelector('img[alt]');
-            const avatarAlt = avatarImg ? (avatarImg.getAttribute('alt') || '') : '';
+            const avatarLabelEl = b.querySelector(
+                '[data-qa="chat-bubble-wrapper"] [aria-label]'
+            );
+            const avatarAlt = avatarImg
+                ? (avatarImg.getAttribute('alt') || '')
+                : (avatarLabelEl?.getAttribute('aria-label') || '');
             const avatarSrc = avatarImg ? avatarImg.src : '';
-            // bot-детект: whitelisted avatar URL ИЛИ имя из списка ИЛИ substring «помощник + (ии|робот|бот)»
-            const is_ai = ai_avatars.has(avatarSrc) || looksLikeBot(avatarAlt) || looksLikeBot(author);
-            // moy: ни AI, ни employer-аватарки.
-            const is_me = !avatarImg && !author;
+            // Incoming continuation bubbles may omit author/avatar. Outgoing CSS
+            // markers are the reliable way to identify our messages.
+            const is_me = Boolean(
+                b.querySelector('[class*="chat-bubble_outgoing"]')
+                || b.querySelector('[class*="message_my"]')
+            );
             out.push({
                 id: mid,
                 text,
                 author,
                 avatar_alt: avatarAlt,
                 avatar_src: avatarSrc,
-                is_ai,
+                is_ai: false,
                 is_me,
-                is_other: !is_ai && !is_me,
+                is_other: !is_me,
             });
         }
         // page title / chat header — для extract названия вакансии и компании
@@ -186,23 +393,33 @@ async def get_messages(page, chat_id: str) -> list[dict]:
             company: headerCompany.trim(),
         };
         return {messages: out, vacancy};
-    }""", {"avatars": sorted(AI_ASSISTANT_AVATAR_URLS), "names": sorted(AI_NAMES)})
-    return msgs  # {messages, vacancy}
+    }""")
+    for message in data.get("messages", []):
+        _classify_message_author(message)
+    return data
+
+
+async def get_messages(page, chat_id: str) -> dict[str, Any]:
+    """Открыть chat прямой URL, вернуть messages+vacancy."""
+    url = f"{CHATIK_ROOT}/chat/{chat_id}"
+    await _open_chatik_page(
+        page,
+        url,
+        CHATIK_CHAT_READY_SELECTOR,
+        settle_ms=2500,
+    )
+    return await _extract_messages(page)
 
 
 # ── LLM ─────────────────────────────────────────────────────────────────────
 
-_llm_client: AsyncOpenAI | None = None
+_llm_client = None
 
 
-def _get_llm_client() -> AsyncOpenAI:
+def _get_llm_client():
     global _llm_client
     if _llm_client is None:
-        _llm_client = AsyncOpenAI(
-            base_url=config.LLM_BASE_URL,
-            api_key=config.LLM_API_KEY or "no-key",
-            http_client=proxy_utils.llm_http_client(),
-        )
+        _llm_client = get_llm_client()
     return _llm_client
 
 
@@ -212,6 +429,8 @@ def _format_dialog(messages: list[dict], take_last: int = 10) -> str:
     for m in tail:
         if m.get("is_ai"):
             tag = "AI"
+        elif m.get("is_ai_suspect"):
+            tag = m.get("author") or "Possible AI/HR"
         elif m.get("is_me"):
             tag = "Я"
         else:
@@ -227,16 +446,22 @@ async def generate_answer(
     messages: list[dict],
     vacancy: dict,
     resume_text: str,
+    *,
+    question_message: dict[str, Any] | None = None,
+    question_kind: str = "AI-помощника",
 ) -> str | None:
-    """Сгенерировать ответ на последний вопрос AI-помощника."""
+    """Сгенерировать ответ на вопрос AI-помощника или approved suspicious HR message."""
     if not messages:
         return None
-    last_ai = next((m for m in reversed(messages) if m.get("is_ai")), None)
-    if not last_ai:
+    target_message = question_message or next((m for m in reversed(messages) if m.get("is_ai")), None)
+    if not target_message:
         return None
-    question = last_ai.get("text", "").strip()
+    question = target_message.get("text", "").strip()
     if not question:
         return None
+    deterministic_answer = _deterministic_chat_answer(question)
+    if deterministic_answer:
+        return deterministic_answer
 
     # Контексты
     from prompt_blocks import (
@@ -269,20 +494,20 @@ async def generate_answer(
 
     dialog_block = _format_dialog(messages, take_last=10)
 
-    prompt = f"""Ты отвечаешь в чате hh.ru от лица кандидата на вопрос ИИ-помощника работодателя.
+    prompt = f"""Ты отвечаешь в чате hh.ru от лица кандидата на вопрос работодателя.
 
-Этот ИИ не примет уход от ответа, отшучивания, переспрашивания. Он re-ask'нет тот же вопрос. Отвечай ПО ДЕЛУ, фактически.
+Тип вопроса: {question_kind}. Если это похоже на автоматический HR-скрининг, отвечай так же конкретно, как AI-помощнику, но без упоминания, что собеседник является ботом. На вопрос о зарплатных ожиданиях отвечай по блоку зарплатных ожиданий ниже.
 
 Опирайся на канонический профиль, структурированные факты, резюме и контекст вакансии. Если факт отсутствует — отвечай ЧЕСТНО: «нет такого опыта», «не работал с этим», «изучаю сейчас». Не выдумывай инструменты/языки/опыт.
 
-Если AI спрашивает количество лет опыта в конкретной технологии — назови конкретно или скажи «не работал». QA-опыт у кандидата меньше года, не путай с общим инженерным.
+Если AI спрашивает количество лет опыта в конкретной технологии — назови конкретно или скажи «не работал». QA-опыт кандидата — около 1 года практического тестирования, не путай с общим инженерным.
 
 Длина ответа: 2-4 предложения, конкретика. Без приветствий («Здравствуйте» — не нужно, мы уже в диалоге). Без шаблонных оборотов «активно», «успешно», «эффективно», «глубокий опыт».
 
 {profile_note}{knowledge}{facts}{salary}{vacancy_block}История диалога (последние 10 реплик):
 {dialog_block}
 
-Текущий вопрос AI-помощника:
+Текущий вопрос:
 "{question}"
 
 Резюме кандидата (для деталей):
@@ -295,7 +520,7 @@ async def generate_answer(
 }}
 
 Правила:
-- status=skip только если совсем нельзя ответить (например AI пишет про оффер/зарплату/собеседование — это требует решения человека).
+- status=skip только если совсем нельзя ответить (например AI предлагает конкретную дату собеседования или просит принять оффер — это требует решения человека).
 - НЕ начинай ответ с приветствия.
 - НЕ объясняй что ты ассистент.
 - Отвечай как Eugene в первом лице."""
@@ -346,13 +571,94 @@ async def _dismiss_cookies_banner(page) -> None:
                 continue
 
 
+def _normalize_sent_message_text(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").replace("\xa0", " ")).strip()
+
+
+def _message_matches_sent_text(actual: str, expected: str) -> bool:
+    actual_norm = _normalize_sent_message_text(actual)
+    expected_norm = _normalize_sent_message_text(expected)
+    if not actual_norm or not expected_norm:
+        return False
+    prefix_len = min(len(expected_norm), max(20, len(expected_norm) // 2))
+    return actual_norm.startswith(expected_norm[:prefix_len])
+
+
+def _messages_contain_sent_text(messages: list[dict], expected: str) -> bool:
+    return any(
+        message.get("is_me")
+        and _message_matches_sent_text(message.get("text") or "", expected)
+        for message in messages[-8:]
+    )
+
+
+def _is_study_certificate_question(text: str) -> bool:
+    normalized = _normalize_ai_marker_text(text)
+    if "справк" not in normalized:
+        return False
+    return any(token in normalized for token in ("обучени", "учеб", "учебы", "учебы", "учебн", "стажировк"))
+
+
+def _deterministic_chat_answer(question: str) -> str | None:
+    if _is_study_certificate_question(question):
+        return (
+            "Справку с места учебы как действующий студент предоставить не смогу, "
+            "сейчас я не учусь. При этом у меня есть техническое образование, "
+            "документы об образовании могу предоставить. Если для стажировки "
+            "критична именно справка от текущего учебного заведения, лучше сразу "
+            "это уточнить."
+        )
+    return None
+
+
+def _quick_reply_choice(text: str) -> str:
+    match = re.match(
+        r"^(да|нет)(?:[\s,.:;!?—-]|$)",
+        _normalize_sent_message_text(text),
+        re.I,
+    )
+    return match.group(1).capitalize() if match else ""
+
+
+async def _find_quick_reply_button(page, choice: str):
+    if not choice:
+        return None
+    for button in await page.query_selector_all("button"):
+        try:
+            if (await button.inner_text()).strip() != choice:
+                continue
+            if await button.is_visible() and await button.is_enabled():
+                return button
+        except Exception:
+            continue
+    return None
+
+
 async def fill_and_preview(page, chat_id: str, text: str) -> dict:
     """Перейти в chat, набрать текст в input. НЕ отправлять.
     Возвращает {filled, screenshot_path}."""
     url = f"{CHATIK_ROOT}/chat/{chat_id}"
-    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-    await page.wait_for_timeout(2500)
+    await _open_chatik_page(
+        page,
+        url,
+        CHATIK_CHAT_READY_SELECTOR,
+        settle_ms=2000,
+    )
     await _dismiss_cookies_banner(page)
+    quick_reply = _quick_reply_choice(text)
+    quick_button = await _find_quick_reply_button(page, quick_reply)
+    if quick_button:
+        shot_path = os.path.join(config.HH_STATE_DIR, f"chat_preview_{chat_id}_{int(time.time())}.png")
+        try:
+            await page.screenshot(path=shot_path)
+        except Exception:
+            shot_path = ""
+        return {
+            "filled": True,
+            "quick_reply": quick_reply,
+            "screenshot_path": shot_path,
+        }
+
     inp = await page.query_selector('textarea[data-qa="chatik-new-message-text"]')
     if not inp:
         return {"filled": False, "reason": "input not found"}
@@ -372,17 +678,253 @@ async def send_message(page, chat_id: str, text: str) -> bool:
     result = await fill_and_preview(page, chat_id, text)
     if not result.get("filled"):
         return False
-    btn = await page.query_selector('[data-qa="chatik-do-send-message"]')
+    quick_reply = result.get("quick_reply") or ""
+    btn = (
+        await _find_quick_reply_button(page, quick_reply)
+        if quick_reply
+        else await page.query_selector('[data-qa="chatik-do-send-message"]')
+    )
     if not btn:
-        log.warning("send button not found")
+        log.warning("send button not found (quick_reply=%r)", quick_reply)
         return False
     try:
         await btn.click()
-        await page.wait_for_timeout(2000)
-        return True
+        await page.wait_for_timeout(2500)
     except Exception as exc:
         log.warning("send click failed: %s", exc)
         return False
+
+    last = {}
+    try:
+        for _ in range(5):
+            data = await _extract_messages(page)
+            messages = data.get("messages", [])
+            last = messages[-1] if messages else {}
+            if _messages_contain_sent_text(messages, quick_reply or text):
+                return True
+            await page.wait_for_timeout(1000)
+    except Exception as exc:
+        log.warning("send verification failed to read current chat %s: %s", chat_id, exc)
+        return False
+
+    log.warning(
+        "send verification failed for chat %s: last_is_me=%s last_author=%r last_text=%r",
+        chat_id,
+        bool(last.get("is_me")),
+        last.get("author") or "",
+        (last.get("text") or "")[:160],
+    )
+    return False
+
+
+# ── Approval lane for suspicious HR messages ───────────────────────────────
+
+def _active_profile_name() -> str:
+    try:
+        import profile as profile_mod
+        return str(getattr(profile_mod.active(), "name", "") or "default")
+    except Exception:
+        return os.getenv("JOB_HUNTER_DEFAULT_PROFILE", "default") or "default"
+
+
+def _chat_callback_data(action: str, profile_name: str, chat_id: str, message_id: str) -> str:
+    safe_profile = re.sub(r"[^a-zA-Z0-9_.-]+", "_", profile_name or "default")
+    return f"{action}:{safe_profile}:{chat_id}:{message_id}"
+
+
+def chat_ai_callback_data(profile_name: str, chat_id: str, message_id: str) -> str:
+    return _chat_callback_data("chat_ai", profile_name, chat_id, message_id)
+
+
+def chat_send_callback_data(profile_name: str, chat_id: str, message_id: str) -> str:
+    return _chat_callback_data("chat_send", profile_name, chat_id, message_id)
+
+
+def build_suspicious_chat_reply_markup(profile_name: str, chat_id: str, message_id: str) -> dict:
+    rows = [[{"text": "Открою сам", "url": f"{CHATIK_ROOT}/chat/{chat_id}"}]]
+    callback_data = chat_ai_callback_data(profile_name, chat_id, message_id)
+    if len(callback_data.encode("utf-8")) <= 64:
+        rows.append([{"text": "Ответить с ИИ", "callback_data": callback_data}])
+    return {"inline_keyboard": rows}
+
+
+def build_chat_answer_preview_markup(profile_name: str, chat_id: str, message_id: str) -> dict:
+    rows = [[{"text": "Открыть чат", "url": f"{CHATIK_ROOT}/chat/{chat_id}"}]]
+    callback_data = chat_send_callback_data(profile_name, chat_id, message_id)
+    if len(callback_data.encode("utf-8")) <= 64:
+        rows.append([{"text": "Отправить ответ", "callback_data": callback_data}])
+    return {"inline_keyboard": rows}
+
+
+async def notify_suspicious_screening_message(
+    notifier,
+    *,
+    chat_id: str,
+    vacancy: dict,
+    message: dict,
+    profile_name: str | None = None,
+) -> bool:
+    if notifier is None:
+        return False
+    profile_name = profile_name or _active_profile_name()
+    message_id = str(message.get("id") or "")
+    question = html.escape((message.get("text") or "").strip()[:900])
+    author = html.escape((message.get("author") or "HR").strip()[:120])
+    title = html.escape((vacancy.get("title") or "—").strip()[:160])
+    company = html.escape((vacancy.get("company") or "—").strip()[:160])
+    text = (
+        "<b>Обнаружено странное сообщение</b>\n"
+        "Похоже на автоматический HR-скрининг, но явного AI-маркера нет. "
+        "Автоответ не отправляю без подтверждения.\n\n"
+        f"<b>Чат:</b> {title} @ {company}\n"
+        f"<b>Автор:</b> {author}\n\n"
+        f"<i>{question}</i>"
+    )
+    markup = build_suspicious_chat_reply_markup(profile_name, chat_id, message_id)
+    return await notifier.send_message_with_markup(text, reply_markup=markup)
+
+
+def _find_message(messages: list[dict], message_id: str) -> dict | None:
+    if message_id:
+        found = next((m for m in messages if str(m.get("id") or "") == str(message_id)), None)
+        if found:
+            return found
+    return messages[-1] if messages else None
+
+
+async def _notify_one_chat_result(notifier, detail: dict) -> None:
+    if notifier is None:
+        return
+    vac = detail.get("vacancy") or {}
+    title = html.escape((vac.get("title") or "—")[:160])
+    company = html.escape((vac.get("company") or "—")[:160])
+    question = html.escape((detail.get("question") or "")[:450])
+    answer = html.escape((detail.get("answer") or "")[:850])
+    raw_chat_id = str(detail.get("chat_id") or "")
+    raw_message_id = str(detail.get("message_id") or "")
+    chat_id = html.escape(raw_chat_id)
+    if detail.get("sent"):
+        caption = (
+            "<b>Ответил в подозрительном HR-чате</b>\n"
+            f"{title} @ {company}\n\n"
+            f"<i>{question}</i>\n\n"
+            f"{answer}\n\n"
+            f"<a href='{CHATIK_ROOT}/chat/{chat_id}'>Открыть чат</a>"
+        )
+        await notifier.send_message_with_markup(caption)
+        return
+    preview = detail.get("preview") or {}
+    caption = (
+        "<b>ИИ подготовил ответ</b>\n"
+        f"{title} @ {company}\n\n"
+        f"<i>{question}</i>\n\n"
+        f"{answer}\n\n"
+        f"<a href='{CHATIK_ROOT}/chat/{chat_id}'>Открыть чат</a>"
+    )
+    markup = (
+        build_chat_answer_preview_markup(_active_profile_name(), raw_chat_id, raw_message_id)
+        if raw_chat_id and raw_message_id
+        else None
+    )
+    screenshot_path = preview.get("screenshot_path") or ""
+    if screenshot_path:
+        await notifier.send_photo(screenshot_path, caption=caption, reply_markup=markup)
+    else:
+        await notifier.send_message_with_markup(caption, reply_markup=markup)
+
+
+async def process_one(
+    hh_client,
+    chat_id: str,
+    *,
+    message_id: str = "",
+    allow_suspicious: bool = False,
+    dry_run: bool | None = None,
+    notify: bool = False,
+) -> dict:
+    """Generate/send one reply for a specific chat message after human approval."""
+    if dry_run is None:
+        dry_run = not bool(int(os.getenv("HH_CHAT_AUTOSEND", "0") or 0))
+
+    if not hh_client._page:
+        await hh_client.start(headless=True)
+    page = hh_client._page
+    await page.goto("https://hh.ru/", wait_until="domcontentloaded", timeout=30000)
+    await page.wait_for_timeout(1500)
+
+    data = await get_messages(page, chat_id)
+    messages = data.get("messages", [])
+    target = _find_message(messages, message_id)
+    if not target:
+        return {"ok": False, "message": "message not found", "chat_id": chat_id}
+    if target.get("is_me"):
+        return {"ok": False, "message": "target message is ours", "chat_id": chat_id}
+
+    target_id = str(target.get("id") or "")
+    state = load_state()
+    chat_state = state.setdefault(str(chat_id), {})
+    if chat_state.get("last_replied_msg_id") == target_id:
+        return {"ok": True, "already_replied": True, "message": "already replied", "chat_id": chat_id}
+
+    is_regular_ai = bool(target.get("is_ai"))
+    is_approved_suspicious = allow_suspicious and bool(target.get("is_ai_suspect"))
+    if not is_regular_ai and not is_approved_suspicious:
+        return {
+            "ok": False,
+            "message": "target message is not AI/suspicious screening",
+            "chat_id": chat_id,
+            "question": (target.get("text") or "")[:300],
+        }
+
+    try:
+        from hh_client import _load_resume_text
+    except Exception:
+        _load_resume_text = lambda: ""
+    resume_text = _load_resume_text()
+    vacancy = data.get("vacancy", {})
+    answer = await generate_answer(
+        messages,
+        vacancy,
+        resume_text,
+        question_message=target if is_approved_suspicious else None,
+        question_kind="подозрительное HR-сообщение" if is_approved_suspicious else "AI-помощник",
+    )
+    if not answer:
+        return {"ok": False, "message": "LLM did not produce answer", "chat_id": chat_id}
+
+    detail = {
+        "ok": True,
+        "chat_id": chat_id,
+        "message_id": target_id,
+        "vacancy": vacancy,
+        "question": (target.get("text") or "")[:500],
+        "answer": answer,
+        "dry_run": dry_run,
+        "suspicious": is_approved_suspicious,
+    }
+    if dry_run:
+        preview = await fill_and_preview(page, chat_id, answer)
+        detail["preview"] = preview
+        detail["sent"] = False
+    else:
+        ok = await send_message(page, chat_id, answer)
+        detail["sent"] = ok
+        if ok:
+            chat_state["last_replied_msg_id"] = target_id
+            chat_state["replies_count"] = int(chat_state.get("replies_count", 0)) + 1
+            chat_state["last_reply_at"] = time.time()
+            save_state(state)
+        else:
+            detail["ok"] = False
+            detail["message"] = "send failed"
+
+    if notify:
+        try:
+            import notifier
+        except Exception:
+            notifier = None
+        await _notify_one_chat_result(notifier, detail)
+    return detail
 
 
 # ── Main process loop ──────────────────────────────────────────────────────
@@ -405,7 +947,17 @@ async def process_all(hh_client, dry_run: bool | None = None, max_replies_per_ch
     await page.wait_for_timeout(1500)
 
     state = load_state()
-    summary = {"chats_scanned": 0, "with_ai": 0, "answers_drafted": 0, "answers_sent": 0, "skipped": 0, "details": []}
+    summary = {
+        "chats_scanned": 0,
+        "with_ai": 0,
+        "suspicious": 0,
+        "suspicious_notified": 0,
+        "answers_drafted": 0,
+        "answers_sent": 0,
+        "skipped": 0,
+        "read_failures": 0,
+        "details": [],
+    }
 
     chats = await list_chats(page)
     summary["chats_scanned"] = len(chats)
@@ -424,6 +976,9 @@ async def process_all(hh_client, dry_run: bool | None = None, max_replies_per_ch
 
     for chat in chats:
         chat_id = chat["chat_id"]
+        if _is_application_only_preview(chat.get("preview") or ""):
+            log.debug("chat %s: application-only placeholder, skip", chat_id)
+            continue
         chat_state = state.setdefault(chat_id, {})
         replies_so_far = int(chat_state.get("replies_count", 0))
         if replies_so_far >= max_replies:
@@ -434,22 +989,81 @@ async def process_all(hh_client, dry_run: bool | None = None, max_replies_per_ch
         try:
             data = await get_messages(page, chat_id)
         except Exception as exc:
-            log.warning("get_messages(%s) failed: %s", chat_id, exc)
+            log.warning(
+                "get_messages(%s) failed: %s; preview=%r",
+                chat_id,
+                exc,
+                (chat.get("preview") or "")[:220],
+            )
+            summary["read_failures"] += 1
             continue
         msgs = data.get("messages", [])
+
+        # последнее сообщение — оно должно быть входящим. Если оно похоже на
+        # автоматический HR-скрининг без явного AI-маркера, не отвечаем сами:
+        # отправляем человеку approval-карточку в Telegram.
+        last = msgs[-1] if msgs else None
+        if not last:
+            log.info("chat %s: no messages, skip", chat_id)
+            summary["skipped"] += 1
+            continue
+        if last.get("is_me"):
+            log.info("chat %s: latest message is ours, skip", chat_id)
+            summary["skipped"] += 1
+            continue
+
+        last_id = str(last.get("id") or "")
+        if chat_state.get("last_replied_msg_id") == last_id:
+            log.info("chat %s: already replied to latest message %s, skip", chat_id, last_id)
+            summary["skipped"] += 1
+            continue
+
+        if last.get("is_ai_suspect") and not last.get("is_ai"):
+            summary["suspicious"] += 1
+            if chat_state.get("last_suspicious_msg_id") == last_id:
+                log.info("chat %s: suspicious message %s already notified, skip", chat_id, last_id)
+                summary["skipped"] += 1
+                continue
+            vac = dict(data.get("vacancy", {}) or {})
+            preview_text = (chat.get("preview") or "").strip()
+            if preview_text and (not vac.get("title") or _normalize_ai_marker_text(vac.get("title") or "") == "перейти"):
+                vac["title"] = preview_text
+            profile_name = _active_profile_name()
+            notified = False
+            if notifier:
+                try:
+                    notified = await notify_suspicious_screening_message(
+                        notifier,
+                        chat_id=chat_id,
+                        vacancy=vac,
+                        message=last,
+                        profile_name=profile_name,
+                    )
+                except Exception as exc:
+                    log.warning("notify suspicious chat %s failed: %s", chat_id, exc)
+            if notified:
+                summary["suspicious_notified"] += 1
+                chat_state["last_suspicious_msg_id"] = last_id
+                chat_state["last_suspicious_at"] = time.time()
+                save_state(state)
+            summary["details"].append({
+                "chat_id": chat_id,
+                "vacancy": vac.get("title", ""),
+                "company": vac.get("company", ""),
+                "question": (last.get("text") or "")[:300],
+                "suspicious": True,
+                "notified": notified,
+            })
+            continue
+
         if not any(m.get("is_ai") for m in msgs):
             continue
         summary["with_ai"] += 1
 
-        # последнее сообщение — оно должно быть от AI и НЕ от нас (иначе уже отвечено)
-        last = msgs[-1] if msgs else None
-        if not last or last.get("is_me"):
-            continue
         if not last.get("is_ai"):
+            log.info("chat %s: latest message is not AI, skip", chat_id)
+            summary["skipped"] += 1
             continue  # последний от человека-HR — не лезем
-        last_id = last.get("id")
-        if chat_state.get("last_replied_msg_id") == last_id:
-            continue  # уже отвечали на это сообщение
 
         # генерируем ответ
         answer = await generate_answer(msgs, data.get("vacancy", {}), resume_text)

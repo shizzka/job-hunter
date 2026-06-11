@@ -1,10 +1,9 @@
 import asyncio
 
 import habr_career_client
-import hh_client
-import matcher
+import llm_client
 import proxy_utils
-import resume_analyzer
+import pytest
 
 
 def test_browser_launch_env_strips_inherited_proxy_without_explicit_browser_proxy(monkeypatch):
@@ -83,58 +82,104 @@ def test_llm_http_client_ignores_env_proxy(monkeypatch):
         asyncio.run(client.aclose())
 
 
-def test_matcher_client_uses_direct_http_client(monkeypatch):
+def test_fallback_llm_client_uses_direct_http_client(monkeypatch):
     captured = {}
 
     class FakeAsyncOpenAI:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    matcher._client = None
-    monkeypatch.setattr(matcher, "AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setattr(llm_client, "AsyncOpenAI", FakeAsyncOpenAI)
 
-    matcher._get_client()
+    client = llm_client.FallbackLLMClient([
+        llm_client.ProviderSpec("test", "https://example.test/v1", "key"),
+    ])
+    client._client_for(0)
 
     try:
         assert captured["http_client"]._trust_env is False
     finally:
         asyncio.run(captured["http_client"].aclose())
-        matcher._client = None
 
 
-def test_hh_question_answer_client_uses_direct_http_client(monkeypatch):
-    captured = {}
+def test_fallback_llm_client_rotates_on_rate_limit(monkeypatch):
+    calls = []
+
+    class FakeRateLimitError(Exception):
+        status_code = 429
+
+    class FakeMessage:
+        content = "ok"
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeCompletions:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        async def create(self, **kwargs):
+            calls.append(self.base_url)
+            if "one" in self.base_url:
+                raise FakeRateLimitError("Too Many Requests")
+            return FakeResponse()
+
+    class FakeChat:
+        def __init__(self, base_url):
+            self.completions = FakeCompletions(base_url)
 
     class FakeAsyncOpenAI:
         def __init__(self, **kwargs):
-            captured.update(kwargs)
+            self.chat = FakeChat(kwargs["base_url"])
 
-    hh_client._question_answer_client = None
-    monkeypatch.setattr(hh_client, "AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setattr(llm_client, "AsyncOpenAI", FakeAsyncOpenAI)
 
-    hh_client._get_question_answer_client()
+    client = llm_client.FallbackLLMClient([
+        llm_client.ProviderSpec("one", "https://one.test/v1", "key1"),
+        llm_client.ProviderSpec("two", "https://two.test/v1", "key2"),
+    ])
+    response = asyncio.run(client.chat.completions.create(model="m", messages=[]))
 
-    try:
-        assert captured["http_client"]._trust_env is False
-    finally:
-        asyncio.run(captured["http_client"].aclose())
-        hh_client._question_answer_client = None
+    assert response.choices[0].message.content == "ok"
+    assert calls == ["https://one.test/v1", "https://two.test/v1"]
 
 
-def test_resume_analyzer_client_uses_direct_http_client(monkeypatch):
-    captured = {}
+def test_fallback_llm_client_raises_exhausted_when_all_rate_limited(monkeypatch):
+    calls = []
+
+    class FakeRateLimitError(Exception):
+        status_code = 429
+
+    class FakeCompletions:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        async def create(self, **kwargs):
+            calls.append(self.base_url)
+            raise FakeRateLimitError("weekly usage limit")
+
+    class FakeChat:
+        def __init__(self, base_url):
+            self.completions = FakeCompletions(base_url)
 
     class FakeAsyncOpenAI:
         def __init__(self, **kwargs):
-            captured.update(kwargs)
+            self.chat = FakeChat(kwargs["base_url"])
 
-    resume_analyzer._client = None
-    monkeypatch.setattr(resume_analyzer, "AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setattr(llm_client, "AsyncOpenAI", FakeAsyncOpenAI)
 
-    resume_analyzer._get_client()
+    client = llm_client.FallbackLLMClient([
+        llm_client.ProviderSpec("one", "https://one.test/v1", "key1"),
+        llm_client.ProviderSpec("two", "https://two.test/v1", "key2"),
+    ])
 
-    try:
-        assert captured["http_client"]._trust_env is False
-    finally:
-        asyncio.run(captured["http_client"].aclose())
-        resume_analyzer._client = None
+    with pytest.raises(llm_client.LLMProvidersExhaustedError) as exc_info:
+        asyncio.run(client.chat.completions.create(model="m", messages=[]))
+
+    assert exc_info.value.provider_names == ("one", "two")
+    assert exc_info.value.model == "m"
+    assert "weekly usage limit" in exc_info.value.last_error
+    assert calls == ["https://one.test/v1", "https://two.test/v1"]

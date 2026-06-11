@@ -17,10 +17,8 @@ import os
 import re
 from typing import Any
 
-from openai import AsyncOpenAI
-
 import config
-import proxy_utils
+from llm_client import get_llm_client
 
 log = logging.getLogger("facts")
 
@@ -106,17 +104,13 @@ _EXTRACT_PROMPT_TEMPLATE = """Извлеки из резюме структур�
 Верни ТОЛЬКО валидный JSON-объект без markdown и без пояснений. Первым символом ответа должен быть `{{`, последним `}}`."""
 
 
-_client_singleton: AsyncOpenAI | None = None
+_client_singleton = None
 
 
-def _get_llm_client() -> AsyncOpenAI:
+def _get_llm_client():
     global _client_singleton
     if _client_singleton is None:
-        _client_singleton = AsyncOpenAI(
-            base_url=config.LLM_BASE_URL,
-            api_key=config.LLM_API_KEY or "no-key",
-            http_client=proxy_utils.llm_http_client(),
-        )
+        _client_singleton = get_llm_client()
     return _client_singleton
 
 

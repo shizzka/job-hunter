@@ -1,4 +1,5 @@
 """Telegram-уведомления о вакансиях и приглашениях."""
+import html
 import json
 import logging
 import os
@@ -212,6 +213,13 @@ async def send_photo(photo_path: str, caption: str = "", parse_mode: str = "HTML
     )
 
 
+def _html(value, limit: int | None = 1000) -> str:
+    text = str(value or "").strip()
+    if limit and len(text) > limit:
+        text = text[: max(0, limit - 1)] + "…"
+    return html.escape(text)
+
+
 async def notify_search_started(source_labels: list[str]):
     """Уведомить о старте прогона поиска."""
     if not source_labels:
@@ -222,6 +230,44 @@ async def notify_search_started(source_labels: list[str]):
         f"🚀 <b>Запуск поиска вакансий</b>\n\n"
         f"Начата процедура поиска вакансий.\n"
         f"🌐 Площадки: {sources}"
+    )
+    await send_message(text)
+
+
+async def notify_llm_issue(
+    vacancy: dict,
+    evaluation: dict,
+    source_index: int = 0,
+    source_total: int = 0,
+):
+    """Уведомить, что оценки вакансий стали score=0 из-за LLM-проблемы."""
+    kind = evaluation.get("error_kind")
+    if kind == "llm_limits_exhausted":
+        title = "⚠️ <b>LLM лимиты исчерпаны</b>"
+        impact = "Все доступные LLM-провайдеры ответили quota/rate-limit."
+    else:
+        title = "⚠️ <b>LLM ошибка: вакансии получают score 0</b>"
+        impact = "Оценщик не получил нормальный ответ от LLM."
+
+    providers = ", ".join(evaluation.get("llm_providers") or [])
+    progress = f"{source_index}/{source_total}" if source_index and source_total else "?"
+    source = vacancy.get("source_label", vacancy.get("source", "—"))
+
+    text = (
+        f"{title}\n\n"
+        f"Стадия: оценка вакансии\n"
+        f"Модель: <code>{_html(evaluation.get('llm_model') or 'unknown', 120)}</code>\n"
+        f"Провайдеры: <code>{_html(providers or 'primary', 200)}</code>\n"
+        f"Прогресс источника: {_html(progress, 50)}\n\n"
+        f"<b>{_html(vacancy.get('title', '—'), 200)}</b>\n"
+        f"🏢 {_html(vacancy.get('company', '—'), 200)}\n"
+        f"🌐 {_html(source, 80)}\n\n"
+        f"Что значит: {impact} Matcher ставит <code>score=0</code> и пропускает вакансии, "
+        f"чтобы не откликаться вслепую.\n\n"
+        f"Что проверить: лимиты аккаунтов Ollama, ключи в "
+        f"<code>~/.job-hunter/llm-providers.env</code>, затем лог поиска.\n\n"
+        f"Где смотреть: <code>статус</code> → <b>📜 Лог поиска</b> или команда <code>/log</code>.\n\n"
+        f"Ошибка: <code>{_html(evaluation.get('llm_error', ''), 800)}</code>"
     )
     await send_message(text)
 

@@ -198,6 +198,52 @@ class TestResumePipeline:
         assert entry["completed_reason"] == ""
         assert entry["next_retry_at"] != ""
 
+    def test_pending_status_does_not_open_retry_candidate(self):
+        import hh_resume_pipeline as pipeline
+
+        vacancy = {"id": "hh:555", "title": "QA", "company": "E", "url": ""}
+        started_at = datetime(2026, 1, 1, 10, 0, 0)
+        later = started_at + timedelta(hours=3)
+
+        with mock.patch.object(pipeline, "_now", return_value=started_at):
+            pipeline.record_successful_apply(vacancy, {"name": "normal", "title": "", "id": "111"})
+
+        with mock.patch.object(pipeline, "_now", return_value=started_at + timedelta(minutes=5)):
+            pipeline.sync_negotiation_statuses([
+                {"id": "hh:555", "title": "QA", "company": "E", "url": "", "status": "Просмотрен"},
+            ])
+
+        with mock.patch.object(pipeline, "_now", return_value=later), \
+             mock.patch.object(config, "HH_RESUME_RETRY_DELAY_HOURS", 1):
+            assert pipeline.get_retry_candidates() == []
+
+        entry = pipeline._entry("hh:555")
+        assert entry["last_status"] == "Просмотрен"
+        assert entry["next_retry_at"] == ""
+
+    def test_rejected_status_opens_retry_candidate_after_delay(self):
+        import hh_resume_pipeline as pipeline
+
+        vacancy = {"id": "hh:444", "title": "QA", "company": "F", "url": "https://hh.ru/vacancy/444"}
+        started_at = datetime(2026, 1, 1, 10, 0, 0)
+        later = started_at + timedelta(hours=3)
+
+        with mock.patch.object(config, "HH_RESUME_RETRY_DELAY_HOURS", 1):
+            with mock.patch.object(pipeline, "_now", return_value=started_at):
+                pipeline.record_successful_apply(vacancy, {"name": "normal", "title": "", "id": "111"})
+
+            with mock.patch.object(pipeline, "_now", return_value=started_at + timedelta(minutes=5)):
+                pipeline.sync_negotiation_statuses([
+                    {"id": "hh:444", "title": "QA", "company": "F", "url": "https://hh.ru/vacancy/444", "status": "Отказ"},
+                ])
+
+            with mock.patch.object(pipeline, "_now", return_value=later):
+                candidates = pipeline.get_retry_candidates()
+
+        assert len(candidates) == 1
+        assert candidates[0]["id"] == "hh:444"
+        assert candidates[0]["_hh_resume_variant"] == "fun"
+
     def test_resolve_variants_by_title(self):
         from hh_resume_pipeline import resolve_variants
         with mock.patch.object(config, "HH_PRIMARY_RESUME_ID", ""), \

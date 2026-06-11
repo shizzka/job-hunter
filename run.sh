@@ -21,11 +21,22 @@ if [ ! -x "$VENV" ]; then
 fi
 ENV_FILE="${JOB_HUNTER_ENV_FILE:-$HOME/.job-hunter/job-hunter.env}"
 
+# Explicit per-run overrides must win over values loaded from the env file.
+HH_CHAT_AUTOSEND_OVERRIDE_SET=0
+HH_CHAT_AUTOSEND_OVERRIDE=""
+if [ "${HH_CHAT_AUTOSEND+x}" = "x" ]; then
+    HH_CHAT_AUTOSEND_OVERRIDE_SET=1
+    HH_CHAT_AUTOSEND_OVERRIDE="$HH_CHAT_AUTOSEND"
+fi
+
 if [ -f "$ENV_FILE" ]; then
     set -a
     # shellcheck disable=SC1090
     . "$ENV_FILE"
     set +a
+fi
+if [ "$HH_CHAT_AUTOSEND_OVERRIDE_SET" -eq 1 ]; then
+    export HH_CHAT_AUTOSEND="$HH_CHAT_AUTOSEND_OVERRIDE"
 fi
 
 # Поддержка --profile <name>: ./run.sh --profile alice search
@@ -120,6 +131,15 @@ case "$MODE" in
     chat-respond|chats|chat)
         $VENV agent.py $PROFILE_ARG --chat-respond
         ;;
+    chat-respond-one|chat-one)
+        CHAT_ID="${2:?Укажи chat_id: ./run.sh chat-respond-one <chat_id> [message_id]}"
+        MSG_ID="${3:-}"
+        if [ -n "$MSG_ID" ]; then
+            $VENV agent.py $PROFILE_ARG --chat-respond-one "$CHAT_ID" --chat-message-id "$MSG_ID" --chat-allow-suspicious
+        else
+            $VENV agent.py $PROFILE_ARG --chat-respond-one "$CHAT_ID" --chat-allow-suspicious
+        fi
+        ;;
     profiles|list-profiles)
         $VENV agent.py --list-profiles
         ;;
@@ -143,7 +163,7 @@ case "$MODE" in
         $VENV job_hunter_ctl.py $PROFILE_ARG daemon-stop
         ;;
     *)
-        echo "Usage: $0 [--profile <name>] {login|search|check|daemon|bot|bot-daemon|status|bot-status|stats|digest|dry-run|grab-resume|create-profile|profiles|bot-stop|stop}"
+        echo "Usage: $0 [--profile <name>] {login|search|check|daemon|bot|bot-daemon|status|bot-status|stats|digest|dry-run|grab-resume|chat-respond|chat-respond-one|create-profile|profiles|bot-stop|stop}"
         exit 1
         ;;
 esac

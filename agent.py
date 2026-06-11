@@ -95,6 +95,57 @@ _source_label = reporting.source_label
 _format_compact_source_counts = reporting.format_compact_source_counts
 _format_source_progress = reporting.format_source_progress
 
+_CLOSED_OR_ARCHIVED_VACANCY_MARKERS = (
+    "вакансия в архиве",
+    "вакансия находится в архиве",
+    "вакансия уже в архиве",
+    "вакансия перемещена в архив",
+    "вакансия закрыта",
+    "вакансия уже закрыта",
+    "закрыта и не принимает отклики",
+    "не принимает отклики",
+    "прием откликов закрыт",
+    "приём откликов закрыт",
+    "отклики больше не принимаются",
+    "вакансия неактивна",
+    "страница вакансии удалена",
+)
+_CLOSED_OR_ARCHIVED_VACANCY_COMPACT_MARKERS = (
+    '"archived":"true"',
+    '"archived":true',
+    "'archived':'true'",
+    "'archived':true",
+    "&quot;archived&quot;:&quot;true&quot;",
+    "&quot;archived&quot;:true",
+)
+
+
+def _has_archived_vacancy_state(value: str) -> bool:
+    compact = "".join(str(value or "").split()).casefold()
+    return any(marker in compact for marker in _CLOSED_OR_ARCHIVED_VACANCY_COMPACT_MARKERS)
+
+
+def _looks_like_closed_or_archived(vacancy: dict, details: str) -> bool:
+    raw_text = "\n".join(
+        str(part or "")
+        for part in (
+            vacancy.get("title"),
+            vacancy.get("company"),
+            vacancy.get("snippet"),
+            vacancy.get("url"),
+            details,
+        )
+    )
+    if _has_archived_vacancy_state(raw_text):
+        return True
+
+    compact = "".join(raw_text.split()).casefold()
+    if "<html" in compact or "<template" in compact:
+        return False
+
+    text = " ".join(raw_text.split()).casefold()
+    return any(marker in text for marker in _CLOSED_OR_ARCHIVED_VACANCY_MARKERS)
+
 
 
 def _write_runtime_status(
@@ -230,6 +281,54 @@ async def _save_autoapply_failure_snapshot(
             ", ".join(saved.values()),
         )
     return saved
+
+
+def _snapshot_looks_like_closed_or_archived(
+    vacancy: dict,
+    snapshot: dict[str, str],
+    extra_text: str = "",
+) -> bool:
+    if _looks_like_closed_or_archived(vacancy, extra_text):
+        return True
+
+    html_path = snapshot.get("html")
+    if not html_path:
+        return False
+    try:
+        html = Path(html_path).read_text(encoding="utf-8", errors="ignore")
+    except Exception as exc:
+        log.debug("Failed to read auto-apply snapshot %s: %s", html_path, exc)
+        return False
+    return _looks_like_closed_or_archived(vacancy, html)
+
+
+def _mark_closed_or_archived_after_apply_attempt(
+    *,
+    vid: str,
+    vacancy: dict,
+    source: str,
+    evaluation: dict,
+    details: str,
+    resume_variant: dict | None,
+    result: dict,
+    bucket: dict,
+    run_id: str,
+    note: str,
+) -> None:
+    seen.mark_seen(vid, vacancy, "skipped_archived")
+    if source == "hh":
+        hh_pipeline.mark_terminal(vid, "closed_or_archived")
+    result["skipped"] += 1
+    bucket["rejected"] += 1
+    analytics.record_decision(
+        run_id=run_id,
+        vacancy=vacancy,
+        decision=DECISION_SKIPPED_LOW_SCORE,
+        evaluation=evaluation,
+        details=details,
+        resume_variant=resume_variant,
+        note=note,
+    )
 
 
 def _autoapply_page_for_source(
@@ -585,6 +684,7 @@ async def do_search(dry_run: bool = False) -> dict:
 
         applied_count = 0
         auto_applied_count_by_source = defaultdict(int)
+        llm_issue_alert_sent = False
         processed_by_source = defaultdict(int)
         habr_logged_in: bool | None = None
         superjob_ready: bool | None = None
@@ -619,6 +719,29 @@ async def do_search(dry_run: bool = False) -> dict:
                 v, hh_client, superjob_client, habr_client, geekjob_client,
             )
 
+            if _looks_like_closed_or_archived(v, details):
+                log.info("  Skipped (closed/archived vacancy)")
+                evaluation = {
+                    "score": 0,
+                    "reason": "Вакансия закрыта или находится в архиве",
+                    "red_flags": ["closed_or_archived"],
+                    "should_apply": False,
+                }
+                seen.mark_seen(vid, v, "skipped_archived")
+                if source == "hh":
+                    hh_pipeline.mark_terminal(vid, "closed_or_archived")
+                result["skipped"] += 1
+                bucket["rejected"] += 1
+                analytics.record_decision(
+                    run_id=run_id,
+                    vacancy=v,
+                    decision=DECISION_SKIPPED_LOW_SCORE,
+                    evaluation=evaluation,
+                    details=details,
+                    note=f"{source}:closed_or_archived",
+                )
+                continue
+
             # LLM-оценка
             evaluation = await evaluate_vacancy(v, details)
             score = evaluation.get("score", 0)
@@ -626,6 +749,19 @@ async def do_search(dry_run: bool = False) -> dict:
             red_flags = evaluation.get("red_flags", [])
 
             log.info("  Score: %d | %s | Flags: %s", score, reason, red_flags)
+
+            if (
+                not llm_issue_alert_sent
+                and score <= 0
+                and evaluation.get("error_kind") in {"llm_limits_exhausted", "llm_error"}
+            ):
+                await notifier.notify_llm_issue(
+                    v,
+                    evaluation,
+                    source_index=source_index,
+                    source_total=source_total,
+                )
+                llm_issue_alert_sent = True
 
             if red_flags:
                 log.warning("  Red flags: %s", red_flags)
@@ -703,10 +839,11 @@ async def do_search(dry_run: bool = False) -> dict:
                     if not hh_can_auto_apply:
                         hh_auto_apply_guard_note = hh_guard_note
                 if hh_auto_apply_guard_note:
-                    # hh на anti-bot cooldown: тихо откладываем без manual-задачи и notify.
+                    # hh на anti-bot/rolling-limit guard: тихо откладываем без manual-задачи и notify.
                     # Не помечаем seen → вакансия подхватится на следующем прогоне после паузы.
                     log.info(
-                        "  hh deferred (cooldown): %s @ %s",
+                        "  hh deferred (%s): %s @ %s",
+                        hh_auto_apply_guard_note,
                         v.get("title", ""), v.get("company", ""),
                     )
                     result["skipped"] += 1
@@ -861,6 +998,30 @@ async def do_search(dry_run: bool = False) -> dict:
                     if snapshot.get("screenshot")
                     else ""
                 )
+                if source == "hh" and _snapshot_looks_like_closed_or_archived(
+                    v,
+                    snapshot,
+                    f"{details}\n{type(e).__name__}: {e}",
+                ):
+                    _mark_closed_or_archived_after_apply_attempt(
+                        vid=vid,
+                        vacancy=v,
+                        source=source,
+                        evaluation=evaluation,
+                        details=details,
+                        resume_variant=hh_resume_variant,
+                        result=result,
+                        bucket=bucket,
+                        run_id=run_id,
+                        note=f"hh:closed_or_archived_after_exception:{type(e).__name__}",
+                    )
+                    await set_hunter_status(
+                        "search_skip_existing",
+                        "HH вакансия в архиве, ручную задачу не создаю",
+                        "working",
+                    )
+                    log.info("  hh skipped closed/archived vacancy after apply exception for %s", vid)
+                    continue
                 guard_suffix = ""
                 anti_bot_kind = None
                 if source == "hh":
@@ -923,6 +1084,31 @@ async def do_search(dry_run: bool = False) -> dict:
             log.info("  %s apply result: %s", source_label, apply_result)
             apply_notes = apply_result.get("notes") or []
             apply_note_text = "; ".join(str(item) for item in apply_notes if item)
+            apply_message_text = str(apply_result.get("message", ""))
+
+            if source == "hh" and (
+                apply_result.get("closed_or_archived")
+                or _looks_like_closed_or_archived(v, apply_message_text)
+            ):
+                _mark_closed_or_archived_after_apply_attempt(
+                    vid=vid,
+                    vacancy=v,
+                    source=source,
+                    evaluation=evaluation,
+                    details=details,
+                    resume_variant=hh_resume_variant,
+                    result=result,
+                    bucket=bucket,
+                    run_id=run_id,
+                    note=f"hh:closed_or_archived_after_apply_result:{apply_message_text or 'closed_or_archived'}",
+                )
+                await set_hunter_status(
+                    "search_skip_existing",
+                    "HH вакансия в архиве, ручную задачу не создаю",
+                    "working",
+                )
+                log.info("  hh skipped closed/archived vacancy after apply result for %s", vid)
+                continue
 
             # 7. hh-специфика: вопросы работодателя
             if source == "hh" and "пропускаем" in apply_result.get("message", "").lower():
@@ -965,6 +1151,8 @@ async def do_search(dry_run: bool = False) -> dict:
             # 8. Обработка результата
             if apply_result.get("already_applied"):
                 seen.mark_seen(vid, v, "already_applied")
+                if source == "hh":
+                    hh_pipeline.mark_terminal(vid, "already_applied")
                 result["skipped"] += 1
                 bucket["rejected"] += 1
                 analytics.record_decision(
@@ -1027,6 +1215,31 @@ async def do_search(dry_run: bool = False) -> dict:
                 await notify_application(v, score, cover, note=apply_note_text or None)
             else:
                 apply_message = apply_result.get("message", "unknown")
+                if source == "hh" and "не удалось подтвердить отклик" in str(apply_message).casefold():
+                    seen.mark_seen(vid, v, "apply_unconfirmed_no_manual")
+                    hh_pipeline.mark_terminal(vid, "apply_unconfirmed")
+                    result["skipped"] += 1
+                    bucket["rejected"] += 1
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision=DECISION_ALREADY_APPLIED,
+                        evaluation=evaluation,
+                        details=details,
+                        resume_variant=hh_resume_variant,
+                        note=f"hh:{apply_message}; suppressed_manual",
+                    )
+                    await set_hunter_status(
+                        "search_skip_existing",
+                        "HH отклик не подтверждён, ручную задачу не создаю",
+                        "working",
+                    )
+                    log.info(
+                        "  hh apply unconfirmed; suppressing manual task for %s: %s",
+                        vid,
+                        apply_message,
+                    )
+                    continue
                 snapshot = await _save_autoapply_failure_snapshot(
                     source,
                     vid,
@@ -1043,6 +1256,30 @@ async def do_search(dry_run: bool = False) -> dict:
                     if snapshot.get("screenshot")
                     else ""
                 )
+                if source == "hh" and _snapshot_looks_like_closed_or_archived(
+                    v,
+                    snapshot,
+                    f"{details}\n{apply_message}",
+                ):
+                    _mark_closed_or_archived_after_apply_attempt(
+                        vid=vid,
+                        vacancy=v,
+                        source=source,
+                        evaluation=evaluation,
+                        details=details,
+                        resume_variant=hh_resume_variant,
+                        result=result,
+                        bucket=bucket,
+                        run_id=run_id,
+                        note=f"hh:closed_or_archived_after_apply_failure_snapshot:{apply_message}",
+                    )
+                    await set_hunter_status(
+                        "search_skip_existing",
+                        "HH вакансия в архиве, ручную задачу не создаю",
+                        "working",
+                    )
+                    log.info("  hh skipped closed/archived vacancy after apply failure snapshot for %s", vid)
+                    continue
                 guard_suffix = ""
                 anti_bot_kind = None
                 if source == "hh":
@@ -1130,11 +1367,12 @@ async def do_search(dry_run: bool = False) -> dict:
                 import hh_chat_responder as cr
                 chat_summary = await cr.process_all(hh_client)
                 log.info(
-                    "chat-respond piggyback: scanned=%d with_ai=%d sent=%d skipped=%d",
+                    "chat-respond piggyback: scanned=%d with_ai=%d sent=%d skipped=%d read_failed=%d",
                     chat_summary.get("chats_scanned", 0),
                     chat_summary.get("with_ai", 0),
                     chat_summary.get("answers_sent", 0),
                     chat_summary.get("skipped", 0),
+                    chat_summary.get("read_failures", 0),
                 )
             except Exception as exc:
                 log.warning("chat-responder failed: %s", exc)
@@ -1387,6 +1625,10 @@ async def main():
     group.add_argument("--analyze-resume", action="store_true", help="Анализ резюме (LLM)")
     group.add_argument("--extract-facts", action="store_true", help="LLM извлекает структурированные факты из резюме в facts.json")
     group.add_argument("--chat-respond", action="store_true", help="Ответить на сообщения AI-помощника в чатах hh.ru (dry-run если HH_CHAT_AUTOSEND=0)")
+    group.add_argument("--chat-respond-one", metavar="CHAT_ID", help="Ответить в конкретном hh-чате после ручного подтверждения")
+    parser.add_argument("--chat-message-id", default="", help="ID сообщения в hh-чате для --chat-respond-one")
+    parser.add_argument("--chat-allow-suspicious", action="store_true", help="Разрешить ответ на подозрительное HR-сообщение без явного AI-маркера")
+    parser.add_argument("--chat-force-send", action="store_true", help="Для --chat-respond-one отправить ответ сразу, без dry-run preview")
 
     args = parser.parse_args()
 
@@ -1420,8 +1662,12 @@ async def main():
             print(f"  {name}{marker} — {', '.join(sources) or 'нет источников'} — {p.home_dir}")
         return
 
-    # Активируем профиль (патчит config.* для всех модулей)
-    profile_mod.activate(args.profile)
+    # Активируем профиль (патчит config.* для всех модулей). One-shot chat reply
+    # запускается из Telegram callback и не должен конфликтовать с daemon lock.
+    if args.chat_respond_one:
+        profile_mod.activate_no_lock(args.profile)
+    else:
+        profile_mod.activate(args.profile)
     _configure_logging(force=True)
     if args.profile != "default":
         log.info("Activated profile: %s", args.profile)
@@ -1468,17 +1714,55 @@ async def main():
             print("📋 Chat-respond summary:")
             print(f"  Чатов проверено: {summary.get('chats_scanned', 0)}")
             print(f"  С AI-помощником: {summary.get('with_ai', 0)}")
+            print(f"  Подозрительных HR-сообщений: {summary.get('suspicious', 0)}")
+            print(f"  Уведомлений на подтверждение: {summary.get('suspicious_notified', 0)}")
             print(f"  Подготовлено ответов: {summary.get('answers_drafted', 0)}")
             print(f"  Отправлено: {summary.get('answers_sent', 0)}")
             print(f"  Пропущено: {summary.get('skipped', 0)}")
+            print(f"  Ошибок чтения: {summary.get('read_failures', 0)}")
             for d in summary.get("details", []):
                 print(f"\n  → {d.get('vacancy')} @ {d.get('company')} ({d.get('chat_id')})")
+                if d.get("suspicious"):
+                    print(f"    Подозрительно: {d.get('question','')[:140]}")
+                    print(f"    Уведомление: {'да' if d.get('notified') else 'нет'}")
+                    continue
                 print(f"    AI: {d.get('question','')[:140]}")
                 print(f"    Ответ: {d.get('answer','')[:140]}")
                 if d.get("dry_run"):
                     print(f"    [DRY-RUN, скрин: {d.get('preview',{}).get('screenshot_path','-')}]")
                 elif d.get("sent"):
                     print("    [SENT ✓]")
+        elif args.chat_respond_one:
+            import hh_chat_responder as cr
+            client = HHClient()
+            try:
+                detail = await cr.process_one(
+                    client,
+                    args.chat_respond_one,
+                    message_id=args.chat_message_id,
+                    allow_suspicious=args.chat_allow_suspicious,
+                    dry_run=False if args.chat_force_send else None,
+                    notify=True,
+                )
+            finally:
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
+            print("📋 Chat one-shot summary:")
+            print(f"  Чат: {detail.get('chat_id', args.chat_respond_one)}")
+            print(f"  OK: {detail.get('ok')}")
+            print(f"  Сообщение: {detail.get('message', '')}")
+            if detail.get('already_replied'):
+                print("  Уже отвечали на это сообщение")
+            if detail.get('question'):
+                print(f"  Вопрос: {detail.get('question','')[:220]}")
+            if detail.get('answer'):
+                print(f"  Ответ: {detail.get('answer','')[:400]}")
+            if detail.get('dry_run'):
+                print(f"  DRY-RUN скрин: {(detail.get('preview') or {}).get('screenshot_path','-')}")
+            elif detail.get('sent'):
+                print("  SENT: yes")
         elif args.analyze_resume:
             import resume_analyzer
             resume_path = config.RESUME_FILE

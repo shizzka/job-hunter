@@ -7,14 +7,12 @@
 import logging
 import os
 
-from openai import AsyncOpenAI
-
 import config
-import proxy_utils
+from llm_client import get_llm_client
 
 log = logging.getLogger("resume_analyzer")
 PROMPT_FILE_NAME = "resume_prompt.md"
-_client: AsyncOpenAI | None = None
+_client = None
 
 # Минимальный fallback, если файл не найден
 _FALLBACK_SYSTEM = "Ты — карьерный консультант и ATS-аналитик. Проанализируй резюме, укажи слабые места, предложи улучшения."
@@ -88,14 +86,10 @@ def _load_prompt() -> tuple[str, str]:
     return _FALLBACK_SYSTEM, _FALLBACK_USER
 
 
-def _get_client() -> AsyncOpenAI:
+def _get_client():
     global _client
     if _client is None:
-        _client = AsyncOpenAI(
-            base_url=config.LLM_BASE_URL,
-            api_key=config.LLM_API_KEY or "no-key",
-            http_client=proxy_utils.llm_http_client(),
-        )
+        _client = get_llm_client()
     return _client
 
 

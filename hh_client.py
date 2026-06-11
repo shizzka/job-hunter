@@ -7,7 +7,6 @@ import logging
 import re
 from pathlib import Path
 from urllib.parse import urlencode
-from openai import AsyncOpenAI
 from playwright.async_api import async_playwright, BrowserContext, Page
 
 try:
@@ -18,11 +17,12 @@ except ImportError:
     _STEALTH_AVAILABLE = False
 
 import config
+from llm_client import get_llm_client
 import proxy_utils
 
 log = logging.getLogger("hh_client")
 HH_AUTH_COOKIE_NAMES = {"hhtoken", "hhuid", "crypted_hhuid", "crypted_id"}
-_question_answer_client: AsyncOpenAI | None = None
+_question_answer_client = None
 
 
 def _ensure_dirs():
@@ -57,6 +57,48 @@ def _normalize_text(value: str) -> str:
 
 def _compact_text(value: str) -> str:
     return "".join((value or "").split()).casefold()
+
+
+_CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS = (
+    "вакансия в архиве",
+    "вакансия находится в архиве",
+    "вакансия уже в архиве",
+    "вакансия перемещена в архив",
+    "вакансия закрыта",
+    "вакансия уже закрыта",
+    "закрыта и не принимает отклики",
+    "не принимает отклики",
+    "прием откликов закрыт",
+    "приём откликов закрыт",
+    "отклики больше не принимаются",
+    "вакансия неактивна",
+    "страница вакансии удалена",
+)
+_CLOSED_OR_ARCHIVED_HH_COMPACT_MARKERS = (
+    '"archived":"true"',
+    '"archived":true',
+    "'archived':'true'",
+    "'archived':true",
+    "&quot;archived&quot;:&quot;true&quot;",
+    "&quot;archived&quot;:true",
+)
+
+
+def _has_archived_hh_state(value: str) -> bool:
+    compact = _compact_text(value)
+    return any(marker in compact for marker in _CLOSED_OR_ARCHIVED_HH_COMPACT_MARKERS)
+
+
+def _looks_like_closed_or_archived_hh(value: str) -> bool:
+    if _has_archived_hh_state(value):
+        return True
+
+    compact = _compact_text(value)
+    if "<html" in compact or "<template" in compact:
+        return False
+
+    text = _normalize_text(value)
+    return any(marker in text for marker in _CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS)
 
 
 def _looks_like_existing_hh_response(value: str) -> bool:
@@ -165,14 +207,10 @@ def _anti_bot_message(kind: str, suffix: str = "") -> str:
     return message
 
 
-def _get_question_answer_client() -> AsyncOpenAI:
+def _get_question_answer_client():
     global _question_answer_client
     if _question_answer_client is None:
-        _question_answer_client = AsyncOpenAI(
-            base_url=config.LLM_BASE_URL,
-            api_key=config.LLM_API_KEY or "no-key",
-            http_client=proxy_utils.llm_http_client(),
-        )
+        _question_answer_client = get_llm_client()
     return _question_answer_client
 
 
@@ -316,6 +354,18 @@ class HHClient:
             )
         except Exception:
             return ""
+
+    async def _page_closed_or_archived(self) -> bool:
+        """Detect closed/archived hh vacancy pages before trying to respond."""
+        body_text = await self._page_text(limit=20000)
+        if _looks_like_closed_or_archived_hh(body_text):
+            return True
+
+        try:
+            page_html = await self._page.content()
+        except Exception:
+            page_html = ""
+        return _has_archived_hh_state(page_html)
 
     async def _apply_success_detected(self) -> bool:
         selectors = (
@@ -1652,6 +1702,16 @@ class HHClient:
         await self._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=20000)
         await self._page.wait_for_timeout(2000)
 
+        body_text = await self._page_text(limit=20000)
+        try:
+            page_html = await self._page.content()
+        except Exception:
+            page_html = ""
+        if _looks_like_closed_or_archived_hh(body_text) or _has_archived_hh_state(page_html):
+            status = "Вакансия закрыта или находится в архиве"
+            context = (body_text or page_html).strip()[:3000]
+            return f"{status}\n\n{context}" if context else status
+
         # Описание вакансии
         desc_el = await self._page.query_selector(
             "[data-qa='vacancy-description'], "
@@ -1957,6 +2017,13 @@ class HHClient:
             message = _anti_bot_message(anti_bot_kind, "на странице вакансии")
             self._remember_antibot_signal(anti_bot_kind, "vacancy_page", message)
             return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind}
+
+        if await self._page_closed_or_archived():
+            return {
+                "ok": False,
+                "message": "Вакансия закрыта или находится в архиве",
+                "closed_or_archived": True,
+            }
 
         if await self._has_existing_response_ui():
             return await finalize_success("Уже откликались ранее", already_applied=True)

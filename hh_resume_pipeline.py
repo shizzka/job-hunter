@@ -289,6 +289,10 @@ def sync_negotiation_statuses(items: list[dict]) -> None:
                 entry["next_retry_at"] = _to_iso(eta)
             continue
 
+        if bucket in {"pending", "unknown"}:
+            entry["next_retry_at"] = ""
+            continue
+
     _save()
 
 
@@ -311,6 +315,9 @@ def get_retry_candidates() -> list[dict]:
         if not attempts:
             continue
         if len(attempts) >= len(variants):
+            continue
+        if _status_bucket(entry.get("last_status", "")) != "rejected":
+            entry["next_retry_at"] = ""
             continue
 
         retry_eta = _from_iso(entry.get("next_retry_at"))

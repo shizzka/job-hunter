@@ -2,7 +2,12 @@ import asyncio
 
 import config
 
-from hh_client import HHClient, _looks_like_existing_hh_response, _looks_like_hh_apply_success
+from hh_client import (
+    HHClient,
+    _looks_like_closed_or_archived_hh,
+    _looks_like_existing_hh_response,
+    _looks_like_hh_apply_success,
+)
 
 
 class FakePage:
@@ -131,6 +136,15 @@ def test_looks_like_hh_apply_success_detects_new_success_markers():
     assert _looks_like_hh_apply_success("Откликнуться") is False
 
 
+def test_looks_like_closed_or_archived_hh_detects_text_and_lux_state():
+    assert _looks_like_closed_or_archived_hh("Вакансия в архиве") is True
+    assert _looks_like_closed_or_archived_hh('{"analyticsParams":{"active":"false","archived":"true"}}') is True
+    assert _looks_like_closed_or_archived_hh(
+        '<html><template>{"translations":{"x":"Вакансия в архиве"}}</template></html>'
+    ) is False
+    assert _looks_like_closed_or_archived_hh("Откликнуться") is False
+
+
 def test_has_existing_response_ui_uses_selector_hit():
     client = HHClient()
     client._page = FakePage(
@@ -250,6 +264,22 @@ class FakeApplyPage:
             if self.stage == "success":
                 return "Резюме доставлено\nОтклик отправлен"
             return "Откликнуться"
+        if "[...document.querySelectorAll('[data-qa]')]" in script:
+            return []
+        return None
+
+
+class FakeArchivedApplyPage(FakeApplyPage):
+    async def content(self) -> str:
+        return (
+            '<html><body><h1>Вакансия в архиве</h1>'
+            '<template>{"analyticsParams":{"active":"false","archived":"true"}}</template>'
+            '</body></html>'
+        )
+
+    async def evaluate(self, script: str, arg=None):
+        if "document.body.innerText" in script:
+            return "Вакансия в архиве\nОтклики больше не принимаются"
         if "[...document.querySelectorAll('[data-qa]')]" in script:
             return []
         return None
@@ -569,6 +599,22 @@ def test_apply_to_vacancy_postfills_cover_letter_on_success_notification(monkeyp
     assert result["ok"] is True
     assert result["message"] == "Отклик отправлен"
     assert called["value"] is True
+
+
+def test_apply_to_vacancy_skips_archived_page_before_click(monkeypatch):
+    client = HHClient()
+    client._page = FakeArchivedApplyPage()
+
+    monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
+
+    result = asyncio.run(
+        client.apply_to_vacancy("https://hh.ru/vacancy/1", cover_letter="hello from cover letter")
+    )
+
+    assert result["ok"] is False
+    assert result["closed_or_archived"] is True
+    assert result["message"] == "Вакансия закрыта или находится в архиве"
+    assert client._page.stage == "vacancy"
 
 
 def test_apply_to_vacancy_allows_missing_resume_picker_when_response_form_is_open(monkeypatch):

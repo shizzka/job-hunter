@@ -47,3 +47,16 @@ def test_save_autoapply_failure_snapshot_writes_screenshot_and_html(tmp_path, mo
     assert Path(saved["html"]).is_file()
     assert Path(saved["screenshot"]).parent == tmp_path
     assert Path(saved["html"]).read_text(encoding="utf-8") == "<html>failure</html>"
+
+
+def test_closed_or_archived_helper_detects_hh_lux_state():
+    assert agent._looks_like_closed_or_archived(
+        {"title": "QA", "company": "Acme"},
+        '{"analyticsParams":{"active":"false","archived":"true"}}',
+    ) is True
+    assert agent._looks_like_closed_or_archived(
+        {"title": "QA"},
+        '<html><template>{"translations":{"x":"Вакансия в архиве"}}</template></html>',
+    ) is False
+    assert agent._looks_like_closed_or_archived({"title": "QA"}, "Откликнуться") is False
+
