@@ -183,3 +183,203 @@ def test_fallback_llm_client_raises_exhausted_when_all_rate_limited(monkeypatch)
     assert exc_info.value.model == "m"
     assert "weekly usage limit" in exc_info.value.last_error
     assert calls == ["https://one.test/v1", "https://two.test/v1"]
+
+
+
+def test_build_provider_specs_includes_extra_providers(monkeypatch):
+    monkeypatch.setattr(llm_client.config, "LLM_BASE_URL", "https://ollama.com/v1")
+    monkeypatch.setattr(llm_client.config, "LLM_API_KEY", "primary-key")
+    monkeypatch.setattr(
+        llm_client,
+        "_load_provider_env",
+        lambda: {
+            "OLLAMA_BASE_URL": "https://ollama.com/v1",
+            "OLLAMA_API_KEY": "primary-key",
+            "OLLAMA2_BASE_URL": "https://ollama.com/v1",
+            "OLLAMA2_API_KEY": "second-key",
+            "CEREBRAS_API_KEY": "cerebras-key",
+            "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
+            "OPENROUTER_API_KEY": "or-key-1",
+            "OPENROUTER_API_KEY_2": "or-key-2",
+            "GROQ_BASE_URL": "https://api.groq.com/openai/v1",
+            "GROQ_API_KEY": "groq-key",
+            "SAMBANOVA_API_KEY": "sambanova-key",
+            "GEMINI_API_KEY": "gemini-key",
+            "DEEPSEEK_BASE_URL": "https://api.deepseek.com/v1",
+            "DEEPSEEK_API_KEY": "deepseek-key",
+            "CLOUDFLARE_ACCOUNT_ID": "cf-account",
+            "CLOUDFLARE_API_KEY": "cf-key",
+            "HF_TOKEN": "hf-key",
+            "SILICONFLOW_API_KEY": "silicon-key",
+        },
+    )
+
+    specs = llm_client._build_provider_specs()
+
+    assert [spec.name for spec in specs] == [
+        "primary",
+        "ollama2",
+        "cerebras",
+        "openrouter",
+        "openrouter2",
+        "groq",
+        "sambanova",
+        "gemini",
+        "deepseek",
+        "cloudflare",
+        "huggingface",
+        "siliconflow",
+    ]
+    assert specs[2].model_for("qwen3-coder:480b") == "zai-glm-4.7"
+    assert specs[3].model_for("gpt-oss:120b") == "openai/gpt-oss-120b:free"
+    assert specs[3].model_for("qwen3-coder:480b") == "openai/gpt-oss-120b:free"
+    assert specs[3].default_headers["X-Title"] == "job-hunter"
+    assert specs[5].model_for("gpt-oss:120b") == "llama-3.3-70b-versatile"
+    assert specs[6].model_for("deepseek-v3.1:671b") == "DeepSeek-V3.1"
+    assert specs[7].model_for("gpt-oss:120b") == "gemini-3.5-flash"
+    assert specs[8].model_for("gpt-oss:120b") == "deepseek-v4-flash"
+    assert specs[9].base_url == "https://api.cloudflare.com/client/v4/accounts/cf-account/ai/v1"
+    assert specs[9].model_for("gpt-oss:120b") == "@cf/openai/gpt-oss-120b"
+    assert specs[10].model_for("gpt-oss:120b") == "openai/gpt-oss-120b:fastest"
+    assert specs[11].model_for("gpt-oss:120b") == "THUDM/GLM-Z1-9B-0414"
+
+
+def test_fallback_llm_client_maps_model_per_provider(monkeypatch):
+    calls = []
+
+    class FakeRateLimitError(Exception):
+        status_code = 429
+
+    class FakeMessage:
+        content = "ok"
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeCompletions:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        async def create(self, **kwargs):
+            calls.append((self.base_url, kwargs["model"]))
+            if "one" in self.base_url:
+                raise FakeRateLimitError("Too Many Requests")
+            return FakeResponse()
+
+    class FakeChat:
+        def __init__(self, base_url):
+            self.completions = FakeCompletions(base_url)
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = FakeChat(kwargs["base_url"])
+
+    monkeypatch.setattr(llm_client, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    client = llm_client.FallbackLLMClient([
+        llm_client.ProviderSpec("one", "https://one.test/v1", "key1", {"m": "one-m"}),
+        llm_client.ProviderSpec("two", "https://two.test/v1", "key2", {"m": "two-m"}),
+    ])
+    response = asyncio.run(client.chat.completions.create(model="m", messages=[]))
+
+    assert response.choices[0].message.content == "ok"
+    assert calls == [("https://one.test/v1", "one-m"), ("https://two.test/v1", "two-m")]
+
+
+def test_fallback_llm_client_rotates_on_model_unavailable(monkeypatch):
+    calls = []
+
+    class FakeGoneError(Exception):
+        status_code = 410
+
+    class FakeMessage:
+        content = "ok"
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeCompletions:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        async def create(self, **kwargs):
+            calls.append((self.base_url, kwargs["model"]))
+            if "retired" in self.base_url:
+                raise FakeGoneError("model was retired")
+            return FakeResponse()
+
+    class FakeChat:
+        def __init__(self, base_url):
+            self.completions = FakeCompletions(base_url)
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = FakeChat(kwargs["base_url"])
+
+    monkeypatch.setattr(llm_client, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    client = llm_client.FallbackLLMClient([
+        llm_client.ProviderSpec("retired", "https://retired.test/v1", "key1"),
+        llm_client.ProviderSpec("fallback", "https://fallback.test/v1", "key2", {"old": "new"}),
+    ])
+    response = asyncio.run(client.chat.completions.create(model="old", messages=[]))
+
+    assert response.choices[0].message.content == "ok"
+    assert calls == [("https://retired.test/v1", "old"), ("https://fallback.test/v1", "new")]
+
+
+
+def test_fallback_llm_client_remembers_active_provider_per_requested_model(monkeypatch):
+    calls = []
+
+    class FakeGoneError(Exception):
+        status_code = 410
+
+    class FakeMessage:
+        content = "ok"
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeCompletions:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        async def create(self, **kwargs):
+            calls.append((self.base_url, kwargs["model"]))
+            if kwargs["model"] == "old":
+                raise FakeGoneError("model was retired")
+            return FakeResponse()
+
+    class FakeChat:
+        def __init__(self, base_url):
+            self.completions = FakeCompletions(base_url)
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = FakeChat(kwargs["base_url"])
+
+    monkeypatch.setattr(llm_client, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    client = llm_client.FallbackLLMClient([
+        llm_client.ProviderSpec("primary", "https://primary.test/v1", "key1"),
+        llm_client.ProviderSpec("fallback", "https://fallback.test/v1", "key2", {"old": "new"}),
+    ])
+
+    asyncio.run(client.chat.completions.create(model="old", messages=[]))
+    asyncio.run(client.chat.completions.create(model="fresh", messages=[]))
+
+    assert calls == [
+        ("https://primary.test/v1", "old"),
+        ("https://fallback.test/v1", "new"),
+        ("https://primary.test/v1", "fresh"),
+    ]

@@ -6,10 +6,58 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import config
 
 log = logging.getLogger("prompt_blocks")
+
+
+def _read_profile_env_values() -> dict[str, str]:
+    path = os.path.join(str(getattr(config, "JOB_HUNTER_HOME", "") or ""), "profile.env")
+    if not path or not os.path.isfile(path):
+        return {}
+    values: dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                values[key.strip()] = value.strip().strip(chr(39) + chr(34))
+    except Exception as exc:
+        log.debug("profile env contacts read failed: %s", exc)
+    return values
+
+
+def _first_nonempty(*values: str) -> str:
+    for value in values:
+        value = str(value or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def get_candidate_contacts() -> dict[str, str]:
+    profile_env = _read_profile_env_values()
+    telegram = _first_nonempty(
+        os.getenv("CANDIDATE_TELEGRAM"),
+        os.getenv("CONTACT_TELEGRAM"),
+        profile_env.get("CANDIDATE_TELEGRAM"),
+        profile_env.get("CONTACT_TELEGRAM"),
+    )
+    resume_url = _first_nonempty(
+        os.getenv("CANDIDATE_RESUME_URL"),
+        os.getenv("CONTACT_RESUME_URL"),
+        profile_env.get("CANDIDATE_RESUME_URL"),
+        profile_env.get("CONTACT_RESUME_URL"),
+    )
+    if not resume_url:
+        resume_id = str(getattr(config, "HH_PRIMARY_RESUME_ID", "") or "").strip()
+        if resume_id:
+            resume_url = f"https://hh.ru/resume/{resume_id}"
+    return {"telegram": telegram, "resume_url": resume_url}
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -54,6 +102,25 @@ def build_profile_note_block() -> str:
     if not note:
         return ""
     return f"⭐ КАНОНИЧЕСКИЙ ПРОФИЛЬ КАНДИДАТА (этот блок имеет приоритет над разделом «Резюме»):\n{note}\n\n"
+
+def build_contact_block() -> str:
+    """Контакты кандидата для форм, где HR явно просит Telegram или ссылку на резюме."""
+    contacts = get_candidate_contacts()
+    telegram = contacts.get("telegram", "")
+    resume_url = contacts.get("resume_url", "")
+    lines = []
+    if telegram:
+        lines.append(f"- Telegram для связи: {telegram}")
+    if resume_url:
+        lines.append(f"- Ссылка на резюме: {resume_url}")
+    if not lines:
+        return ""
+    return (
+        "Контактные данные кандидата "
+        "(используй только когда форма прямо просит контакты/ссылку на резюме):\n"
+        + "\n".join(lines)
+        + "\n\n"
+    )
 
 
 def build_vacancy_context_block(vacancy_context: str, limit: int = 1500) -> str:

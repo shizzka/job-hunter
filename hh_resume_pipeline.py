@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timedelta
 
 import config
-from outcome import status_bucket as _status_bucket
+from outcome import STATUS_PENDING, STATUS_POSITIVE, STATUS_REJECTED, status_bucket as _status_bucket
 
 
 def _now() -> datetime:
@@ -24,6 +24,69 @@ def _from_iso(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _config_int(name: str, default: int) -> int:
+    try:
+        return int(getattr(config, name, default) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+_RETRY_ALLOWED_TITLE_MARKERS = (
+    "qa",
+    "тест",
+    "test",
+    "quality assurance",
+    "manual qa",
+    "sdet",
+)
+
+_RETRY_BLOCKED_TITLE_MARKERS = (
+    "техническая поддерж",
+    "технической поддерж",
+    "техподдерж",
+    "поддержк",
+    "support",
+    "helpdesk",
+    "сервисный инженер",
+    "сервис-инженер",
+    "сервисн",
+    "техник",
+    "рэа",
+    "радиоэлектрон",
+    "разработчик",
+    "developer",
+    "devops",
+    "программист",
+    "администратор",
+    "оператор",
+)
+
+
+def _normal_text(value: str) -> str:
+    return (value or "").casefold().replace("\xa0", " ").replace("ё", "е")
+
+
+def retry_role_reject_reason(title: str) -> str | None:
+    """Strict role filter for staged resume retries.
+
+    Retry uses historic vacancies that were already applied to. Some old applies were
+    intentionally broad, but sending another resume should stay QA/test-only.
+    """
+    title_norm = _normal_text(title)
+    if not title_norm.strip():
+        return "retry_empty_title"
+
+    has_blocked_marker = any(marker in title_norm for marker in _RETRY_BLOCKED_TITLE_MARKERS)
+    if has_blocked_marker:
+        return "retry_blocked_role_title"
+
+    has_allowed_marker = any(marker in title_norm for marker in _RETRY_ALLOWED_TITLE_MARKERS)
+    if not has_allowed_marker:
+        return "retry_not_qa_title"
+
+    return None
 
 
 _state: dict | None = None
@@ -191,6 +254,7 @@ def _ensure_entry(vacancy: dict) -> dict:
             "last_status": "",
             "last_status_at": "",
             "next_retry_at": "",
+            "retry_reason": "",
             "completed_reason": "",
         },
     )
@@ -232,6 +296,7 @@ def record_successful_apply(vacancy: dict, variant: dict) -> None:
             }
         )
     entry["next_retry_at"] = ""
+    entry["retry_reason"] = ""
     entry["completed_reason"] = ""
     _save()
 
@@ -242,17 +307,54 @@ def mark_terminal(vacancy_id: str, reason: str) -> None:
         return
     entry["completed_reason"] = reason
     entry["next_retry_at"] = ""
+    entry["retry_reason"] = ""
     _save()
 
 
-def _retry_eta_from_last_attempt(entry: dict) -> datetime | None:
+def _retry_eta_from_last_attempt(entry: dict, delay_hours: int | None = None) -> datetime | None:
     attempts = entry.get("attempts") or []
     if not attempts:
         return None
     last_attempt_at = _from_iso(attempts[-1].get("applied_at"))
     if not last_attempt_at:
         return None
-    return last_attempt_at + timedelta(hours=config.HH_RESUME_RETRY_DELAY_HOURS)
+    if delay_hours is None:
+        delay_hours = _config_int("HH_RESUME_RETRY_DELAY_HOURS", 24)
+    return last_attempt_at + timedelta(hours=delay_hours)
+
+
+def _retry_delay_for_bucket(bucket: str) -> int | None:
+    if bucket == STATUS_REJECTED:
+        return _config_int("HH_RESUME_RETRY_DELAY_HOURS", 24)
+    if bucket == STATUS_PENDING and getattr(config, "HH_RESUME_RETRY_ON_SILENCE", False):
+        return _config_int("HH_RESUME_SILENCE_RETRY_DELAY_HOURS", 72)
+    return None
+
+
+def _retry_reason_for_bucket(bucket: str) -> str:
+    if bucket == STATUS_REJECTED:
+        return "rejected"
+    if bucket == STATUS_PENDING:
+        return "silence"
+    return ""
+
+
+def _set_retry_state(entry: dict, vacancy_id: str, bucket: str) -> None:
+    delay_hours = _retry_delay_for_bucket(bucket)
+    if delay_hours is None:
+        entry["next_retry_at"] = ""
+        entry["retry_reason"] = ""
+        return
+
+    if get_next_variant(vacancy_id) is None:
+        entry["completed_reason"] = "pipeline_exhausted"
+        entry["next_retry_at"] = ""
+        entry["retry_reason"] = ""
+        return
+
+    eta = _retry_eta_from_last_attempt(entry, delay_hours)
+    entry["next_retry_at"] = _to_iso(eta)
+    entry["retry_reason"] = _retry_reason_for_bucket(bucket)
 
 
 def sync_negotiation_statuses(items: list[dict]) -> None:
@@ -275,23 +377,19 @@ def sync_negotiation_statuses(items: list[dict]) -> None:
         entry["url"] = item.get("url", entry.get("url", ""))
 
         bucket = _status_bucket(status_text)
-        if bucket == "positive":
+        if bucket == STATUS_POSITIVE:
             entry["completed_reason"] = "positive_response"
             entry["next_retry_at"] = ""
+            entry["retry_reason"] = ""
             continue
 
-        if bucket == "rejected":
-            if get_next_variant(vacancy_id) is None:
-                entry["completed_reason"] = "pipeline_exhausted"
-                entry["next_retry_at"] = ""
-            else:
-                eta = _retry_eta_from_last_attempt(entry)
-                entry["next_retry_at"] = _to_iso(eta)
+        if bucket in {STATUS_REJECTED, STATUS_PENDING}:
+            _set_retry_state(entry, vacancy_id, bucket)
             continue
 
-        if bucket in {"pending", "unknown"}:
-            entry["next_retry_at"] = ""
-            continue
+        entry["next_retry_at"] = ""
+        entry["retry_reason"] = ""
+        continue
 
     _save()
 
@@ -316,13 +414,16 @@ def get_retry_candidates() -> list[dict]:
             continue
         if len(attempts) >= len(variants):
             continue
-        if _status_bucket(entry.get("last_status", "")) != "rejected":
+        bucket = _status_bucket(entry.get("last_status", ""))
+        delay_hours = _retry_delay_for_bucket(bucket)
+        if delay_hours is None:
             entry["next_retry_at"] = ""
+            entry["retry_reason"] = ""
             continue
 
         retry_eta = _from_iso(entry.get("next_retry_at"))
         if retry_eta is None:
-            retry_eta = _retry_eta_from_last_attempt(entry)
+            retry_eta = _retry_eta_from_last_attempt(entry, delay_hours)
         if retry_eta is None or retry_eta > now:
             continue
 
@@ -330,6 +431,14 @@ def get_retry_candidates() -> list[dict]:
         if not next_variant:
             entry["completed_reason"] = "pipeline_exhausted"
             entry["next_retry_at"] = ""
+            continue
+
+        role_reject_reason = retry_role_reject_reason(entry.get("title", ""))
+        if role_reject_reason:
+            entry["completed_reason"] = "retry_filtered_role"
+            entry["next_retry_at"] = ""
+            entry["retry_reason"] = ""
+            entry["retry_filtered_reason"] = role_reject_reason
             continue
 
         items.append(
@@ -349,8 +458,16 @@ def get_retry_candidates() -> list[dict]:
                 "_hh_resume_title": next_variant.get("title", ""),
                 "_hh_resume_id": next_variant.get("id", ""),
                 "_hh_last_status": entry.get("last_status", ""),
+                "_hh_retry_reason": entry.get("retry_reason") or _retry_reason_for_bucket(bucket),
+                "_hh_retry_after": _to_iso(retry_eta),
             }
         )
 
     _save()
+    # Сначала пробуем свежих молчунов: старые pending чаще уже закрыты/архивны.
+    items.sort(key=lambda item: item.get("_hh_retry_after") or "", reverse=True)
+    items.sort(key=lambda item: 0 if item.get("_hh_retry_reason") == "silence" else 1)
+    limit = max(0, _config_int("HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN", 5))
+    if limit:
+        return items[:limit]
     return items

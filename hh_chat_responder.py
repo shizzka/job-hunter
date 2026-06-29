@@ -35,6 +35,7 @@ from typing import Any
 import config
 from llm_client import get_llm_client
 from llm_utils import parse_llm_json
+from google_form_filler import extract_google_form_urls
 from chat_screening import (
     AI_ASSISTANT_AVATAR_URLS,
     AI_NAMES,
@@ -64,6 +65,11 @@ CHATIK_CHAT_READY_SELECTOR = (
 def _is_application_only_preview(preview: str) -> bool:
     """HH lists fresh applications as chats before a real dialog exists."""
     return _normalize_ai_marker_text(preview).endswith("отклик на вакансию")
+
+
+def _is_blocked_company_preview(preview: str) -> bool:
+    """HH can list blocked employers as chats while the direct chat page never renders."""
+    return "компания заблокирована" in _normalize_ai_marker_text(preview)
 
 
 # ── State ───────────────────────────────────────────────────────────────────
@@ -112,6 +118,8 @@ async def _open_chatik_page(
     *,
     settle_ms: int,
     attempts: int = CHATIK_NAVIGATION_ATTEMPTS,
+    ready_timeout_ms: int = CHATIK_READY_TIMEOUT_MS,
+    log_failures: bool = True,
 ) -> None:
     """Open a chatik page and retry once after resetting a stuck tab."""
     last_exc: Exception | None = None
@@ -127,13 +135,17 @@ async def _open_chatik_page(
             await page.wait_for_selector(
                 ready_selector,
                 state="attached",
-                timeout=CHATIK_READY_TIMEOUT_MS,
+                timeout=ready_timeout_ms,
             )
             await page.wait_for_timeout(settle_ms)
             return
         except Exception as exc:
             last_exc = exc
-            log.warning(
+            current_url = getattr(page, "url", "") or ""
+            if "account/login" in current_url:
+                raise RuntimeError(f"chatik redirected to HH login: {current_url}") from exc
+            log_method = log.warning if log_failures else log.debug
+            log_method(
                 "chatik open attempt %d/%d failed for %s: %s",
                 attempt,
                 attempts,
@@ -238,12 +250,17 @@ async def _extract_messages(page) -> dict[str, Any]:
                 b.querySelector('[class*="chat-bubble_outgoing"]')
                 || b.querySelector('[class*="message_my"]')
             );
+            const links = [...b.querySelectorAll('a[href]')].map(a => ({
+                href: a.href || '',
+                text: (a.innerText || '').trim(),
+            }));
             out.push({
                 id: mid,
                 text,
                 author,
                 avatar_alt: avatarAlt,
                 avatar_src: avatarSrc,
+                links,
                 is_ai: false,
                 is_me,
                 is_other: !is_me,
@@ -275,6 +292,39 @@ async def get_messages(page, chat_id: str) -> dict[str, Any]:
         settle_ms=2500,
     )
     return await _extract_messages(page)
+
+
+async def get_messages_safe(
+    page,
+    chat_id: str,
+    *,
+    attempts: int = 1,
+    ready_timeout_ms: int = 5000,
+    settle_ms: int = 800,
+) -> dict[str, Any]:
+    """Best-effort chat read for scanners that should skip broken/empty chats quickly."""
+    url = f"{CHATIK_ROOT}/chat/{chat_id}"
+    try:
+        await _open_chatik_page(
+            page,
+            url,
+            CHATIK_CHAT_READY_SELECTOR,
+            settle_ms=settle_ms,
+            attempts=attempts,
+            ready_timeout_ms=ready_timeout_ms,
+            log_failures=False,
+        )
+        data = await _extract_messages(page)
+        data.setdefault("error", "")
+        return data
+    except Exception as exc:
+        await _reset_page_after_navigation_failure(page)
+        return {
+            "messages": [],
+            "vacancy": {},
+            "error": f"{type(exc).__name__}: {str(exc).splitlines()[0][:180]}",
+            "chat_id": str(chat_id),
+        }
 
 
 # ── LLM ─────────────────────────────────────────────────────────────────────
@@ -465,6 +515,13 @@ def _is_study_certificate_question(text: str) -> bool:
     return any(token in normalized for token in ("обучени", "учеб", "учебы", "учебы", "учебн", "стажировк"))
 
 
+def _is_screening_form_question(text: str) -> bool:
+    normalized = _normalize_ai_marker_text(text)
+    if not any(token in normalized for token in ("форм", "анкет", "опросник", "опрос")):
+        return False
+    return any(token in normalized for token in ("заполн", "пройти", "отправ", "коротк", "вопрос", "ссылк"))
+
+
 def _deterministic_chat_answer(question: str) -> str | None:
     if _is_study_certificate_question(question):
         return (
@@ -473,6 +530,11 @@ def _deterministic_chat_answer(question: str) -> str | None:
             "документы об образовании могу предоставить. Если для стажировки "
             "критична именно справка от текущего учебного заведения, лучше сразу "
             "это уточнить."
+        )
+    if _is_screening_form_question(question):
+        return (
+            "Да, готов пройти короткую форму. Заполню вопросы по опыту и навыкам; "
+            "если понадобится уточнение, отвечу отдельно."
         )
     return None
 
@@ -606,6 +668,14 @@ def chat_send_callback_data(profile_name: str, chat_id: str, message_id: str) ->
     return _chat_callback_data("chat_send", profile_name, chat_id, message_id)
 
 
+def chat_ai_manual_callback_data(profile_name: str, chat_id: str, message_id: str) -> str:
+    return _chat_callback_data("chat_ai_any", profile_name, chat_id, message_id)
+
+
+def chat_manual_send_callback_data(profile_name: str, chat_id: str, message_id: str) -> str:
+    return _chat_callback_data("chat_send_any", profile_name, chat_id, message_id)
+
+
 def build_suspicious_chat_reply_markup(profile_name: str, chat_id: str, message_id: str) -> dict:
     rows = [[{"text": "Открою сам", "url": f"{CHATIK_ROOT}/chat/{chat_id}"}]]
     callback_data = chat_ai_callback_data(profile_name, chat_id, message_id)
@@ -614,9 +684,19 @@ def build_suspicious_chat_reply_markup(profile_name: str, chat_id: str, message_
     return {"inline_keyboard": rows}
 
 
-def build_chat_answer_preview_markup(profile_name: str, chat_id: str, message_id: str) -> dict:
+def build_chat_answer_preview_markup(
+    profile_name: str,
+    chat_id: str,
+    message_id: str,
+    *,
+    allow_any: bool = False,
+) -> dict:
     rows = [[{"text": "Открыть чат", "url": f"{CHATIK_ROOT}/chat/{chat_id}"}]]
-    callback_data = chat_send_callback_data(profile_name, chat_id, message_id)
+    callback_data = (
+        chat_manual_send_callback_data(profile_name, chat_id, message_id)
+        if allow_any
+        else chat_send_callback_data(profile_name, chat_id, message_id)
+    )
     if len(callback_data.encode("utf-8")) <= 64:
         rows.append([{"text": "Отправить ответ", "callback_data": callback_data}])
     return {"inline_keyboard": rows}
@@ -658,6 +738,121 @@ def _find_message(messages: list[dict], message_id: str) -> dict | None:
     return messages[-1] if messages else None
 
 
+def _chat_candidate_kind(message: dict[str, Any]) -> str:
+    if message.get("is_ai"):
+        return "ai"
+    if message.get("is_ai_suspect"):
+        return "suspect"
+    return "manual"
+
+
+def _chat_candidate_kind_label(kind: str) -> str:
+    if kind == "ai":
+        return "AI"
+    if kind == "suspect":
+        return "похоже на AI"
+    return "HR"
+
+
+def _short_chat_text(value: str, limit: int = 220) -> str:
+    text = re.sub(r"\s+", " ", value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+async def list_reply_candidates(hh_client, *, limit: int = 8, max_scan: int = 25) -> dict:
+    # Return recent incoming HH chat messages that can be answered from Telegram buttons.
+    if not hh_client._page:
+        await hh_client.start(headless=True)
+    page = hh_client._page
+    await page.goto("https://hh.ru/", wait_until="domcontentloaded", timeout=30000)
+    await page.wait_for_timeout(1500)
+
+    state = load_state()
+    candidates: list[dict[str, Any]] = []
+    summary = {
+        "ok": True,
+        "chats_scanned": 0,
+        "chats_read": 0,
+        "max_scan": max_scan,
+        "limit": limit,
+        "read_failures": 0,
+        "candidates": candidates,
+    }
+    try:
+        chats = await list_chats(page)
+    except Exception as exc:
+        summary.update({
+            "ok": False,
+            "message": "chatik list is unavailable",
+            "error": str(exc)[:500],
+            "url": getattr(page, "url", ""),
+        })
+        return summary
+    summary["chats_scanned"] = len(chats)
+
+    for chat in chats[: max(1, max_scan)]:
+        if len(candidates) >= max(1, limit):
+            break
+        chat_id = str(chat.get("chat_id") or "")
+        if not chat_id:
+            continue
+        preview_text = chat.get("preview") or ""
+        if _is_application_only_preview(preview_text) or _is_blocked_company_preview(preview_text):
+            continue
+
+        try:
+            data = await get_messages(page, chat_id)
+            summary["chats_read"] += 1
+        except Exception as exc:
+            log.warning("candidate get_messages(%s) failed: %s", chat_id, exc)
+            summary["read_failures"] += 1
+            continue
+
+        messages = data.get("messages") or []
+        last = messages[-1] if messages else None
+        if not last or last.get("is_me"):
+            continue
+        message_id = str(last.get("id") or "")
+        if not message_id:
+            continue
+        chat_state = state.get(chat_id) or {}
+        if chat_state.get("last_replied_msg_id") == message_id:
+            continue
+
+        question = _short_chat_text(last.get("text") or "", limit=260)
+        if not question:
+            continue
+        vacancy = dict(data.get("vacancy") or {})
+        preview_clean = _short_chat_text(preview_text, limit=180)
+        if preview_clean and (not vacancy.get("title") or _normalize_ai_marker_text(vacancy.get("title") or "") == "перейти"):
+            vacancy["title"] = preview_clean
+        kind = _chat_candidate_kind(last)
+        google_form_urls = extract_google_form_urls(last.get("text") or "", last.get("links") or [])
+        if not google_form_urls:
+            for msg in reversed(messages):
+                if msg.get("is_me"):
+                    continue
+                google_form_urls = extract_google_form_urls(msg.get("text") or "", msg.get("links") or [])
+                if google_form_urls:
+                    break
+        candidates.append({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "title": _short_chat_text(vacancy.get("title") or "—", limit=120),
+            "company": _short_chat_text(vacancy.get("company") or "—", limit=80),
+            "author": _short_chat_text(last.get("author") or "HR", limit=80),
+            "question": question,
+            "kind": kind,
+            "kind_label": _chat_candidate_kind_label(kind),
+            "allow_any": kind == "manual",
+            "google_form_urls": google_form_urls[:3],
+        })
+
+    return summary
+
+
 async def _notify_one_chat_result(notifier, detail: dict) -> None:
     if notifier is None:
         return
@@ -688,7 +883,12 @@ async def _notify_one_chat_result(notifier, detail: dict) -> None:
         f"<a href='{CHATIK_ROOT}/chat/{chat_id}'>Открыть чат</a>"
     )
     markup = (
-        build_chat_answer_preview_markup(_active_profile_name(), raw_chat_id, raw_message_id)
+        build_chat_answer_preview_markup(
+            _active_profile_name(),
+            raw_chat_id,
+            raw_message_id,
+            allow_any=bool(detail.get("manual_any")),
+        )
         if raw_chat_id and raw_message_id
         else None
     )
@@ -705,6 +905,7 @@ async def process_one(
     *,
     message_id: str = "",
     allow_suspicious: bool = False,
+    allow_any: bool = False,
     dry_run: bool | None = None,
     notify: bool = False,
 ) -> dict:
@@ -734,10 +935,11 @@ async def process_one(
 
     is_regular_ai = bool(target.get("is_ai"))
     is_approved_suspicious = allow_suspicious and bool(target.get("is_ai_suspect"))
-    if not is_regular_ai and not is_approved_suspicious:
+    is_manual_any = bool(allow_any) and not bool(target.get("is_me"))
+    if not is_regular_ai and not is_approved_suspicious and not is_manual_any:
         return {
             "ok": False,
-            "message": "target message is not AI/suspicious screening",
+            "message": "target message is not AI/suspicious/manual-approved screening",
             "chat_id": chat_id,
             "question": (target.get("text") or "")[:300],
         }
@@ -752,8 +954,14 @@ async def process_one(
         messages,
         vacancy,
         resume_text,
-        question_message=target if is_approved_suspicious else None,
-        question_kind="подозрительное HR-сообщение" if is_approved_suspicious else "AI-помощник",
+        question_message=target if (is_approved_suspicious or is_manual_any) else None,
+        question_kind=(
+            "подозрительное HR-сообщение"
+            if is_approved_suspicious
+            else "ручное HR-сообщение"
+            if is_manual_any
+            else "AI-помощник"
+        ),
     )
     if not answer:
         return {"ok": False, "message": "LLM did not produce answer", "chat_id": chat_id}
@@ -767,6 +975,7 @@ async def process_one(
         "answer": answer,
         "dry_run": dry_run,
         "suspicious": is_approved_suspicious,
+        "manual_any": is_manual_any,
     }
     if dry_run:
         preview = await fill_and_preview(page, chat_id, answer)
@@ -842,8 +1051,13 @@ async def process_all(hh_client, dry_run: bool | None = None, max_replies_per_ch
 
     for chat in chats:
         chat_id = chat["chat_id"]
-        if _is_application_only_preview(chat.get("preview") or ""):
+        preview_text = chat.get("preview") or ""
+        if _is_application_only_preview(preview_text):
             log.debug("chat %s: application-only placeholder, skip", chat_id)
+            continue
+        if _is_blocked_company_preview(preview_text):
+            log.info("chat %s: blocked company preview, skip", chat_id)
+            summary["skipped"] += 1
             continue
         chat_state = state.setdefault(chat_id, {})
         replies_so_far = int(chat_state.get("replies_count", 0))

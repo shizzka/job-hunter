@@ -53,6 +53,9 @@ class HHConfig(SourceConfig):
     tertiary_resume_id: str = ""
     resume_pipeline_enabled: bool = False
     resume_retry_delay_hours: int = 24
+    resume_retry_on_silence: bool = False
+    resume_silence_retry_delay_hours: int = 72
+    resume_retry_max_candidates_per_run: int = 5
     resume_pipeline_file: str = ""
 
 
@@ -308,6 +311,7 @@ def _patch_config(p: Profile):
     config.TELEGRAM_BOT_DEBUG_LOG_FILE = p.telegram_bot_debug_log_file
     config.HH_STATE_DIR = p.state_dir
     config.RESUME_FILE = p.resume_file
+    config.MANUAL_APPLY_QUEUE_FILE = os.path.join(p.home_dir, "manual_apply_queue.json")
 
     # Limits
     config.MAX_APPLICATIONS_PER_RUN = p.max_applications_per_run
@@ -332,6 +336,9 @@ def _patch_config(p: Profile):
     config.HH_TERTIARY_RESUME_ID = p.hh.tertiary_resume_id
     config.HH_RESUME_PIPELINE_ENABLED = p.hh.resume_pipeline_enabled
     config.HH_RESUME_RETRY_DELAY_HOURS = p.hh.resume_retry_delay_hours
+    config.HH_RESUME_RETRY_ON_SILENCE = p.hh.resume_retry_on_silence
+    config.HH_RESUME_SILENCE_RETRY_DELAY_HOURS = p.hh.resume_silence_retry_delay_hours
+    config.HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN = p.hh.resume_retry_max_candidates_per_run
     config.HH_RESUME_PIPELINE_FILE = p.hh.resume_pipeline_file
 
     # SuperJob
@@ -404,6 +411,9 @@ def load_default_profile() -> Profile:
             tertiary_resume_id=config.HH_TERTIARY_RESUME_ID,
             resume_pipeline_enabled=config.HH_RESUME_PIPELINE_ENABLED,
             resume_retry_delay_hours=config.HH_RESUME_RETRY_DELAY_HOURS,
+            resume_retry_on_silence=config.HH_RESUME_RETRY_ON_SILENCE,
+            resume_silence_retry_delay_hours=config.HH_RESUME_SILENCE_RETRY_DELAY_HOURS,
+            resume_retry_max_candidates_per_run=config.HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN,
             resume_pipeline_file=config.HH_RESUME_PIPELINE_FILE,
         ),
         superjob=SuperJobConfig(
@@ -690,6 +700,20 @@ def _apply_env_overrides(profile: Profile, env: dict[str, str]):
         profile.hh.tertiary_resume_title = env["HH_TERTIARY_RESUME_TITLE"].strip()
     if "HH_RESUME_PIPELINE_ENABLED" in env:
         profile.hh.resume_pipeline_enabled = _flag("HH_RESUME_PIPELINE_ENABLED")
+    if "HH_RESUME_RETRY_DELAY_HOURS" in env:
+        profile.hh.resume_retry_delay_hours = _int("HH_RESUME_RETRY_DELAY_HOURS", profile.hh.resume_retry_delay_hours)
+    if "HH_RESUME_RETRY_ON_SILENCE" in env:
+        profile.hh.resume_retry_on_silence = _flag("HH_RESUME_RETRY_ON_SILENCE", profile.hh.resume_retry_on_silence)
+    if "HH_RESUME_SILENCE_RETRY_DELAY_HOURS" in env:
+        profile.hh.resume_silence_retry_delay_hours = _int(
+            "HH_RESUME_SILENCE_RETRY_DELAY_HOURS",
+            profile.hh.resume_silence_retry_delay_hours,
+        )
+    if "HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN" in env:
+        profile.hh.resume_retry_max_candidates_per_run = _int(
+            "HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN",
+            profile.hh.resume_retry_max_candidates_per_run,
+        )
 
     # SuperJob
     if "SUPERJOB_ENABLED" in env:

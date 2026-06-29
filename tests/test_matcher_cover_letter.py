@@ -24,6 +24,27 @@ def test_cover_letter_style_block_is_stable_for_same_vacancy():
     assert "В вашей вакансии" in first
 
 
+def test_cover_letter_positioning_block_for_middle_one_year():
+    block = matcher._build_cover_letter_positioning_block(
+        {"title": "Middle Manual QA Engineer", "snippet": "Опыт от 1 года, REST API, SQL"},
+        "Ручное и API тестирование, опыт от 1 года.",
+    )
+
+    assert "junior+ challenge" in block
+    assert "не называй себя middle" in block
+    assert "REST API" in block
+
+
+def test_cover_letter_positioning_block_for_middle_challenge():
+    block = matcher._build_cover_letter_positioning_block(
+        {"title": "Middle QA Engineer", "snippet": "Опыт от 2 лет, API"},
+        "Manual QA, API, опыт от 2 лет.",
+    )
+
+    assert "Middle/challenge" in block
+    assert "не завышай стаж" in block
+
+
 def test_cover_letter_variant_changes_across_vacancies():
     vacancies = [
         {"id": f"hh-{i}", "title": f"QA инженер {i}", "company": f"Company {i}"}
@@ -201,6 +222,38 @@ def test_evaluate_vacancy_blocks_middle_below_challenge_threshold(monkeypatch):
     assert "middle_challenge_below_threshold" in result["guard_flags"]
 
 
+def test_evaluate_vacancy_treats_middle_one_year_as_junior_plus_challenge(monkeypatch):
+    payload = json.dumps(
+        {
+            "score": 58,
+            "reason": "Manual/API QA подходит, требования опыта около года.",
+            "should_apply": True,
+            "red_flags": [],
+        },
+        ensure_ascii=False,
+    )
+    client = _FakeClient(payload)
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    monkeypatch.setattr(matcher, "_load_resume", lambda: "Junior Manual QA, около 1 года практического тестирования.")
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_AUTO_APPLY_MIN_SCORE", 58, raising=False)
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE", 60, raising=False)
+
+    result = asyncio.run(
+        matcher.evaluate_vacancy(
+            {"id": "hh-middle-one-year", "title": "Middle Manual QA Engineer", "company": "Acme", "snippet": "Опыт от 1 года, API, SQL"},
+            "Middle Manual QA, ручное и API тестирование, опыт от 1 года.",
+        )
+    )
+
+    assert result["should_apply"] is True
+    assert result["score"] == 58
+    assert "middle_one_year_challenge" in result["guard_flags"]
+    assert "middle_challenge_below_threshold" not in result["guard_flags"]
+    prompt = client.chat.completions.calls[0]["messages"][0]["content"]
+    assert "junior+ challenge" in prompt
+    assert "не обычный Middle-фильтр" in prompt
+
+
 def test_evaluate_vacancy_allows_optional_automation_as_plus(monkeypatch):
     payload = json.dumps(
         {
@@ -279,6 +332,54 @@ def test_evaluate_vacancy_applies_min_score_threshold(monkeypatch):
 
     assert result["should_apply"] is False
     assert "below_auto_apply_threshold" in result["guard_flags"]
+
+
+def test_manual_review_candidate_allows_yellow_zone(monkeypatch):
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_MANUAL_REVIEW_ENABLED", True, raising=False)
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_MANUAL_REVIEW_MIN_SCORE", 50, raising=False)
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_MANUAL_REVIEW_MAX_SCORE", 0, raising=False)
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_AUTO_APPLY_MIN_SCORE", 58, raising=False)
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE", 60, raising=False)
+
+    assert matcher.is_manual_review_candidate(
+        {
+            "score": 57,
+            "should_apply": False,
+            "red_flags": [],
+            "guard_flags": ["below_auto_apply_threshold"],
+        }
+    ) is True
+    assert matcher.is_manual_review_candidate(
+        {
+            "score": 59,
+            "should_apply": False,
+            "red_flags": [],
+            "guard_flags": ["middle_challenge_below_threshold"],
+        }
+    ) is True
+
+
+def test_manual_review_candidate_blocks_fatal_guards(monkeypatch):
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_MANUAL_REVIEW_ENABLED", True, raising=False)
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_MANUAL_REVIEW_MIN_SCORE", 50, raising=False)
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_MANUAL_REVIEW_MAX_SCORE", 0, raising=False)
+
+    assert matcher.is_manual_review_candidate(
+        {
+            "score": 57,
+            "should_apply": False,
+            "red_flags": [],
+            "guard_flags": ["automation_heavy_mismatch"],
+        }
+    ) is False
+    assert matcher.is_manual_review_candidate(
+        {
+            "score": 57,
+            "should_apply": False,
+            "red_flags": ["closed_or_archived"],
+            "guard_flags": [],
+        }
+    ) is False
 
 
 def test_evaluate_vacancy_softens_salary_red_flag(monkeypatch):

@@ -20,6 +20,7 @@ import re
 import signal
 import sys
 from collections import defaultdict
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
 
@@ -35,6 +36,7 @@ import analytics
 import search_pipeline
 import apply_orchestrator
 import invitation_sync
+import manual_apply_queue
 from outcome import (
     DECISION_APPLIED_AUTO,
     DECISION_ALREADY_APPLIED,
@@ -42,13 +44,14 @@ from outcome import (
     DECISION_APPLY_FAILED_EXCEPTION,
     DECISION_DRY_RUN_MATCH,
     DECISION_QUESTIONS_REQUIRED,
+    DECISION_MANUAL_REVIEW,
     DECISION_SKIPPED_LOW_SCORE,
     DECISION_SKIPPED_RED_FLAGS,
 )
 from geekjob_client import GeekJobClient
 from habr_career_client import HabrCareerClient
 from hh_client import HHClient
-from matcher import evaluate_vacancy, generate_cover_letter
+from matcher import evaluate_vacancy, generate_cover_letter, is_manual_review_candidate
 from office_bridge import office_log, create_task, task_progress, task_complete
 from office_bridge import close_session as close_office_session
 import notifier
@@ -57,6 +60,27 @@ from notifier import (
     close_session as close_notify_session,
 )
 from superjob_client import SuperJobClient
+
+
+@contextmanager
+def _temporary_config_values(**overrides):
+    previous = {name: getattr(config, name) for name in overrides}
+    try:
+        for name, value in overrides.items():
+            setattr(config, name, value)
+        yield
+    finally:
+        for name, value in previous.items():
+            setattr(config, name, value)
+
+
+def _evaluation_with_guard_flag(evaluation: dict, flag: str) -> dict:
+    updated = dict(evaluation or {})
+    flags = list(updated.get("guard_flags") or [])
+    if flag not in flags:
+        flags.append(flag)
+    updated["guard_flags"] = flags
+    return updated
 
 
 def _build_logging_handlers() -> list[logging.Handler]:
@@ -475,6 +499,161 @@ async def do_grab_resume():
         await client.stop()
 
 
+async def do_manual_apply_token(token: str) -> dict:
+    """Отправить подтвержденный человеком yellow-zone отклик по token из очереди."""
+    item = manual_apply_queue.get_candidate(token)
+    if not item:
+        print(f"❌ Заявка не найдена или устарела: {token}")
+        return {"ok": False, "message": "manual apply token not found"}
+
+    vacancy = dict(item.get("vacancy") or {})
+    evaluation = dict(item.get("evaluation") or {})
+    details = str(item.get("details") or "")
+    source = vacancy.get("source", "hh")
+    score = int(evaluation.get("score") or 0)
+    reason = str(evaluation.get("reason") or "")
+
+    if source != "hh":
+        message = f"ИИ-отклик по кнопке пока поддержан только для hh.ru, источник: {source}."
+        manual_apply_queue.mark_candidate(token, "unsupported", message)
+        await notify_needs_manual(vacancy, score, reason, note=f"{message} Открой вручную.")
+        print(f"❌ {message}")
+        return {"ok": False, "message": message}
+
+    run_id = analytics.new_run_id("manual-ai-apply")
+    hh_client = HHClient()
+    try:
+        await hh_client.start()
+        if not await hh_client.is_logged_in():
+            raise RuntimeError("Не залогинен в hh.ru")
+
+        can_apply, guard_note = hh_guard.can_auto_apply()
+        if not can_apply:
+            manual_apply_queue.mark_candidate(token, "deferred", guard_note)
+            await notify_needs_manual(
+                vacancy,
+                score,
+                reason,
+                note=f"ИИ-отклик не отправил: {guard_note}. Открой вручную или повтори позже.",
+            )
+            print(f"⏸ {guard_note}")
+            return {"ok": False, "message": guard_note, "deferred": True}
+
+        if not details:
+            details = await apply_orchestrator.fetch_vacancy_details(vacancy, hh_client=hh_client)
+        if _looks_like_closed_or_archived(vacancy, details):
+            message = "Вакансия закрыта или в архиве"
+            seen.mark_seen(vacancy.get("id", token), vacancy, "manual_ai_archived")
+            hh_pipeline.mark_terminal(vacancy.get("id", token), "closed_or_archived")
+            manual_apply_queue.mark_candidate(token, "archived", message)
+            analytics.record_decision(
+                run_id=run_id,
+                vacancy=vacancy,
+                decision=DECISION_SKIPPED_LOW_SCORE,
+                evaluation={**evaluation, "should_apply": False, "red_flags": ["closed_or_archived"]},
+                details=details,
+                note="manual_ai:closed_or_archived",
+            )
+            print(f"ℹ️ {message}")
+            return {"ok": False, "message": message, "closed_or_archived": True}
+
+        vacancy["details"] = details
+        cover_limit = apply_orchestrator.get_cover_letter_limit(source)
+        cover = await generate_cover_letter(vacancy, details)
+        cover = cover or ""
+        if len(cover) > cover_limit:
+            cover = cover[:cover_limit]
+        if not (cover or "").strip():
+            message = "ИИ-сопровод не сгенерировался; отклик без текста не отправляю."
+            manual_apply_queue.mark_candidate(token, "failed_no_cover", message)
+            analytics.record_decision(
+                run_id=run_id,
+                vacancy=vacancy,
+                decision=DECISION_APPLY_FAILED,
+                evaluation=_evaluation_with_guard_flag(evaluation, "no_cover_letter"),
+                details=details,
+                note="manual_ai:no_cover_letter",
+            )
+            await notify_needs_manual(
+                vacancy,
+                score,
+                reason,
+                note=f"{message} Открой вручную или повтори позже.",
+            )
+            print(f"❌ {message}")
+            return {"ok": False, "message": message, "no_cover": True}
+
+        apply_result = await apply_orchestrator.dispatch_apply(vacancy, cover, hh_client=hh_client)
+        apply_notes = apply_result.get("notes") or []
+        apply_note_text = "; ".join(str(item) for item in apply_notes if item)
+        apply_message = str(apply_result.get("message", ""))
+
+        if apply_result.get("closed_or_archived") or _looks_like_closed_or_archived(vacancy, apply_message):
+            seen.mark_seen(vacancy.get("id", token), vacancy, "manual_ai_archived")
+            hh_pipeline.mark_terminal(vacancy.get("id", token), "closed_or_archived")
+            manual_apply_queue.mark_candidate(token, "archived", apply_message or "closed_or_archived")
+            print("ℹ️ Вакансия уже закрыта или в архиве")
+            return {"ok": False, "message": apply_message, "closed_or_archived": True}
+
+        if apply_result.get("already_applied"):
+            seen.mark_seen(vacancy.get("id", token), vacancy, "already_applied")
+            hh_pipeline.mark_terminal(vacancy.get("id", token), "already_applied")
+            manual_apply_queue.mark_candidate(token, "already_applied", apply_message or "already applied")
+            print("ℹ️ Уже откликались ранее")
+            return {"ok": True, "already_applied": True, "message": apply_message}
+
+        if apply_result.get("ok"):
+            seen.mark_seen(vacancy.get("id", token), vacancy, "manual_ai_applied")
+            hh_guard.record_apply_success()
+            hh_pipeline.record_successful_apply(vacancy, {"name": "manual_ai", "title": "", "id": ""})
+            manual_apply_queue.mark_candidate(token, "applied", apply_message or "ok")
+            analytics.record_decision(
+                run_id=run_id,
+                vacancy=vacancy,
+                decision=DECISION_APPLIED_AUTO,
+                evaluation={**evaluation, "should_apply": True},
+                details=details,
+                note="manual_ai_yellow_zone",
+            )
+            await notify_application(
+                vacancy,
+                score,
+                cover,
+                note=("Ручной AI-отклик из yellow-zone." + (f" {apply_note_text}" if apply_note_text else "")),
+            )
+            print(f"✅ ИИ-отклик отправлен: {vacancy.get('title', '—')} @ {vacancy.get('company', '—')}")
+            return {"ok": True, "message": apply_message or "ok"}
+
+        message = apply_message or "unknown apply failure"
+        manual_apply_queue.mark_candidate(token, "failed", message)
+        await notify_needs_manual(
+            vacancy,
+            score,
+            reason,
+            note=f"ИИ-отклик не завершился: {message}. Открой вручную.",
+        )
+        print(f"❌ ИИ-отклик не завершился: {message}")
+        return {"ok": False, "message": message}
+
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        manual_apply_queue.mark_candidate(token, "failed", message)
+        await notify_needs_manual(
+            vacancy,
+            score,
+            reason,
+            note=f"ИИ-отклик упал: {message}. Открой вручную.",
+        )
+        log.exception("Manual AI apply failed for token %s", token)
+        print(f"❌ ИИ-отклик упал: {message}")
+        return {"ok": False, "message": message}
+    finally:
+        try:
+            await hh_client.stop()
+        except Exception:
+            pass
+
+
 async def _mark_manual(
     status_msg: str,
     seen_action: str,
@@ -492,6 +671,7 @@ async def _mark_manual(
     set_hunter_status,
     resume_variant: dict | None = None,
     analytics_note: str = "",
+    reply_markup: dict | None = None,
     **extra_analytics,
 ) -> None:
     """Общий хелпер для пометки вакансии как manual (ручной разбор)."""
@@ -522,7 +702,19 @@ async def _mark_manual(
         ),
         "medium",
     )
-    await notify_needs_manual(v, score, reason, note=manual_note)
+    await notify_needs_manual(v, score, reason, note=manual_note, reply_markup=reply_markup)
+
+
+def _build_hh_retry_cover_letter(v: dict, resume_variant: dict | None = None) -> str:
+    title = str(v.get("title") or "вакансию").strip()
+    company = str(v.get("company") or "").strip()
+    company_part = f" в {company}" if company else ""
+    resume_title = str((resume_variant or {}).get("title") or "другой вариант резюме").strip()
+    return (
+        f"Здравствуйте! Направляю {resume_title} на вакансию «{title}»{company_part}. "
+        "Готов обсудить опыт ручного тестирования, проверки web/API, работы с DevTools/Postman "
+        "и участия в подготовке автотестов. Спасибо."
+    )
 
 
 async def do_search(dry_run: bool = False) -> dict:
@@ -742,8 +934,24 @@ async def do_search(dry_run: bool = False) -> dict:
                 )
                 continue
 
-            # LLM-оценка
-            evaluation = await evaluate_vacancy(v, details)
+            # LLM-оценка. Retry-кандидаты уже проходили матчинг при первом отклике,
+            # поэтому здесь только проверяем, что вакансия не закрыта, и пробуем
+            # следующий вариант резюме в рамках staged pipeline.
+            if v.get("_hh_retry"):
+                retry_reason = v.get("_hh_retry_reason") or "retry"
+                last_status = v.get("_hh_last_status") or "нет ответа"
+                evaluation = {
+                    "score": max(70, int(getattr(config, "HH_MATCHER_AUTO_APPLY_MIN_SCORE", 58) or 58)),
+                    "reason": (
+                        "Повторный отклик другим резюме через hh staged resume pipeline "
+                        f"после статуса: {last_status} ({retry_reason})."
+                    ),
+                    "red_flags": [],
+                    "guard_flags": ["hh_resume_retry"],
+                    "should_apply": True,
+                }
+            else:
+                evaluation = await evaluate_vacancy(v, details)
             score = evaluation.get("score", 0)
             reason = evaluation.get("reason", "")
             red_flags = evaluation.get("red_flags", [])
@@ -778,6 +986,47 @@ async def do_search(dry_run: bool = False) -> dict:
                 continue
 
             if not evaluation.get("should_apply", False):
+                if is_manual_review_candidate(evaluation):
+                    profile_name = profile_mod.active().name
+                    candidate = manual_apply_queue.create_candidate(
+                        v,
+                        evaluation,
+                        details,
+                        profile_name=profile_name,
+                    )
+                    token = candidate.get("token", "")
+                    reply_markup = manual_apply_queue.build_manual_apply_markup(v, profile_name, token)
+                    if source == "hh":
+                        note = (
+                            "Желтая зона: вакансия не прошла автоотклик, но score достаточно высокий для ручного решения. "
+                            "Можно открыть самому или нажать 'Откликнуться с ИИ'."
+                        )
+                    else:
+                        note = (
+                            "Желтая зона: вакансия не прошла автоотклик, но score достаточно высокий для ручного решения. "
+                            "Для этого источника оставляю ссылку на ручную проверку."
+                        )
+                    log.info("  Manual review yellow-zone: token=%s", token)
+                    await _mark_manual(
+                        f"Ручной {_source_label(source, short=True)}: yellow-zone",
+                        f"manual_yellow_{source}",
+                        DECISION_MANUAL_REVIEW,
+                        note,
+                        v,
+                        vid,
+                        score,
+                        reason,
+                        evaluation,
+                        details,
+                        result,
+                        bucket,
+                        run_id,
+                        set_hunter_status,
+                        reply_markup=reply_markup,
+                        analytics_note="yellow_zone",
+                    )
+                    continue
+
                 log.info("  Skipped (low score)")
                 seen.mark_seen(vid, v, "skipped_low_score")
                 result["skipped"] += 1
@@ -961,8 +1210,31 @@ async def do_search(dry_run: bool = False) -> dict:
             )
             cover_limit = apply_orchestrator.get_cover_letter_limit(source)
             cover = await generate_cover_letter(v, details)
+            cover = cover or ""
+            if not (cover or "").strip() and v.get("_hh_retry"):
+                cover = _build_hh_retry_cover_letter(v, hh_resume_variant)
+                log.info("  hh retry fallback cover letter used for %s", vid)
             if len(cover) > cover_limit:
                 cover = cover[:cover_limit]
+            if not (cover or "").strip():
+                manual_note = (
+                    "LLM не сгенерировал сопроводительное письмо; "
+                    "автоотклик без текста не отправляю. Проверь вручную."
+                )
+                log.warning("  %s cover letter empty; auto apply blocked for %s", source_label, vid)
+                await _mark_manual(
+                    f"Ручной {short_label}: нет сопровода",
+                    f"manual_{source}_no_cover",
+                    DECISION_APPLY_FAILED,
+                    manual_note,
+                    v, vid, score, reason,
+                    _evaluation_with_guard_flag(evaluation, "no_cover_letter"),
+                    details,
+                    result, bucket, run_id, set_hunter_status,
+                    resume_variant=hh_resume_variant,
+                    analytics_note=f"{source}:no_cover_letter",
+                )
+                continue
             log.info("  %s cover letter: %s", source_label, cover[:100] if cover else "(empty)")
 
             # 5. Пауза перед откликом
@@ -1445,10 +1717,40 @@ async def do_check_invitations():
         await client.stop()
 
 
+async def do_fresh_search() -> dict:
+    """Lightweight HH-only scan for fresh vacancies between full search cycles."""
+    if not config.HH_ENABLED or not getattr(config, "HH_FRESH_SEARCH_ENABLED", True):
+        return {"found": 0, "applied": 0, "skipped": 0, "source_stats": {}, "note": "fresh hh disabled"}
+
+    queries = [str(q).strip() for q in getattr(config, "HH_FRESH_SEARCH_QUERIES", []) if str(q).strip()]
+    if not queries:
+        queries = list(config.SEARCH_QUERIES)
+    pages = max(1, int(getattr(config, "HH_FRESH_SEARCH_PAGES", 1) or 1))
+
+    log.info(
+        "Running fresh HH search: %d queries, %d page(s), interval=%d min",
+        len(queries),
+        pages,
+        getattr(config, "HH_FRESH_SEARCH_INTERVAL_MIN", 0),
+    )
+    await office_log("fresh_search_start", f"Свежий HH: {len(queries)} запросов", "working")
+    with _temporary_config_values(
+        SEARCH_QUERIES=queries,
+        SEARCH_PAGES=pages,
+        SUPERJOB_ENABLED=False,
+        HABR_ENABLED=False,
+        GEEKJOB_ENABLED=False,
+    ):
+        result = await do_search()
+    await office_log("fresh_search_done", f"Свежий HH: найдено {result.get('found', 0)}", "idle")
+    return result
+
+
 async def do_daemon():
     """Основной цикл демона: поиск + проверка приглашений."""
     log.info("Starting daemon mode")
     log.info("  Search interval: %d min", config.SEARCH_INTERVAL_MIN)
+    log.info("  Fresh HH interval: %d min", getattr(config, "HH_FRESH_SEARCH_INTERVAL_MIN", 0))
     log.info("  Invite check interval: %d min", config.INVITE_CHECK_INTERVAL_MIN)
     runtime_control.register_current_process(
         config.DAEMON_PID_FILE,
@@ -1459,9 +1761,11 @@ async def do_daemon():
         await office_log("daemon_start", "Job Hunter запущен в режиме демона", "idle")
 
         search_interval = config.SEARCH_INTERVAL_MIN * 60
+        fresh_interval = max(0, int(getattr(config, "HH_FRESH_SEARCH_INTERVAL_MIN", 0) or 0)) * 60
         invite_interval = config.INVITE_CHECK_INTERVAL_MIN * 60
 
         last_search = 0
+        last_fresh_search = asyncio.get_event_loop().time()
         last_invite_check = 0
 
         stop_event = asyncio.Event()
@@ -1477,7 +1781,7 @@ async def do_daemon():
         while not stop_event.is_set():
             now = asyncio.get_event_loop().time()
 
-            # Поиск
+            # Полный поиск
             if now - last_search >= search_interval:
                 log.info("Running search cycle...")
                 try:
@@ -1485,6 +1789,16 @@ async def do_daemon():
                 except Exception as e:
                     log.error("Search cycle failed: %s", e)
                 last_search = asyncio.get_event_loop().time()
+                last_fresh_search = last_search
+
+            # Легкий HH fresh-поиск между полными циклами
+            elif fresh_interval > 0 and now - last_fresh_search >= fresh_interval:
+                log.info("Running fresh HH search cycle...")
+                try:
+                    await do_fresh_search()
+                except Exception as e:
+                    log.error("Fresh HH search cycle failed: %s", e)
+                last_fresh_search = asyncio.get_event_loop().time()
 
             # Проверка приглашений
             if now - last_invite_check >= invite_interval:
@@ -1613,6 +1927,7 @@ async def main():
     group.add_argument("--habr-login", action="store_true", help="Ручной логин в Хабр Карьере")
     group.add_argument("--geekjob-login", action="store_true", help="Ручной логин в GeekJob")
     group.add_argument("--search", action="store_true", help="Один прогон поиска + откликов")
+    group.add_argument("--fresh-search", action="store_true", help="Легкий HH-поиск свежих вакансий")
     group.add_argument("--check", action="store_true", help="Проверить приглашения")
     group.add_argument("--daemon", action="store_true", help="Демон: поиск + проверка в цикле")
     group.add_argument("--stats", action="store_true", help="Статистика")
@@ -1625,10 +1940,17 @@ async def main():
     group.add_argument("--analyze-resume", action="store_true", help="Анализ резюме (LLM)")
     group.add_argument("--extract-facts", action="store_true", help="LLM извлекает структурированные факты из резюме в facts.json")
     group.add_argument("--chat-respond", action="store_true", help="Ответить на сообщения AI-помощника в чатах hh.ru (dry-run если HH_CHAT_AUTOSEND=0)")
+    group.add_argument("--chat-list-candidates", action="store_true", help="Список последних входящих HH-чатов для ручного AI-ответа")
     group.add_argument("--chat-respond-one", metavar="CHAT_ID", help="Ответить в конкретном hh-чате после ручного подтверждения")
+    group.add_argument("--google-form-preview", metavar="CHAT_ID", help="Подготовить заполнение Google Form из HH-чата")
+    group.add_argument("--google-form-submit", metavar="TOKEN", help="Отправить ранее подготовленную Google Form по токену")
+    group.add_argument("--manual-apply-token", metavar="TOKEN", help="Отправить yellow-zone отклик по Telegram token")
     parser.add_argument("--chat-message-id", default="", help="ID сообщения в hh-чате для --chat-respond-one")
     parser.add_argument("--chat-allow-suspicious", action="store_true", help="Разрешить ответ на подозрительное HR-сообщение без явного AI-маркера")
+    parser.add_argument("--chat-allow-any", action="store_true", help="Для ручного запуска разрешить AI-preview по любому последнему входящему сообщению")
     parser.add_argument("--chat-force-send", action="store_true", help="Для --chat-respond-one отправить ответ сразу, без dry-run preview")
+    parser.add_argument("--chat-list-limit", type=int, default=8, help="Сколько HH-чатов показать для ручного AI-ответа")
+    parser.add_argument("--chat-list-max-scan", type=int, default=25, help="Сколько свежих HH-чатов просмотреть для списка ручного AI-ответа")
 
     args = parser.parse_args()
 
@@ -1664,7 +1986,7 @@ async def main():
 
     # Активируем профиль (патчит config.* для всех модулей). One-shot chat reply
     # запускается из Telegram callback и не должен конфликтовать с daemon lock.
-    if args.chat_respond_one:
+    if args.chat_respond_one or args.chat_list_candidates or args.google_form_preview or args.google_form_submit or args.manual_apply_token:
         profile_mod.activate_no_lock(args.profile)
     else:
         profile_mod.activate(args.profile)
@@ -1732,6 +2054,68 @@ async def main():
                     print(f"    [DRY-RUN, скрин: {d.get('preview',{}).get('screenshot_path','-')}]")
                 elif d.get("sent"):
                     print("    [SENT ✓]")
+        elif args.chat_list_candidates:
+            import hh_chat_responder as cr
+            client = HHClient()
+            try:
+                summary = await cr.list_reply_candidates(
+                    client,
+                    limit=max(1, args.chat_list_limit),
+                    max_scan=max(1, args.chat_list_max_scan),
+                )
+            finally:
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
+            print(json.dumps({"chat_candidates": summary}, ensure_ascii=False))
+        elif args.google_form_preview:
+            import google_form_filler as gforms
+            client = HHClient()
+            try:
+                detail = await gforms.preview_from_hh_chat(
+                    client,
+                    args.google_form_preview,
+                    message_id=args.chat_message_id,
+                    profile_name=args.profile,
+                    notify=True,
+                )
+            finally:
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
+            print("📋 Google Form preview summary:")
+            print(f"  OK: {detail.get('ok')}")
+            print(f"  Сообщение: {detail.get('message', '')}")
+            print(f"  Чат: {detail.get('chat_id', args.google_form_preview)}")
+            print(f"  Токен: {detail.get('token', '')}")
+            print(f"  Вопросов: {len(detail.get('questions') or [])}")
+            filled = (detail.get('fill_result') or {}).get('filled') or []
+            skipped = (detail.get('fill_result') or {}).get('skipped') or []
+            print(f"  Заполнено: {len(filled)} | пропущено: {len(skipped)}")
+            if not detail.get("ok"):
+                sys.exit(1)
+        elif args.google_form_submit:
+            import google_form_filler as gforms
+            client = HHClient()
+            try:
+                detail = await gforms.submit_saved_preview(client, args.google_form_submit, notify=True)
+            finally:
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
+            print("📋 Google Form submit summary:")
+            print(f"  OK: {detail.get('ok')}")
+            print(f"  Сообщение: {detail.get('message', '')}")
+            print(f"  Токен: {detail.get('token', args.google_form_submit)}")
+            if not detail.get("ok"):
+                sys.exit(1)
+        elif args.manual_apply_token:
+            result = await do_manual_apply_token(args.manual_apply_token)
+            if not result.get("ok"):
+                sys.exit(1)
         elif args.chat_respond_one:
             import hh_chat_responder as cr
             client = HHClient()
@@ -1741,7 +2125,8 @@ async def main():
                     args.chat_respond_one,
                     message_id=args.chat_message_id,
                     allow_suspicious=args.chat_allow_suspicious,
-                    dry_run=False if args.chat_force_send else None,
+                    allow_any=args.chat_allow_any,
+                    dry_run=False if args.chat_force_send else True,
                     notify=True,
                 )
             finally:

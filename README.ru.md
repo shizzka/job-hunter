@@ -4,7 +4,7 @@ English version: [README.md](README.md)
 
 `Job Hunter` — Python-инструмент для автоматизации поиска QA/testing вакансий на нескольких job board-платформах, их оценки через LLM и автоотклика там, где площадка это позволяет.
 
-Поддерживает изолированные профили пользователей, LLM-анализ резюме, воронку откликов с A/B тестированием резюме, интерактивный мастер настройки, авто-ответ на анкеты работодателя (radio/checkbox/select), решение captcha hh.ru (vision-LLM + TG-bridge), авто-диалог с AI-помощниками hh.ru и безопасный Telegram-approval flow для подозрительных HR/AI-скринингов под обычным именем рекрутера.
+Поддерживает изолированные профили пользователей, LLM-анализ резюме, воронку откликов со staged retry / A/B тестированием резюме, интерактивный мастер настройки, авто-ответ на анкеты работодателя (radio/checkbox/select), решение captcha hh.ru (vision-LLM + TG-bridge), Telegram-подтверждение AI-ответов в HH-чатах, ручной AI-отклик на yellow-zone вакансии и заполнение Google Forms из ссылок рекрутеров.
 
 Текущий публичный статус: `OBT` (open beta testing) → freeware. Ожидай дрейф селекторов, captcha-ограничения и платформенные edge case'ы.
 
@@ -20,9 +20,15 @@ English version: [README.md](README.md)
 
 ### Анкеты работодателя на hh.ru
 - Авто-ответ на формы с вопросами после отклика: text/textarea/number, **radio/checkbox/select** (включая «Свой вариант» с custom-текстом)
-- Контекст вакансии и канонический профиль кандидата подкладываются в LLM-промпт
-- Retry-без-skip для radio/select (LLM делает best-guess вместо отказа)
+- Контекст вакансии, structured facts, релевантные секции knowledge base и канонический профиль кандидата подкладываются в LLM-промпт
+- Поля со звёздочкой считаются обязательными; для radio/select есть retry-без-skip, где LLM должен выбрать лучший вариант вместо отказа
 - Авто-ответы транслируются в Telegram-уведомление об отклике вместе с цитатами вопросов
+
+### Google Forms из чатов рекрутеров
+- Находит ссылки на Google Forms в HH-чатах, включая `hh.ru/away?to=...` редиректы и короткие `forms.gle` ссылки
+- Готовит Telegram-preview с найденными полями и предложенными ответами до отправки
+- Заполняет форму по резюме, structured facts, релевантным секциям knowledge base и профилю кандидата; обязательные поля в приоритете
+- Отправляет форму только после Telegram-подтверждения, preview-state хранится вне репозитория
 
 ### Captcha hh.ru (hybrid solver)
 - Этап 0: vision-LLM (`qwen3-vl:235b-instruct`) распознаёт текст с captcha-картинки автоматически
@@ -33,8 +39,8 @@ English version: [README.md](README.md)
 - Polling чатов на `chatik.hh.ru` каждые 30 минут (cron), плюс piggyback после поиска
 - Детект официальных ботов hh.ru («ИИ-помощник», «Робот-помощник») по аватарке, автору и самопрезентации в тексте
 - Детект подозрительных scripted HR-сообщений, которые выглядят как AI-скрининг, но приходят от обычного имени рекрутера
-- На официальных AI-ботов можно отвечать автоматически; подозрительные HR-сообщения сначала уходят в Telegram на подтверждение
-- Telegram-preview содержит сгенерированный ответ, ссылку на чат и inline-кнопку **Отправить ответ** для ручного подтверждения
+- Telegram умеет показать свежие входящие кандидаты из главного меню (`Ответ ИИ в чат`), сгенерировать one-shot AI-ответ и отправить его только после подтверждения
+- В строках кандидатов появляются кнопки Google Form, если рекрутер просит заполнить внешнюю анкету
 - Safety: лимит ответов на чат, защита от дублей по message_id, cooldown между ответами и детерминированные безопасные ответы на чувствительные вопросы вроде справки с места учебы
 
 ### База знаний кандидата
@@ -43,12 +49,15 @@ English version: [README.md](README.md)
 - Используется в cover letter, ответах на анкеты, чатах с AI-помощником
 
 ### Анти-бот гигиена
-- 90 секунд между апплаями, лимит 30 за 24 часа (по умолчанию)
+- Настраиваемая пауза между HH-откликами (`HH_MIN_SECONDS_BETWEEN_APPLICATIONS`, по умолчанию 12 секунд)
+- Rolling guard для HH-автооткликов (`HH_AUTO_APPLY_MAX_PER_24H`, по умолчанию 45 откликов за 24 часа) плюс лимиты за прогон
 - `playwright-stealth` скрывает headless-маркеры от hh.ru anti-bot detection
 
 ### Прочее
 - Переводит вакансии в manual review и отправляет Telegram-уведомления, если автоотклик невозможен
+- Yellow-zone вакансии можно отправлять из Telegram через кнопку ручного AI-отклика; feedback-кнопки (`норм` / `мимо`) сохраняются для дальнейшей настройки
 - Ведёт воронку откликов: отклик → просмотр → ожидание / отказ / позитив
+- Поддерживает staged retry другим HH-резюме после отказа или долгого молчания, с QA-only guard по title чтобы не уходить в сервис/поддержку/dev-роли
 - Поддерживает A/B тестирование резюме с отдельной статистикой по вариантам
 - Анализирует резюме через LLM и отправляет рекомендации в Telegram
 - Поддерживает изолированные профили пользователей для многопользовательских сценариев
@@ -72,7 +81,8 @@ English version: [README.md](README.md)
 5. Просит LLM оценить вакансию относительно твоего резюме и кратко объяснить решение.
 6. Если вакансия релевантна:
    - делает автоотклик на поддерживаемых площадках;
-   - либо создаёт manual-review задачу и отправляет уведомление.
+   - для retry-кандидатов выбирает следующий staged HH-вариант резюме;
+   - либо создаёт manual-review задачу с Telegram-кнопками для ручного AI-отклика / feedback.
 
 Подробнее: [Architecture](docs/ARCHITECTURE.md)
 
@@ -155,6 +165,9 @@ cp job-hunter.env.example ~/.job-hunter/job-hunter.env
 - `OFFICE_URL`: необязательный base URL AI Office HTTP API
 - `OFFICE_DB`: необязательный путь к AI Office SQLite
 - `JOB_HUNTER_HOME`: директория для cookies, resume, seen state, runtime status и скриншотов
+- `HH_RESUME_PIPELINE_ENABLED`: staged pipeline повторных HH-откликов разными резюме
+- `HH_RESUME_RETRY_ON_SILENCE`: повторять HH-отклики после долгого молчания / просмотра без ответа
+- `HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN`: лимит retry-кандидатов за один поиск
 
 ### Per-task LLM модели (опционально)
 
@@ -172,8 +185,8 @@ cp job-hunter.env.example ~/.job-hunter/job-hunter.env
 
 ### Анти-бот и captcha
 
-- `HH_MIN_SECONDS_BETWEEN_APPLICATIONS=90`: пауза между откликами
-- `HH_AUTO_APPLY_MAX_PER_24H=30`: лимит откликов за сутки
+- `HH_MIN_SECONDS_BETWEEN_APPLICATIONS=12`: пауза между HH-откликами
+- `HH_AUTO_APPLY_MAX_PER_24H=45`: rolling HH-лимит откликов за 24 часа
 - `HH_ANTI_BOT_COOLDOWN_HOURS=6`: пауза после captcha-блока
 - `HH_CAPTCHA_VISION_RETRIES=2`: попыток vision-OCR перед эскалацией в TG
 - `HH_CAPTCHA_HUMAN_WINDOW_S=300`: окно ожидания ответа человека в TG (потом soft-cooldown 15 мин)
@@ -264,6 +277,7 @@ LLM_MODEL=qwen2.5:14b
 # Поиск и отклик
 ./run.sh dry-run
 ./run.sh search
+./run.sh fresh-search          # лёгкий HH-only поиск свежих вакансий
 ./run.sh check
 ./run.sh daemon
 ./run.sh stats
@@ -273,6 +287,7 @@ LLM_MODEL=qwen2.5:14b
 # AI/screening-чаты hh.ru
 ./run.sh chat-respond           # проверить чаты, ответить AI-помощникам или уведомить о подозрительном HR-скрининге
 ./run.sh chat-respond-one <chat_id> [message_id]  # подготовить one-shot preview ответа для конкретного чата
+# Google Forms и yellow-zone ручные AI-отклики обычно запускаются из Telegram inline-кнопок
 
 # Поиск по конкретным площадкам
 ./run.sh superjob-dry-run
@@ -329,6 +344,8 @@ Runtime state специально хранится вне репозитори�
 - `facts.json` — структурированные факты кандидата (из `./run.sh extract-facts`)
 - `knowledge/*.md` — пользовательская база знаний (about_me, qa_kb, и т.п.)
 - `chat_responder_state.json` — last_replied_msg_id, состояние уведомлений о подозрительных сообщениях и replies_count per чат
+- `manual_apply_queue.json` — очередь Telegram-confirmed yellow-zone AI-откликов
+- `google_form_previews.json` — сохранённые Google Form preview перед Telegram-подтверждением отправки
 - `hh_guard_state.json` — счётчик откликов + anti-bot блокировки
 - runtime status
 - Playwright debug screenshots и HTML-dumps (включая `captcha_*.png` и `chat_preview_*.png`)
@@ -371,6 +388,7 @@ Telegram-уведомления и интеграция с AI Office необя�
 - Дефолтные поисковые наборы ориентированы на `QA`, пока ты не переопределишь их через env или `config.py`.
 - Качество LLM-оценки полностью зависит от выбранного провайдера, модели и качества резюме/базы знаний.
 - Детект подозрительного HR-скрининга эвристический. Такие сообщения специально не автоотправляются от имени обычного рекрутера: перед отправкой нужен Telegram-approval.
+- Заполнение Google Forms — best-effort для обычных рекрутерских анкет; перед submit бот показывает preview ответов.
 - Ollama Cloud имеет недельные лимиты — если упёрся, временно переключайся на другой ключ (см. `~/.job-hunter/llm-providers.env`) или другую модель.
 
 ## Документация

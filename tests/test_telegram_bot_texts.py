@@ -5,6 +5,7 @@ from telegram_bot import (
     BUTTON_DAEMON_ON,
     BUTTON_DRYRUN,
     BUTTON_HH_AUTH,
+    BUTTON_CHAT_AI,
     BUTTON_REPEAT_OFF,
     MENU_RUN,
     ROLE_ADMIN,
@@ -23,6 +24,7 @@ def test_button_labels_are_russian():
     assert BUTTON_BACKFILL == "🗃 Пересчёт аналитики"
     assert BUTTON_AI_LIMITS == "🎁 Лимиты ИИ"
     assert BUTTON_HH_AUTH == "🔐 Вход HH"
+    assert BUTTON_CHAT_AI == "🤖 Ответ ИИ в чат"
     assert BUTTON_DAEMON_ON == "🟢 Демон: вкл"
     assert BUTTON_DAEMON_OFF == "⛔ Демон: выкл"
     assert BUTTON_REPEAT_OFF == "🛑 Повтор: выкл"
@@ -74,3 +76,121 @@ def test_hh_auth_result_and_users_text_are_russian():
     assert "profile " not in users_text
     assert "enabled" not in users_text
     assert "доступ открыт" in users_text
+
+
+def test_manual_feedback_callback_parser():
+    from telegram_bot_ui import _parse_manual_feedback_callback_data
+
+    assert _parse_manual_feedback_callback_data("manual_fb:qa:abcdef123456:good") == ("qa", "abcdef123456", "good")
+    assert _parse_manual_feedback_callback_data("manual_fb:qa:abcdef123456:bad") == ("qa", "abcdef123456", "bad")
+    assert _parse_manual_feedback_callback_data("manual_fb:qa:abcdef123456:wat") == ("", "", "")
+
+
+def test_manual_chat_ai_arg_parser():
+    from telegram_bot import _parse_manual_chat_ai_arg
+
+    assert _parse_manual_chat_ai_arg("https://chatik.hh.ru/chat/5416682595") == ("5416682595", "")
+    assert _parse_manual_chat_ai_arg("/chat_ai 5416682595 14513855732") == ("5416682595", "14513855732")
+    assert _parse_manual_chat_ai_arg("chat_id=5416682595&message_id=14513855732") == ("5416682595", "14513855732")
+    assert _parse_manual_chat_ai_arg("") == ("", "")
+
+
+def test_chat_ai_command_is_available_to_admin_menu():
+    from telegram_bot_ui import ACTIVE_CONFLICT_COMMANDS, ADMIN_BUTTON_MAP, ADMIN_ONLY_COMMANDS
+
+    assert ADMIN_BUTTON_MAP[BUTTON_CHAT_AI] == "/chat_ai"
+    assert "/chat_ai" in ADMIN_ONLY_COMMANDS
+    assert "/chat_ai" in ACTIVE_CONFLICT_COMMANDS
+    assert "/chat_ai" in build_help_text(ROLE_ADMIN, profile_name="qa")
+
+
+def test_chat_ai_button_is_visible_in_admin_main_menu():
+    from telegram_bot_ui import MENU_MAIN, build_reply_markup
+
+    markup = build_reply_markup(ROLE_ADMIN, menu=MENU_MAIN)
+    labels = [button["text"] for row in markup["keyboard"] for button in row]
+
+    assert labels[0] == BUTTON_CHAT_AI
+
+
+def test_chat_ai_manual_callback_parser():
+    from telegram_bot_ui import (
+        _parse_chat_ai_manual_callback_data,
+        _parse_chat_manual_send_callback_data,
+    )
+
+    assert _parse_chat_ai_manual_callback_data("chat_ai_any:qa:5416682595:14513855732") == (
+        "qa",
+        "5416682595",
+        "14513855732",
+    )
+    assert _parse_chat_manual_send_callback_data("chat_send_any:qa:5416682595:14513855732") == (
+        "qa",
+        "5416682595",
+        "14513855732",
+    )
+    assert _parse_chat_ai_manual_callback_data("chat_ai:qa:5416682595:14513855732") == ("", "", "")
+
+
+def test_chat_ai_candidate_list_markup():
+    from telegram_bot import _build_chat_ai_candidates_markup, _build_chat_ai_candidates_text
+
+    summary = {
+        "chats_scanned": 12,
+        "chats_read": 5,
+        "candidates": [
+            {
+                "chat_id": "5416682595",
+                "message_id": "14513855732",
+                "title": "QA Engineer",
+                "company": "Циан",
+                "author": "Олеся",
+                "question": "Заполните короткую форму",
+                "kind_label": "HR",
+                "allow_any": True,
+                "google_form_urls": ["https://forms.gle/abc123"],
+            },
+            {
+                "chat_id": "5417714076",
+                "message_id": "14599999999",
+                "title": "Тестировщик",
+                "company": "НДМ",
+                "author": "ИИ-помощник",
+                "question": "Сколько лет опыта тестирования?",
+                "kind_label": "AI",
+                "allow_any": False,
+            },
+        ],
+    }
+
+    text = _build_chat_ai_candidates_text(summary)
+    markup = _build_chat_ai_candidates_markup("qa", summary)
+
+    assert "Выбери HH-чат" in text
+    assert "QA Engineer @ Циан" in text
+    assert "📝 анкета" in text
+    assert markup["inline_keyboard"][0][0]["callback_data"] == "chat_ai_any:qa:5416682595:14513855732"
+    assert markup["inline_keyboard"][0][1]["text"] == "📝 Анкета 1"
+    assert markup["inline_keyboard"][0][1]["callback_data"] == "gform_preview:qa:5416682595:14513855732"
+    assert markup["inline_keyboard"][1][0]["callback_data"] == "chat_ai:qa:5417714076:14599999999"
+
+
+
+def test_hh_reauth_callback_parser():
+    from telegram_bot_ui import CALLBACK_HH_REAUTH, _parse_hh_reauth_callback_data
+
+    assert CALLBACK_HH_REAUTH == "hh_reauth"
+    assert _parse_hh_reauth_callback_data("hh_reauth:qa") == "qa"
+    assert _parse_hh_reauth_callback_data("hh_reauth:qa.profile-1") == "qa.profile-1"
+    assert _parse_hh_reauth_callback_data("hh_reauth:bad/profile") == ""
+    assert _parse_hh_reauth_callback_data("chat_ai:qa:1:2") == ""
+
+
+def test_hh_reauth_notifier_markup():
+    import notifier
+
+    markup = notifier.build_hh_reauth_markup("qa")
+    buttons = [button for row in markup["inline_keyboard"] for button in row]
+
+    assert any(button.get("callback_data") == "hh_reauth:qa" for button in buttons)
+    assert any(button.get("url") == "https://hh.ru/account/login" for button in buttons)

@@ -53,12 +53,19 @@ HH_RESUME_PIPELINE_FILE = os.path.join(JOB_HUNTER_HOME, "hh_resume_pipeline.json
 # Поисковые запросы (каждый будет искаться отдельно)
 SEARCH_QUERIES = _env_list("HH_SEARCH_QUERIES", [
     "тестировщик",
+    "тестировщик ПО",
     "QA engineer",
+    "Manual QA Engineer",
     "QA тестировщик",
     "manual QA",
+    "QA analyst",
+    "тест-аналитик",
+    "technical QA",
     "инженер по тестированию",
+    "специалист по тестированию",
     "функциональное тестирование",
     "тестировщик веб приложений",
+    "API tester",
 ])
 
 # Фильтры поиска
@@ -75,6 +82,18 @@ SEARCH_EXPERIENCE = ""   # "" = любой, "noExperience", "between1And3", "bet
 SEARCH_SALARY = 0        # минимальная зарплата (0 = не фильтровать)
 SEARCH_ONLY_WITH_SALARY = False  # только с указанной зарплатой
 SEARCH_PAGES = 3                 # сколько страниц листать (hh.ru даёт ~50 на страницу)
+HH_FRESH_SEARCH_ENABLED = _env_flag("HH_FRESH_SEARCH_ENABLED", "1")
+HH_FRESH_SEARCH_INTERVAL_MIN = _env_int("HH_FRESH_SEARCH_INTERVAL_MIN", "120")
+HH_FRESH_SEARCH_PAGES = _env_int("HH_FRESH_SEARCH_PAGES", "1")
+HH_FRESH_SEARCH_QUERIES = _env_list("HH_FRESH_SEARCH_QUERIES", [
+    "manual QA",
+    "QA engineer",
+    "QA тестировщик",
+    "тестировщик",
+    "тестировщик ПО",
+    "инженер по тестированию",
+    "тестировщик API",
+])
 HH_RESUME_PIPELINE_ENABLED = _env_flag("HH_RESUME_PIPELINE_ENABLED", "0")
 HH_PRIMARY_RESUME_TITLE = os.getenv("HH_PRIMARY_RESUME_TITLE", "").strip()
 HH_PRIMARY_RESUME_ID = os.getenv("HH_PRIMARY_RESUME_ID", "").strip()
@@ -83,6 +102,9 @@ HH_SECONDARY_RESUME_ID = os.getenv("HH_SECONDARY_RESUME_ID", "").strip()
 HH_TERTIARY_RESUME_TITLE = os.getenv("HH_TERTIARY_RESUME_TITLE", "").strip()
 HH_TERTIARY_RESUME_ID = os.getenv("HH_TERTIARY_RESUME_ID", "").strip()
 HH_RESUME_RETRY_DELAY_HOURS = _env_int("HH_RESUME_RETRY_DELAY_HOURS", "24")
+HH_RESUME_RETRY_ON_SILENCE = _env_flag("HH_RESUME_RETRY_ON_SILENCE", "0")
+HH_RESUME_SILENCE_RETRY_DELAY_HOURS = _env_int("HH_RESUME_SILENCE_RETRY_DELAY_HOURS", "72")
+HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN = _env_int("HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN", "5")
 # --- Chat responder (AI-помощник hh.ru) ---
 HH_CHAT_RESPONDER_ENABLED = _env_flag("HH_CHAT_RESPONDER_ENABLED", "0")
 HH_CHAT_AUTOSEND = _env_flag("HH_CHAT_AUTOSEND", "0")  # 0 = dry-run + preview в TG
@@ -96,6 +118,10 @@ HH_MATCHER_MODEL = os.getenv("HH_MATCHER_MODEL", "").strip()
 HH_COVER_LETTER_MODEL = os.getenv("HH_COVER_LETTER_MODEL", "").strip()
 HH_MATCHER_AUTO_APPLY_MIN_SCORE = _env_int("HH_MATCHER_AUTO_APPLY_MIN_SCORE", "58")
 HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE = _env_int("HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE", "60")
+HH_MATCHER_MANUAL_REVIEW_ENABLED = _env_flag("HH_MATCHER_MANUAL_REVIEW_ENABLED", "1")
+HH_MATCHER_MANUAL_REVIEW_MIN_SCORE = _env_int("HH_MATCHER_MANUAL_REVIEW_MIN_SCORE", "50")
+HH_MATCHER_MANUAL_REVIEW_MAX_SCORE = _env_int("HH_MATCHER_MANUAL_REVIEW_MAX_SCORE", "0")  # 0 = до порога авто/middle
+MANUAL_APPLY_QUEUE_FILE = os.path.join(JOB_HUNTER_HOME, "manual_apply_queue.json")
 HH_QUESTION_MODEL = os.getenv("HH_QUESTION_MODEL", "").strip()
 HH_CHOICE_MODEL = os.getenv("HH_CHOICE_MODEL", "").strip()
 HH_FACTS_EXTRACT_MODEL = os.getenv("HH_FACTS_EXTRACT_MODEL", "").strip()

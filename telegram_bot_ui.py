@@ -27,6 +27,7 @@ BUTTON_DIGEST = "📰 Дайджест"
 BUTTON_ANALYZE = "🧠 Анализ резюме"
 BUTTON_BACKFILL = "🗃 Пересчёт аналитики"
 BUTTON_GRAB_RESUME = "📄 Забрать резюме"
+BUTTON_CHAT_AI = "🤖 Ответ ИИ в чат"
 BUTTON_AI_LIMITS = "🎁 Лимиты ИИ"
 BUTTON_CLIENTS = "🧑‍💼 Клиенты"
 BUTTON_CLIENT_START = "🆕 Стать клиентом"
@@ -66,6 +67,11 @@ CALLBACK_CLIENT_REJECT = "cr"
 CALLBACK_CLIENT_HH_AUTH = "ch"
 CALLBACK_CHAT_AI_REPLY = "chat_ai"
 CALLBACK_CHAT_AI_SEND = "chat_send"
+CALLBACK_CHAT_AI_MANUAL_REPLY = "chat_ai_any"
+CALLBACK_CHAT_AI_MANUAL_SEND = "chat_send_any"
+CALLBACK_MANUAL_APPLY = "manual_apply"
+CALLBACK_MANUAL_FEEDBACK = "manual_fb"
+CALLBACK_HH_REAUTH = "hh_reauth"
 
 ADMIN_BUTTON_MAP = {
     BUTTON_MENU_MONITOR: "/menu_monitor",
@@ -84,6 +90,7 @@ ADMIN_BUTTON_MAP = {
     BUTTON_ANALYZE: "/analyze",
     BUTTON_BACKFILL: "/backfill",
     BUTTON_GRAB_RESUME: "/grabresume",
+    BUTTON_CHAT_AI: "/chat_ai",
     BUTTON_AI_LIMITS: "/ai_limits",
     BUTTON_CLIENTS: "/clients",
     BUTTON_HH_AUTH: "/hh_auth",
@@ -171,6 +178,9 @@ LEGACY_BUTTON_MAP = {
     "Backfill": "/backfill",
     "Пересчёт аналитики": "/backfill",
     "Забрать резюме": "/grabresume",
+    "Ответ ИИ в чат": "/chat_ai",
+    "ИИ ответ в чат": "/chat_ai",
+    "AI ответ в чат": "/chat_ai",
     "Демон ON": "/daemon_on",
     "Демон OFF": "/daemon_off",
     "Демон: вкл": "/daemon_on",
@@ -187,6 +197,7 @@ LEGACY_BUTTON_MAP = {
 ADMIN_ONLY_COMMANDS = {
     "/profiles", "/profile", "/users", "/grant", "/revoke",
     "/digest", "/backfill", "/grabresume",
+    "/chat_ai", "/ai_chat", "/chat_answer",
     "/daemon_on", "/daemon_off",
     "/ai_limits", "/ai_grant", "/ai_reset",
     "/clients", "/client_approve", "/client_reject", "/client_hh_auth",
@@ -195,6 +206,7 @@ ADMIN_ONLY_COMMANDS = {
 }
 ACTIVE_CONFLICT_COMMANDS = {
     "/search", "/dryrun", "/check", "/digest", "/analyze", "/backfill", "/grabresume",
+    "/chat_ai", "/ai_chat", "/chat_answer",
     "/hh_auth", "/client_hh_auth",
     "/daemon_on", "/daemon_off",
     "/repeat_3day", "/repeat_daily", "/repeat_weekly", "/repeat_off",
@@ -422,6 +434,7 @@ def build_reply_markup(
                 [{"text": BUTTON_SEARCH}, {"text": BUTTON_DRYRUN}],
                 [{"text": BUTTON_CANCEL_ACTIVE}],
                 [{"text": BUTTON_ANALYZE}, {"text": BUTTON_DIGEST}],
+                [{"text": BUTTON_CHAT_AI}],
                 [{"text": BUTTON_HH_AUTH}, {"text": BUTTON_HH_RESUMES}],
                 [{"text": BUTTON_BACKFILL}, {"text": BUTTON_GRAB_RESUME}],
                 [{"text": BUTTON_MENU}],
@@ -443,6 +456,7 @@ def build_reply_markup(
             ]
         else:
             rows = [
+                [{"text": BUTTON_CHAT_AI}],
                 [{"text": BUTTON_MENU_MONITOR}, {"text": BUTTON_MENU_RUN}],
                 [{"text": BUTTON_MENU_REPEAT}, {"text": BUTTON_MENU_ADMIN}],
                 [{"text": BUTTON_PROFILES}, {"text": BUTTON_HELP}],
@@ -541,6 +555,47 @@ def _parse_chat_ai_callback_data(data: str) -> tuple[str, str, str]:
 
 def _parse_chat_send_callback_data(data: str) -> tuple[str, str, str]:
     return _parse_chat_action_callback_data(data, CALLBACK_CHAT_AI_SEND)
+
+
+def _parse_chat_ai_manual_callback_data(data: str) -> tuple[str, str, str]:
+    return _parse_chat_action_callback_data(data, CALLBACK_CHAT_AI_MANUAL_REPLY)
+
+
+def _parse_chat_manual_send_callback_data(data: str) -> tuple[str, str, str]:
+    return _parse_chat_action_callback_data(data, CALLBACK_CHAT_AI_MANUAL_SEND)
+
+
+def _parse_manual_apply_callback_data(data: str) -> tuple[str, str]:
+    prefix = f"{CALLBACK_MANUAL_APPLY}:"
+    if not (data or "").startswith(prefix):
+        return "", ""
+    profile_name, sep, token = data[len(prefix):].partition(":")
+    if not sep:
+        return "", ""
+    return profile_name.strip(), token.strip()
+
+
+def _parse_hh_reauth_callback_data(data: str) -> str:
+    prefix = f"{CALLBACK_HH_REAUTH}:"
+    if not (data or "").startswith(prefix):
+        return ""
+    profile_name = data[len(prefix):].strip()
+    if not profile_name or not re.match(r"^[a-zA-Z0-9_.-]+$", profile_name):
+        return ""
+    return profile_name
+
+
+def _parse_manual_feedback_callback_data(data: str) -> tuple[str, str, str]:
+    prefix = f"{CALLBACK_MANUAL_FEEDBACK}:"
+    if not (data or "").startswith(prefix):
+        return "", "", ""
+    parts = data[len(prefix):].split(":")
+    if len(parts) != 3:
+        return "", "", ""
+    profile_name, token, value = (part.strip() for part in parts)
+    if value not in {"good", "bad"}:
+        return "", "", ""
+    return profile_name, token, value
 
 
 def build_client_review_inline_markup(user_id: int) -> dict:
@@ -658,6 +713,7 @@ def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default") ->
         "⚡ Основные действия доступны через кнопки меню.",
         "• «Мониторинг»: статус, статистика, прогоны, инвайты",
         "• «Запуск»: поиск, тестовый прогон, ИИ-анализ, вход HH",
+        "• Ответ ИИ в HH-чат: кнопка открывает список последних входящих; /chat_ai ссылка_на_чат или chat_id — ручной аварийный ввод",
         "• «Повтор»: расписание и периодические запуски",
     ]
     if role == ROLE_ADMIN:
@@ -690,6 +746,7 @@ def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
             "• Разовый поиск и тестовый прогон",
             "• ИИ-проверка резюме",
             "• Вход HH и захват текущих резюме",
+            "• Ответ ИИ в HH-чат: /chat_ai покажет список последних входящих; можно передать ссылку или chat_id",
         ]
         if role == ROLE_ADMIN:
             lines.extend([
@@ -1431,7 +1488,7 @@ def _format_users_text(users: list[dict]) -> str:
     return "\n".join(lines)
 
 
-_EXPORTED_HELPERS = ['_append_active_controls', '_callback_data', '_client_auth_label', '_client_display_name', '_client_status_label', '_command_conflicts_with_active', '_error_excerpt', '_extract_analyze_markdown', '_format_ai_profile_counts', '_format_elapsed', '_format_interval_label', '_format_runtime_block', '_format_users_text', '_normalize_menu', '_normalize_process_runtime', '_ok_icon', '_parse_callback_data', '_parse_chat_action_callback_data', '_parse_chat_ai_callback_data', '_parse_chat_send_callback_data', '_pretty_command_label', '_pretty_pid', '_pretty_profile_name', '_pretty_runtime_action', '_pretty_runtime_mode', '_pretty_runtime_status', '_pretty_value', '_redact_log_text', '_resolve_guest_command', '_resolve_message_command', '_role_label', '_role_title', '_sanitize_analyze_output', '_sanitize_command_output', '_schedule_preset_label', '_status_icon', '_status_label', '_strip_markdown_markup', '_tail_text_file', '_unique_paths', 'build_ai_limits_text', 'build_busy_reply_markup', 'build_busy_status_text', 'build_client_hh_auth_inline_markup', 'build_client_review_inline_markup', 'build_client_status_text', 'build_clients_inline_markup', 'build_clients_text', 'build_guest_reply_markup', 'build_guest_welcome_text', 'build_help_text', 'build_hh_auth_admin_text', 'build_hh_auth_result_text', 'build_hh_resumes_text', 'build_log_text', 'build_menu_section_text', 'build_profiles_text', 'build_progress_text', 'build_reply_markup', 'build_runs_text', 'build_schedule_text', 'build_stats_text', 'build_status_text', 'format_ai_snapshot_text', 'format_command_result', 'format_run_summary', 'normalize_command', 'parse_hh_auth_command_result', 'split_message']
+_EXPORTED_HELPERS = ['_append_active_controls', '_callback_data', '_client_auth_label', '_client_display_name', '_client_status_label', '_command_conflicts_with_active', '_error_excerpt', '_extract_analyze_markdown', '_format_ai_profile_counts', '_format_elapsed', '_format_interval_label', '_format_runtime_block', '_format_users_text', '_normalize_menu', '_normalize_process_runtime', '_ok_icon', '_parse_callback_data', '_parse_chat_action_callback_data', '_parse_chat_ai_callback_data', '_parse_chat_ai_manual_callback_data', '_parse_chat_manual_send_callback_data', '_parse_chat_send_callback_data', '_parse_manual_apply_callback_data', '_parse_manual_feedback_callback_data', '_pretty_command_label', '_pretty_pid', '_pretty_profile_name', '_pretty_runtime_action', '_pretty_runtime_mode', '_pretty_runtime_status', '_pretty_value', '_redact_log_text', '_resolve_guest_command', '_resolve_message_command', '_role_label', '_role_title', '_sanitize_analyze_output', '_sanitize_command_output', '_schedule_preset_label', '_status_icon', '_status_label', '_strip_markdown_markup', '_tail_text_file', '_unique_paths', 'build_ai_limits_text', 'build_busy_reply_markup', 'build_busy_status_text', 'build_client_hh_auth_inline_markup', 'build_client_review_inline_markup', 'build_client_status_text', 'build_clients_inline_markup', 'build_clients_text', 'build_guest_reply_markup', 'build_guest_welcome_text', 'build_help_text', 'build_hh_auth_admin_text', 'build_hh_auth_result_text', 'build_hh_resumes_text', 'build_log_text', 'build_menu_section_text', 'build_profiles_text', 'build_progress_text', 'build_reply_markup', 'build_runs_text', 'build_schedule_text', 'build_stats_text', 'build_status_text', 'format_ai_snapshot_text', 'format_command_result', 'format_run_summary', 'normalize_command', 'parse_hh_auth_command_result', 'split_message']
 
 __all__ = [
     name

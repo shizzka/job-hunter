@@ -44,6 +44,11 @@ ONE_YEAR_EXPERIENCE_PATTERNS = [
     r"\bдо\s+1\s+года\b",
 ]
 
+AROUND_ONE_YEAR_EXPERIENCE_PATTERNS = [
+    pattern for pattern in ONE_YEAR_EXPERIENCE_PATTERNS
+    if pattern != r"\bjunior\b"
+]
+
 SENIOR_EXPERIENCE_PATTERNS = [
     r"\bsenior\b",
     r"\blead\b",
@@ -216,6 +221,11 @@ def _vacancy_haystack(vacancy: dict, details: str = "") -> str:
     ).casefold()
 
 
+def _is_around_one_year_experience_vacancy(vacancy: dict, details: str = "") -> bool:
+    haystack = _vacancy_haystack(vacancy, details)
+    return any(re.search(pattern, haystack) for pattern in AROUND_ONE_YEAR_EXPERIENCE_PATTERNS)
+
+
 def _is_automation_heavy_vacancy(vacancy: dict, details: str = "") -> bool:
     title = str(vacancy.get("title", "")).casefold()
     haystack = _vacancy_haystack(vacancy, details)
@@ -320,6 +330,36 @@ def _middle_challenge_threshold() -> int:
     auto_threshold = _coerce_score(getattr(config, "HH_MATCHER_AUTO_APPLY_MIN_SCORE", 58), default=58)
     middle_threshold = _coerce_score(getattr(config, "HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE", 60), default=60)
     return max(auto_threshold, middle_threshold)
+
+
+FATAL_MANUAL_REVIEW_GUARDS = {
+    "senior_level_mismatch",
+    "automation_heavy_mismatch",
+    "candidate_claim_overstatement",
+}
+
+
+def _manual_review_score_window() -> tuple[int, int]:
+    lower = _coerce_score(getattr(config, "HH_MATCHER_MANUAL_REVIEW_MIN_SCORE", 50), default=50)
+    configured_upper = _coerce_score(getattr(config, "HH_MATCHER_MANUAL_REVIEW_MAX_SCORE", 0), default=0)
+    if configured_upper > 0:
+        return lower, configured_upper
+    auto_upper = _coerce_score(getattr(config, "HH_MATCHER_AUTO_APPLY_MIN_SCORE", 58), default=58) - 1
+    middle_upper = _middle_challenge_threshold() - 1
+    return lower, max(auto_upper, middle_upper)
+
+
+def is_manual_review_candidate(result: dict) -> bool:
+    if not getattr(config, "HH_MATCHER_MANUAL_REVIEW_ENABLED", True):
+        return False
+    if result.get("should_apply") or result.get("red_flags") or result.get("error_kind"):
+        return False
+    guard_flags = {str(flag) for flag in result.get("guard_flags", [])}
+    if guard_flags & FATAL_MANUAL_REVIEW_GUARDS:
+        return False
+    score = _coerce_score(result.get("score"), default=0)
+    lower, upper = _manual_review_score_window()
+    return lower <= score <= upper
 
 
 def _build_matcher_truth_block() -> str:
@@ -452,6 +492,35 @@ def _cover_letter_variant_index(vacancy: dict, details: str = "") -> int:
     return int(digest[:8], 16) % len(COVER_LETTER_STYLE_VARIANTS)
 
 
+def _build_cover_letter_positioning_block(vacancy: dict, details: str = "") -> str:
+    is_middle = _is_middle_experience_vacancy(vacancy, details)
+    is_around_year = _is_around_one_year_experience_vacancy(vacancy, details)
+    is_junior = _is_junior_or_training_vacancy(vacancy, details) or _is_one_year_experience_vacancy(vacancy, details)
+    haystack = _vacancy_haystack(vacancy, details)
+    notes = ["## Позиционирование под уровень вакансии:"]
+    if is_middle and is_around_year:
+        notes.append(
+            "- Для Middle с около 1 года / 1-3 года: подавай как junior+ challenge - около 1 года QA, сильный технический фон, быстро вхожу в предметку; не называй себя middle."
+        )
+    elif is_middle:
+        notes.append(
+            "- Для Middle/challenge: честно покажи около 1 года QA + инженерную диагностику и ручное/API-тестирование; не обещай самостоятельный middle-уровень и не завышай стаж."
+        )
+    elif is_junior:
+        notes.append(
+            "- Для junior/около года: делай упор на практику ручного тестирования, аккуратность, API/web-проверки и готовность быстро разбираться в продукте."
+        )
+    else:
+        notes.append(
+            "- Для общей QA-вакансии: позиционируй как Manual QA с около 1 года практики и сильным техническим/диагностическим бэкграундом."
+        )
+    if any(token in haystack for token in ("api", "rest", "postman", "swagger", "sql")):
+        notes.append("- Если пишешь про API/SQL, держи это конкретно: REST API, Postman/DevTools/SQL только когда уместно по вакансии и резюме.")
+    if any(token in haystack for token in ("автотест", "automation", "selenium", "playwright", "cypress", "sdet", "aqa")):
+        notes.append("- Если в вакансии есть автоматизация как плюс, формулируй осторожно: участвовал в API-автотестах Python/pytest, не самостоятельный AQA/SDET.")
+    return "\n".join(notes) + "\n"
+
+
 def _build_cover_letter_style_block(vacancy: dict, details: str = "") -> str:
     variant = COVER_LETTER_STYLE_VARIANTS[_cover_letter_variant_index(vacancy, details)]
     return f"""## Вариант стиля для ЭТОГО письма:
@@ -482,8 +551,20 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
     truth_block = _build_matcher_truth_block()
 
     allow_one_year_override = _is_one_year_experience_vacancy(vacancy, details)
+    around_one_year_experience = _is_around_one_year_experience_vacancy(vacancy, details)
     force_senior_reject = _is_senior_experience_vacancy(vacancy, details)
-    force_middle_reject = _is_middle_experience_vacancy(vacancy, details) and not _is_junior_or_training_vacancy(vacancy, details)
+    is_middle_experience = _is_middle_experience_vacancy(vacancy, details)
+    is_junior_or_training = _is_junior_or_training_vacancy(vacancy, details)
+    middle_one_year_challenge = (
+        is_middle_experience
+        and around_one_year_experience
+        and not force_senior_reject
+    )
+    force_middle_reject = (
+        is_middle_experience
+        and not is_junior_or_training
+        and not middle_one_year_challenge
+    )
 
     prompt = f"""Ты — ассистент по поиску работы. Оцени подходит ли вакансия для кандидата.
 
@@ -524,7 +605,8 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
 Дополнительное правило:
 - Требование опыта до 1 года, junior/trainee-уровень или обучение НЕ считать причиной для отказа само по себе.
 - Диапазон 1-3 года не режь только по цифре, но не завышай профиль кандидата.
-- Middle/mid-level или 2+ года именно QA без junior/trainee считай challenge-вакансией: высокий score ставь только если это manual/API/technical QA без самостоятельной AQA/SDET и совпадение действительно сильное.
+- Middle/mid-level с "от 1 года" или "1-3 года" считай junior+ challenge: можно откликаться, если manual/API/technical QA совпадает и нет самостоятельной AQA/SDET.
+- Middle/mid-level или 2+ года именно QA без около-годового требования и без junior/trainee считай challenge-вакансией: высокий score ставь только если это manual/API/technical QA без самостоятельной AQA/SDET и совпадение действительно сильное.
 - Если вакансия в целом QA/тестовая и выглядит адекватной, оценивай её по реальному совпадению, не по шаблонному отказу."""
 
     if force_senior_reject:
@@ -542,6 +624,14 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
 - Если вакансия про Manual QA, API QA, веб/API, требования, тестовую документацию, SQL, Postman/DevTools и НЕ требует самостоятельной роли AQA/SDET/QA Automation, можно ставить высокий score при сильном совпадении.
 - Инженерный и электротехнический бэкграунд кандидата, диагностику, работу с требованиями и руководство командой в электрике учитывай как плюс к системности, но НЕ как 2+ года QA.
 - В reason честно пиши: около 1 года QA + сильный технический/диагностический бэкграунд; не придумывай Middle QA-стаж."""
+
+    if middle_one_year_challenge:
+        prompt += """
+
+Дополнительное правило для Middle с около 1 года / 1-3 года:
+- Это не обычный Middle-фильтр, а junior+ challenge: работодатель может искать сильного джуна/джуна+ с дообучением.
+- Не отклоняй только из-за слова Middle, если требования похожи на около 1 года и задачи Manual/API/technical QA.
+- Всё равно честно держи рамку кандидата: около 1 года QA, технический бэкграунд, без самостоятельной роли AQA/SDET."""
 
     try:
         client = _get_client()
@@ -580,6 +670,12 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
             result["should_apply"] = False
             _add_guard_flag(result, "senior_level_mismatch")
             _append_reason(result, "Senior/Lead-уровень считаем слишком высоким для текущего профиля.")
+        if middle_one_year_challenge and result["score"] >= 40 and not result.get("red_flags"):
+            _add_guard_flag(result, "middle_one_year_challenge")
+            _append_reason(
+                result,
+                "Middle с около-годовым требованием рассматриваем как junior+ challenge без отдельного middle-порога.",
+            )
         if force_middle_reject:
             middle_threshold = _middle_challenge_threshold()
             if result["score"] >= middle_threshold and not result.get("red_flags"):
@@ -648,10 +744,11 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
         knowledge = build_knowledge_base_block(limit_chars=8000)
 
     style_block = _build_cover_letter_style_block(vacancy, details)
+    positioning_block = _build_cover_letter_positioning_block(vacancy, details)
 
     prompt = f"""Ты — ассистент по поиску работы. Напиши короткое сопроводительное письмо.
 
-{profile_note}{knowledge}{style_block}## Резюме кандидата:
+{profile_note}{knowledge}{style_block}{positioning_block}## Резюме кандидата:
 {resume}
 
 ## Вакансия:

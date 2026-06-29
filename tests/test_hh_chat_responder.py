@@ -296,3 +296,23 @@ def test_preview_markup_contains_send_callback():
         and button.get("callback_data") == "chat_send:qa:5394116371:14410048077"
         for button in buttons
     )
+
+
+def test_get_messages_safe_returns_empty_result_on_timeout(monkeypatch):
+    async def fail_open(*args, **kwargs):
+        raise TimeoutError("chat did not render")
+
+    class FakePage:
+        url = f"{chat_responder.CHATIK_ROOT}/chat/123"
+
+        async def goto(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(chat_responder, "_open_chatik_page", fail_open)
+
+    result = asyncio.run(chat_responder.get_messages_safe(FakePage(), "123"))
+
+    assert result["messages"] == []
+    assert result["vacancy"] == {}
+    assert result["chat_id"] == "123"
+    assert "TimeoutError" in result["error"]

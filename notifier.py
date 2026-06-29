@@ -3,6 +3,7 @@ import html
 import json
 import logging
 import os
+import re
 import time
 import aiohttp
 
@@ -220,6 +221,29 @@ def _html(value, limit: int | None = 1000) -> str:
     return html.escape(text)
 
 
+def build_hh_reauth_markup(profile_name: str = "default") -> dict:
+    safe_profile = re.sub(r"[^a-zA-Z0-9_.-]+", "_", profile_name or "default")
+    return {
+        "inline_keyboard": [
+            [{"text": "🔐 Восстановить вход HH", "callback_data": f"hh_reauth:{safe_profile}"}],
+            [{"text": "Открыть HH", "url": "https://hh.ru/account/login"}],
+        ]
+    }
+
+
+async def notify_hh_session_required(profile_name: str = "default", reason: str = "") -> bool:
+    detail = _html(reason, limit=600)
+    detail_block = f"\n\n<b>Причина:</b> {detail}" if detail else ""
+    text = (
+        "⚠️ <b>HH-сессия слетела</b>\n\n"
+        "Поиск по hh.ru и чтение HH-чатов сейчас недоступны. "
+        "Нужно обновить вход, иначе daemon будет пропускать HH без откликов."
+        f"\n\n<b>Профиль:</b> {_html(profile_name, limit=80)}"
+        f"{detail_block}"
+    )
+    return await send_message_with_markup(text, reply_markup=build_hh_reauth_markup(profile_name))
+
+
 async def notify_search_started(source_labels: list[str]):
     """Уведомить о старте прогона поиска."""
     if not source_labels:
@@ -357,7 +381,13 @@ async def notify_invitation(invitation: dict):
     await send_message(text)
 
 
-async def notify_needs_manual(vacancy: dict, score: int, reason: str, note: str | None = None):
+async def notify_needs_manual(
+    vacancy: dict,
+    score: int,
+    reason: str,
+    note: str | None = None,
+    reply_markup: dict | None = None,
+):
     """Уведомить о подходящей вакансии, где нужен ручной отклик."""
     extra_note = note or "Работодатель требует ответить на вопросы"
     text = (
@@ -371,7 +401,10 @@ async def notify_needs_manual(vacancy: dict, score: int, reason: str, note: str 
         f"💡 {reason[:250] if reason else 'Нужно проверить вакансию вручную'}\n\n"
         f"<a href=\"{vacancy.get('url', '')}\">Открыть и откликнуться</a>"
     )
-    await send_message(text)
+    if reply_markup:
+        await send_message_with_markup(text, reply_markup=reply_markup)
+    else:
+        await send_message(text)
 
 
 def _format_source_stats(source_stats: dict | None) -> str:

@@ -6,6 +6,7 @@
 import inspect
 import logging
 import re
+import time
 from typing import Callable, Awaitable
 
 import config
@@ -21,6 +22,29 @@ from habr_career_client import HabrCareerClient
 from geekjob_client import GeekJobClient
 
 log = logging.getLogger("agent")
+_HH_AUTH_NOTICE_LAST_TS = 0.0
+_HH_AUTH_NOTICE_COOLDOWN_S = 30 * 60
+
+
+def _active_profile_name() -> str:
+    try:
+        import profile as profile_mod
+        return str(getattr(profile_mod.active(), "name", "") or "default")
+    except Exception:
+        return "default"
+
+
+async def _notify_hh_auth_required_once(reason: str) -> None:
+    global _HH_AUTH_NOTICE_LAST_TS
+    now = time.time()
+    if now - _HH_AUTH_NOTICE_LAST_TS < _HH_AUTH_NOTICE_COOLDOWN_S:
+        return
+    _HH_AUTH_NOTICE_LAST_TS = now
+    try:
+        import notifier
+        await notifier.notify_hh_session_required(_active_profile_name(), reason=reason)
+    except Exception as exc:
+        log.warning("failed to notify HH auth required: %s", exc)
 
 
 # ── Дедупликация ──
@@ -62,6 +86,7 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
     if not await client.is_logged_in():
         log.warning("hh.ru is not logged in, skipping hh source")
         await office_log("hh_skipped", "hh.ru пропущен: нет авторизации", "thinking")
+        await _notify_hh_auth_required_once("is_logged_in() returned false before HH collection")
         return []
 
     all_vacancies = []
@@ -331,6 +356,10 @@ def keyword_filter(
     filtered = []
     for v in vacancies:
         bucket = get_source_bucket(source_stats, v)
+        if v.get("_hh_retry"):
+            bucket["relevant"] += 1
+            filtered.append(v)
+            continue
         reject_reason = filters.check_vacancy(v)
         if reject_reason:
             seen.mark_seen(v["id"], v, "skipped_keyword_filter")

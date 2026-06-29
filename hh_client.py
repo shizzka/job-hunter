@@ -2025,7 +2025,8 @@ class HHClient:
                 "closed_or_archived": True,
             }
 
-        if await self._has_existing_response_ui():
+        wants_specific_resume = bool(preferred_resume_title or preferred_resume_id)
+        if await self._has_existing_response_ui() and not wants_specific_resume:
             return await finalize_success("Уже откликались ранее", already_applied=True)
 
         # Ищем кнопку "Откликнуться" — собираем все data-qa для дебага
@@ -2046,7 +2047,11 @@ class HHClient:
                 "a:has-text('Откликнуться повторно')"
             )
             if reapply_btn:
-                return {"ok": True, "message": "Уже откликались ранее", "already_applied": True}
+                if wants_specific_resume:
+                    log.info("Found reapply button for preferred resume flow")
+                    apply_btn = reapply_btn
+                else:
+                    return {"ok": True, "message": "Уже откликались ранее", "already_applied": True}
 
         if not apply_btn:
             # Попробуем найти по тексту
@@ -2056,8 +2061,9 @@ class HHClient:
             )
 
         if not apply_btn:
-            # Возможно уже откликались
-            if await self._has_existing_response_ui():
+            # Возможно уже откликались. Но если задан preferred resume, продолжаем:
+            # на hh повторный отклик может быть доступен отдельной кнопкой/формой.
+            if await self._has_existing_response_ui() and not wants_specific_resume:
                 return {"ok": True, "message": "Уже откликались ранее", "already_applied": True}
 
             (

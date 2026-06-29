@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import signal
 import time
 import traceback
@@ -18,6 +19,7 @@ import aiohttp
 
 import analytics
 import client_hh_auth
+import manual_apply_queue
 import config
 import profile as profile_mod
 import runtime_control
@@ -63,6 +65,117 @@ def _configure_logging(force: bool = False) -> None:
 _configure_logging()
 
 
+def _parse_manual_chat_ai_arg(raw: str) -> tuple[str, str]:
+    text = (raw or "").strip()
+    if not text:
+        return "", ""
+
+    chat_id = ""
+    message_id = ""
+
+    chat_match = re.search(r"(?:chatik\.hh\.ru|hh\.ru)?/chat/(\d{6,})", text, re.I)
+    if chat_match:
+        chat_id = chat_match.group(1)
+
+    if not chat_id:
+        chat_param = re.search(r"(?:chat_id|chatId|chat)=([0-9]{6,})", text, re.I)
+        if chat_param:
+            chat_id = chat_param.group(1)
+
+    msg_param = re.search(r"(?:message_id|messageId|msg|mid)=([0-9]{6,})", text, re.I)
+    if msg_param:
+        message_id = msg_param.group(1)
+
+    numbers = re.findall(r"\d{6,}", text)
+    if not chat_id and numbers:
+        chat_id = numbers[0]
+    if not message_id:
+        for number in numbers:
+            if number != chat_id:
+                message_id = number
+                break
+
+    return chat_id, message_id
+
+
+def _safe_chat_callback_profile(profile_name: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_.-]+", "_", profile_name or "default")
+
+
+def _chat_ai_candidate_callback_data(profile_name: str, candidate: dict) -> str:
+    action = CALLBACK_CHAT_AI_MANUAL_REPLY if candidate.get("allow_any") else CALLBACK_CHAT_AI_REPLY
+    chat_id = str(candidate.get("chat_id") or "")
+    message_id = str(candidate.get("message_id") or "")
+    return f"{action}:{_safe_chat_callback_profile(profile_name)}:{chat_id}:{message_id}"
+
+
+def _parse_chat_candidates_stdout(stdout: str) -> dict:
+    for line in reversed((stdout or "").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        summary = payload.get("chat_candidates")
+        if isinstance(summary, dict):
+            return summary
+    return {}
+
+
+def _build_chat_ai_candidates_text(summary: dict) -> str:
+    if summary.get("ok") is False:
+        url = str(summary.get("url") or "")
+        if "account/login" in url:
+            return "HH просит заново войти в аккаунт, поэтому список чатов сейчас недоступен. Нажми `Вход HH`, обнови сессию и повтори `Ответ ИИ в чат`."
+        message = str(summary.get("message") or "не удалось открыть chatik")
+        return f"Не удалось получить список HH-чатов: {message}"
+    candidates = list(summary.get("candidates") or [])
+    scanned = int(summary.get("chats_scanned") or 0)
+    read = int(summary.get("chats_read") or 0)
+    if not candidates:
+        return (
+            "Не нашёл свежих входящих HH-сообщений для ручного ИИ-ответа.\n"
+            f"Проверено чатов: {read}/{scanned}."
+        )
+    lines = [
+        "Выбери HH-чат для ИИ-предпросмотра.",
+        f"Проверено чатов: {read}/{scanned}.",
+    ]
+    for idx, item in enumerate(candidates, 1):
+        title = str(item.get("title") or "—")[:120]
+        company = str(item.get("company") or "—")[:80]
+        kind = str(item.get("kind_label") or item.get("kind") or "HR")[:40]
+        author = str(item.get("author") or "HR")[:80]
+        question = str(item.get("question") or "").replace("\n", " ")[:220]
+        marker = " 📝 анкета" if item.get("google_form_urls") else ""
+        lines.append(f"\n{idx}. [{kind}]{marker} {title} @ {company}\n{author}: {question}")
+    return "\n".join(lines)[:3900]
+
+
+def _build_chat_ai_candidates_markup(profile_name: str, summary: dict) -> dict | None:
+    rows = []
+    for idx, item in enumerate(list(summary.get("candidates") or [])[:8], 1):
+        chat_id = str(item.get("chat_id") or "")
+        message_id = str(item.get("message_id") or "")
+        if not chat_id or not message_id:
+            continue
+        callback_data = _chat_ai_candidate_callback_data(profile_name, item)
+        row = []
+        if len(callback_data.encode("utf-8")) <= 64:
+            row.append({"text": f"🤖 {idx}", "callback_data": callback_data})
+        if item.get("google_form_urls"):
+            try:
+                import google_form_filler as gforms
+                form_callback = gforms.google_form_preview_callback_data(profile_name, chat_id, message_id)
+            except Exception:
+                form_callback = ""
+            if form_callback and len(form_callback.encode("utf-8")) <= 64:
+                row.append({"text": f"📝 Анкета {idx}", "callback_data": form_callback})
+        row.append({"text": f"Открыть {idx}", "url": f"https://chatik.hh.ru/chat/{chat_id}"})
+        rows.append(row)
+    return {"inline_keyboard": rows} if rows else None
 
 
 class TelegramBot:
@@ -135,6 +248,27 @@ class TelegramBot:
                 "updated_at": datetime.now().isoformat(timespec="seconds"),
             },
         )
+
+    def _append_chat_ai_audit_event(self, event: str, **payload: object) -> None:
+        path = getattr(config, "TELEGRAM_BOT_DEBUG_LOG_FILE", "") or ""
+        if not path:
+            return
+        record = {
+            "event": event,
+            "profile": self.profile_name,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            **payload,
+        }
+        try:
+            import json
+
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            log.warning("chat AI audit write failed: %s", exc)
 
     def _prune_active_commands(self) -> None:
         stale_profiles = [
@@ -647,6 +781,13 @@ class TelegramBot:
                 first_result = result
         return first_result
 
+    async def _send_text_safely(self, chat_id: int, text: str, *, reply_markup: dict | None = None) -> dict | None:
+        try:
+            return await self._send_text(chat_id, text, reply_markup=reply_markup)
+        except Exception as exc:
+            log.warning("Telegram sendMessage failed chat=%s: %s", chat_id, exc)
+            return None
+
     async def _edit_text(self, chat_id: int, message_id: int, text: str, *, reply_markup: dict | None = None) -> None:
         payload = {
             "chat_id": chat_id,
@@ -1133,11 +1274,126 @@ class TelegramBot:
             await self._answer_callback_query(callback_id, "Не удалось определить чат.", show_alert=True)
             return
 
+        if raw_data.startswith(f"{CALLBACK_HH_REAUTH}:"):
+            profile_name = _parse_hh_reauth_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names():
+                await self._answer_callback_query(callback_id, "Не удалось определить профиль.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id, "Запускаю вход HH…")
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            await self._start_profile_hh_auth_capture(chat_id, principal, profile_name=profile_name)
+            return
+
+        if raw_data.startswith("gform_preview:"):
+            import google_form_filler as gforms
+            profile_name, hh_chat_id, hh_message_id = gforms.parse_google_form_preview_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names():
+                await self._answer_callback_query(callback_id, "Не удалось определить профиль.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id, "Готовлю Google Form preview…")
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            await self._start_google_form_preview(
+                chat_id,
+                principal,
+                profile_name=profile_name,
+                hh_chat_id=hh_chat_id,
+                hh_message_id=hh_message_id,
+            )
+            return
+
+        if raw_data.startswith("gform_submit:"):
+            import google_form_filler as gforms
+            profile_name, token = gforms.parse_google_form_submit_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names() or not token:
+                await self._answer_callback_query(callback_id, "Не удалось определить форму.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id, "Отправляю Google Form…")
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            await self._start_google_form_submit(
+                chat_id,
+                principal,
+                profile_name=profile_name,
+                token=token,
+            )
+            return
+
+        if raw_data.startswith(f"{CALLBACK_CHAT_AI_MANUAL_REPLY}:"):
+            profile_name, hh_chat_id, hh_message_id = _parse_chat_ai_manual_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names():
+                await self._answer_callback_query(callback_id, "Не удалось определить профиль.", show_alert=True)
+                return
+            self._append_chat_ai_audit_event(
+                "callback",
+                action="preview",
+                telegram_chat_id=chat_id,
+                telegram_message_id=message_id,
+                user_id=user_id,
+                profile_name=profile_name,
+                hh_chat_id=hh_chat_id,
+                hh_message_id=hh_message_id,
+                allow_any=True,
+            )
+            await self._answer_callback_query(callback_id, "Генерирую ответ через ИИ…")
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            await self._start_chat_ai_reply(
+                chat_id,
+                principal,
+                profile_name=profile_name,
+                hh_chat_id=hh_chat_id,
+                hh_message_id=hh_message_id,
+                allow_any=True,
+            )
+            return
+
+        if raw_data.startswith(f"{CALLBACK_CHAT_AI_MANUAL_SEND}:"):
+            profile_name, hh_chat_id, hh_message_id = _parse_chat_manual_send_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names():
+                await self._answer_callback_query(callback_id, "Не удалось определить профиль.", show_alert=True)
+                return
+            self._append_chat_ai_audit_event(
+                "callback",
+                action="send",
+                telegram_chat_id=chat_id,
+                telegram_message_id=message_id,
+                user_id=user_id,
+                profile_name=profile_name,
+                hh_chat_id=hh_chat_id,
+                hh_message_id=hh_message_id,
+                allow_any=True,
+            )
+            await self._answer_callback_query(callback_id, "Отправляю ответ в HH…")
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            await self._start_chat_ai_reply(
+                chat_id,
+                principal,
+                profile_name=profile_name,
+                hh_chat_id=hh_chat_id,
+                hh_message_id=hh_message_id,
+                force_send=True,
+                allow_any=True,
+            )
+            return
+
         if raw_data.startswith(f"{CALLBACK_CHAT_AI_REPLY}:"):
             profile_name, hh_chat_id, hh_message_id = _parse_chat_ai_callback_data(raw_data)
             if not profile_name or profile_name not in self._profile_names():
                 await self._answer_callback_query(callback_id, "Не удалось определить профиль.", show_alert=True)
                 return
+            self._append_chat_ai_audit_event(
+                "callback",
+                action="preview",
+                telegram_chat_id=chat_id,
+                telegram_message_id=message_id,
+                user_id=user_id,
+                profile_name=profile_name,
+                hh_chat_id=hh_chat_id,
+                hh_message_id=hh_message_id,
+            )
             await self._answer_callback_query(callback_id, "Генерирую ответ через ИИ…")
             if message_id > 0:
                 await self._edit_reply_markup(chat_id, message_id)
@@ -1155,6 +1411,16 @@ class TelegramBot:
             if not profile_name or profile_name not in self._profile_names():
                 await self._answer_callback_query(callback_id, "Не удалось определить профиль.", show_alert=True)
                 return
+            self._append_chat_ai_audit_event(
+                "callback",
+                action="send",
+                telegram_chat_id=chat_id,
+                telegram_message_id=message_id,
+                user_id=user_id,
+                profile_name=profile_name,
+                hh_chat_id=hh_chat_id,
+                hh_message_id=hh_message_id,
+            )
             await self._answer_callback_query(callback_id, "Отправляю ответ в HH…")
             if message_id > 0:
                 await self._edit_reply_markup(chat_id, message_id)
@@ -1166,6 +1432,46 @@ class TelegramBot:
                 hh_message_id=hh_message_id,
                 force_send=True,
             )
+            return
+
+        if raw_data.startswith(f"{CALLBACK_MANUAL_APPLY}:"):
+            profile_name, token = _parse_manual_apply_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names() or not token:
+                await self._answer_callback_query(callback_id, "Не удалось определить вакансию.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id, "Отправляю отклик через ИИ…")
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            await self._start_manual_ai_apply(
+                chat_id,
+                principal,
+                profile_name=profile_name,
+                token=token,
+            )
+            return
+
+        if raw_data.startswith(f"{CALLBACK_MANUAL_FEEDBACK}:"):
+            profile_name, token, feedback = _parse_manual_feedback_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names() or not token:
+                await self._answer_callback_query(callback_id, "Не удалось определить вакансию.", show_alert=True)
+                return
+            item = manual_apply_queue.record_feedback(token, feedback, user_id=user_id)
+            if not item:
+                await self._answer_callback_query(callback_id, "Не удалось записать оценку.", show_alert=True)
+                return
+            label = manual_apply_queue.feedback_label(feedback)
+            await self._answer_callback_query(callback_id, f"Записал: {label}")
+            if message_id > 0:
+                if feedback == "good":
+                    reply_markup = manual_apply_queue.build_manual_apply_markup(
+                        item.get("vacancy") or {},
+                        profile_name,
+                        token,
+                        include_feedback=False,
+                    )
+                    await self._edit_reply_markup(chat_id, message_id, reply_markup=reply_markup)
+                else:
+                    await self._edit_reply_markup(chat_id, message_id)
             return
 
         # captcha-retry: ручной перезапуск поиска из TG (после пропущенного окна captcha).
@@ -1301,6 +1607,9 @@ class TelegramBot:
 
         if command == "/hh_auth":
             client = self._client_record(principal["user_id"])
+            if not client and role == ROLE_ADMIN:
+                await self._start_profile_hh_auth_capture(chat_id, principal, profile_name=profile_name)
+                return
             if not client:
                 await self._send_text(
                     chat_id,
@@ -1602,6 +1911,35 @@ class TelegramBot:
             await self._send_log_tail(chat_id, principal, profile_name=profile_name, kind="chat_log")
             return
 
+        if command in {"/chat_ai", "/ai_chat", "/chat_answer"}:
+            hh_chat_id, hh_message_id = _parse_manual_chat_ai_arg(arg)
+            if not hh_chat_id:
+                await self._start_chat_ai_candidate_list(
+                    chat_id,
+                    principal,
+                    profile_name=profile_name,
+                )
+                return
+            self._append_chat_ai_audit_event(
+                "manual_command",
+                action="preview",
+                telegram_chat_id=chat_id,
+                user_id=int(principal.get("user_id") or 0),
+                profile_name=profile_name,
+                hh_chat_id=hh_chat_id,
+                hh_message_id=hh_message_id,
+                allow_any=True,
+            )
+            await self._start_chat_ai_reply(
+                chat_id,
+                principal,
+                profile_name=profile_name,
+                hh_chat_id=hh_chat_id,
+                hh_message_id=hh_message_id,
+                allow_any=True,
+            )
+            return
+
         command_map = {
             "/search": ("--search", "search", 3600),
             "/dryrun": ("--dry-run", "dry-run", 3600),
@@ -1722,6 +2060,123 @@ class TelegramBot:
             return
 
         await self._send_text(chat_id, f"❓ Неизвестная команда: {command}", reply_markup=self._menu_reply_markup(principal))
+
+    async def _start_profile_hh_auth_capture(
+        self,
+        chat_id: int,
+        principal: dict,
+        *,
+        profile_name: str,
+    ) -> None:
+        role = principal.get("role", ROLE_USER)
+        reply_markup = self._menu_reply_markup(principal)
+        if profile_name not in self._profile_names():
+            await self._send_text(chat_id, f"❌ Неизвестный профиль: {profile_name}", reply_markup=reply_markup)
+            return
+        if self._has_active_command(profile_name):
+            await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+            return
+
+        label = "hh auth capture"
+        active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
+        self._append_debug_log(
+            "profile_hh_auth_capture_started",
+            admin_user_id=principal.get("user_id"),
+            profile_name=profile_name,
+            argv=runtime_control.client_hh_auth_command_argv(profile_name, timeout_sec=900),
+        )
+        progress_message = await self._send_text(
+            chat_id,
+            "🔐 Запускаю вход HH для выбранного профиля. Откроется браузер; войди в HH, дальше cookies сохранятся автоматически.",
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        progress_task: asyncio.Task | None = None
+        progress_message_id = int((progress_message or {}).get("message_id") or 0)
+        if progress_message_id > 0:
+            progress_task = asyncio.create_task(
+                self._run_progress_indicator(
+                    chat_id=chat_id,
+                    message_id=progress_message_id,
+                    label=label,
+                    profile_name=profile_name,
+                    reply_markup=self._menu_reply_markup(principal),
+                    interval_sec=5,
+                )
+            )
+
+        async def runner() -> None:
+            nonlocal progress_task
+            try:
+                command_result = await runtime_control.run_command_capture(
+                    runtime_control.client_hh_auth_command_argv(profile_name, timeout_sec=900),
+                    timeout=1800,
+                    on_start=lambda pid: setattr(active_command, "subprocess_pid", pid),
+                )
+                if active_command.cancel_requested:
+                    command_result["cancelled"] = True
+                self._append_debug_log(
+                    "profile_hh_auth_capture_command_result",
+                    admin_user_id=principal.get("user_id"),
+                    profile_name=profile_name,
+                    command_result=command_result,
+                )
+                result = parse_hh_auth_command_result(command_result, profile_name=profile_name)
+                self._append_debug_log(
+                    "profile_hh_auth_capture_result",
+                    admin_user_id=principal.get("user_id"),
+                    profile_name=profile_name,
+                    result=result,
+                )
+                if progress_task:
+                    progress_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await progress_task
+                    progress_task = None
+                if progress_message_id > 0:
+                    await self._delete_message(chat_id, progress_message_id)
+                await self._send_text(
+                    chat_id,
+                    build_hh_auth_result_text(result),
+                    reply_markup=reply_markup,
+                )
+            except asyncio.CancelledError:
+                if progress_task:
+                    progress_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await progress_task
+                    progress_task = None
+                if progress_message_id > 0:
+                    await self._delete_message(chat_id, progress_message_id)
+                await self._send_text(
+                    chat_id,
+                    build_hh_auth_result_text({"cancelled": True, "profile_name": profile_name}),
+                    reply_markup=reply_markup,
+                )
+            except Exception as exc:
+                log.error("Profile HH auth capture failed: %s", exc, exc_info=True)
+                self._append_debug_log(
+                    "profile_hh_auth_capture_exception",
+                    admin_user_id=principal.get("user_id"),
+                    profile_name=profile_name,
+                    error=str(exc),
+                    traceback=traceback.format_exc(),
+                )
+                if progress_task:
+                    progress_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await progress_task
+                    progress_task = None
+                if progress_message_id > 0:
+                    await self._delete_message(chat_id, progress_message_id)
+                await self._send_text(
+                    chat_id,
+                    f"❌ Вход HH завершился с ошибкой:\n{exc}",
+                    reply_markup=reply_markup,
+                )
+            finally:
+                self._clear_active_command(profile_name)
+
+        active_command.task = asyncio.create_task(runner())
 
     async def _start_hh_auth_capture(self, chat_id: int, principal: dict, client: dict) -> None:
         role = principal.get("role", ROLE_USER)
@@ -1891,6 +2346,212 @@ class TelegramBot:
 
         active_command.task = asyncio.create_task(runner())
 
+    async def _start_google_form_preview(
+        self,
+        chat_id: int,
+        principal: dict,
+        *,
+        profile_name: str,
+        hh_chat_id: str,
+        hh_message_id: str,
+    ) -> None:
+        await self._start_google_form_command(
+            chat_id,
+            principal,
+            profile_name=profile_name,
+            label="google form preview",
+            argv=runtime_control.agent_command_argv(
+                profile_name,
+                "--google-form-preview",
+                hh_chat_id,
+                "--chat-message-id",
+                hh_message_id,
+            ),
+        )
+
+    async def _start_google_form_submit(
+        self,
+        chat_id: int,
+        principal: dict,
+        *,
+        profile_name: str,
+        token: str,
+    ) -> None:
+        await self._start_google_form_command(
+            chat_id,
+            principal,
+            profile_name=profile_name,
+            label="google form submit",
+            argv=runtime_control.agent_command_argv(profile_name, "--google-form-submit", token),
+        )
+
+    async def _start_google_form_command(
+        self,
+        chat_id: int,
+        principal: dict,
+        *,
+        profile_name: str,
+        label: str,
+        argv: list[str],
+    ) -> None:
+        role = principal.get("role", ROLE_USER)
+        reply_markup = self._menu_reply_markup(principal)
+        if self._has_active_command(profile_name):
+            await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+            return
+
+        active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
+        progress_message = await self._send_text(
+            chat_id,
+            build_progress_text(label, profile_name=profile_name),
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        progress_message_id = int((progress_message or {}).get("message_id") or 0)
+
+        async def runner() -> None:
+            try:
+                result = await runtime_control.run_command_capture(
+                    argv,
+                    timeout=1800,
+                    on_start=lambda pid: setattr(active_command, "subprocess_pid", pid),
+                )
+                if active_command.cancel_requested:
+                    result["cancelled"] = True
+                if progress_message_id > 0:
+                    await self._delete_message(chat_id, progress_message_id)
+                await self._send_text(
+                    chat_id,
+                    format_command_result(label, result, role=role),
+                    reply_markup=reply_markup,
+                )
+            except asyncio.CancelledError:
+                if progress_message_id > 0:
+                    await self._delete_message(chat_id, progress_message_id)
+                await self._send_text(
+                    chat_id,
+                    format_command_result(label, {"cancelled": True}, role=role),
+                    reply_markup=reply_markup,
+                )
+            except Exception as exc:
+                log.error("Google Form command failed: %s", exc, exc_info=True)
+                if progress_message_id > 0:
+                    await self._delete_message(chat_id, progress_message_id)
+                await self._send_text(
+                    chat_id,
+                    f"❌ Google Form команда завершилась с ошибкой:\n{exc}",
+                    reply_markup=reply_markup,
+                )
+            finally:
+                self._clear_active_command(profile_name)
+
+        active_command.task = asyncio.create_task(runner())
+
+    async def _start_chat_ai_candidate_list(
+        self,
+        chat_id: int,
+        principal: dict,
+        *,
+        profile_name: str,
+    ) -> None:
+        role = principal.get("role", ROLE_USER)
+        reply_markup = self._menu_reply_markup(principal)
+        if self._has_active_command(profile_name):
+            await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+            return
+
+        label = "chat AI list"
+        active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
+        progress_message = await self._send_text_safely(
+            chat_id,
+            "Смотрю последние HH-чаты и ищу входящие сообщения для ИИ-предпросмотра…",
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        progress_message_id = int((progress_message or {}).get("message_id") or 0)
+
+        async def runner() -> None:
+            try:
+                argv = runtime_control.agent_command_argv(
+                    profile_name,
+                    "--chat-list-candidates",
+                    "--chat-list-limit",
+                    "8",
+                    "--chat-list-max-scan",
+                    "25",
+                )
+                self._append_chat_ai_audit_event(
+                    "candidate_list_start",
+                    profile_name=profile_name,
+                    telegram_chat_id=chat_id,
+                    user_id=int(principal.get("user_id") or 0),
+                )
+                result = await runtime_control.run_command_capture(
+                    argv,
+                    timeout=900,
+                    on_start=lambda pid: setattr(active_command, "subprocess_pid", pid),
+                )
+                if active_command.cancel_requested:
+                    result["cancelled"] = True
+                if progress_message_id > 0:
+                    await self._delete_message(chat_id, progress_message_id)
+                if not result.get("ok") or result.get("cancelled"):
+                    await self._send_text_safely(
+                        chat_id,
+                        format_command_result(label, result, role=role),
+                        reply_markup=reply_markup,
+                    )
+                    return
+                summary = _parse_chat_candidates_stdout(result.get("stdout") or "")
+                self._append_chat_ai_audit_event(
+                    "candidate_list_result",
+                    profile_name=profile_name,
+                    telegram_chat_id=chat_id,
+                    ok=bool(summary),
+                    candidates=len(summary.get("candidates") or []) if summary else 0,
+                    chats_scanned=summary.get("chats_scanned") if summary else None,
+                    chats_read=summary.get("chats_read") if summary else None,
+                    read_failures=summary.get("read_failures") if summary else None,
+                    stderr=(result.get("stderr") or "")[-1200:],
+                )
+                if not summary:
+                    await self._send_text_safely(
+                        chat_id,
+                        "Не смог разобрать список HH-чатов. Посмотри /chat_log или /log.",
+                        reply_markup=reply_markup,
+                    )
+                    return
+                await self._send_text_safely(
+                    chat_id,
+                    _build_chat_ai_candidates_text(summary),
+                    reply_markup=_build_chat_ai_candidates_markup(profile_name, summary) or reply_markup,
+                )
+            except asyncio.CancelledError:
+                if progress_message_id > 0:
+                    await self._delete_message(chat_id, progress_message_id)
+                await self._send_text_safely(
+                    chat_id,
+                    format_command_result(label, {"cancelled": True}, role=role),
+                    reply_markup=reply_markup,
+                )
+            except Exception as exc:
+                self._append_chat_ai_audit_event(
+                    "candidate_list_exception",
+                    profile_name=profile_name,
+                    telegram_chat_id=chat_id,
+                    error=str(exc),
+                )
+                log.error("Chat AI candidate list failed: %s", exc, exc_info=True)
+                if progress_message_id > 0:
+                    await self._delete_message(chat_id, progress_message_id)
+                await self._send_text_safely(
+                    chat_id,
+                    f"❌ Список HH-чатов для ИИ-ответа завершился с ошибкой:\n{exc}",
+                    reply_markup=reply_markup,
+                )
+            finally:
+                self._clear_active_command(profile_name)
+
+        active_command.task = asyncio.create_task(runner())
+
     async def _start_chat_ai_reply(
         self,
         chat_id: int,
@@ -1900,6 +2561,7 @@ class TelegramBot:
         hh_chat_id: str,
         hh_message_id: str,
         force_send: bool = False,
+        allow_any: bool = False,
     ) -> None:
         role = principal.get("role", ROLE_USER)
         reply_markup = self._menu_reply_markup(principal)
@@ -1909,7 +2571,7 @@ class TelegramBot:
 
         label = "chat AI send" if force_send else "chat AI reply"
         active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
-        progress_message = await self._send_text(
+        progress_message = await self._send_text_safely(
             chat_id,
             build_progress_text(label, profile_name=profile_name),
             reply_markup=self._menu_reply_markup(principal),
@@ -1939,11 +2601,170 @@ class TelegramBot:
                     hh_message_id,
                     "--chat-allow-suspicious",
                 )
+                if allow_any:
+                    argv.append("--chat-allow-any")
                 if force_send:
                     argv.append("--chat-force-send")
+                self._append_chat_ai_audit_event(
+                    "command_start",
+                    action="send" if force_send else "preview",
+                    profile_name=profile_name,
+                    hh_chat_id=hh_chat_id,
+                    hh_message_id=hh_message_id,
+                    force_send=force_send,
+                    allow_any=allow_any,
+                )
                 result = await runtime_control.run_command_capture(
                     argv,
                     timeout=1200,
+                    on_start=lambda pid: setattr(active_command, "subprocess_pid", pid),
+                )
+                if active_command.cancel_requested:
+                    result["cancelled"] = True
+                self._append_chat_ai_audit_event(
+                    "command_result",
+                    action="send" if force_send else "preview",
+                    profile_name=profile_name,
+                    hh_chat_id=hh_chat_id,
+                    hh_message_id=hh_message_id,
+                    force_send=force_send,
+                    allow_any=allow_any,
+                    ok=bool(result.get("ok")),
+                    returncode=result.get("returncode"),
+                    timeout=bool(result.get("timeout")),
+                    cancelled=bool(result.get("cancelled")),
+                    stdout=(result.get("stdout") or "")[-2000:],
+                    stderr=(result.get("stderr") or "")[-1200:],
+                )
+                message = format_command_result(label, result, role=role)
+                if progress_task:
+                    progress_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await progress_task
+                    progress_task = None
+                if progress_message_id > 0:
+                    await self._delete_message(chat_id, progress_message_id)
+                try:
+                    sent_message = await self._send_text(chat_id, message, reply_markup=reply_markup)
+                    self._append_chat_ai_audit_event(
+                        "delivery_ok",
+                        action="send" if force_send else "preview",
+                        profile_name=profile_name,
+                        hh_chat_id=hh_chat_id,
+                        hh_message_id=hh_message_id,
+                        force_send=force_send,
+                        allow_any=allow_any,
+                        telegram_message_id=int((sent_message or {}).get("message_id") or 0),
+                    )
+                except Exception as exc:
+                    self._append_chat_ai_audit_event(
+                        "delivery_failed",
+                        action="send" if force_send else "preview",
+                        profile_name=profile_name,
+                        hh_chat_id=hh_chat_id,
+                        hh_message_id=hh_message_id,
+                        force_send=force_send,
+                        allow_any=allow_any,
+                        cli_ok=bool(result.get("ok")),
+                        error=str(exc),
+                    )
+                    log.warning("Telegram delivery failed for Chat AI reply: %s", exc)
+            except asyncio.CancelledError:
+                self._append_chat_ai_audit_event(
+                    "command_cancelled",
+                    action="send" if force_send else "preview",
+                    profile_name=profile_name,
+                    hh_chat_id=hh_chat_id,
+                    hh_message_id=hh_message_id,
+                    force_send=force_send,
+                    allow_any=allow_any,
+                )
+                if progress_task:
+                    progress_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await progress_task
+                    progress_task = None
+                if progress_message_id > 0:
+                    await self._delete_message(chat_id, progress_message_id)
+                await self._send_text_safely(
+                    chat_id,
+                    format_command_result(label, {"cancelled": True}, role=role),
+                    reply_markup=reply_markup,
+                )
+            except Exception as exc:
+                self._append_chat_ai_audit_event(
+                    "command_exception",
+                    action="send" if force_send else "preview",
+                    profile_name=profile_name,
+                    hh_chat_id=hh_chat_id,
+                    hh_message_id=hh_message_id,
+                    force_send=force_send,
+                    allow_any=allow_any,
+                    error=str(exc),
+                )
+                log.error("Chat AI reply failed: %s", exc, exc_info=True)
+                if progress_task:
+                    progress_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await progress_task
+                    progress_task = None
+                if progress_message_id > 0:
+                    await self._delete_message(chat_id, progress_message_id)
+                await self._send_text_safely(
+                    chat_id,
+                    f"❌ Ответ ИИ в чат завершился с ошибкой:\n{exc}",
+                    reply_markup=reply_markup,
+                )
+            finally:
+                if progress_task:
+                    progress_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await progress_task
+                self._clear_active_command(profile_name)
+
+        active_command.task = asyncio.create_task(runner())
+
+    async def _start_manual_ai_apply(
+        self,
+        chat_id: int,
+        principal: dict,
+        *,
+        profile_name: str,
+        token: str,
+    ) -> None:
+        role = principal.get("role", ROLE_USER)
+        reply_markup = self._menu_reply_markup(principal)
+        if self._has_active_command(profile_name):
+            await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+            return
+
+        label = "manual AI apply"
+        active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
+        progress_message = await self._send_text(
+            chat_id,
+            build_progress_text(label, profile_name=profile_name),
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        progress_task: asyncio.Task | None = None
+        progress_message_id = int((progress_message or {}).get("message_id") or 0)
+        if progress_message_id > 0:
+            progress_task = asyncio.create_task(
+                self._run_progress_indicator(
+                    chat_id=chat_id,
+                    message_id=progress_message_id,
+                    label=label,
+                    profile_name=profile_name,
+                    reply_markup=self._menu_reply_markup(principal),
+                    interval_sec=5,
+                )
+            )
+
+        async def runner() -> None:
+            nonlocal progress_task
+            try:
+                result = await runtime_control.run_command_capture(
+                    runtime_control.agent_command_argv(profile_name, "--manual-apply-token", token),
+                    timeout=1800,
                     on_start=lambda pid: setattr(active_command, "subprocess_pid", pid),
                 )
                 if active_command.cancel_requested:
@@ -1971,7 +2792,7 @@ class TelegramBot:
                     reply_markup=reply_markup,
                 )
             except Exception as exc:
-                log.error("Chat AI reply failed: %s", exc, exc_info=True)
+                log.error("Manual AI apply failed: %s", exc, exc_info=True)
                 if progress_task:
                     progress_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
@@ -1981,7 +2802,7 @@ class TelegramBot:
                     await self._delete_message(chat_id, progress_message_id)
                 await self._send_text(
                     chat_id,
-                    f"❌ Ответ ИИ в чат завершился с ошибкой:\n{exc}",
+                    f"❌ Ручной ИИ-отклик завершился с ошибкой:\n{exc}",
                     reply_markup=reply_markup,
                 )
             finally:

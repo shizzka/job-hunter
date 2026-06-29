@@ -77,6 +77,9 @@ case "$MODE" in
     search)
         $VENV agent.py $PROFILE_ARG --search
         ;;
+    fresh-search|fresh)
+        $VENV agent.py $PROFILE_ARG --fresh-search
+        ;;
     check)
         $VENV agent.py $PROFILE_ARG --check
         ;;
@@ -163,7 +166,7 @@ case "$MODE" in
         $VENV job_hunter_ctl.py $PROFILE_ARG daemon-stop
         ;;
     *)
-        echo "Usage: $0 [--profile <name>] {login|search|check|daemon|bot|bot-daemon|status|bot-status|stats|digest|dry-run|grab-resume|chat-respond|chat-respond-one|create-profile|profiles|bot-stop|stop}"
+        echo "Usage: $0 [--profile <name>] {login|search|fresh-search|check|daemon|bot|bot-daemon|status|bot-status|stats|digest|dry-run|grab-resume|chat-respond|chat-respond-one|create-profile|profiles|bot-stop|stop}"
         exit 1
         ;;
 esac

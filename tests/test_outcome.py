@@ -117,7 +117,10 @@ class TestResumePipeline:
              mock.patch.object(config, "HH_SECONDARY_RESUME_TITLE", "Fun Resume"), \
              mock.patch.object(config, "HH_SECONDARY_RESUME_ID", "222"), \
              mock.patch.object(config, "HH_TERTIARY_RESUME_TITLE", ""), \
-             mock.patch.object(config, "HH_TERTIARY_RESUME_ID", ""):
+             mock.patch.object(config, "HH_TERTIARY_RESUME_ID", ""), \
+             mock.patch.object(config, "HH_RESUME_RETRY_ON_SILENCE", False), \
+             mock.patch.object(config, "HH_RESUME_SILENCE_RETRY_DELAY_HOURS", 72), \
+             mock.patch.object(config, "HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN", 0):
             import hh_resume_pipeline
             hh_resume_pipeline._state = None
             yield tmp_path
@@ -220,6 +223,95 @@ class TestResumePipeline:
         entry = pipeline._entry("hh:555")
         assert entry["last_status"] == "Просмотрен"
         assert entry["next_retry_at"] == ""
+
+    def test_pending_status_opens_retry_candidate_when_silence_enabled(self):
+        import hh_resume_pipeline as pipeline
+
+        vacancy = {"id": "hh:556", "title": "QA", "company": "E", "url": "https://hh.ru/vacancy/556"}
+        started_at = datetime(2026, 1, 1, 10, 0, 0)
+        later = started_at + timedelta(hours=80)
+
+        with mock.patch.object(config, "HH_RESUME_RETRY_ON_SILENCE", True), \
+             mock.patch.object(config, "HH_RESUME_SILENCE_RETRY_DELAY_HOURS", 72):
+            with mock.patch.object(pipeline, "_now", return_value=started_at):
+                pipeline.record_successful_apply(vacancy, {"name": "normal", "title": "", "id": "111"})
+
+            with mock.patch.object(pipeline, "_now", return_value=started_at + timedelta(minutes=5)):
+                pipeline.sync_negotiation_statuses([
+                    {"id": "hh:556", "title": "QA", "company": "E", "url": "https://hh.ru/vacancy/556", "status": "Просмотрен"},
+                ])
+
+            with mock.patch.object(pipeline, "_now", return_value=later):
+                candidates = pipeline.get_retry_candidates()
+
+        assert len(candidates) == 1
+        assert candidates[0]["id"] == "hh:556"
+        assert candidates[0]["_hh_resume_variant"] == "fun"
+        assert candidates[0]["_hh_retry_reason"] == "silence"
+
+    def test_retry_role_filter_blocks_non_qa_pending_titles(self):
+        import hh_resume_pipeline as pipeline
+
+        vacancy = {
+            "id": "hh:557",
+            "title": "Специалист технической поддержки пользователей",
+            "company": "E",
+            "url": "https://hh.ru/vacancy/557",
+        }
+        started_at = datetime(2026, 1, 1, 10, 0, 0)
+        later = started_at + timedelta(hours=80)
+
+        with mock.patch.object(config, "HH_RESUME_RETRY_ON_SILENCE", True), \
+             mock.patch.object(config, "HH_RESUME_SILENCE_RETRY_DELAY_HOURS", 72):
+            with mock.patch.object(pipeline, "_now", return_value=started_at):
+                pipeline.record_successful_apply(vacancy, {"name": "normal", "title": "", "id": "111"})
+
+            with mock.patch.object(pipeline, "_now", return_value=started_at + timedelta(minutes=5)):
+                pipeline.sync_negotiation_statuses([
+                    {**vacancy, "status": "Просмотрен"},
+                ])
+
+            with mock.patch.object(pipeline, "_now", return_value=later):
+                candidates = pipeline.get_retry_candidates()
+
+        assert candidates == []
+        entry = pipeline._entry("hh:557")
+        assert entry["completed_reason"] == "retry_filtered_role"
+        assert entry["retry_filtered_reason"] == "retry_blocked_role_title"
+
+    def test_retry_role_filter_blocks_programmer_tester_titles(self):
+        import hh_resume_pipeline as pipeline
+
+        assert pipeline.retry_role_reject_reason("Инженер - программист (Тестировщик СПО)") == "retry_blocked_role_title"
+
+    def test_retry_role_filter_allows_qa_pending_titles(self):
+        import hh_resume_pipeline as pipeline
+
+        vacancy = {
+            "id": "hh:558",
+            "title": "Тестировщик Java",
+            "company": "E",
+            "url": "https://hh.ru/vacancy/558",
+        }
+        started_at = datetime(2026, 1, 1, 10, 0, 0)
+        later = started_at + timedelta(hours=80)
+
+        with mock.patch.object(config, "HH_RESUME_RETRY_ON_SILENCE", True), \
+             mock.patch.object(config, "HH_RESUME_SILENCE_RETRY_DELAY_HOURS", 72):
+            with mock.patch.object(pipeline, "_now", return_value=started_at):
+                pipeline.record_successful_apply(vacancy, {"name": "normal", "title": "", "id": "111"})
+
+            with mock.patch.object(pipeline, "_now", return_value=started_at + timedelta(minutes=5)):
+                pipeline.sync_negotiation_statuses([
+                    {**vacancy, "status": "Просмотрен"},
+                ])
+
+            with mock.patch.object(pipeline, "_now", return_value=later):
+                candidates = pipeline.get_retry_candidates()
+
+        assert len(candidates) == 1
+        assert candidates[0]["id"] == "hh:558"
+        assert candidates[0]["_hh_resume_variant"] == "fun"
 
     def test_rejected_status_opens_retry_candidate_after_delay(self):
         import hh_resume_pipeline as pipeline
