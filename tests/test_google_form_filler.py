@@ -80,6 +80,14 @@ def test_google_form_button_text_helpers_handle_ru_en_nl():
     assert not gforms._is_google_form_email_consent_text("Смартфон на базе Android")
 
 
+def test_google_form_submit_success_detection_handles_common_languages():
+    assert gforms._looks_like_google_form_submit_success("Ваш ответ записан.")
+    assert gforms._looks_like_google_form_submit_success("Your response has been recorded.")
+    assert gforms._looks_like_google_form_submit_success("Submit another response")
+    assert gforms._looks_like_google_form_submit_success("Je antwoord is geregistreerd")
+    assert not gforms._looks_like_google_form_submit_success("Это обязательный вопрос.")
+
+
 def test_reindex_page_questions_preserves_page_metadata():
     questions = [
         {"index": 0, "dom_index": 3, "question": "ФИО"},

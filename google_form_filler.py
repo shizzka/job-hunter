@@ -724,6 +724,31 @@ def _is_google_form_submit_button_text(value: str) -> bool:
     return text in {"отправить", "submit", "verzenden", "send", "envoyer", "senden"}
 
 
+def _looks_like_google_form_submit_success(page_text: str) -> bool:
+    text = _norm(page_text)
+    if not text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "ваш ответ записан",
+            "ответ записан",
+            "ответ отправлен",
+            "форма отправлена",
+            "your response has been recorded",
+            "response has been recorded",
+            "submit another response",
+            "je antwoord is geregistreerd",
+            "je antwoord is opgenomen",
+            "uw antwoord is geregistreerd",
+            "uw antwoord is opgenomen",
+            "verzend nog een reactie",
+            "envoyer une autre réponse",
+            "eine weitere antwort senden",
+        )
+    )
+
+
 def _is_google_form_email_consent_text(value: str) -> bool:
     text = _norm(value)
     if not text:
@@ -902,9 +927,29 @@ async def _click_google_form_submit(page) -> bool:
     button = await _find_google_form_button(page, _is_google_form_submit_button_text)
     if not button:
         return False
+    try:
+        await button.scroll_into_view_if_needed(timeout=5000)
+    except Exception:
+        pass
     await button.click(timeout=10000)
-    await page.wait_for_timeout(3000)
+    with contextlib.suppress(Exception):
+        await page.wait_for_load_state("networkidle", timeout=15000)
+    await page.wait_for_timeout(1500)
     return True
+
+
+async def _wait_google_form_submit_success(page, *, timeout_s: float = 15.0) -> tuple[bool, str]:
+    last_text = ""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            last_text = await page.locator("body").inner_text(timeout=3000)
+        except Exception:
+            last_text = ""
+        if _looks_like_google_form_submit_success(last_text):
+            return True, last_text
+        await page.wait_for_timeout(750)
+    return False, last_text
 
 
 async def _click_google_form_option(handle) -> None:
@@ -1325,21 +1370,16 @@ async def submit_saved_preview(hh_client, token: str, *, notify: bool = False) -
 
     fill_result = _merge_fill_results([item.get("fill_result") or {} for item in page_results])
     submitted = False
+    submit_success = False
+    submit_page_text = ""
     if reached_submit:
         submitted = await _click_google_form_submit(page)
-    await page.wait_for_timeout(3000)
+        if submitted:
+            submit_success, submit_page_text = await _wait_google_form_submit_success(page)
     shot_path = os.path.join(config.HH_STATE_DIR, f"google_form_submit_{token}.png")
     os.makedirs(os.path.dirname(shot_path), exist_ok=True)
     await _safe_screenshot(page, shot_path)
-    page_text = ""
-    try:
-        page_text = await page.locator("body").inner_text(timeout=5000)
-    except Exception:
-        pass
-    ok = submitted and any(
-        marker in page_text.casefold()
-        for marker in ("ответ записан", "response has been recorded", "ответ отправлен", "отправлен")
-    )
+    ok = bool(submitted and submit_success)
     result = {
         "ok": bool(ok),
         "submitted": submitted,
@@ -1352,6 +1392,7 @@ async def submit_saved_preview(hh_client, token: str, *, notify: bool = False) -
         "navigation_error": navigation_error,
         "email_consent_filled": email_consent_filled,
         "screenshot_path": shot_path,
+        "submit_page_text": submit_page_text[:1500],
         "message": "submitted" if ok else "submit clicked, verification uncertain" if submitted else (navigation_error or "submit button not found"),
     }
     item["status"] = "submitted" if ok else "submit_uncertain" if submitted else "submit_failed"
