@@ -6,7 +6,15 @@ import os
 from datetime import datetime, timedelta
 
 import config
-from outcome import STATUS_PENDING, STATUS_POSITIVE, STATUS_REJECTED, status_bucket as _status_bucket
+from outcome import (
+    STATUS_DETAIL_PENDING_NEW,
+    STATUS_DETAIL_PENDING_VIEWED,
+    STATUS_PENDING,
+    STATUS_POSITIVE,
+    STATUS_REJECTED,
+    status_bucket as _status_bucket,
+    status_detail_bucket as _status_detail_bucket,
+)
 
 
 def _now() -> datetime:
@@ -63,9 +71,32 @@ _RETRY_BLOCKED_TITLE_MARKERS = (
     "оператор",
 )
 
+_RETRY_BLOCKED_RESUME_MARKERS = (
+    "electrician",
+    "электрик",
+    "электромонтаж",
+    "электро-монтаж",
+    "электротех",
+    "сервисный инженер",
+    "сервис-инженер",
+)
+
+_CLUSTER_PREFERRED_VARIANTS = {
+    "manual_web_qa": "normal",
+    "api_qa": "ats_heavy",
+    "junior_aqa_python": "ats_heavy",
+    "mobile_qa": "normal",
+    "qa_support_adjacent": "normal",
+    "enterprise_banking_qa": "ats_heavy",
+}
+
 
 def _normal_text(value: str) -> str:
     return (value or "").casefold().replace("\xa0", " ").replace("ё", "е")
+
+
+def _company_key(company: str) -> str:
+    return " ".join(_normal_text(company).split())
 
 
 def retry_role_reject_reason(title: str) -> str | None:
@@ -86,6 +117,20 @@ def retry_role_reject_reason(title: str) -> str | None:
     if not has_allowed_marker:
         return "retry_not_qa_title"
 
+    return None
+
+
+def resume_variant_reject_reason(variant: dict) -> str | None:
+    text = _normal_text(
+        " ".join(
+            [
+                str(variant.get("name") or ""),
+                str(variant.get("title") or ""),
+            ]
+        )
+    )
+    if any(marker in text for marker in _RETRY_BLOCKED_RESUME_MARKERS):
+        return "retry_blocked_resume_variant"
     return None
 
 
@@ -233,6 +278,54 @@ def all_entries() -> dict:
     }
 
 
+def _blocked_company_state(state: dict | None = None) -> dict:
+    state = state if state is not None else _load()
+    blocked = state.get("_blocked_companies", {})
+    return blocked if isinstance(blocked, dict) else {}
+
+
+def block_company_retry(company: str, reason: str = "manual") -> bool:
+    key = _company_key(company)
+    if not key:
+        return False
+    state = _load()
+    blocked = state.setdefault("_blocked_companies", {})
+    if not isinstance(blocked, dict):
+        blocked = {}
+        state["_blocked_companies"] = blocked
+    blocked[key] = {
+        "company": str(company or "").strip(),
+        "reason": str(reason or "manual").strip() or "manual",
+        "created_at": _to_iso(_now()),
+    }
+    _save()
+    return True
+
+
+def unblock_company_retry(company: str) -> bool:
+    key = _company_key(company)
+    if not key:
+        return False
+    blocked = _blocked_company_state()
+    if key not in blocked:
+        return False
+    blocked.pop(key, None)
+    _save()
+    return True
+
+
+def list_blocked_companies() -> list[dict]:
+    blocked = _blocked_company_state()
+    return [dict(payload, key=key) for key, payload in sorted(blocked.items())]
+
+
+def _config_blocked_company_keys() -> set[str]:
+    names = getattr(config, "HH_RESUME_RETRY_BLOCKED_COMPANIES", []) or []
+    if isinstance(names, str):
+        names = [names]
+    return {_company_key(str(name)) for name in names if _company_key(str(name))}
+
+
 def _entry(vacancy_id: str) -> dict | None:
     return _load().get(vacancy_id)
 
@@ -272,20 +365,65 @@ def get_attempt_count(vacancy_id: str) -> int:
     return len(entry.get("attempts", []))
 
 
-def get_next_variant(vacancy_id: str) -> dict | None:
-    variants = get_resolved_variants()
-    index = get_attempt_count(vacancy_id)
-    if 0 <= index < len(variants):
-        return variants[index]
+def _variant_by_name(variants: list[dict], name: str) -> dict | None:
+    name = str(name or "").strip()
+    if not name:
+        return None
+    for variant in variants:
+        if variant.get("name") == name:
+            return variant
     return None
+
+
+def get_next_variant(vacancy_id: str, cluster: str | None = None) -> dict | None:
+    variants = [
+        variant
+        for variant in get_resolved_variants()
+        if resume_variant_reject_reason(variant) is None
+    ]
+    if not variants:
+        return None
+
+    entry = _entry(vacancy_id) or {}
+    attempts = entry.get("attempts") or []
+    attempted_names = {
+        str(attempt.get("variant") or "").strip()
+        for attempt in attempts
+        if str(attempt.get("variant") or "").strip()
+    }
+
+    if getattr(config, "HH_RESUME_CLUSTER_STRATEGY_ENABLED", False) and not attempted_names:
+        preferred_name = _CLUSTER_PREFERRED_VARIANTS.get(str(cluster or ""))
+        preferred = _variant_by_name(variants, preferred_name or "")
+        if preferred is not None:
+            return preferred
+
+    for variant in variants:
+        if str(variant.get("name") or "").strip() not in attempted_names:
+            return variant
+    return None
+
+
+def _retry_attempt_payload(vacancy: dict) -> dict:
+    if not vacancy.get("_hh_retry"):
+        return {}
+    retry_reason = str(vacancy.get("_hh_retry_reason") or "").strip() or "retry"
+    return {
+        "retry_reason": retry_reason,
+        "retry_outcome": str(vacancy.get("_hh_retry_outcome") or retry_reason).strip(),
+        "last_status": str(vacancy.get("_hh_last_status") or "").strip(),
+        "retry_after": str(vacancy.get("_hh_retry_after") or "").strip(),
+    }
 
 
 def record_successful_apply(vacancy: dict, variant: dict) -> None:
     entry = _ensure_entry(vacancy)
     attempts = entry.setdefault("attempts", [])
+    retry_payload = _retry_attempt_payload(vacancy)
     if attempts and attempts[-1].get("variant") == variant["name"]:
         # Повторно ту же ступень не дублируем.
         attempts[-1]["applied_at"] = _to_iso(_now())
+        attempts[-1].update(retry_payload)
     else:
         attempts.append(
             {
@@ -293,6 +431,7 @@ def record_successful_apply(vacancy: dict, variant: dict) -> None:
                 "resume_title": variant.get("title", ""),
                 "resume_id": variant.get("id", ""),
                 "applied_at": _to_iso(_now()),
+                **retry_payload,
             }
         )
     entry["next_retry_at"] = ""
@@ -323,12 +462,46 @@ def _retry_eta_from_last_attempt(entry: dict, delay_hours: int | None = None) ->
     return last_attempt_at + timedelta(hours=delay_hours)
 
 
+def _retry_delay_for_status(status_text: str) -> int | None:
+    bucket = _status_bucket(status_text)
+    if bucket == STATUS_REJECTED:
+        return _config_int("HH_RESUME_RETRY_DELAY_HOURS", 24)
+    if bucket == STATUS_PENDING and getattr(config, "HH_RESUME_RETRY_ON_SILENCE", False):
+        detail = _status_detail_bucket(status_text)
+        if detail == STATUS_DETAIL_PENDING_VIEWED:
+            return _config_int(
+                "HH_RESUME_VIEWED_RETRY_DELAY_HOURS",
+                _config_int("HH_RESUME_SILENCE_RETRY_DELAY_HOURS", 72),
+            )
+        if detail == STATUS_DETAIL_PENDING_NEW:
+            return _config_int(
+                "HH_RESUME_NOT_VIEWED_RETRY_DELAY_HOURS",
+                _config_int("HH_RESUME_SILENCE_RETRY_DELAY_HOURS", 72),
+            )
+        return _config_int("HH_RESUME_SILENCE_RETRY_DELAY_HOURS", 72)
+    return None
+
+
 def _retry_delay_for_bucket(bucket: str) -> int | None:
     if bucket == STATUS_REJECTED:
         return _config_int("HH_RESUME_RETRY_DELAY_HOURS", 24)
     if bucket == STATUS_PENDING and getattr(config, "HH_RESUME_RETRY_ON_SILENCE", False):
         return _config_int("HH_RESUME_SILENCE_RETRY_DELAY_HOURS", 72)
     return None
+
+
+def _retry_reason_for_status(status_text: str) -> str:
+    bucket = _status_bucket(status_text)
+    if bucket == STATUS_REJECTED:
+        return "rejected"
+    if bucket != STATUS_PENDING:
+        return ""
+    detail = _status_detail_bucket(status_text)
+    if detail == STATUS_DETAIL_PENDING_VIEWED:
+        return "viewed_no_response"
+    if detail == STATUS_DETAIL_PENDING_NEW:
+        return "not_viewed"
+    return "silence"
 
 
 def _retry_reason_for_bucket(bucket: str) -> str:
@@ -339,8 +512,8 @@ def _retry_reason_for_bucket(bucket: str) -> str:
     return ""
 
 
-def _set_retry_state(entry: dict, vacancy_id: str, bucket: str) -> None:
-    delay_hours = _retry_delay_for_bucket(bucket)
+def _set_retry_state(entry: dict, vacancy_id: str, status_text: str) -> None:
+    delay_hours = _retry_delay_for_status(status_text)
     if delay_hours is None:
         entry["next_retry_at"] = ""
         entry["retry_reason"] = ""
@@ -354,7 +527,66 @@ def _set_retry_state(entry: dict, vacancy_id: str, bucket: str) -> None:
 
     eta = _retry_eta_from_last_attempt(entry, delay_hours)
     entry["next_retry_at"] = _to_iso(eta)
-    entry["retry_reason"] = _retry_reason_for_bucket(bucket)
+    entry["retry_reason"] = _retry_reason_for_status(status_text)
+
+
+def _retry_attempts_since(state: dict, cutoff: datetime) -> int:
+    count = 0
+    for vacancy_id, entry in state.items():
+        if str(vacancy_id).startswith("_") or not isinstance(entry, dict):
+            continue
+        for attempt in entry.get("attempts") or []:
+            if not attempt.get("retry_reason"):
+                continue
+            applied_at = _from_iso(attempt.get("applied_at"))
+            if applied_at is not None and applied_at >= cutoff:
+                count += 1
+    return count
+
+
+def _company_retry_attempts_since(state: dict, company_key: str, cutoff: datetime) -> int:
+    if not company_key:
+        return 0
+    count = 0
+    for vacancy_id, entry in state.items():
+        if str(vacancy_id).startswith("_") or not isinstance(entry, dict):
+            continue
+        if _company_key(entry.get("company", "")) != company_key:
+            continue
+        for attempt in entry.get("attempts") or []:
+            if not attempt.get("retry_reason"):
+                continue
+            applied_at = _from_iso(attempt.get("applied_at"))
+            if applied_at is not None and applied_at >= cutoff:
+                count += 1
+    return count
+
+
+def retry_company_reject_reason(entry: dict, state: dict | None = None, now: datetime | None = None) -> str | None:
+    company_key = _company_key(entry.get("company", ""))
+    if not company_key:
+        return None
+    state = state if state is not None else _load()
+    if company_key in _config_blocked_company_keys() or company_key in _blocked_company_state(state):
+        return "retry_blocked_company"
+
+    limit = max(0, _config_int("HH_RESUME_RETRY_MAX_PER_COMPANY", 1))
+    if limit <= 0:
+        return None
+    lookback_days = max(1, _config_int("HH_RESUME_RETRY_COMPANY_LOOKBACK_DAYS", 30))
+    now = now or _now()
+    used = _company_retry_attempts_since(state, company_key, now - timedelta(days=lookback_days))
+    if used >= limit:
+        return "retry_company_limit"
+    return None
+
+
+def _retry_remaining_today(state: dict, now: datetime) -> int | None:
+    limit = max(0, _config_int("HH_RESUME_RETRY_DAILY_LIMIT", 3))
+    if limit <= 0:
+        return None
+    used = _retry_attempts_since(state, now - timedelta(hours=24))
+    return max(0, limit - used)
 
 
 def sync_negotiation_statuses(items: list[dict]) -> None:
@@ -384,7 +616,7 @@ def sync_negotiation_statuses(items: list[dict]) -> None:
             continue
 
         if bucket in {STATUS_REJECTED, STATUS_PENDING}:
-            _set_retry_state(entry, vacancy_id, bucket)
+            _set_retry_state(entry, vacancy_id, status_text)
             continue
 
         entry["next_retry_at"] = ""
@@ -399,8 +631,15 @@ def get_retry_candidates() -> list[dict]:
         return []
 
     state = _load()
-    variants = get_resolved_variants()
+    variants = [
+        variant
+        for variant in get_resolved_variants()
+        if resume_variant_reject_reason(variant) is None
+    ]
     now = _now()
+    remaining_today = _retry_remaining_today(state, now)
+    if remaining_today == 0:
+        return []
     items = []
 
     for vacancy_id, entry in state.items():
@@ -414,8 +653,9 @@ def get_retry_candidates() -> list[dict]:
             continue
         if len(attempts) >= len(variants):
             continue
-        bucket = _status_bucket(entry.get("last_status", ""))
-        delay_hours = _retry_delay_for_bucket(bucket)
+        status_text = entry.get("last_status", "")
+        bucket = _status_bucket(status_text)
+        delay_hours = _retry_delay_for_status(status_text)
         if delay_hours is None:
             entry["next_retry_at"] = ""
             entry["retry_reason"] = ""
@@ -433,6 +673,16 @@ def get_retry_candidates() -> list[dict]:
             entry["next_retry_at"] = ""
             continue
 
+        company_reject_reason = retry_company_reject_reason(entry, state, now)
+        if company_reject_reason:
+            entry["retry_filtered_reason"] = company_reject_reason
+            entry["retry_filtered_company"] = entry.get("company", "")
+            if company_reject_reason == "retry_blocked_company":
+                entry["completed_reason"] = "retry_filtered_company"
+                entry["next_retry_at"] = ""
+                entry["retry_reason"] = ""
+            continue
+
         role_reject_reason = retry_role_reject_reason(entry.get("title", ""))
         if role_reject_reason:
             entry["completed_reason"] = "retry_filtered_role"
@@ -441,6 +691,11 @@ def get_retry_candidates() -> list[dict]:
             entry["retry_filtered_reason"] = role_reject_reason
             continue
 
+        computed_retry_reason = _retry_reason_for_status(status_text)
+        retry_reason = entry.get("retry_reason") or computed_retry_reason
+        if retry_reason == "silence" and computed_retry_reason in {"viewed_no_response", "not_viewed"}:
+            retry_reason = computed_retry_reason
+            entry["retry_reason"] = retry_reason
         items.append(
             {
                 "id": entry.get("id") or vacancy_id,
@@ -458,16 +713,25 @@ def get_retry_candidates() -> list[dict]:
                 "_hh_resume_title": next_variant.get("title", ""),
                 "_hh_resume_id": next_variant.get("id", ""),
                 "_hh_last_status": entry.get("last_status", ""),
-                "_hh_retry_reason": entry.get("retry_reason") or _retry_reason_for_bucket(bucket),
+                "_hh_retry_reason": retry_reason,
+                "_hh_retry_outcome": retry_reason,
                 "_hh_retry_after": _to_iso(retry_eta),
             }
         )
 
     _save()
     # Сначала пробуем свежих молчунов: старые pending чаще уже закрыты/архивны.
+    reason_priority = {
+        "viewed_no_response": 0,
+        "not_viewed": 1,
+        "silence": 1,
+        "rejected": 2,
+    }
     items.sort(key=lambda item: item.get("_hh_retry_after") or "", reverse=True)
-    items.sort(key=lambda item: 0 if item.get("_hh_retry_reason") == "silence" else 1)
+    items.sort(key=lambda item: reason_priority.get(item.get("_hh_retry_reason"), 9))
     limit = max(0, _config_int("HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN", 5))
     if limit:
-        return items[:limit]
+        items = items[:limit]
+    if remaining_today is not None:
+        items = items[:remaining_today]
     return items

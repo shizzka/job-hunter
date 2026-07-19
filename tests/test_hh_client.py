@@ -7,6 +7,13 @@ from hh_client import (
     _looks_like_closed_or_archived_hh,
     _looks_like_existing_hh_response,
     _looks_like_hh_apply_success,
+    _looks_like_resume_boost_action,
+    _looks_like_resume_boost_success,
+    _looks_like_resume_boost_unavailable,
+    _question_answer_item,
+    _answer_question_from_library,
+    _is_risky_question,
+    _resume_matches_target,
 )
 
 
@@ -477,6 +484,35 @@ class FakeAutoAnswerQuestionPage(FakeQuestionResponsePage):
         return await super().evaluate(script, arg=arg)
 
 
+class FakeManyAutoAnswerQuestionPage(FakeAutoAnswerQuestionPage):
+    def __init__(self, *, question_count: int):
+        super().__init__(question_text="Вопрос 1")
+        self.question_count = question_count
+        self.filled_answers = []
+
+    async def evaluate(self, script: str, arg=None):
+        if "codex:auto-question-inspect" in script:
+            return {
+                "page_text": "Ответьте на вопросы анкеты",
+                "fields": [
+                    {
+                        "field_id": f"field-{idx}",
+                        "control": "input",
+                        "input_type": "text",
+                        "question_text": f"Вопрос {idx}",
+                        "placeholder": "",
+                        "max_length": 0,
+                    }
+                    for idx in range(1, self.question_count + 1)
+                ],
+                "unsupported_fields": 0,
+            }
+        if "codex:auto-question-fill" in script:
+            self.filled_answers = list(arg)
+            return {"filled": len(arg), "errors": []}
+        return await super().evaluate(script, arg=arg)
+
+
 class FakeResumeSelectionReturnsToVacancyPage:
     def __init__(self):
         self.url = "https://hh.ru/vacancy/1"
@@ -719,6 +755,94 @@ def test_apply_to_vacancy_autoanswers_resume_question_with_llm(monkeypatch):
     assert "API-тестирования" in client._page.filled_answer
     assert "notes" in result
     assert any("опыт api-тестирования".casefold() in note.casefold() for note in result["notes"])
+    assert result["question_answers"] == [
+        {
+            "question": "Какой у вас опыт API-тестирования?",
+            "answer": "Есть опыт API-тестирования через Postman и проверки JSON-ответов.",
+            "control": "textarea",
+        }
+    ]
+
+
+def test_apply_to_vacancy_sends_risky_question_to_manual(monkeypatch):
+    client = HHClient()
+    client._page = FakeAutoAnswerQuestionPage(
+        question_text="Какой у вас коммерческий опыт AQA на Java/Selenium и сколько лет?",
+        input_type="textarea",
+        control="textarea",
+    )
+
+    monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(config, "HH_AUTO_ANSWER_SIMPLE_QUESTIONS", True)
+    monkeypatch.setattr(config, "HH_AUTO_ANSWER_USE_LLM", True)
+
+    result = asyncio.run(
+        client.apply_to_vacancy(
+            "https://hh.ru/vacancy/1",
+            cover_letter="hello from cover letter",
+        )
+    )
+
+    assert result["ok"] is False
+    assert "ручное подтверждение рискованного вопроса" in result["message"]
+    assert result["risky_question"].startswith("Какой у вас коммерческий опыт AQA")
+    assert client._page.filled_answer == ""
+    assert result["question_answers"] == [
+        {
+            "question": "Какой у вас коммерческий опыт AQA на Java/Selenium и сколько лет?",
+            "answer": "Нужно ручное подтверждение: риск завысить опыт кандидата.",
+            "control": "textarea",
+            "skipped": True,
+            "skip_reason": "risky_question",
+        }
+    ]
+
+
+def test_apply_to_vacancy_autoanswers_fourteen_questions_when_limit_allows(monkeypatch):
+    client = HHClient()
+    client._page = FakeManyAutoAnswerQuestionPage(question_count=14)
+
+    async def fake_llm_answer(field: dict, resume_text: str, page_text: str = "", vacancy_context: str = "") -> str | None:
+        return f"Ответ на {field['field_id']}"
+
+    monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(client, "_answer_question_with_llm", fake_llm_answer)
+    monkeypatch.setattr(config, "HH_AUTO_ANSWER_SIMPLE_QUESTIONS", True)
+    monkeypatch.setattr(config, "HH_AUTO_ANSWER_USE_LLM", True)
+    monkeypatch.setattr(config, "HH_AUTO_ANSWER_MAX_QUESTIONS", 20)
+
+    result = asyncio.run(
+        client.apply_to_vacancy(
+            "https://hh.ru/vacancy/1",
+            cover_letter="hello from cover letter",
+        )
+    )
+
+    assert result["ok"] is True
+    assert len(client._page.filled_answers) == 14
+    assert len(result["question_answers"]) == 14
+    assert result["question_answers"][0]["question"] == "Вопрос 1"
+    assert result["question_answers"][0]["answer"] == "Ответ на field-1"
+
+
+def test_apply_to_vacancy_keeps_question_limit(monkeypatch):
+    client = HHClient()
+    client._page = FakeManyAutoAnswerQuestionPage(question_count=21)
+
+    monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(config, "HH_AUTO_ANSWER_SIMPLE_QUESTIONS", True)
+    monkeypatch.setattr(config, "HH_AUTO_ANSWER_MAX_QUESTIONS", 20)
+
+    result = asyncio.run(
+        client.apply_to_vacancy(
+            "https://hh.ru/vacancy/1",
+            cover_letter="hello from cover letter",
+        )
+    )
+
+    assert result["ok"] is False
+    assert "слишком много полей" in result["message"]
+    assert result["notes"] == ["автоответ пропущен: полей 21, лимит 20"]
 
 
 def test_apply_to_vacancy_expands_hidden_cover_letter_before_submit(monkeypatch):
@@ -756,3 +880,65 @@ def test_get_resume_ids_returns_empty_on_captcha_page():
     )
 
     assert asyncio.run(client.get_resume_ids()) == []
+
+
+def test_resume_boost_text_helpers_detect_action_and_state():
+    assert _looks_like_resume_boost_action("Поднять резюме")
+    assert _looks_like_resume_boost_action("Поднять")
+    assert _looks_like_resume_boost_action("Обновить дату резюме")
+    assert not _looks_like_resume_boost_action("Откликнуться")
+
+    assert _looks_like_resume_boost_unavailable("Резюме можно будет поднять через 2 часа")
+    assert _looks_like_resume_boost_success("Резюме поднято в поиске")
+
+
+def test_resume_matches_target_by_id_title_or_url():
+    resume = {
+        "id": "abc123",
+        "title": "QA Engineer",
+        "url": "/resume/abc123?from=resume_list",
+    }
+
+    assert _resume_matches_target(resume, resume_id="abc123")
+    assert _resume_matches_target(resume, resume_id="abc123", resume_title="")
+    assert _resume_matches_target(resume, resume_title="QA")
+    assert not _resume_matches_target(resume, resume_id="zzz", resume_title="Python developer")
+
+
+def test_question_answer_item_keeps_questionnaire_metadata():
+    item = _question_answer_item(
+        "Есть ли опыт API?",
+        "Да, REST API и Postman",
+        control="textarea",
+        best_guess=True,
+        required=True,
+        starred=True,
+    )
+
+    assert item == {
+        "question": "Есть ли опыт API?",
+        "answer": "Да, REST API и Postman",
+        "control": "textarea",
+        "best_guess": True,
+        "required": True,
+        "starred": True,
+    }
+
+
+def test_stable_answer_library_answers_api_question_without_llm():
+    answer = _answer_question_from_library(
+        "Какой у вас опыт API, REST, Postman и JSON?",
+        max_chars=140,
+    )
+
+    assert answer is not None
+    assert "REST API" in answer
+    assert "Postman" in answer
+    assert len(answer) <= 140
+
+
+def test_stable_answer_library_skips_risky_aqa_commercial_question():
+    question = "Какой у вас коммерческий опыт AQA на Java/Selenium и сколько лет?"
+
+    assert _is_risky_question(question) is True
+    assert _answer_question_from_library(question, max_chars=200) is None

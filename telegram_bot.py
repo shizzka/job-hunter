@@ -65,6 +65,21 @@ def _configure_logging(force: bool = False) -> None:
 _configure_logging()
 
 
+def _clean_hh_auth_code_text(text: str) -> str:
+    return "".join(re.findall(r"\d", text or ""))
+
+
+def _is_menu_button_text(text: str) -> bool:
+    return text in ADMIN_BUTTON_MAP or text in USER_BUTTON_MAP or text in LEGACY_BUTTON_MAP
+
+
+def _can_answer_hh_auth_prompt(principal: dict, pending: dict) -> bool:
+    profile_name = str(pending.get("profile_name") or "")
+    if principal.get("role") == ROLE_ADMIN:
+        return True
+    return bool(profile_name) and str(principal.get("profile") or "") == profile_name
+
+
 def _parse_manual_chat_ai_arg(raw: str) -> tuple[str, str]:
     text = (raw or "").strip()
     if not text:
@@ -225,6 +240,7 @@ class TelegramBot:
 
                 for update in updates:
                     await self._handle_update(update)
+                await self._maybe_send_daily_summary()
         finally:
             self._write_runtime("bot_stop", "Бот Telegram остановлен", "offline")
             runtime_control.unregister_current_process(config.TELEGRAM_BOT_PID_FILE)
@@ -549,6 +565,54 @@ class TelegramBot:
             with contextlib.suppress(Exception):
                 await self._send_text(chat_id, text, reply_markup=reply_markup or build_reply_markup(ROLE_ADMIN))
 
+    async def _maybe_accept_hh_auth_response(self, chat_id: int, principal: dict, text: str) -> bool:
+        value = (text or "").strip()
+        if not value or value.startswith("/") or value.startswith("➡") or _is_menu_button_text(value):
+            return False
+        try:
+            import hh_auth_bridge
+            pending = hh_auth_bridge.peek_pending()
+        except Exception as exc:
+            log.debug("hh auth bridge peek failed: %s", exc)
+            return False
+        if not pending or not _can_answer_hh_auth_prompt(principal, pending):
+            return False
+
+        kind = str(pending.get("kind") or "code").strip()
+        profile_name = str(pending.get("profile_name") or "")
+        if kind == "code":
+            answer = _clean_hh_auth_code_text(value)
+            if not 4 <= len(answer) <= 8:
+                await self._send_text(chat_id, "🔐 Жду HH SMS-код: 4-8 цифр без лишнего текста.")
+                return True
+            label = "SMS-код HH"
+        elif kind == "login":
+            answer = value
+            if len(answer) < 3 or len(answer) > 120:
+                await self._send_text(chat_id, "🔐 Жду телефон или email для входа HH.")
+                return True
+            label = "логин HH"
+        else:
+            return False
+
+        try:
+            hh_auth_bridge.write_response(str(pending["id"]), answer)
+            self._append_debug_log(
+                "hh_auth_response_accepted",
+                user_id=principal.get("user_id"),
+                profile_name=profile_name,
+                kind=kind,
+            )
+            await self._send_text(
+                chat_id,
+                f"✅ Принял {label} для профиля {profile_name}. Ввожу в браузер HH…",
+            )
+            return True
+        except Exception as exc:
+            log.warning("hh auth response write failed: %s", exc)
+            await self._send_text(chat_id, f"❌ Не смог передать ответ в HH auth: {exc}")
+            return True
+
     def _profile_names(self) -> list[str]:
         names = profile_mod.list_profiles()
         visible = [name for name in names if name]
@@ -670,6 +734,80 @@ class TelegramBot:
             "analytics_summary": analytics.summarize(events_file=profile.analytics_events_file, all_time=True),
             "recent_runs": self._recent_runs(profile_name, limit=3),
         }
+
+    def _daily_summary_snapshot(self, profile_name: str) -> dict:
+        profile = self._profile(profile_name)
+        days = max(1, int(getattr(config, "TELEGRAM_DAILY_SUMMARY_DAYS", 1) or 1))
+        return {
+            "profile_name": profile_name,
+            "analytics_summary": analytics.summarize(events_file=profile.analytics_events_file, days=days),
+            "recent_runs": self._recent_runs(profile_name, limit=1),
+            "days": days,
+        }
+
+    def _daily_summary_due(self, now: datetime | None = None) -> tuple[bool, str]:
+        if not getattr(config, "TELEGRAM_DAILY_SUMMARY_ENABLED", True):
+            return False, ""
+        current = now or datetime.now()
+        hour = max(0, min(23, int(getattr(config, "TELEGRAM_DAILY_SUMMARY_HOUR", 20) or 20)))
+        today = current.date().isoformat()
+        if current.hour < hour:
+            return False, today
+        state = self._load_state()
+        daily_state = state.get("daily_summary") if isinstance(state.get("daily_summary"), dict) else {}
+        return daily_state.get("last_sent_date") != today, today
+
+    async def _maybe_send_daily_summary(self) -> None:
+        due, today = self._daily_summary_due()
+        if not due:
+            return
+
+        profile_names = set(self._profile_names())
+        recipients: dict[int, dict] = {}
+        for item in telegram_access.list_users():
+            try:
+                user_id = int(item.get("user_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if user_id <= 0 or not item.get("enabled", True):
+                continue
+            profile_name = str(item.get("profile") or self.profile_name or "default").strip() or "default"
+            if profile_name not in profile_names:
+                log.warning("daily summary skipped user=%s unknown profile=%s", user_id, profile_name)
+                continue
+            recipients[user_id] = {**item, "profile": profile_name}
+
+        sent = 0
+        for user_id, principal in sorted(recipients.items()):
+            profile_name = str(principal.get("profile") or self.profile_name or "default")
+            try:
+                snapshot = self._daily_summary_snapshot(profile_name)
+                text = build_daily_summary_text(
+                    profile_name=profile_name,
+                    analytics_summary=snapshot["analytics_summary"],
+                    recent_runs=snapshot["recent_runs"],
+                    days=snapshot["days"],
+                )
+                result = await self._send_text_safely(
+                    user_id,
+                    text,
+                    reply_markup=self._menu_reply_markup(principal),
+                )
+                if result is not None:
+                    sent += 1
+            except Exception as exc:
+                log.warning("daily summary failed user=%s profile=%s: %s", user_id, profile_name, exc)
+
+        if sent <= 0:
+            return
+        state = self._load_state()
+        state["daily_summary"] = {
+            "last_sent_date": today,
+            "last_sent_at": datetime.now().isoformat(timespec="seconds"),
+            "recipients": sent,
+        }
+        self._save_state(state)
+        self._append_debug_log("daily_summary_sent", date=today, recipients=sent)
 
     def _runtime_status(self, profile_name: str) -> dict | None:
         runtime_file = self._profile(profile_name).runtime_status_file
@@ -1213,6 +1351,9 @@ class TelegramBot:
 
         text = (message.get("text") or "").strip()
 
+        if await self._maybe_accept_hh_auth_response(chat_id, principal, text):
+            return
+
         # captcha-bridge: если есть pending captcha и юзер админ —
         # принимаем короткий текст (≤ 50 символов, без слэшей и стандартных меню-команд)
         # как ответ на captcha и передаём search-процессу через файл.
@@ -1472,6 +1613,53 @@ class TelegramBot:
                     await self._edit_reply_markup(chat_id, message_id, reply_markup=reply_markup)
                 else:
                     await self._edit_reply_markup(chat_id, message_id)
+            return
+
+        if raw_data.startswith(f"{CALLBACK_MANUAL_WHY}:"):
+            profile_name, token = _parse_manual_why_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names() or not token:
+                await self._answer_callback_query(callback_id, "Не удалось определить вакансию.", show_alert=True)
+                return
+            item = manual_apply_queue.get_candidate(token)
+            if not item:
+                await self._answer_callback_query(callback_id, "Решение уже не найдено.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id, "Показываю причину")
+            await self._send_text(
+                chat_id,
+                manual_apply_queue.build_manual_why_text(item),
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+
+        if raw_data.startswith(f"{CALLBACK_MANUAL_BLOCK_COMPANY}:"):
+            profile_name, token = _parse_manual_block_company_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names() or not token:
+                await self._answer_callback_query(callback_id, "Не удалось определить вакансию.", show_alert=True)
+                return
+            item = manual_apply_queue.get_candidate(token)
+            vacancy = (item or {}).get("vacancy") or {}
+            company = str(vacancy.get("company") or "").strip()
+            if not item or not company:
+                await self._answer_callback_query(callback_id, "Не удалось определить компанию.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id, "Ставлю компанию в retry blocklist…")
+            result = await runtime_control.run_command_capture(
+                runtime_control.agent_command_argv(profile_name, "--hh-retry-block-company", company),
+                timeout=60,
+            )
+            if result.get("ok"):
+                manual_apply_queue.mark_candidate(token, "company_blocked", f"retry company blocked: {company}")
+                if message_id > 0:
+                    await self._edit_reply_markup(chat_id, message_id)
+                await self._send_text(
+                    chat_id,
+                    f"🛑 Retry-отклики в компанию {company} отключены для профиля {profile_name}.",
+                    reply_markup=self._menu_reply_markup(principal),
+                )
+            else:
+                message = format_command_result("retry block company", result, role=principal.get("role", ROLE_USER))
+                await self._send_text(chat_id, message, reply_markup=self._menu_reply_markup(principal))
             return
 
         # captcha-retry: ручной перезапуск поиска из TG (после пропущенного окна captcha).
@@ -2087,7 +2275,7 @@ class TelegramBot:
         )
         progress_message = await self._send_text(
             chat_id,
-            "🔐 Запускаю вход HH для выбранного профиля. Откроется браузер; войди в HH, дальше cookies сохранятся автоматически.",
+            "🔐 Запускаю вход HH для выбранного профиля. Бот откроет браузер; если hh.ru попросит телефон или SMS-код, пришли ответ сюда в Telegram.",
             reply_markup=self._menu_reply_markup(principal),
         )
         progress_task: asyncio.Task | None = None

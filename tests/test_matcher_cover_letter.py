@@ -24,6 +24,37 @@ def test_cover_letter_style_block_is_stable_for_same_vacancy():
     assert "В вашей вакансии" in first
 
 
+def test_cover_letter_style_block_includes_managed_cover_style():
+    block = matcher._build_cover_letter_style_block(
+        {"title": "QA Engineer API", "snippet": "REST API, Postman, Swagger"},
+        "Нужно тестировать REST API.",
+    )
+
+    assert "## Управляемый стиль сопроводительного" in block
+    assert "cover_style: api_qa" in block
+    assert "REST API" in block
+    assert "production automation" in block
+
+
+def test_analyze_cover_letter_returns_hash_features_and_guard_flags():
+    cover = "Проверяю REST API в Postman, руками гоняю сценарии и оформляю баг-репорты."
+
+    meta = matcher.analyze_cover_letter(
+        cover,
+        cover_style="api_qa",
+        fallback=True,
+        overclaim_guard=True,
+    )
+
+    assert meta["cover_style"] == "api_qa"
+    assert len(meta["cover_letter_hash"]) == 16
+    assert meta["cover_letter_length"] == len(cover)
+    assert meta["cover_letter_features"]["mentions_api"] is True
+    assert meta["cover_letter_features"]["mentions_manual"] is True
+    assert meta["fallback_cover_letter"] is True
+    assert meta["overclaim_guard"] is True
+
+
 def test_cover_letter_positioning_block_for_middle_one_year():
     block = matcher._build_cover_letter_positioning_block(
         {"title": "Middle Manual QA Engineer", "snippet": "Опыт от 1 года, REST API, SQL"},
@@ -80,13 +111,14 @@ class _FakeResponse:
 
 
 class _FakeCompletions:
-    def __init__(self, content: str):
-        self.content = content
+    def __init__(self, content: str | list[str]):
+        self.contents = list(content) if isinstance(content, list) else [content]
         self.calls = []
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
-        return _FakeResponse(self.content)
+        idx = min(len(self.calls) - 1, len(self.contents) - 1)
+        return _FakeResponse(self.contents[idx])
 
 
 class _FakeChat:
@@ -95,8 +127,36 @@ class _FakeChat:
 
 
 class _FakeClient:
-    def __init__(self, content: str):
+    def __init__(self, content: str | list[str]):
         self.chat = _FakeChat(_FakeCompletions(content))
+
+
+def test_evaluate_vacancy_repairs_malformed_json(monkeypatch):
+    repaired = json.dumps(
+        {
+            "score": 82,
+            "reason": "Manual/API QA хорошо совпадает с вакансией.",
+            "should_apply": True,
+            "red_flags": [],
+        },
+        ensure_ascii=False,
+    )
+    client = _FakeClient(["{\n  \"score\": ,\n  \"reason\": \"сломано\"", repaired])
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    monkeypatch.setattr(matcher, "_load_resume", lambda: "Junior Manual QA, около 1 года практического тестирования.")
+
+    result = asyncio.run(
+        matcher.evaluate_vacancy(
+            {"id": "hh-json", "title": "QA Engineer", "company": "Acme", "snippet": "Manual, API"},
+            "Manual QA, API, Postman.",
+        )
+    )
+
+    assert result["score"] == 82
+    assert result["should_apply"] is True
+    assert len(client.chat.completions.calls) == 2
+    repair_prompt = client.chat.completions.calls[1]["messages"][1]["content"]
+    assert "Преобразуй ответ модели в валидный JSON" in repair_prompt
 
 
 def test_evaluate_vacancy_blocks_overstated_llm_claim(monkeypatch):
@@ -410,6 +470,50 @@ def test_evaluate_vacancy_softens_salary_red_flag(monkeypatch):
     assert "salary_red_flag_softened" in result["guard_flags"]
 
 
+class _FailingCompletions:
+    async def create(self, **kwargs):
+        raise TimeoutError("cover timeout")
+
+
+class _FailingClient:
+    def __init__(self):
+        self.chat = _FakeChat(_FailingCompletions())
+
+
+def test_generate_cover_letter_falls_back_on_empty_response(monkeypatch):
+    client = _FakeClient("")
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    monkeypatch.setattr(matcher, "_load_resume", lambda: "Junior Manual QA, около 1 года практического тестирования.")
+
+    cover = asyncio.run(
+        matcher.generate_cover_letter(
+            {"id": "hh-empty-cover", "title": "QA Engineer", "company": "Acme"},
+            "Ручное тестирование web-продукта.",
+        )
+    )
+
+    assert "Junior Manual QA" in cover
+    assert "около 1 года" in cover
+    meta = matcher.analyze_cover_letter(cover)
+    assert meta["fallback_cover_letter"] is True
+    assert meta["cover_letter_hash"]
+
+
+def test_generate_cover_letter_falls_back_on_client_error(monkeypatch):
+    monkeypatch.setattr(matcher, "_get_client", lambda: _FailingClient())
+    monkeypatch.setattr(matcher, "_load_resume", lambda: "Junior Manual QA, около 1 года практического тестирования.")
+
+    cover = asyncio.run(
+        matcher.generate_cover_letter(
+            {"id": "hh-error-cover", "title": "QA Engineer", "company": "Acme"},
+            "Ручное тестирование web-продукта.",
+        )
+    )
+
+    assert "Junior Manual QA" in cover
+    assert "около 1 года" in cover
+
+
 def test_generate_cover_letter_falls_back_on_overstated_claim(monkeypatch):
     client = _FakeClient("Я QA с более 3 лет опыта и автотестами на Python.")
     monkeypatch.setattr(matcher, "_get_client", lambda: client)
@@ -426,4 +530,202 @@ def test_generate_cover_letter_falls_back_on_overstated_claim(monkeypatch):
     assert "около 1 года" in cover
     assert "более 3" not in cover
     assert "автотестами на Python" not in cover
+    meta = matcher.analyze_cover_letter(cover)
+    assert meta["fallback_cover_letter"] is True
+    assert meta["overclaim_guard"] is True
 
+
+
+def test_classify_vacancy_cluster_regressions():
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Manual QA Engineer", "snippet": "web, UI, regression, checklists"},
+        "ручное тестирование web-продукта",
+    ) == "manual_web_qa"
+    assert matcher.classify_vacancy_cluster(
+        {"title": "QA Engineer API", "snippet": "REST API, Postman, Swagger, SQL"},
+        "",
+    ) == "api_qa"
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Mobile QA", "snippet": "Android, iOS, Charles, push"},
+        "",
+    ) == "mobile_qa"
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Java developer", "snippet": "Spring, backend"},
+        "",
+    ) == "reject_non_qa"
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Сервисный инженер", "snippet": "ремонт оборудования"},
+        "",
+    ) == "reject_non_qa"
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Support engineer", "snippet": "API, логи, баги, диагностика, тестирование"},
+        "",
+    ) == "qa_support_adjacent"
+
+
+def test_classify_vacancy_cluster_rejects_misleading_non_qa_roles():
+    assert matcher.classify_vacancy_cluster(
+        {
+            "title": "Сервисный инженер",
+            "snippet": "Тестирование оборудования после ремонта, контроль качества, выезды к клиентам",
+        },
+        "Диагностика плат, пайка, ремонт и проверка работоспособности устройств.",
+    ) == "reject_non_qa"
+    assert matcher.classify_vacancy_cluster(
+        {
+            "title": "Java Developer",
+            "snippet": "Spring Boot, REST API, unit tests, интеграционное тестирование кода",
+        },
+        "Разработка backend-сервисов и покрытие кода тестами.",
+    ) == "reject_non_qa"
+    assert matcher.classify_vacancy_cluster(
+        {
+            "title": "Специалист технической поддержки",
+            "snippet": "Консультации пользователей, чат, звонки, CRM, SLA",
+        },
+        "Первая линия поддержки и ответы по шаблонам.",
+    ) == "reject_non_qa"
+
+
+def test_classify_vacancy_cluster_allows_qa_adjacent_and_junior_plus_cases():
+    assert matcher.classify_vacancy_cluster(
+        {"title": "QA Support Engineer", "snippet": "API, логи, баги, диагностика, Postman"},
+        "Разбор дефектов, проверка REST API и оформление баг-репортов.",
+    ) == "qa_support_adjacent"
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Специалист технической поддержки", "snippet": "Логи, баги, REST API, DevTools"},
+        "Работать с логами и багами системы, разбирать REST API и передавать дефекты в разработку.",
+    ) == "qa_support_adjacent"
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Middle Manual QA Engineer", "snippet": "Опыт от 1 года, API, SQL"},
+        "Ручное тестирование web-продукта, REST API, тест-кейсы, без самостоятельной автоматизации.",
+    ) == "api_qa"
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Junior AQA Python", "snippet": "Python, pytest, обучение, manual/API база"},
+        "Junior/trainee формат, развитие в API-автотестах под наставником.",
+    ) == "junior_aqa_python"
+
+
+def test_classify_vacancy_cluster_rejects_pure_support_noise():
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Product Marketing Manager", "company": "QA.Guru", "snippet": "Запуск и оптимизация рекламных кампаний"},
+        "Маркетинг, лидогенерация, рекламные площадки и публичные выступления.",
+    ) == "reject_non_qa"
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Специалист по внедрению и настройке Битрикс24", "snippet": "Инструкция или чек-лист для пользователей"},
+        "Настроить Битрикс24 под цикл обработки клиентских запросов.",
+    ) == "reject_non_qa"
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Оператор службы поддержки", "snippet": "Звонки, консультация по скрипту, помощь клиентам"},
+        "Принимать входящие звонки и отвечать по базе знаний.",
+    ) == "reject_non_qa"
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Специалист по поддержке информационных систем (SQL)", "snippet": "SQL-запросы для внесения данных в БД"},
+        "Сопровождение системы и изменение данных по заявкам пользователей.",
+    ) == "reject_non_qa"
+    assert matcher.classify_vacancy_cluster(
+        {"title": "Hospitality Software IT Specialist", "snippet": "SQL, software installation, remote support"},
+        "Provide telephonic and onsite support, install software, business travel.",
+    ) == "reject_non_qa"
+
+
+def test_response_probability_score_uses_freshness_and_applicants():
+    fresh = matcher.estimate_response_probability_score(
+        {
+            "title": "Junior QA Engineer",
+            "snippet": "без опыта, обучение, API",
+            "salary": "100 000 ₽",
+            "number_of_applicants": 5,
+            "published_at": "2026-07-09T10:00:00",
+        },
+        match_score=70,
+        cluster="api_qa",
+    )
+    crowded = matcher.estimate_response_probability_score(
+        {
+            "title": "QA Engineer",
+            "snippet": "manual web testing",
+            "salary": "не указана",
+            "number_of_applicants": 500,
+            "published_at": "2026-05-01T10:00:00",
+        },
+        match_score=70,
+        cluster="manual_web_qa",
+    )
+
+    assert fresh > crowded
+    assert fresh >= 80
+    assert crowded < 35
+
+
+def test_evaluate_vacancy_blocks_non_qa_cluster_even_if_llm_allows(monkeypatch):
+    payload = json.dumps(
+        {
+            "score": 91,
+            "reason": "LLM ошибочно решила, что тестирование оборудования подходит под QA.",
+            "should_apply": True,
+            "red_flags": [],
+        },
+        ensure_ascii=False,
+    )
+    client = _FakeClient(payload)
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    monkeypatch.setattr(matcher, "_load_resume", lambda: "Junior Manual QA, около 1 года практического тестирования.")
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_MANUAL_REVIEW_ENABLED", True, raising=False)
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_MANUAL_REVIEW_MIN_SCORE", 0, raising=False)
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_MANUAL_REVIEW_MAX_SCORE", 100, raising=False)
+
+    result = asyncio.run(
+        matcher.evaluate_vacancy(
+            {
+                "id": "hh-service",
+                "title": "Сервисный инженер",
+                "company": "RepairCo",
+                "snippet": "Тестирование оборудования после ремонта, контроль качества, выезды к клиентам",
+            },
+            "Диагностика плат, пайка, ремонт и проверка работоспособности устройств.",
+        )
+    )
+
+    assert result["should_apply"] is False
+    assert result["score"] <= 39
+    assert result["cluster"] == "reject_non_qa"
+    assert "cluster_reject_non_qa" in result["guard_flags"]
+    assert "cluster_reject_non_qa" in result["hard_flags"]
+    assert matcher.is_manual_review_candidate(result) is False
+
+
+def test_evaluate_vacancy_blocks_low_response_probability(monkeypatch):
+    payload = json.dumps(
+        {
+            "score": 84,
+            "reason": "Manual QA хорошо подходит по задачам.",
+            "should_apply": True,
+            "red_flags": [],
+        },
+        ensure_ascii=False,
+    )
+    client = _FakeClient(payload)
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    monkeypatch.setattr(matcher, "_load_resume", lambda: "Junior Manual QA, около 1 года практического тестирования.")
+    monkeypatch.setattr(matcher.config, "HH_MATCHER_AUTO_APPLY_MIN_RESPONSE_SCORE", 45, raising=False)
+
+    result = asyncio.run(
+        matcher.evaluate_vacancy(
+            {
+                "id": "hh-crowded",
+                "title": "QA Engineer",
+                "company": "Acme",
+                "snippet": "Manual web testing",
+                "salary": "не указана",
+                "number_of_applicants": 500,
+                "published_at": "2026-05-01T10:00:00",
+            },
+            "Ручное тестирование web-продукта.",
+        )
+    )
+
+    assert result["should_apply"] is False
+    assert result["cluster"] == "manual_web_qa"
+    assert result["response_probability_score"] < 45
+    assert "below_response_probability_threshold" in result["guard_flags"]

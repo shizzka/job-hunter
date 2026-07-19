@@ -4,6 +4,7 @@ set -euo pipefail
 # Job Hunter — скрипт запуска
 # Использование:
 #   ./run.sh login       — ручной логин
+#   ./run.sh google-login — ручной логин в Google для Google Forms
 #   ./run.sh geekjob-login — ручной логин в GeekJob
 #   ./run.sh search      — один прогон
 #   ./run.sh check       — проверка приглашений
@@ -11,7 +12,16 @@ set -euo pipefail
 #   ./run.sh bot         — Telegram bot (foreground)
 #   ./run.sh bot-daemon  — Telegram bot (в фоне)
 #   ./run.sh stats       — статистика
+#   ./run.sh analytics [days] — аналитика за N дней
+#   ./run.sh filter-audit [days] — replay-аудит фильтров по analytics
 #   ./run.sh analytics-backfill — подтянуть историю в аналитику
+#   ./run.sh retry-preview — показать HH retry-кандидатов без откликов
+#   ./run.sh retry-block-company "Компания" — не слать retry в компанию
+#   ./run.sh retry-blocked-companies — список company blocklist для retry
+#   ./run.sh resume-status — проверить кнопку "поднять резюме" на HH без клика
+#   ./run.sh resume-boost ПОДНЯТЬ — вручную нажать "поднять резюме" (требует HH_RESUME_BOOST_ENABLED=1)
+#   ./run.sh google-form-preview <chat_id> [message_id] — подготовить Google Form из HH-чата
+#   ./run.sh google-form-submit <token> — отправить подготовленную Google Form
 #   ./run.sh dry-run     — поиск без откликов
 
 cd "$(dirname "$0")"
@@ -65,6 +75,9 @@ case "$MODE" in
     login)
         $VENV agent.py $PROFILE_ARG --login
         ;;
+    google-login)
+        $VENV agent.py $PROFILE_ARG --google-login
+        ;;
     superjob-login)
         $VENV agent.py $PROFILE_ARG --superjob-login
         ;;
@@ -95,11 +108,69 @@ case "$MODE" in
     stats)
         $VENV agent.py $PROFILE_ARG --stats
         ;;
+    analytics|funnel)
+        DAYS="${2:-}"
+        if [ -n "$DAYS" ]; then
+            $VENV agent.py $PROFILE_ARG --analytics-report "$DAYS"
+        else
+            $VENV agent.py $PROFILE_ARG --analytics-report
+        fi
+        ;;
     digest)
         $VENV agent.py $PROFILE_ARG --digest
         ;;
     analytics-backfill|backfill)
         $VENV agent.py $PROFILE_ARG --analytics-backfill
+        ;;
+    filter-audit|audit-filters)
+        DAYS="${2:-}"
+        if [ -n "$DAYS" ]; then
+            $VENV agent.py $PROFILE_ARG --filter-audit "$DAYS"
+        else
+            $VENV agent.py $PROFILE_ARG --filter-audit
+        fi
+        ;;
+    retry-preview|preview-retry)
+        $VENV agent.py $PROFILE_ARG --hh-retry-preview
+        ;;
+    retry-block-company|block-company)
+        COMPANY="${*:2}"
+        if [ -z "$COMPANY" ]; then
+            echo 'Укажи компанию: ./run.sh retry-block-company "Company Name"'
+            exit 1
+        fi
+        $VENV agent.py $PROFILE_ARG --hh-retry-block-company "$COMPANY"
+        ;;
+    retry-unblock-company|unblock-company)
+        COMPANY="${*:2}"
+        if [ -z "$COMPANY" ]; then
+            echo 'Укажи компанию: ./run.sh retry-unblock-company "Company Name"'
+            exit 1
+        fi
+        $VENV agent.py $PROFILE_ARG --hh-retry-unblock-company "$COMPANY"
+        ;;
+    retry-blocked-companies|blocked-companies)
+        $VENV agent.py $PROFILE_ARG --hh-retry-list-blocked-companies
+        ;;
+    hh-resume-status|resume-status|boost-status)
+        $VENV agent.py $PROFILE_ARG --hh-resume-boost-status
+        ;;
+    hh-resume-boost|resume-boost)
+        CONFIRM="${2:-}"
+        $VENV agent.py $PROFILE_ARG --hh-resume-boost --hh-resume-boost-confirm "$CONFIRM"
+        ;;
+    google-form-preview|gform-preview)
+        CHAT_ID="${2:?Укажи chat_id: ./run.sh google-form-preview <chat_id> [message_id]}"
+        MSG_ID="${3:-}"
+        if [ -n "$MSG_ID" ]; then
+            $VENV agent.py $PROFILE_ARG --google-form-preview "$CHAT_ID" --chat-message-id "$MSG_ID"
+        else
+            $VENV agent.py $PROFILE_ARG --google-form-preview "$CHAT_ID"
+        fi
+        ;;
+    google-form-submit|gform-submit)
+        TOKEN="${2:?Укажи token: ./run.sh google-form-submit <token>}"
+        $VENV agent.py $PROFILE_ARG --google-form-submit "$TOKEN"
         ;;
     dry-run|dryrun)
         $VENV agent.py $PROFILE_ARG --dry-run
@@ -166,7 +237,7 @@ case "$MODE" in
         $VENV job_hunter_ctl.py $PROFILE_ARG daemon-stop
         ;;
     *)
-        echo "Usage: $0 [--profile <name>] {login|search|fresh-search|check|daemon|bot|bot-daemon|status|bot-status|stats|digest|dry-run|grab-resume|chat-respond|chat-respond-one|create-profile|profiles|bot-stop|stop}"
+        echo "Usage: $0 [--profile <name>] {login|google-login|search|fresh-search|check|daemon|bot|bot-daemon|status|bot-status|stats|analytics|filter-audit|digest|dry-run|grab-resume|resume-status|resume-boost|google-form-preview|google-form-submit|chat-respond|chat-respond-one|retry-preview|retry-block-company|retry-unblock-company|retry-blocked-companies|create-profile|profiles|bot-stop|stop}"
         exit 1
         ;;
 esac

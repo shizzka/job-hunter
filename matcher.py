@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime
 
 import config
 from llm_client import LLMProvidersExhaustedError, get_llm_client
@@ -28,7 +29,7 @@ def _load_resume() -> str:
     return f"(Резюме не найдено — заполни {config.RESUME_FILE})"
 
 
-from llm_utils import parse_llm_json as _parse_llm_json  # re-export для обратной совместимости
+from llm_utils import parse_llm_json as _parse_llm_json, repair_llm_json as _repair_llm_json  # re-export для обратной совместимости
 
 
 ONE_YEAR_EXPERIENCE_PATTERNS = [
@@ -169,6 +170,47 @@ CANDIDATE_CLAIM_OVERSTATEMENT_PATTERNS = [
 ]
 
 
+_EVALUATION_JSON_SCHEMA = """{
+  "score": <число 0-100>,
+  "reason": "<1-2 предложения почему подходит/не подходит>",
+  "should_apply": <true/false>,
+  "red_flags": ["<красный флаг 1>", ...]
+}"""
+
+
+async def _parse_evaluation_json_with_repair(client, raw_text: str, prompt: str, model: str) -> dict:
+    try:
+        return _parse_llm_json(raw_text)
+    except Exception as parse_exc:
+        parse_error = str(parse_exc)
+        log.warning("LLM evaluation JSON parse failed, trying repair: %s", parse_error)
+
+    try:
+        return await _repair_llm_json(
+            client,
+            model=model,
+            raw_text=raw_text,
+            parse_error=parse_error,
+            schema=_EVALUATION_JSON_SCHEMA,
+            max_tokens=700,
+        )
+    except Exception as repair_exc:
+        log.warning("LLM evaluation JSON repair failed, retrying evaluation: %s", repair_exc)
+
+    retry_prompt = (
+        prompt
+        + "\n\nПредыдущий ответ был невалидным JSON. Повтори оценку заново. "
+        "Верни только валидный JSON-объект ровно по указанной схеме, без markdown и текста вне JSON."
+    )
+    retry = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": retry_prompt}],
+        temperature=0.1,
+        max_tokens=800,
+    )
+    return _parse_llm_json(retry.choices[0].message.content or "")
+
+
 def _is_one_year_experience_vacancy(vacancy: dict, details: str = "") -> bool:
     haystack = " ".join(
         part
@@ -221,6 +263,18 @@ def _vacancy_haystack(vacancy: dict, details: str = "") -> str:
     ).casefold()
 
 
+def _vacancy_role_haystack(vacancy: dict, details: str = "") -> str:
+    return " ".join(
+        part
+        for part in (
+            vacancy.get("title", ""),
+            vacancy.get("snippet", ""),
+            details or "",
+        )
+        if part
+    ).casefold()
+
+
 def _is_around_one_year_experience_vacancy(vacancy: dict, details: str = "") -> bool:
     haystack = _vacancy_haystack(vacancy, details)
     return any(re.search(pattern, haystack) for pattern in AROUND_ONE_YEAR_EXPERIENCE_PATTERNS)
@@ -254,6 +308,480 @@ def _coerce_score(value, default: int = 50) -> int:
     except (TypeError, ValueError):
         score = default
     return max(0, min(100, score))
+
+VACANCY_CLUSTERS = (
+    "manual_web_qa",
+    "api_qa",
+    "junior_aqa_python",
+    "mobile_qa",
+    "qa_support_adjacent",
+    "enterprise_banking_qa",
+    "reject_non_qa",
+)
+
+CLUSTER_POLICIES = {
+    "manual_web_qa": {
+        "preferred_resume_variant": "normal",
+        "cover_style": "direct_manual_qa",
+        "min_auto_score": 58,
+        "min_response_score": 35,
+    },
+    "api_qa": {
+        "preferred_resume_variant": "ats_heavy",
+        "cover_style": "api_qa",
+        "min_auto_score": 58,
+        "min_response_score": 35,
+    },
+    "junior_aqa_python": {
+        "preferred_resume_variant": "ats_heavy",
+        "cover_style": "junior_aqa_careful",
+        "min_auto_score": 60,
+        "min_response_score": 40,
+    },
+    "mobile_qa": {
+        "preferred_resume_variant": "normal",
+        "cover_style": "mobile_qa",
+        "min_auto_score": 58,
+        "min_response_score": 35,
+    },
+    "qa_support_adjacent": {
+        "preferred_resume_variant": "normal",
+        "cover_style": "direct_manual_qa",
+        "min_auto_score": 62,
+        "min_response_score": 40,
+    },
+    "enterprise_banking_qa": {
+        "preferred_resume_variant": "ats_heavy",
+        "cover_style": "enterprise_process",
+        "min_auto_score": 58,
+        "min_response_score": 35,
+    },
+    "reject_non_qa": {
+        "preferred_resume_variant": "",
+        "cover_style": "",
+        "min_auto_score": 101,
+        "min_response_score": 101,
+    },
+}
+
+QA_CONTEXT_PATTERNS = [
+    r"\bqa\b",
+    r"\baqa\b",
+    r"quality\s+assurance",
+    r"\btest(?:er|ing)?\b",
+    r"тестиров",
+    r"тестирован",
+    r"тестировщик",
+    r"test\s*case",
+    r"чек[-\s]?лист",
+    r"баг[-\s]?репорт",
+    r"регресс",
+]
+
+STRONG_QA_CONTEXT_PATTERNS = [
+    r"\bqa\b",
+    r"\baqa\b",
+    r"quality\s+assurance",
+    r"\bmanual\s+qa\b",
+    r"\bapi\s+qa\b",
+    r"\bmobile\s+qa\b",
+    r"тестировщик",
+    r"инженер\w*\s+по\s+тестирован",
+    r"ручн\w*\s+тест",
+    r"\bapi\b.{0,80}\bтестирован",
+    r"тестирован.{0,80}\bapi\b",
+    r"test\s*case",
+    r"тест[-\s]?кейс",
+    r"чек[-\s]?лист",
+    r"баг[-\s]?репорт",
+    r"регресс",
+    r"postman",
+    r"swagger",
+    r"testit",
+    r"testrail",
+    r"автотест",
+]
+
+HARD_NON_QA_TITLE_PATTERNS = [
+    r"сервисн\w*\s+инженер",
+    r"сервис[-\s]?инженер",
+    r"техник\b",
+    r"техник\s+рэа",
+    r"радиоэлектрон",
+    r"\bjava\s+developer\b",
+    r"java[-\s]?разработчик",
+    r"разработчик\s+java",
+    r"\bbackend\s+developer\b",
+    r"\bfrontend\s+developer\b",
+    r"\bdevops\b",
+    r"\bsre\b",
+    r"system\s+administrator",
+    r"системн\w*\s+администратор",
+    r"бизнес[-\s]?аналитик",
+    r"product\s+(manager|owner|analyst)",
+    r"специалист\w*\s+по\s+внедрен",
+    r"специалист\w*.{0,40}настройк",
+    r"оператор\s+call[-\s]?center",
+    r"call[-\s]?center",
+]
+
+NON_QA_TITLE_PATTERNS = [
+    *HARD_NON_QA_TITLE_PATTERNS,
+    r"\bdeveloper\b",
+    r"разработчик",
+    r"программист",
+]
+
+SUPPORT_PATTERNS = [
+    r"support",
+    r"поддержк",
+    r"техподдерж",
+    r"help\s?desk",
+    r"customer\s+success",
+]
+
+QA_SUPPORT_DIRECT_PATTERNS = [
+    r"\bqa\b.{0,40}support",
+    r"support.{0,40}\bqa\b",
+    r"тестировщик",
+    r"инженер\w*\s+по\s+тестирован",
+    r"ручн\w*\s+тест",
+    r"тест[-\s]?кейс",
+    r"чек[-\s]?лист",
+    r"баг[-\s]?репорт",
+    r"регресс",
+    r"postman",
+    r"swagger",
+]
+
+QA_SUPPORT_ISSUE_PATTERNS = [
+    r"баг",
+    r"дефект",
+    r"bug",
+    r"defect",
+    r"ошибк",
+    r"тестирован",
+    r"testing",
+]
+
+QA_SUPPORT_TECH_PATTERNS = [
+    r"\bapi\b",
+    r"\brest\b",
+    r"http",
+    r"лог[аиов]*\b",
+    r"logs?\b",
+    r"devtools",
+    r"postman",
+    r"swagger",
+    r"json",
+    r"sql",
+]
+
+API_QA_PATTERNS = [
+    r"\bapi\b",
+    r"\brest\b",
+    r"postman",
+    r"swagger",
+    r"openapi",
+    r"json",
+    r"xml",
+    r"http[-\s]?код",
+    r"sql",
+]
+
+MOBILE_QA_PATTERNS = [
+    r"mobile",
+    r"мобильн",
+    r"android",
+    r"ios\b",
+    r"webview",
+    r"charles",
+    r"fiddler",
+    r"push",
+    r"deeplink",
+    r"эмулятор",
+]
+
+ENTERPRISE_PATTERNS = [
+    r"банк",
+    r"банковск",
+    r"финтех",
+    r"fintech",
+    r"enterprise",
+    r"jira",
+    r"testrail",
+    r"testit",
+    r"документац",
+]
+
+MANUAL_WEB_PATTERNS = [
+    r"manual",
+    r"ручн\w*\s+тест",
+    r"web\b",
+    r"веб",
+    r"ui\b",
+    r"ux\b",
+    r"devtools",
+    r"регресс",
+    r"чек[-\s]?лист",
+    r"тест[-\s]?кейс",
+    r"баг[-\s]?репорт",
+]
+
+MASS_VACANCY_PATTERNS = [
+    r"массов\w*\s+подбор",
+    r"поток\w*\s+ваканс",
+    r"много\s+откликов",
+    r"кадров\w*\s+агентств",
+]
+
+REMOTE_PATTERNS = [
+    r"remote",
+    r"удален",
+    r"удалён",
+    r"дистанц",
+]
+
+
+def _regex_any(patterns: list[str] | tuple[str, ...], value: str) -> bool:
+    return any(re.search(pattern, value) for pattern in patterns)
+
+
+def _cluster_policy(cluster: str) -> dict:
+    return dict(CLUSTER_POLICIES.get(cluster) or CLUSTER_POLICIES["manual_web_qa"])
+
+
+def _has_qa_support_context(haystack: str) -> bool:
+    if _regex_any(QA_SUPPORT_DIRECT_PATTERNS, haystack):
+        return True
+    has_issue_or_testing = _regex_any(QA_SUPPORT_ISSUE_PATTERNS, haystack)
+    has_technical_context = _regex_any(QA_SUPPORT_TECH_PATTERNS, haystack)
+    return has_issue_or_testing and has_technical_context
+
+
+def classify_vacancy_cluster(vacancy: dict, details: str = "") -> str:
+    """Детерминированный кластер вакансии для аналитики и выбора стратегии."""
+    title = str(vacancy.get("title") or "").casefold()
+    haystack = _vacancy_role_haystack(vacancy, details)
+    has_qa_context = _regex_any(QA_CONTEXT_PATTERNS, haystack)
+    has_strong_qa_context = _regex_any(STRONG_QA_CONTEXT_PATTERNS, haystack)
+    has_support = _regex_any(SUPPORT_PATTERNS, haystack)
+    support_has_qa_context = has_support and _has_qa_support_context(haystack)
+
+    if _regex_any(HARD_NON_QA_TITLE_PATTERNS, title):
+        return "reject_non_qa"
+    if _regex_any(NON_QA_TITLE_PATTERNS, title) and not has_strong_qa_context and not support_has_qa_context:
+        return "reject_non_qa"
+    if has_support and not support_has_qa_context and not has_qa_context:
+        return "reject_non_qa"
+    if not has_qa_context and not support_has_qa_context:
+        return "reject_non_qa"
+    if has_support and support_has_qa_context:
+        return "qa_support_adjacent"
+    if _regex_any(MOBILE_QA_PATTERNS, haystack):
+        return "mobile_qa"
+    if _regex_any(ENTERPRISE_PATTERNS, haystack) and has_qa_context:
+        return "enterprise_banking_qa"
+    if _is_automation_heavy_vacancy(vacancy, details) and (
+        _is_junior_or_training_vacancy(vacancy, details)
+        or "python" in haystack
+        or "pytest" in haystack
+    ):
+        return "junior_aqa_python"
+    if _regex_any(API_QA_PATTERNS, haystack):
+        return "api_qa"
+    if _regex_any(MANUAL_WEB_PATTERNS, haystack) or has_qa_context:
+        return "manual_web_qa"
+    return "reject_non_qa"
+
+
+def cover_style_for_cluster(cluster: str) -> str:
+    return str(_cluster_policy(cluster).get("cover_style") or "direct_manual_qa")
+
+
+def _parse_datetime(value) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value)
+        except (OSError, OverflowError, ValueError):
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def _publication_age_days(vacancy: dict) -> float | None:
+    for field in ("published_at", "publishedDate", "date_published", "created_at", "updated_at"):
+        parsed = _parse_datetime(vacancy.get(field))
+        if parsed is not None:
+            return max(0.0, (datetime.now() - parsed).total_seconds() / 86400)
+    return None
+
+
+def _extract_applicant_count(vacancy: dict, details: str = "") -> int | None:
+    for field in ("number_of_applicants", "applicants", "applicant_count", "responses_count", "response_count"):
+        value = vacancy.get(field)
+        if isinstance(value, int):
+            return max(0, value)
+        if isinstance(value, str) and value.strip().isdigit():
+            return max(0, int(value.strip()))
+
+    haystack = _vacancy_haystack(vacancy, details)
+    for pattern in (
+        r"(\d[\d\s]{0,8})\s+(?:отклик|отклика|откликов)",
+        r"(\d[\d\s]{0,8})\s+(?:соискател|кандидат)",
+        r"responses?\s*[:=]?\s*(\d[\d\s]{0,8})",
+        r"applicants?\s*[:=]?\s*(\d[\d\s]{0,8})",
+    ):
+        match = re.search(pattern, haystack)
+        if match:
+            digits = re.sub(r"\D", "", match.group(1))
+            if digits:
+                return int(digits)
+    return None
+
+
+def estimate_response_probability_score(
+    vacancy: dict,
+    details: str = "",
+    *,
+    match_score: int | None = None,
+    cluster: str | None = None,
+    hard_flags: list[str] | None = None,
+    soft_flags: list[str] | None = None,
+) -> int:
+    """Оценка шанса получить просмотр/ответ, отдельно от match score."""
+    cluster = cluster or classify_vacancy_cluster(vacancy, details)
+    haystack = _vacancy_haystack(vacancy, details)
+    score = 55
+
+    if cluster == "reject_non_qa":
+        score -= 45
+    elif cluster in {"manual_web_qa", "api_qa", "mobile_qa"}:
+        score += 5
+    elif cluster == "junior_aqa_python":
+        score += 3
+    elif cluster == "qa_support_adjacent":
+        score -= 4
+
+    if _is_junior_or_training_vacancy(vacancy, details):
+        score += 14
+    elif _is_around_one_year_experience_vacancy(vacancy, details):
+        score += 8
+    if _is_senior_experience_vacancy(vacancy, details):
+        score -= 30
+    elif _is_middle_experience_vacancy(vacancy, details) and not _is_around_one_year_experience_vacancy(vacancy, details):
+        score -= 10
+
+    applicants = _extract_applicant_count(vacancy, details)
+    if applicants is not None:
+        if applicants <= 10:
+            score += 10
+        elif applicants <= 50:
+            score += 3
+        elif applicants <= 150:
+            score -= 8
+        elif applicants <= 300:
+            score -= 16
+        else:
+            score -= 25
+
+    age_days = _publication_age_days(vacancy)
+    if age_days is not None:
+        if age_days <= 1:
+            score += 12
+        elif age_days <= 3:
+            score += 7
+        elif age_days <= 7:
+            score += 2
+        elif age_days > 21:
+            score -= 14
+        elif age_days > 14:
+            score -= 8
+
+    if _regex_any(REMOTE_PATTERNS, haystack) or "schedule=remote" in str(vacancy.get("_search_profile") or ""):
+        score += 4
+    salary = str(vacancy.get("salary") or "").casefold()
+    if salary and "не указ" not in salary and "договор" not in salary:
+        score += 3
+    else:
+        score -= 4
+    if _regex_any(MASS_VACANCY_PATTERNS, haystack):
+        score -= 8
+
+    if match_score is not None:
+        match_score = _coerce_score(match_score, default=50)
+        if match_score >= 80:
+            score += 8
+        elif match_score >= 65:
+            score += 4
+        elif match_score < 50:
+            score -= 12
+
+    score -= 35 if hard_flags else 0
+    score -= min(15, 5 * len(soft_flags or []))
+    return _coerce_score(score, default=55)
+
+
+def _add_strategy_fields(result: dict, vacancy: dict, details: str = "") -> dict:
+    cluster = classify_vacancy_cluster(vacancy, details)
+    policy = _cluster_policy(cluster)
+    result["cluster"] = cluster
+    result["cover_style"] = str(policy.get("cover_style") or "")
+    result["preferred_resume_variant"] = str(policy.get("preferred_resume_variant") or "")
+    result["cluster_min_auto_score"] = int(policy.get("min_auto_score") or 0)
+    result["cluster_min_response_score"] = int(policy.get("min_response_score") or 0)
+
+    hard_flags = [str(flag).strip() for flag in result.get("hard_flags", []) if str(flag).strip()]
+    for flag in result.get("red_flags", []) or []:
+        flag = str(flag).strip()
+        if flag and flag not in hard_flags:
+            hard_flags.append(flag)
+    if cluster == "reject_non_qa" and "cluster_reject_non_qa" not in hard_flags:
+        hard_flags.append("cluster_reject_non_qa")
+        result["score"] = min(_coerce_score(result.get("score"), default=0), 39)
+        result["should_apply"] = False
+        _add_guard_flag(result, "cluster_reject_non_qa")
+        _append_reason(result, "Кластер вакансии не похож на QA/test роль.")
+    result["hard_flags"] = hard_flags
+
+    soft_flags = [str(flag).strip() for flag in result.get("soft_flags", []) if str(flag).strip()]
+    result["soft_flags"] = soft_flags
+    result["response_probability_score"] = estimate_response_probability_score(
+        vacancy,
+        details,
+        match_score=result.get("score"),
+        cluster=cluster,
+        hard_flags=hard_flags,
+        soft_flags=soft_flags,
+    )
+    return result
+
+
+def _apply_response_probability_threshold(result: dict) -> dict:
+    threshold = _coerce_score(
+        getattr(config, "HH_MATCHER_AUTO_APPLY_MIN_RESPONSE_SCORE", 35),
+        default=35,
+    )
+    cluster_threshold = _coerce_score(result.get("cluster_min_response_score"), default=0)
+    threshold = max(threshold, cluster_threshold)
+    response_score = _coerce_score(result.get("response_probability_score"), default=0)
+    if result.get("should_apply") and response_score < threshold:
+        result["should_apply"] = False
+        _add_guard_flag(result, "below_response_probability_threshold")
+        _append_reason(result, f"Response score {response_score} ниже порога автоотклика {threshold}.")
+    return result
 
 
 SALARY_SOFT_FLAG_PATTERNS = [
@@ -336,6 +864,7 @@ FATAL_MANUAL_REVIEW_GUARDS = {
     "senior_level_mismatch",
     "automation_heavy_mismatch",
     "candidate_claim_overstatement",
+    "cluster_reject_non_qa",
 }
 
 
@@ -427,13 +956,167 @@ def _apply_candidate_truth_guards(result: dict, vacancy: dict, details: str = ""
     return result
 
 
-def _fallback_cover_letter(vacancy: dict, details: str = "") -> str:
+def _fallback_cover_letter(vacancy: dict, details: str = "", cover_style: str = "") -> str:
+    style = cover_style or cover_style_for_cluster(classify_vacancy_cluster(vacancy, details))
+    if style == "api_qa":
+        return (
+            "По вакансии вижу фокус на QA с API и проверкой продуктовых сценариев. "
+            "Мой профиль - Junior Manual QA: около 1 года практики, ручные проверки, тест-кейсы, "
+            "баг-репорты, REST API и Postman/DevTools по задачам. "
+            "Если такой уровень подходит, обсудим задачи и формат работы."
+        )
+    if style == "junior_aqa_careful":
+        return (
+            "По вакансии вижу QA-задачи, где ручная база сочетается с аккуратным развитием в автотестах. "
+            "Мой профиль - Junior Manual QA: около 1 года практики; участвовал в API-автотестах на Python/pytest, "
+            "но основной фокус сейчас - ручное и API-тестирование. "
+            "Если такая рамка подходит, обсудим задачи."
+        )
+    if style == "enterprise_process":
+        return (
+            "По вакансии вижу задачи, где важны регресс, требования и аккуратная тестовая документация. "
+            "Мой профиль - Junior Manual QA: около 1 года практики, ручные проверки, тест-кейсы, "
+            "баг-репорты и технический бэкграунд в диагностике. "
+            "Если такой уровень подходит, обсудим процессы и формат работы."
+        )
+    if style == "mobile_qa":
+        return (
+            "По вакансии вижу задачи по проверке пользовательских сценариев на мобильном продукте. "
+            "Мой профиль - Junior Manual QA: около 1 года практики, ручные проверки, баг-репорты, "
+            "DevTools/Charles для диагностики, когда это нужно. "
+            "Если такой уровень подходит, обсудим задачи и формат работы."
+        )
+    if style == "short_retry":
+        title = str(vacancy.get("title") or "вакансию").strip()
+        return (
+            f"Здравствуйте! Направляю другой вариант резюме на {title}. "
+            "Мой профиль - Junior Manual QA: около 1 года практики, ручные проверки, тест-кейсы, "
+            "баг-репорты и технический бэкграунд в диагностике. "
+            "Если профиль подходит, можно обсудить детали."
+        )
     return (
         "По вакансии вижу задачи по тестированию продукта и аккуратной проверке сценариев. "
         "Мой профиль - Junior Manual QA: около 1 года практики, ручные проверки, тест-кейсы, "
         "баг-репорты и технический бэкграунд в диагностике. "
         "Если такой уровень подходит, обсудим задачи и формат работы."
     )
+
+
+COVER_STYLE_RULES = {
+    "direct_manual_qa": {
+        "max_chars": 1200,
+        "must_mention": "manual QA, ручные проверки, тест-кейсы/чек-листы или баг-репорты",
+        "avoid": "длинные списки инструментов и уверенный AQA",
+        "tone": "прямой, спокойный, без маркетинга",
+        "automation": "автотесты не поднимать, если вакансия не просит это явно как плюс",
+    },
+    "api_qa": {
+        "max_chars": 1200,
+        "must_mention": "REST API, Postman/DevTools или HTTP/JSON, если это есть в вакансии",
+        "avoid": "обещать backend-разработку или production automation",
+        "tone": "практичный, через проверки API и пользовательских сценариев",
+        "automation": "можно осторожно упомянуть участие в API-автотестах Python/pytest, но не как самостоятельный AQA",
+    },
+    "junior_aqa_careful": {
+        "max_chars": 1100,
+        "must_mention": "ручной QA как база и аккуратное участие в Python/pytest",
+        "avoid": "слова SDET, QA Automation, уверенно автоматизирую, commercial automation experience",
+        "tone": "честный junior+/trainee tone без завышения",
+        "automation": "формулировать только как участвовал/разбираюсь/готов развиваться",
+    },
+    "enterprise_process": {
+        "max_chars": 1300,
+        "must_mention": "регресс, документацию, требования, Jira/TestRail/TestIT если уместно",
+        "avoid": "слишком неформальные обороты и обещания руководить QA-процессом",
+        "tone": "аккуратный, процессный, надежный",
+        "automation": "автотесты упоминать только как дополнительный опыт, не фокус",
+    },
+    "mobile_qa": {
+        "max_chars": 1200,
+        "must_mention": "мобильные сценарии, устройства/эмуляторы или сетевую диагностику если уместно",
+        "avoid": "приписывать коммерческий iOS/Android automation опыт",
+        "tone": "конкретный, через сценарии пользователя и диагностику",
+        "automation": "не обещать mobile automation",
+    },
+    "short_retry": {
+        "max_chars": 600,
+        "must_mention": "что отправляется другой вариант резюме и почему профиль может подойти",
+        "avoid": "повторять длинное первое сопроводительное",
+        "tone": "короткий follow-up",
+        "automation": "не добавлять новых claims",
+    },
+    "human_followup": {
+        "max_chars": 800,
+        "must_mention": "один конкретный повод продолжить диалог",
+        "avoid": "давление, канцелярит и длинные объяснения",
+        "tone": "живой, короткий, как сообщение в чате",
+        "automation": "не добавлять новых claims",
+    },
+}
+
+_COVER_LETTER_META_BY_HASH: dict[str, dict] = {}
+
+
+def _cover_letter_hash(value: str) -> str:
+    normalized = (value or "").strip()
+    if not normalized:
+        return ""
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _cover_letter_features(value: str) -> dict:
+    text = (value or "").casefold()
+    return {
+        "mentions_api": bool(re.search(r"\b(api|rest|postman|swagger|json|http)\b", text)),
+        "mentions_manual": bool(re.search(r"manual|ручн\w*|тест-кейс|чек[-\s]?лист|баг[-\s]?репорт", text)),
+        "mentions_autotests": bool(re.search(r"автотест|pytest|automation|selenium|playwright|cypress", text)),
+        "mentions_mobile": bool(re.search(r"mobile|мобильн|android|ios|charles|fiddler", text)),
+        "mentions_enterprise_process": bool(re.search(r"jira|testrail|testit|регресс|требован|документац", text)),
+    }
+
+
+def analyze_cover_letter(
+    cover_letter: str,
+    *,
+    cover_style: str = "",
+    fallback: bool | None = None,
+    overclaim_guard: bool | None = None,
+) -> dict:
+    """Compact analytics payload for a generated cover letter."""
+    text = (cover_letter or "").strip()
+    digest = _cover_letter_hash(text)
+    cached = dict(_COVER_LETTER_META_BY_HASH.get(digest) or {})
+    if fallback is None:
+        fallback = cached.get("fallback_cover_letter", False)
+    if overclaim_guard is None:
+        overclaim_guard = cached.get("overclaim_guard", False)
+    style = cover_style or cached.get("cover_style", "")
+    return {
+        "cover_style": style,
+        "cover_letter_hash": digest,
+        "cover_letter_length": len(text),
+        "cover_letter_features": _cover_letter_features(text),
+        "fallback_cover_letter": bool(fallback),
+        "overclaim_guard": bool(overclaim_guard),
+    }
+
+
+def _remember_cover_letter_meta(
+    cover_letter: str,
+    *,
+    cover_style: str,
+    fallback: bool = False,
+    overclaim_guard: bool = False,
+) -> str:
+    digest = _cover_letter_hash(cover_letter)
+    if digest:
+        _COVER_LETTER_META_BY_HASH[digest] = analyze_cover_letter(
+            cover_letter,
+            cover_style=cover_style,
+            fallback=fallback,
+            overclaim_guard=overclaim_guard,
+        )
+    return cover_letter
 
 
 COVER_LETTER_STYLE_VARIANTS = (
@@ -521,9 +1204,19 @@ def _build_cover_letter_positioning_block(vacancy: dict, details: str = "") -> s
     return "\n".join(notes) + "\n"
 
 
-def _build_cover_letter_style_block(vacancy: dict, details: str = "") -> str:
+def _build_cover_letter_style_block(vacancy: dict, details: str = "", cover_style: str = "") -> str:
+    style = cover_style or cover_style_for_cluster(classify_vacancy_cluster(vacancy, details))
+    rules = COVER_STYLE_RULES.get(style) or COVER_STYLE_RULES["direct_manual_qa"]
     variant = COVER_LETTER_STYLE_VARIANTS[_cover_letter_variant_index(vacancy, details)]
-    return f"""## Вариант стиля для ЭТОГО письма:
+    return f"""## Управляемый стиль сопроводительного:
+- cover_style: {style}
+- Максимальная длина: до {rules['max_chars']} символов.
+- Обязательно зацепить: {rules['must_mention']}.
+- Нельзя: {rules['avoid']}.
+- Тон: {rules['tone']}.
+- Автотесты/AQA: {rules['automation']}.
+
+## Вариант стиля для ЭТОГО письма:
 - Стратегия: {variant['name']}
 - Как начать: {variant['opening']}
 - Скелет: {variant['shape']}
@@ -635,14 +1328,15 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
 
     try:
         client = _get_client()
+        model = config.HH_MATCHER_MODEL or config.LLM_MODEL
         resp = await client.chat.completions.create(
-            model=config.HH_MATCHER_MODEL or config.LLM_MODEL,
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=800,
         )
-        text = resp.choices[0].message.content.strip()
-        result = _parse_llm_json(text)
+        text = (resp.choices[0].message.content or "").strip()
+        result = await _parse_evaluation_json_with_repair(client, text, prompt, model)
         if not isinstance(result, dict):
             raise ValueError("LLM response JSON is not an object")
         result["score"] = _coerce_score(result.get("score"), default=50)
@@ -687,12 +1381,14 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
                 _add_guard_flag(result, "middle_challenge_below_threshold")
                 _append_reason(result, f"Middle/2+ challenge требует score >= {middle_threshold} и отсутствия red flags.")
         result = _apply_candidate_truth_guards(result, vacancy, details)
-        return _apply_auto_apply_threshold(result)
+        result = _add_strategy_fields(result, vacancy, details)
+        result = _apply_auto_apply_threshold(result)
+        return _apply_response_probability_threshold(result)
 
     except LLMProvidersExhaustedError as e:
         log.error("LLM providers exhausted for evaluation: %s", e)
         providers = ", ".join(e.provider_names)
-        return {
+        result = {
             "score": 0,
             "reason": (
                 f"LLM лимиты исчерпаны для модели {e.model or 'unknown'}"
@@ -705,10 +1401,11 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
             "llm_providers": list(e.provider_names),
             "llm_error": e.last_error,
         }
+        return _add_strategy_fields(result, vacancy, details)
 
     except Exception as e:
         log.error("LLM evaluation failed: %s", e)
-        return {
+        result = {
             "score": 0,
             "reason": f"LLM ошибка: {e}",
             "should_apply": False,  # при ошибке LLM — не откликаться вслепую
@@ -717,6 +1414,7 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
             "llm_model": config.HH_MATCHER_MODEL or config.LLM_MODEL,
             "llm_error": str(e),
         }
+        return _add_strategy_fields(result, vacancy, details)
 
 
 async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
@@ -743,7 +1441,8 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
         log.warning("filtered KB selection failed, fallback to full: %s", exc)
         knowledge = build_knowledge_base_block(limit_chars=8000)
 
-    style_block = _build_cover_letter_style_block(vacancy, details)
+    cover_style = cover_style_for_cluster(classify_vacancy_cluster(vacancy, details))
+    style_block = _build_cover_letter_style_block(vacancy, details, cover_style)
     positioning_block = _build_cover_letter_positioning_block(vacancy, details)
 
     prompt = f"""Ты — ассистент по поиску работы. Напиши короткое сопроводительное письмо.
@@ -801,13 +1500,32 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
             temperature=0.55,
             max_tokens=2000,
         )
-        cover = resp.choices[0].message.content.strip()
+        cover = (resp.choices[0].message.content or "").strip()
+        if not cover:
+            log.warning("Cover letter generation returned empty response; using fallback")
+            fallback_cover = _fallback_cover_letter(vacancy, details, cover_style)
+            return _remember_cover_letter_meta(
+                fallback_cover,
+                cover_style=cover_style,
+                fallback=True,
+            )
         overstatements = _detect_candidate_claim_overstatements(cover)
         if overstatements:
             log.warning("cover letter overclaim guard triggered: %s", overstatements)
-            return _fallback_cover_letter(vacancy, details)
-        return cover
+            fallback_cover = _fallback_cover_letter(vacancy, details, cover_style)
+            return _remember_cover_letter_meta(
+                fallback_cover,
+                cover_style=cover_style,
+                fallback=True,
+                overclaim_guard=True,
+            )
+        return _remember_cover_letter_meta(cover, cover_style=cover_style)
 
     except Exception as e:
-        log.error("Cover letter generation failed: %s", e)
-        return ""
+        log.error("Cover letter generation failed, using fallback: %s", e)
+        fallback_cover = _fallback_cover_letter(vacancy, details, cover_style)
+        return _remember_cover_letter_meta(
+            fallback_cover,
+            cover_style=cover_style,
+            fallback=True,
+        )

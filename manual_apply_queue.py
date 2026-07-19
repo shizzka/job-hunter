@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -13,6 +14,8 @@ import config
 
 CALLBACK_MANUAL_APPLY = "manual_apply"
 CALLBACK_MANUAL_FEEDBACK = "manual_fb"
+CALLBACK_MANUAL_BLOCK_COMPANY = "manual_block_company"
+CALLBACK_MANUAL_WHY = "manual_why"
 FEEDBACK_LABELS = {
     "good": "норм",
     "bad": "мимо",
@@ -68,7 +71,11 @@ def _compact_vacancy(vacancy: dict) -> dict:
 
 
 def _compact_evaluation(evaluation: dict) -> dict:
-    keys = ("score", "reason", "should_apply", "red_flags", "guard_flags", "soft_flags", "error_kind")
+    keys = (
+        "score", "response_probability_score", "reason", "should_apply",
+        "cluster", "resume_variant", "cover_style", "red_flags", "guard_flags",
+        "soft_flags", "hard_flags", "error_kind",
+    )
     return {key: evaluation.get(key) for key in keys if evaluation.get(key) not in (None, "", [])}
 
 
@@ -181,6 +188,14 @@ def manual_feedback_callback_data(profile_name: str, token: str, value: str) -> 
     return f"{CALLBACK_MANUAL_FEEDBACK}:{_safe_profile(profile_name)}:{(token or '').strip()}:{(value or '').strip()}"
 
 
+def manual_block_company_callback_data(profile_name: str, token: str) -> str:
+    return f"{CALLBACK_MANUAL_BLOCK_COMPANY}:{_safe_profile(profile_name)}:{(token or '').strip()}"
+
+
+def manual_why_callback_data(profile_name: str, token: str) -> str:
+    return f"{CALLBACK_MANUAL_WHY}:{_safe_profile(profile_name)}:{(token or '').strip()}"
+
+
 def parse_manual_apply_callback_data(data: str) -> tuple[str, str]:
     prefix = f"{CALLBACK_MANUAL_APPLY}:"
     if not (data or "").startswith(prefix):
@@ -205,6 +220,106 @@ def parse_manual_feedback_callback_data(data: str) -> tuple[str, str, str]:
     return _safe_profile(profile_name), token, value
 
 
+def parse_manual_block_company_callback_data(data: str) -> tuple[str, str]:
+    prefix = f"{CALLBACK_MANUAL_BLOCK_COMPANY}:"
+    if not (data or "").startswith(prefix):
+        return "", ""
+    rest = data[len(prefix):]
+    profile_name, sep, token = rest.partition(":")
+    if not sep:
+        return "", ""
+    return _safe_profile(profile_name), token.strip()
+
+
+def parse_manual_why_callback_data(data: str) -> tuple[str, str]:
+    prefix = f"{CALLBACK_MANUAL_WHY}:"
+    if not (data or "").startswith(prefix):
+        return "", ""
+    rest = data[len(prefix):]
+    profile_name, sep, token = rest.partition(":")
+    if not sep:
+        return "", ""
+    return _safe_profile(profile_name), token.strip()
+
+
+def _format_list_value(value: object, *, limit: int = 5) -> str:
+    if not value:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        items = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        items = [str(value).strip()]
+    if not items:
+        return ""
+    suffix = ""
+    if len(items) > limit:
+        suffix = f" +{len(items) - limit}"
+    return ", ".join(items[:limit]) + suffix
+
+
+def _shorten(value: object, max_len: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3].rstrip() + "..."
+
+
+def build_manual_why_text(item: dict | None) -> str:
+    if not isinstance(item, dict):
+        return "❌ Не нашёл сохранённое решение по этой вакансии."
+
+    vacancy = item.get("vacancy") or {}
+    evaluation = item.get("evaluation") or {}
+    title = vacancy.get("title") or "вакансия"
+    company = vacancy.get("company") or "компания не указана"
+    lines = [
+        "<b>Почему ручное решение</b>",
+        f"{html.escape(_shorten(title, 100))} @ {html.escape(_shorten(company, 80))}",
+    ]
+
+    source = vacancy.get("source_label") or vacancy.get("source")
+    if source:
+        lines.append(f"Источник: {html.escape(str(source))}")
+
+    score = evaluation.get("score")
+    response_score = evaluation.get("response_probability_score")
+    score_parts = []
+    if score not in (None, ""):
+        score_parts.append(f"match {score}/100")
+    if response_score not in (None, ""):
+        score_parts.append(f"response {response_score}/100")
+    if score_parts:
+        lines.append("Score: " + html.escape(" | ".join(score_parts)))
+
+    for label, key in (
+        ("Кластер", "cluster"),
+        ("Резюме", "resume_variant"),
+        ("Сопровод", "cover_style"),
+    ):
+        value = evaluation.get(key)
+        if value:
+            lines.append(f"{label}: {html.escape(_shorten(value, 80))}")
+
+    for label, key in (
+        ("Красные флаги", "red_flags"),
+        ("Guard flags", "guard_flags"),
+        ("Мягкие флаги", "soft_flags"),
+    ):
+        value = _format_list_value(evaluation.get(key))
+        if value:
+            lines.append(f"{label}: {html.escape(_shorten(value, 220))}")
+
+    reason = evaluation.get("reason") or item.get("details") or ""
+    if reason:
+        lines.extend(["", html.escape(_shorten(reason, 1200))])
+
+    url = vacancy.get("url")
+    if url:
+        lines.extend(["", html.escape(str(url))])
+
+    return "\n".join(lines)
+
+
 def build_manual_apply_markup(
     vacancy: dict,
     profile_name: str,
@@ -220,6 +335,9 @@ def build_manual_apply_markup(
     is_hh = (vacancy.get("source") or "hh") == "hh"
     if is_hh and len(callback_data.encode("utf-8")) <= 64:
         rows.append([{"text": "Откликнуться с ИИ", "callback_data": callback_data}])
+    why_data = manual_why_callback_data(profile_name, token)
+    if len(why_data.encode("utf-8")) <= 64:
+        rows.append([{"text": "Почему?", "callback_data": why_data}])
     if include_feedback:
         feedback_buttons = []
         for text, value in (("Норм", "good"), ("Мимо", "bad")):
@@ -228,4 +346,7 @@ def build_manual_apply_markup(
                 feedback_buttons.append({"text": text, "callback_data": feedback_data})
         if feedback_buttons:
             rows.append(feedback_buttons)
+        block_company_data = manual_block_company_callback_data(profile_name, token)
+        if is_hh and vacancy.get("company") and len(block_company_data.encode("utf-8")) <= 64:
+            rows.append([{"text": "Не трогать компанию", "callback_data": block_company_data}])
     return {"inline_keyboard": rows} if rows else None

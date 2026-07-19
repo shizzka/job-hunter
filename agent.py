@@ -51,7 +51,7 @@ from outcome import (
 from geekjob_client import GeekJobClient
 from habr_career_client import HabrCareerClient
 from hh_client import HHClient
-from matcher import evaluate_vacancy, generate_cover_letter, is_manual_review_candidate
+from matcher import analyze_cover_letter, evaluate_vacancy, generate_cover_letter, is_manual_review_candidate
 from office_bridge import office_log, create_task, task_progress, task_complete
 from office_bridge import close_session as close_office_session
 import notifier
@@ -388,6 +388,23 @@ async def do_login():
         await client.stop()
 
 
+async def do_google_login():
+    """Интерактивный логин в Google внутри Playwright-контекста профиля."""
+    client = HHClient()
+    try:
+        await client.google_login_interactive(
+            "https://docs.google.com/forms/d/e/1FAIpQLScVKWLjCFv5RQ9HlufLEue5Rr02qKmZD4FT0RL0KXSMcq4_ww/viewform"
+        )
+    except Exception as e:
+        log.error("Google login failed: %s", e, exc_info=True)
+        print(f"❌ Ошибка: {e}")
+    finally:
+        try:
+            await client.stop()
+        except Exception:
+            pass
+
+
 async def do_habr_login():
     """Интерактивный логин в Хабр Карьере."""
     client = HabrCareerClient()
@@ -499,6 +516,69 @@ async def do_grab_resume():
         await client.stop()
 
 
+def _print_hh_resume_boost_detail(detail: dict) -> None:
+    print("📌 HH resume boost:")
+    print(f"  OK: {detail.get('ok')}")
+    print(f"  Резюме: {detail.get('title') or '-'} ({detail.get('resume_id') or '-'})")
+    print(f"  Можно поднять: {'да' if detail.get('can_boost') else 'нет'}")
+    print(f"  Причина: {detail.get('reason') or '-'}")
+    if detail.get("button_text"):
+        print(f"  Кнопка: {detail.get('button_text')}")
+    print(f"  Найдено резюме: {detail.get('resumes_found', 0)}")
+    if detail.get("debug_screenshot"):
+        print(f"  Скрин: {detail.get('debug_screenshot')}")
+    if detail.get("debug_html"):
+        print(f"  HTML: {detail.get('debug_html')}")
+
+
+async def do_hh_resume_boost_status():
+    """Проверить кнопку поднятия HH-резюме без клика."""
+    client = HHClient()
+    try:
+        await client.start()
+        if not await client.is_logged_in():
+            print("❌ Не залогинен! Сначала: ./run.sh login")
+            return
+        detail = await client.get_resume_boost_status(
+            resume_id=config.HH_PRIMARY_RESUME_ID,
+            resume_title=config.HH_PRIMARY_RESUME_TITLE,
+        )
+        _print_hh_resume_boost_detail(detail)
+    except Exception as e:
+        log.error("HH resume boost status failed: %s", e, exc_info=True)
+        print(f"❌ Ошибка: {e}")
+    finally:
+        await client.stop()
+
+
+async def do_hh_resume_boost(confirm: str):
+    """Ручное поднятие HH-резюме с явным подтверждением."""
+    if not config.HH_RESUME_BOOST_ENABLED:
+        print("❌ Поднятие отключено: выставь HH_RESUME_BOOST_ENABLED=1 для ручного запуска.")
+        return
+    if confirm != config.HH_RESUME_BOOST_CONFIRM_TEXT:
+        print(f"❌ Для клика нужно подтверждение: ./run.sh resume-boost {config.HH_RESUME_BOOST_CONFIRM_TEXT}")
+        return
+
+    client = HHClient()
+    try:
+        await client.start()
+        if not await client.is_logged_in():
+            print("❌ Не залогинен! Сначала: ./run.sh login")
+            return
+        detail = await client.boost_resume(
+            resume_id=config.HH_PRIMARY_RESUME_ID,
+            resume_title=config.HH_PRIMARY_RESUME_TITLE,
+            confirm=confirm,
+        )
+        _print_hh_resume_boost_detail(detail)
+    except Exception as e:
+        log.error("HH resume boost failed: %s", e, exc_info=True)
+        print(f"❌ Ошибка: {e}")
+    finally:
+        await client.stop()
+
+
 async def do_manual_apply_token(token: str) -> dict:
     """Отправить подтвержденный человеком yellow-zone отклик по token из очереди."""
     item = manual_apply_queue.get_candidate(token)
@@ -563,6 +643,7 @@ async def do_manual_apply_token(token: str) -> dict:
         cover = cover or ""
         if len(cover) > cover_limit:
             cover = cover[:cover_limit]
+        cover_evaluation = _evaluation_with_cover_letter(evaluation, cover)
         if not (cover or "").strip():
             message = "ИИ-сопровод не сгенерировался; отклик без текста не отправляю."
             manual_apply_queue.mark_candidate(token, "failed_no_cover", message)
@@ -570,7 +651,10 @@ async def do_manual_apply_token(token: str) -> dict:
                 run_id=run_id,
                 vacancy=vacancy,
                 decision=DECISION_APPLY_FAILED,
-                evaluation=_evaluation_with_guard_flag(evaluation, "no_cover_letter"),
+                evaluation=_evaluation_with_cover_letter(
+                    _evaluation_with_guard_flag(evaluation, "no_cover_letter"),
+                    cover,
+                ),
                 details=details,
                 note="manual_ai:no_cover_letter",
             )
@@ -584,8 +668,17 @@ async def do_manual_apply_token(token: str) -> dict:
             return {"ok": False, "message": message, "no_cover": True}
 
         apply_result = await apply_orchestrator.dispatch_apply(vacancy, cover, hh_client=hh_client)
+        _record_hh_questionnaire_analytics(
+            run_id=run_id,
+            vacancy=vacancy,
+            apply_result=apply_result,
+            success=bool(apply_result.get("ok")),
+        )
         apply_notes = apply_result.get("notes") or []
         apply_note_text = "; ".join(str(item) for item in apply_notes if item)
+        question_answer_note = _format_hh_question_answers_for_note(apply_result)
+        if question_answer_note:
+            apply_note_text = (apply_note_text + "\n\n" + question_answer_note).strip()
         apply_message = str(apply_result.get("message", ""))
 
         if apply_result.get("closed_or_archived") or _looks_like_closed_or_archived(vacancy, apply_message):
@@ -611,7 +704,7 @@ async def do_manual_apply_token(token: str) -> dict:
                 run_id=run_id,
                 vacancy=vacancy,
                 decision=DECISION_APPLIED_AUTO,
-                evaluation={**evaluation, "should_apply": True},
+                evaluation={**cover_evaluation, "should_apply": True},
                 details=details,
                 note="manual_ai_yellow_zone",
             )
@@ -715,6 +808,73 @@ def _build_hh_retry_cover_letter(v: dict, resume_variant: dict | None = None) ->
         "Готов обсудить опыт ручного тестирования, проверки web/API, работы с DevTools/Postman "
         "и участия в подготовке автотестов. Спасибо."
     )
+
+
+def _evaluation_with_cover_letter(
+    evaluation: dict,
+    cover_letter: str,
+    *,
+    fallback: bool | None = None,
+    overclaim_guard: bool | None = None,
+) -> dict:
+    cover_meta = analyze_cover_letter(
+        cover_letter,
+        cover_style=str(evaluation.get("cover_style") or ""),
+        fallback=fallback,
+        overclaim_guard=overclaim_guard,
+    )
+    return {**evaluation, **cover_meta}
+
+
+def _record_hh_questionnaire_analytics(
+    *,
+    run_id: str,
+    vacancy: dict,
+    apply_result: dict,
+    success: bool,
+) -> None:
+    question_answers = apply_result.get("question_answers") or []
+    if not question_answers:
+        return
+    try:
+        analytics.record_questionnaire(
+            run_id=run_id,
+            vacancy=vacancy,
+            question_answers=question_answers,
+            success=success,
+            reason=str(apply_result.get("message") or ""),
+        )
+    except Exception as exc:
+        log.warning("failed to record HH questionnaire analytics: %s", exc)
+
+
+def _format_hh_question_answers_for_note(apply_result: dict, *, limit: int = 8) -> str:
+    items = apply_result.get("question_answers") or []
+    if not items:
+        return ""
+
+    def shorten(value: str, max_len: int) -> str:
+        value = " ".join(str(value or "").split())
+        if len(value) <= max_len:
+            return value
+        return value[: max_len - 3].rstrip() + "..."
+
+    lines = ["Анкета HH заполнена:"]
+    for idx, item in enumerate(items[:limit], start=1):
+        question = shorten(item.get("question") or "вопрос", 140)
+        answer = shorten(item.get("answer") or "—", 260)
+        suffix_parts = []
+        if item.get("best_guess"):
+            suffix_parts.append("best-guess")
+        if item.get("skipped"):
+            suffix_parts.append("пропущено")
+        if item.get("skip_reason"):
+            suffix_parts.append(str(item.get("skip_reason")))
+        suffix = f" [{' | '.join(suffix_parts)}]" if suffix_parts else ""
+        lines.append(f"{idx}. {question} -> {answer}{suffix}")
+    if len(items) > limit:
+        lines.append(f"...ещё {len(items) - limit} ответ(ов)")
+    return "\n".join(lines)
 
 
 async def do_search(dry_run: bool = False) -> dict:
@@ -1045,7 +1205,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 if v.get("_hh_resume_variant"):
                     hh_resume_variant = hh_pipeline.get_variant_by_name(v["_hh_resume_variant"])
                 if hh_resume_variant is None:
-                    hh_resume_variant = hh_pipeline.get_next_variant(vid)
+                    hh_resume_variant = hh_pipeline.get_next_variant(vid, evaluation.get("cluster"))
 
             if dry_run:
                 log.info("  [DRY RUN] Would handle: %s @ %s (score=%d)", v["title"], v["company"], score)
@@ -1211,11 +1371,18 @@ async def do_search(dry_run: bool = False) -> dict:
             cover_limit = apply_orchestrator.get_cover_letter_limit(source)
             cover = await generate_cover_letter(v, details)
             cover = cover or ""
+            cover_fallback_used = False
             if not (cover or "").strip() and v.get("_hh_retry"):
                 cover = _build_hh_retry_cover_letter(v, hh_resume_variant)
+                cover_fallback_used = True
                 log.info("  hh retry fallback cover letter used for %s", vid)
             if len(cover) > cover_limit:
                 cover = cover[:cover_limit]
+            cover_evaluation = _evaluation_with_cover_letter(
+                evaluation,
+                cover,
+                fallback=cover_fallback_used or None,
+            )
             if not (cover or "").strip():
                 manual_note = (
                     "LLM не сгенерировал сопроводительное письмо; "
@@ -1228,7 +1395,10 @@ async def do_search(dry_run: bool = False) -> dict:
                     DECISION_APPLY_FAILED,
                     manual_note,
                     v, vid, score, reason,
-                    _evaluation_with_guard_flag(evaluation, "no_cover_letter"),
+                    _evaluation_with_cover_letter(
+                        _evaluation_with_guard_flag(evaluation, "no_cover_letter"),
+                        cover,
+                    ),
                     details,
                     result, bucket, run_id, set_hunter_status,
                     resume_variant=hh_resume_variant,
@@ -1279,7 +1449,7 @@ async def do_search(dry_run: bool = False) -> dict:
                         vid=vid,
                         vacancy=v,
                         source=source,
-                        evaluation=evaluation,
+                        evaluation=cover_evaluation,
                         details=details,
                         resume_variant=hh_resume_variant,
                         result=result,
@@ -1324,7 +1494,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     run_id=run_id,
                     vacancy=v,
                     decision=DECISION_APPLY_FAILED_EXCEPTION,
-                    evaluation=evaluation,
+                    evaluation=cover_evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
                     note=f"{source}:{type(e).__name__}" + (f"; {hh_auto_apply_guard_note}" if guard_suffix else ""),
@@ -1354,8 +1524,25 @@ async def do_search(dry_run: bool = False) -> dict:
                 continue
 
             log.info("  %s apply result: %s", source_label, apply_result)
+            if source == "hh":
+                _record_hh_questionnaire_analytics(
+                    run_id=run_id,
+                    vacancy=v,
+                    apply_result=apply_result,
+                    success=bool(apply_result.get("ok")),
+                )
             apply_notes = apply_result.get("notes") or []
             apply_note_text = "; ".join(str(item) for item in apply_notes if item)
+            question_answer_note = _format_hh_question_answers_for_note(apply_result)
+            if question_answer_note:
+                apply_note_text = (apply_note_text + "\n\n" + question_answer_note).strip()
+            if source == "hh" and v.get("_hh_retry"):
+                retry_note = f"Повторный отклик: {v.get('_hh_retry_reason') or 'retry'}"
+                if v.get("_hh_last_status"):
+                    retry_note += f"; статус: {v.get('_hh_last_status')}"
+                if hh_resume_variant and hh_resume_variant.get("title"):
+                    retry_note += f"; резюме: {hh_resume_variant.get('title')}"
+                apply_note_text = (apply_note_text + "\n" + retry_note).strip()
             apply_message_text = str(apply_result.get("message", ""))
 
             if source == "hh" and (
@@ -1366,7 +1553,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     vid=vid,
                     vacancy=v,
                     source=source,
-                    evaluation=evaluation,
+                    evaluation=cover_evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
                     result=result,
@@ -1403,7 +1590,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     run_id=run_id,
                     vacancy=v,
                     decision=DECISION_QUESTIONS_REQUIRED,
-                    evaluation=evaluation,
+                    evaluation=cover_evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
                 )
@@ -1431,7 +1618,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     run_id=run_id,
                     vacancy=v,
                     decision=DECISION_ALREADY_APPLIED,
-                    evaluation=evaluation,
+                    evaluation=cover_evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
                     note=f"{source}:{apply_result.get('message', 'already applied')}",
@@ -1458,7 +1645,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     run_id=run_id,
                     vacancy=v,
                     decision=DECISION_APPLIED_AUTO,
-                    evaluation=evaluation,
+                    evaluation=cover_evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
                     note=f"{source}:{apply_note_text}" if apply_note_text else "",
@@ -1496,7 +1683,7 @@ async def do_search(dry_run: bool = False) -> dict:
                         run_id=run_id,
                         vacancy=v,
                         decision=DECISION_ALREADY_APPLIED,
-                        evaluation=evaluation,
+                        evaluation=cover_evaluation,
                         details=details,
                         resume_variant=hh_resume_variant,
                         note=f"hh:{apply_message}; suppressed_manual",
@@ -1537,7 +1724,7 @@ async def do_search(dry_run: bool = False) -> dict:
                         vid=vid,
                         vacancy=v,
                         source=source,
-                        evaluation=evaluation,
+                        evaluation=cover_evaluation,
                         details=details,
                         resume_variant=hh_resume_variant,
                         result=result,
@@ -1589,7 +1776,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     run_id=run_id,
                     vacancy=v,
                     decision=DECISION_APPLY_FAILED,
-                    evaluation=evaluation,
+                    evaluation=cover_evaluation,
                     details=details,
                     resume_variant=hh_resume_variant,
                     note=f"{source}:{apply_message}" + (f"; {hh_auto_apply_guard_note}" if guard_suffix else ""),
@@ -1628,7 +1815,7 @@ async def do_search(dry_run: bool = False) -> dict:
             result["skipped"],
             result["source_stats"],
         )
-        if not dry_run and result["applied"] > 0:
+        if not dry_run and result["applied"] > 0 and config.TELEGRAM_NOTIFY_AUTO_DIGEST:
             await notify_digest(analytics.summarize())
         _record_search_run(result, dry_run=dry_run, ok=True)
 
@@ -1835,6 +2022,53 @@ async def do_stats():
     reporting.print_stats()
 
 
+async def do_analytics_report(days: int | None = None):
+    """Показать аналитику за заданное число дней."""
+    reporting.print_stats(days=days)
+
+
+async def do_filter_audit(days: int | None = None):
+    """Replay-аудит текущих фильтров по analytics history."""
+    reporting.print_filter_audit(days=days)
+
+
+def do_hh_retry_preview() -> None:
+    """Показать HH retry-кандидатов без отправки откликов."""
+    if not hh_pipeline.enabled():
+        print("HH retry pipeline disabled or resume variants are not configured.")
+        return
+    candidates = hh_pipeline.get_retry_candidates()
+    print(reporting.format_hh_retry_preview(candidates))
+
+
+def do_hh_retry_company_guard(action: str, company: str = "") -> None:
+    """Управление company denylist для HH staged resume retry."""
+    company = str(company or "").strip()
+    if action == "list":
+        items = hh_pipeline.list_blocked_companies()
+        if not items:
+            print("HH retry company blocklist пуст.")
+            return
+        print("HH retry company blocklist:")
+        for item in items:
+            reason = item.get("reason") or "manual"
+            created_at = item.get("created_at") or ""
+            print(f"  - {item.get('company') or item.get('key')} | {reason} | {created_at}")
+        return
+
+    if not company:
+        raise ValueError("company is required")
+    if action == "block":
+        ok = hh_pipeline.block_company_retry(company, "manual_cli")
+        print(f"{'✅' if ok else '❌'} HH retry block company: {company}")
+        return
+    if action == "unblock":
+        ok = hh_pipeline.unblock_company_retry(company)
+        print(f"{'✅' if ok else '⚪'} HH retry unblock company: {company}")
+        return
+    raise ValueError(f"unknown retry company action: {action}")
+
+
 async def do_analytics_backfill():
     """Аккуратно подтянуть исторические hh-статусы и seen-решения в аналитику."""
     run_id = analytics.new_run_id("analytics-backfill")
@@ -1923,6 +2157,7 @@ async def main():
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--login", action="store_true", help="Ручной логин (сохранение cookies)")
+    group.add_argument("--google-login", action="store_true", help="Ручной логин в Google для Google Forms")
     group.add_argument("--superjob-login", action="store_true", help="Логин в SuperJob")
     group.add_argument("--habr-login", action="store_true", help="Ручной логин в Хабр Карьере")
     group.add_argument("--geekjob-login", action="store_true", help="Ручной логин в GeekJob")
@@ -1933,6 +2168,14 @@ async def main():
     group.add_argument("--stats", action="store_true", help="Статистика")
     group.add_argument("--digest", action="store_true", help="Отправить дайджест в Telegram")
     group.add_argument("--analytics-backfill", action="store_true", help="Подтянуть историю в аналитику")
+    group.add_argument("--analytics-report", nargs="?", const=config.ANALYTICS_RECENT_DAYS, type=int, help="Отчет аналитики за N дней")
+    group.add_argument("--filter-audit", nargs="?", const=config.ANALYTICS_RECENT_DAYS, type=int, help="Replay-аудит текущих фильтров по analytics history за N дней")
+    group.add_argument("--hh-retry-preview", action="store_true", help="Показать HH retry-кандидатов без откликов")
+    group.add_argument("--hh-retry-block-company", metavar="COMPANY", help="Не отправлять retry-отклики в компанию")
+    group.add_argument("--hh-retry-unblock-company", metavar="COMPANY", help="Убрать компанию из retry blocklist")
+    group.add_argument("--hh-retry-list-blocked-companies", action="store_true", help="Показать retry blocklist компаний")
+    group.add_argument("--hh-resume-boost-status", action="store_true", help="Проверить кнопку поднятия HH-резюме без клика")
+    group.add_argument("--hh-resume-boost", action="store_true", help="Ручное поднятие HH-резюме")
     group.add_argument("--dry-run", action="store_true", help="Поиск без откликов")
     group.add_argument("--grab-resume", action="store_true", help="Скачать резюме с hh.ru")
     group.add_argument("--create-profile", metavar="NAME", help="Создать новый профиль")
@@ -1951,6 +2194,7 @@ async def main():
     parser.add_argument("--chat-force-send", action="store_true", help="Для --chat-respond-one отправить ответ сразу, без dry-run preview")
     parser.add_argument("--chat-list-limit", type=int, default=8, help="Сколько HH-чатов показать для ручного AI-ответа")
     parser.add_argument("--chat-list-max-scan", type=int, default=25, help="Сколько свежих HH-чатов просмотреть для списка ручного AI-ответа")
+    parser.add_argument("--hh-resume-boost-confirm", default="", help="Слово подтверждения для --hh-resume-boost")
 
     args = parser.parse_args()
 
@@ -1986,7 +2230,15 @@ async def main():
 
     # Активируем профиль (патчит config.* для всех модулей). One-shot chat reply
     # запускается из Telegram callback и не должен конфликтовать с daemon lock.
-    if args.chat_respond_one or args.chat_list_candidates or args.google_form_preview or args.google_form_submit or args.manual_apply_token:
+    if (
+        args.chat_respond_one
+        or args.chat_list_candidates
+        or args.google_form_preview
+        or args.google_form_submit
+        or args.manual_apply_token
+        or args.filter_audit
+        or args.hh_resume_boost_status
+    ):
         profile_mod.activate_no_lock(args.profile)
     else:
         profile_mod.activate(args.profile)
@@ -1997,6 +2249,8 @@ async def main():
     try:
         if args.login:
             await do_login()
+        elif args.google_login:
+            await do_google_login()
         elif args.superjob_login:
             await do_superjob_login()
         elif args.habr_login:
@@ -2020,6 +2274,22 @@ async def main():
             await do_digest()
         elif args.analytics_backfill:
             await do_analytics_backfill()
+        elif args.analytics_report is not None:
+            await do_analytics_report(args.analytics_report)
+        elif args.filter_audit is not None:
+            await do_filter_audit(args.filter_audit)
+        elif args.hh_retry_preview:
+            do_hh_retry_preview()
+        elif args.hh_retry_block_company:
+            do_hh_retry_company_guard("block", args.hh_retry_block_company)
+        elif args.hh_retry_unblock_company:
+            do_hh_retry_company_guard("unblock", args.hh_retry_unblock_company)
+        elif args.hh_retry_list_blocked_companies:
+            do_hh_retry_company_guard("list")
+        elif args.hh_resume_boost_status:
+            await do_hh_resume_boost_status()
+        elif args.hh_resume_boost:
+            await do_hh_resume_boost(args.hh_resume_boost_confirm)
         elif args.extract_facts:
             import facts as facts_mod
             await facts_mod.do_extract_facts()
@@ -2038,12 +2308,26 @@ async def main():
             print(f"  С AI-помощником: {summary.get('with_ai', 0)}")
             print(f"  Подозрительных HR-сообщений: {summary.get('suspicious', 0)}")
             print(f"  Уведомлений на подтверждение: {summary.get('suspicious_notified', 0)}")
+            print(
+                "  Google Forms: "
+                f"найдено {summary.get('google_forms_found', 0)} | "
+                f"preview {summary.get('google_forms_prepared', 0)} | "
+                f"ошибок {summary.get('google_forms_failed', 0)}"
+            )
             print(f"  Подготовлено ответов: {summary.get('answers_drafted', 0)}")
             print(f"  Отправлено: {summary.get('answers_sent', 0)}")
             print(f"  Пропущено: {summary.get('skipped', 0)}")
             print(f"  Ошибок чтения: {summary.get('read_failures', 0)}")
             for d in summary.get("details", []):
                 print(f"\n  → {d.get('vacancy')} @ {d.get('company')} ({d.get('chat_id')})")
+                if d.get("google_form"):
+                    print(f"    Google Form: {'preview готов' if d.get('ok') else 'ошибка'}")
+                    print(f"    Форма: {d.get('form_url') or '-'}")
+                    if d.get("token"):
+                        print(f"    Токен: {d.get('token')}")
+                    if not d.get("ok"):
+                        print(f"    Причина: {d.get('message') or '-'}")
+                    continue
                 if d.get("suspicious"):
                     print(f"    Подозрительно: {d.get('question','')[:140]}")
                     print(f"    Уведомление: {'да' if d.get('notified') else 'нет'}")

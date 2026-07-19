@@ -140,7 +140,10 @@ class TestClientHHAuth:
             async def stop(self):
                 return None
 
+        imported_calls = []
+
         async def fake_import_current_hh_resumes(client, profile_name):
+            imported_calls.append((client, profile_name))
             return {"ok": True, "count": 1, "catalog_path": "/tmp/catalog.json", "profile_env_path": "/tmp/profile.env", "resume_file": "/tmp/resume.md", "resumes": [{"id": "1", "title": "QA"}]}
 
         async def fake_sleep(seconds):
@@ -156,7 +159,74 @@ class TestClientHHAuth:
         )
 
         assert result["ok"] is True
+        assert result["authenticated"] is True
+        assert result["imported_resumes"] is False
+        assert result["count"] == 0
+        assert imported_calls == []
         assert FakeClient.instance._page.goto_calls == ["https://hh.ru/account/login"]
+
+    def test_run_hh_auth_capture_imports_resumes_only_when_requested(self, monkeypatch):
+        class DummyProfile:
+            def __init__(self):
+                self.name = "client_42"
+                self.home_dir = "/tmp/profiles/client_42"
+                self.hh = type("HH", (), {"cookies_file": "/tmp/profiles/client_42/hh_cookies.json"})()
+
+        class FakePage:
+            async def goto(self, url, wait_until=None, timeout=None):
+                return None
+
+            def is_closed(self):
+                return False
+
+        class FakeClient:
+            def __init__(self):
+                self._page = FakePage()
+
+            async def start(self, headless=False):
+                return None
+
+            async def is_logged_in_passive(self):
+                return True
+
+            async def save_session(self):
+                return None
+
+            async def stop(self):
+                return None
+
+        imported_calls = []
+
+        async def fake_import_current_hh_resumes(client, profile_name):
+            imported_calls.append((client, profile_name))
+            return {
+                "ok": True,
+                "count": 1,
+                "catalog_path": "/tmp/catalog.json",
+                "profile_env_path": "/tmp/profile.env",
+                "resume_file": "/tmp/resume.md",
+                "resumes": [{"id": "1", "title": "QA"}],
+            }
+
+        monkeypatch.setattr(client_hh_auth, "_resolve_profile", lambda profile_name: DummyProfile())
+        monkeypatch.setattr(client_hh_auth, "HHClient", FakeClient)
+        monkeypatch.setattr(client_hh_auth, "import_current_hh_resumes", fake_import_current_hh_resumes)
+
+        result = asyncio.run(
+            client_hh_auth.run_hh_auth_capture(
+                "client_42",
+                timeout_sec=5,
+                poll_sec=1,
+                activate_profile=False,
+                import_resumes=True,
+            )
+        )
+
+        assert result["ok"] is True
+        assert result["authenticated"] is True
+        assert result["imported_resumes"] is True
+        assert result["count"] == 1
+        assert imported_calls and imported_calls[0][1] == "client_42"
 
     def test_run_hh_auth_capture_returns_friendly_error_when_window_closed(self, monkeypatch):
         class DummyProfile:
@@ -192,3 +262,24 @@ class TestClientHHAuth:
         assert result["ok"] is False
         assert result["authenticated"] is False
         assert "закрыто" in result["error"].lower()
+
+
+def test_hh_auth_prompt_detection_and_code_normalization():
+    assert client_hh_auth._normalize_hh_auth_code("12 34-56") == "123456"
+    assert client_hh_auth._looks_like_hh_auth_code_prompt("Введите код из SMS") is True
+    assert client_hh_auth._looks_like_hh_auth_login_prompt("Войти по телефону или email", "https://hh.ru/account/login") is True
+    assert client_hh_auth._looks_like_hh_auth_login_prompt("Введите код из SMS", "https://hh.ru/account/login") is False
+
+
+def test_select_profile_resumes_filters_blank_ids_and_non_qa_titles():
+    resumes = [
+        {"id": "qa-1", "title": "QA Engineer"},
+        {"id": "", "title": "QA Engineer duplicate"},
+        {"id": "electric-1", "title": "Техник-электрик"},
+        {"id": "qa-2", "title": "Тестировщик"},
+        {"id": "qa-3", "title": "QA Engineer / Manual QA / Тестировщик ПО"},
+    ]
+
+    selected = client_hh_auth._select_profile_resumes("qa", resumes)
+
+    assert [item["id"] for item in selected] == ["qa-1", "qa-2", "qa-3"]

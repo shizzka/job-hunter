@@ -462,6 +462,12 @@ async def generate_answer(
     if parsed.get("status") != "answer":
         return None
     answer = str(parsed.get("answer", "")).strip()
+    if answer and _looks_like_screening_form_artifact(answer) and not _is_screening_form_question(question):
+        log.warning(
+            "LLM chat-answer dropped form artifact for non-form question: %s",
+            question[:160],
+        )
+        return None
     return answer or None
 
 
@@ -517,9 +523,29 @@ def _is_study_certificate_question(text: str) -> bool:
 
 def _is_screening_form_question(text: str) -> bool:
     normalized = _normalize_ai_marker_text(text)
-    if not any(token in normalized for token in ("форм", "анкет", "опросник", "опрос")):
+    if not normalized:
         return False
-    return any(token in normalized for token in ("заполн", "пройти", "отправ", "коротк", "вопрос", "ссылк"))
+    form_nouns = r"(?:форм\w*|анкет\w*|опросник\w*|опрос\w*)"
+    return any(
+        re.search(pattern, normalized)
+        for pattern in (
+            rf"\b(?:заполн\w*|прой\w*|пройти|отправ\w*)\s+(?:\w+\s+){{0,3}}{form_nouns}\b",
+            rf"\b{form_nouns}\s+(?:\w+\s+){{0,3}}(?:заполн\w*|прой\w*|пройти|отправ\w*)\b",
+            r"\bответ\w*\s+на\s+(?:несколько\s+|коротк\w+\s+|дополнительн\w+\s+){0,2}вопрос\w*\b",
+        )
+    )
+
+
+def _looks_like_screening_form_artifact(answer: str) -> bool:
+    normalized = _normalize_ai_marker_text(answer)
+    if not normalized:
+        return False
+    artifact_patterns = (
+        r"\bготов\w*\s+прой\w*\s+(?:коротк\w+\s+)?форм\w*\b",
+        r"\bзаполн\w*\s+вопрос\w*\s+по\s+опыт\w*\s+и\s+навык\w*\b",
+        r"\bготов\w*\s+заполн\w*\s+(?:коротк\w+\s+)?(?:форм\w*|анкет\w*)\b",
+    )
+    return any(re.search(pattern, normalized) for pattern in artifact_patterns)
 
 
 def _deterministic_chat_answer(question: str) -> str | None:
@@ -899,6 +925,121 @@ async def _notify_one_chat_result(notifier, detail: dict) -> None:
         await notifier.send_message_with_markup(caption, reply_markup=markup)
 
 
+def _google_form_seen_key(form_url: str, message_id: str = "") -> str:
+    seed = f"{message_id}|{form_url}"
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+
+
+def _find_unseen_google_form_message(messages: list[dict], chat_state: dict) -> dict:
+    seen = chat_state.get("google_form_previews") or {}
+    if not isinstance(seen, dict):
+        seen = {}
+    for msg in reversed(messages or []):
+        if msg.get("is_me"):
+            continue
+        urls = extract_google_form_urls(msg.get("text") or "", msg.get("links") or [])
+        for form_url in urls:
+            message_id = str(msg.get("id") or "")
+            key = _google_form_seen_key(form_url, message_id)
+            if key not in seen:
+                return {"message": msg, "form_url": form_url, "key": key}
+    return {}
+
+
+def _remember_google_form_preview(chat_state: dict, key: str, detail: dict) -> None:
+    previews = chat_state.setdefault("google_form_previews", {})
+    if not isinstance(previews, dict):
+        previews = {}
+        chat_state["google_form_previews"] = previews
+    previews[key] = {
+        "created_at": int(time.time()),
+        "ok": bool(detail.get("ok")),
+        "status": detail.get("status") or detail.get("message") or "preview",
+        "token": detail.get("token") or "",
+        "form_url": detail.get("form_url") or detail.get("original_form_url") or "",
+        "message_id": str(detail.get("message_id") or ""),
+    }
+    if len(previews) > 30:
+        ordered = sorted(previews.items(), key=lambda item: int((item[1] or {}).get("created_at") or 0))
+        for old_key, _ in ordered[: len(previews) - 30]:
+            previews.pop(old_key, None)
+
+
+async def _notify_google_form_failure(notifier, *, chat_id: str, vacancy: dict, message: dict, form_url: str, error: str) -> bool:
+    if notifier is None:
+        return False
+    title = html.escape((vacancy.get("title") or "Google Form")[:160])
+    company = html.escape((vacancy.get("company") or "—")[:160])
+    question = html.escape((message.get("text") or "")[:500])
+    safe_form_url = html.escape(form_url or "")
+    safe_chat_id = html.escape(str(chat_id or ""))
+    safe_error = html.escape((error or "unknown error")[:300])
+    caption = (
+        "⚠️ <b>Google Form не удалось подготовить</b>\n"
+        f"{title} @ {company}\n\n"
+        f"<i>{question}</i>\n\n"
+        f"Ошибка: {safe_error}\n"
+        f"<a href='{safe_form_url}'>Открыть форму</a> · "
+        f"<a href='{CHATIK_ROOT}/chat/{safe_chat_id}'>Открыть чат</a>"
+    )
+    return await notifier.send_message_with_markup(caption)
+
+
+async def _prepare_google_form_preview_from_message(page, *, chat_id: str, vacancy: dict, message: dict, form_url: str, notifier) -> dict:
+    import google_form_filler as gforms
+
+    form_page = await page.context.new_page()
+    try:
+        detail = await gforms.preview_form(
+            form_page,
+            form_url,
+            profile_name=_active_profile_name(),
+            chat_id=chat_id,
+            message_id=str(message.get("id") or ""),
+            vacancy=vacancy,
+            source_message=message.get("text") or "",
+            notify=bool(notifier),
+        )
+        if not detail.get("ok"):
+            detail.setdefault("chat_id", chat_id)
+            detail.setdefault("message_id", str(message.get("id") or ""))
+            detail.setdefault("vacancy", vacancy)
+            detail.setdefault("status", "preview_failed")
+            await _notify_google_form_failure(
+                notifier,
+                chat_id=chat_id,
+                vacancy=vacancy,
+                message=message,
+                form_url=detail.get("form_url") or form_url,
+                error=detail.get("message") or "preview failed",
+            )
+    except Exception as exc:
+        log.warning("google form preview failed for chat %s: %s", chat_id, exc)
+        detail = {
+            "ok": False,
+            "message": f"{type(exc).__name__}: {exc}",
+            "chat_id": chat_id,
+            "message_id": str(message.get("id") or ""),
+            "form_url": form_url,
+            "vacancy": vacancy,
+            "status": "preview_failed",
+        }
+        await _notify_google_form_failure(
+            notifier,
+            chat_id=chat_id,
+            vacancy=vacancy,
+            message=message,
+            form_url=form_url,
+            error=detail["message"],
+        )
+    finally:
+        try:
+            await form_page.close()
+        except Exception:
+            pass
+    return detail
+
+
 async def process_one(
     hh_client,
     chat_id: str,
@@ -1027,6 +1168,9 @@ async def process_all(hh_client, dry_run: bool | None = None, max_replies_per_ch
         "with_ai": 0,
         "suspicious": 0,
         "suspicious_notified": 0,
+        "google_forms_found": 0,
+        "google_forms_prepared": 0,
+        "google_forms_failed": 0,
         "answers_drafted": 0,
         "answers_sent": 0,
         "skipped": 0,
@@ -1061,10 +1205,6 @@ async def process_all(hh_client, dry_run: bool | None = None, max_replies_per_ch
             continue
         chat_state = state.setdefault(chat_id, {})
         replies_so_far = int(chat_state.get("replies_count", 0))
-        if replies_so_far >= max_replies:
-            log.info("chat %s: max replies (%d) reached, skip", chat_id, max_replies)
-            summary["skipped"] += 1
-            continue
 
         try:
             data = await get_messages(page, chat_id)
@@ -1078,6 +1218,47 @@ async def process_all(hh_client, dry_run: bool | None = None, max_replies_per_ch
             summary["read_failures"] += 1
             continue
         msgs = data.get("messages", [])
+
+        form_item = _find_unseen_google_form_message(msgs, chat_state)
+        if form_item:
+            form_msg = form_item["message"]
+            form_url = form_item["form_url"]
+            vac = dict(data.get("vacancy", {}) or {})
+            preview_text = (chat.get("preview") or "").strip()
+            if preview_text and (not vac.get("title") or _normalize_ai_marker_text(vac.get("title") or "") == "перейти"):
+                vac["title"] = preview_text
+            summary["google_forms_found"] += 1
+            detail = await _prepare_google_form_preview_from_message(
+                page,
+                chat_id=chat_id,
+                vacancy=vac,
+                message=form_msg,
+                form_url=form_url,
+                notifier=notifier,
+            )
+            _remember_google_form_preview(chat_state, form_item["key"], detail)
+            save_state(state)
+            if detail.get("ok"):
+                summary["google_forms_prepared"] += 1
+            else:
+                summary["google_forms_failed"] += 1
+            summary["details"].append({
+                "chat_id": chat_id,
+                "vacancy": vac.get("title", ""),
+                "company": vac.get("company", ""),
+                "question": (form_msg.get("text") or "")[:300],
+                "google_form": True,
+                "form_url": detail.get("form_url") or form_url,
+                "token": detail.get("token") or "",
+                "ok": bool(detail.get("ok")),
+                "message": detail.get("message") or detail.get("status") or "preview",
+            })
+            continue
+
+        if replies_so_far >= max_replies:
+            log.info("chat %s: max replies (%d) reached, skip", chat_id, max_replies)
+            summary["skipped"] += 1
+            continue
 
         # последнее сообщение — оно должно быть входящим. Если оно похоже на
         # автоматический HR-скрининг без явного AI-маркера, не отвечаем сами:

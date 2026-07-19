@@ -47,21 +47,84 @@ def load_facts() -> dict[str, Any]:
     return {}
 
 
-def format_facts_for_prompt(facts: dict[str, Any], limit_chars: int = 1500) -> str:
-    """Превратить facts.json в bullet-список для вставки в LLM-промпт."""
+def _is_empty_fact(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _format_fact_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "да" if value else "нет"
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value if not _is_empty_fact(v))
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _append_fact_section(lines: list[str], title: str, value: Any) -> None:
+    if _is_empty_fact(value):
+        return
+    lines.append(title)
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if _is_empty_fact(item):
+                continue
+            lines.append(f"- {key}: {_format_fact_value(item)}")
+        return
+    if isinstance(value, list):
+        for item in value:
+            if _is_empty_fact(item):
+                continue
+            lines.append(f"- {_format_fact_value(item)}")
+        return
+    lines.append(f"- {_format_fact_value(value)}")
+
+
+def format_facts_for_prompt(facts: dict[str, Any], limit_chars: int = 3000) -> str:
+    """Превратить facts.json в prompt-блок с явными claim guardrails.
+
+    Поддерживает новую схему:
+    - confirmed: подтвержденные факты, можно утверждать прямо;
+    - inferred: аккуратные выводы из опыта;
+    - weak: слабые/ограниченные факты, только мягкие формулировки;
+    - do_not_claim / forbidden_claims: запреты, нельзя писать как факт;
+    - allowed_wording: безопасные формулировки.
+
+    Старые плоские facts.json продолжают работать как список подтвержденных полей.
+    """
     if not facts:
         return ""
-    lines = ["Структурированные факты о кандидате (приоритет над свободным резюме):"]
-    for key, value in facts.items():
-        if value is None or value == "" or value == [] or value == {}:
-            continue
-        if isinstance(value, bool):
-            value = "да" if value else "нет"
-        elif isinstance(value, list):
-            value = ", ".join(str(v) for v in value if v)
-        elif isinstance(value, dict):
-            value = json.dumps(value, ensure_ascii=False)
-        lines.append(f"- {key}: {value}")
+
+    known_sections = {
+        "confirmed",
+        "inferred",
+        "weak",
+        "do_not_claim",
+        "forbidden_claims",
+        "allowed_wording",
+    }
+    has_structured_sections = any(key in facts for key in known_sections)
+    lines = [
+        "Структурированные факты о кандидате (приоритет над свободным резюме):",
+        "Правило: не расширяй эти факты и не превращай слабые факты в уверенные claims.",
+    ]
+
+    if has_structured_sections:
+        _append_fact_section(lines, "CONFIRMED — можно утверждать прямо:", facts.get("confirmed"))
+        _append_fact_section(lines, "INFERRED — можно использовать аккуратно, без усиления:", facts.get("inferred"))
+        _append_fact_section(lines, "WEAK / LIMITED — только мягкие формулировки:", facts.get("weak"))
+        _append_fact_section(lines, "ALLOWED WORDING — безопасные формулировки:", facts.get("allowed_wording"))
+        forbidden = facts.get("do_not_claim") or facts.get("forbidden_claims")
+        _append_fact_section(lines, "DO NOT CLAIM — запрещено писать или подразумевать:", forbidden)
+
+        extra = {key: value for key, value in facts.items() if key not in known_sections and not _is_empty_fact(value)}
+        _append_fact_section(lines, "OTHER FACTS:", extra)
+    else:
+        for key, value in facts.items():
+            if _is_empty_fact(value):
+                continue
+            lines.append(f"- {key}: {_format_fact_value(value)}")
+
     block = "\n".join(lines) + "\n\n"
     if len(block) > limit_chars:
         block = block[:limit_chars - 1] + "…\n\n"

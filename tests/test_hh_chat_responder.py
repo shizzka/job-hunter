@@ -286,6 +286,119 @@ def test_study_certificate_question_has_safe_deterministic_answer():
     assert "документы об образовании" in answer
 
 
+def test_explicit_screening_form_question_has_deterministic_answer():
+    answer = chat_responder._deterministic_chat_answer(
+        "Готовы заполнить короткую анкету по опыту и ответить на несколько вопросов?"
+    )
+
+    assert answer
+    assert "готов пройти короткую форму" in answer.casefold()
+
+
+def test_form_word_in_unrelated_question_does_not_trigger_form_answer():
+    question = "В какой форме вы обычно фиксируете вопросы по API-тестированию и баг-репорты?"
+
+    assert chat_responder._is_screening_form_question(question) is False
+    assert chat_responder._deterministic_chat_answer(question) is None
+
+
+def test_screening_form_artifact_is_detected_for_guard():
+    assert chat_responder._looks_like_screening_form_artifact(
+        "Да, готов пройти короткую форму. Заполню вопросы по опыту и навыкам."
+    ) is True
+
+
+def test_generate_answer_drops_form_artifact_for_non_form_question(monkeypatch):
+    import prompt_blocks
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            class Response:
+                choices = [
+                    type(
+                        "Choice",
+                        (),
+                        {
+                            "message": type(
+                                "Message",
+                                (),
+                                {
+                                    "content": (
+                                        '{"status":"answer","answer":"Да, готов пройти короткую форму. '
+                                        'Заполню вопросы по опыту и навыкам."}'
+                                    )
+                                },
+                            )()
+                        },
+                    )()
+                ]
+
+            return Response()
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    async def fake_filtered_kb(*args, **kwargs):
+        return ""
+
+    monkeypatch.setattr(chat_responder, "_get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr(prompt_blocks, "build_profile_note_block", lambda: "")
+    monkeypatch.setattr(prompt_blocks, "build_facts_block", lambda: "")
+    monkeypatch.setattr(prompt_blocks, "build_salary_rule_block", lambda: "")
+    monkeypatch.setattr(prompt_blocks, "build_knowledge_base_block", lambda **kwargs: "")
+    monkeypatch.setattr(prompt_blocks, "build_filtered_kb_block", fake_filtered_kb)
+
+    answer = asyncio.run(
+        chat_responder.generate_answer(
+            [{"text": "Какой у вас опыт API-тестирования?", "is_ai": True}],
+            {},
+            "QA resume",
+        )
+    )
+
+    assert answer is None
+
+
+def test_find_unseen_google_form_message_returns_latest_unseen_form():
+    messages = [
+        {"id": "10", "text": "Заполните https://docs.google.com/forms/d/e/FORM1/viewform", "is_me": False},
+        {"id": "11", "text": "Наш ответ", "is_me": True},
+        {"id": "12", "text": "Новая анкета https://forms.gle/abc123", "is_me": False},
+    ]
+    chat_state = {}
+
+    item = chat_responder._find_unseen_google_form_message(messages, chat_state)
+
+    assert item["message"]["id"] == "12"
+    assert item["form_url"] == "https://forms.gle/abc123"
+
+
+def test_find_unseen_google_form_message_skips_remembered_form():
+    messages = [
+        {"id": "10", "text": "Заполните https://docs.google.com/forms/d/e/FORM1/viewform", "is_me": False},
+    ]
+    url = "https://docs.google.com/forms/d/e/FORM1/viewform"
+    key = chat_responder._google_form_seen_key(url, "10")
+    chat_state = {"google_form_previews": {key: {"ok": True}}}
+
+    assert chat_responder._find_unseen_google_form_message(messages, chat_state) == {}
+
+
+def test_remember_google_form_preview_keeps_bounded_state():
+    chat_state = {}
+
+    for idx in range(35):
+        chat_responder._remember_google_form_preview(
+            chat_state,
+            f"key-{idx}",
+            {"ok": True, "token": f"tok{idx}", "form_url": f"https://forms.gle/{idx}", "message_id": str(idx)},
+        )
+
+    previews = chat_state["google_form_previews"]
+    assert len(previews) == 30
+    assert "key-34" in previews
+
+
 def test_preview_markup_contains_send_callback():
     markup = chat_responder.build_chat_answer_preview_markup("qa", "5394116371", "14410048077")
     buttons = [button for row in markup["inline_keyboard"] for button in row]

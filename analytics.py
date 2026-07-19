@@ -192,7 +192,13 @@ def record_decision(
         "url": vacancy.get("url", ""),
         "response_url": vacancy.get("response_url", ""),
         "location": vacancy.get("location", ""),
+        "area": vacancy.get("area", ""),
+        "remote": vacancy.get("remote", ""),
+        "schedule": vacancy.get("schedule", ""),
         "salary": vacancy.get("salary", ""),
+        "required_experience": vacancy.get("experience", "") or vacancy.get("required_experience", ""),
+        "number_of_applicants": vacancy.get("number_of_applicants", "") or vacancy.get("applicant_count", ""),
+        "published_at": vacancy.get("published_at", "") or vacancy.get("publishedDate", "") or vacancy.get("date_published", ""),
         "snippet": vacancy.get("snippet", ""),
         "details": _trim_details(details),
         "search_query": vacancy.get("_search_query", ""),
@@ -200,11 +206,27 @@ def record_decision(
         "search_path": vacancy.get("_search_path", ""),
         "is_retry": bool(vacancy.get("_hh_retry")),
         "last_known_status": vacancy.get("_hh_last_status", ""),
+        "retry_reason": vacancy.get("_hh_retry_reason", ""),
+        "retry_outcome": vacancy.get("_hh_retry_outcome", "") or vacancy.get("_hh_retry_reason", ""),
+        "retry_after": vacancy.get("_hh_retry_after", ""),
         "apply_mode": vacancy.get("apply_mode", ""),
         "score": evaluation.get("score"),
+        "match_score": evaluation.get("score"),
+        "response_probability_score": evaluation.get("response_probability_score"),
+        "cluster": evaluation.get("cluster", "") or vacancy.get("cluster", ""),
+        "cover_style": evaluation.get("cover_style", ""),
+        "cover_letter_hash": evaluation.get("cover_letter_hash", ""),
+        "cover_letter_length": evaluation.get("cover_letter_length", 0),
+        "cover_letter_features": dict(evaluation.get("cover_letter_features", {}) or {}),
+        "fallback_cover_letter": bool(evaluation.get("fallback_cover_letter", False)),
+        "overclaim_guard": bool(evaluation.get("overclaim_guard", False)),
+        "preferred_resume_variant": evaluation.get("preferred_resume_variant", ""),
         "should_apply": bool(evaluation.get("should_apply", False)),
         "reason": evaluation.get("reason", ""),
         "red_flags": list(evaluation.get("red_flags", []) or []),
+        "hard_flags": list(evaluation.get("hard_flags", []) or evaluation.get("red_flags", []) or []),
+        "soft_flags": list(evaluation.get("soft_flags", []) or []),
+        "guard_flags": list(evaluation.get("guard_flags", []) or []),
         "note": note,
     }
     payload.update(_resume_variant_payload(resume_variant))
@@ -249,6 +271,67 @@ def record_negotiation_statuses(items: list[dict]) -> None:
 
     if changed:
         _save_state()
+
+
+def _questionnaire_items_payload(items: list[dict]) -> list[dict]:
+    payload_items = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or item.get("question_text") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        if not question and not answer:
+            continue
+        payload_items.append(
+            {
+                "question_text": question[:500],
+                "answer": answer[:1000],
+                "control": str(item.get("control") or "").strip(),
+                "required": bool(item.get("required", False)),
+                "starred": bool(item.get("starred", False)),
+                "best_guess": bool(item.get("best_guess", False)),
+            }
+        )
+    return payload_items
+
+
+def record_questionnaire(
+    *,
+    run_id: str,
+    vacancy: dict,
+    question_answers: list[dict],
+    success: bool,
+    reason: str = "",
+) -> None:
+    """Record structured HH employer questionnaire answers."""
+    if not config.ANALYTICS_ENABLED:
+        return
+
+    items = _questionnaire_items_payload(question_answers)
+    if not items and not reason:
+        return
+
+    _append_event(
+        {
+            "event": "questionnaire",
+            "created_at": _now().isoformat(timespec="seconds"),
+            "run_id": run_id,
+            "source": vacancy.get("source", "") or "hh",
+            "source_label": vacancy.get("source_label", "") or "hh.ru",
+            "vacancy_id": str(vacancy.get("id") or "").strip(),
+            "title": vacancy.get("title", ""),
+            "company": vacancy.get("company", ""),
+            "url": vacancy.get("url", ""),
+            "success": bool(success),
+            "reason": str(reason or "")[:500],
+            "questions_count": len(items),
+            "answered_count": sum(1 for item in items if item.get("answer")),
+            "required_count": sum(1 for item in items if item.get("required")),
+            "starred_count": sum(1 for item in items if item.get("starred")),
+            "best_guess_count": sum(1 for item in items if item.get("best_guess")),
+            "question_answers": items,
+        }
+    )
 
 
 def record_invitations(items: list[dict]) -> None:
@@ -385,7 +468,7 @@ def _iter_events(events_file: str | None = None) -> list[dict]:
     try:
         with open(path, encoding="utf-8") as f:
             for line in f:
-                line = line.strip()
+                line = line.replace("\x00", "").strip()
                 if not line:
                     continue
                 try:
@@ -396,6 +479,120 @@ def _iter_events(events_file: str | None = None) -> list[dict]:
         log.warning("Failed to read analytics events: %s", exc)
         return []
     return events
+
+
+FILTER_AUDIT_ALLOWED_DECISIONS = {
+    "applied_auto",
+    "already_applied",
+    "questions_required",
+    "apply_failed",
+    "apply_failed_exception",
+    "manual_review",
+    "manual_hh",
+    "manual_hh_guard",
+    "manual_hh_limit",
+    "manual_geekjob_session",
+    "manual_habr_session",
+}
+
+FILTER_AUDIT_VIABLE_CLUSTERS = {
+    "manual_web_qa",
+    "api_qa",
+    "mobile_qa",
+    "qa_support_adjacent",
+    "enterprise_banking_qa",
+    "junior_aqa_python",
+}
+
+
+def _filter_audit_sample(event: dict, cluster: str) -> dict:
+    return {
+        "created_at": event.get("created_at", ""),
+        "decision": event.get("decision", ""),
+        "score": event.get("score"),
+        "cluster": cluster,
+        "recorded_cluster": event.get("cluster", ""),
+        "title": event.get("title", ""),
+        "company": event.get("company", ""),
+        "note": event.get("note", ""),
+        "reason": str(event.get("reason", ""))[:220],
+    }
+
+
+def audit_filters(
+    days: int | None = None,
+    *,
+    events_file: str | None = None,
+    all_time: bool = False,
+    limit: int = 20,
+    min_viable_score: int = 50,
+) -> dict:
+    """Replay current deterministic vacancy classifier over analytics history."""
+    from matcher import classify_vacancy_cluster
+
+    days = days if days is not None else config.ANALYTICS_RECENT_DAYS
+    cutoff = None if all_time else (_now() - timedelta(days=max(0, days)))
+    cluster_counter = Counter()
+    decision_cluster_counter = Counter()
+    audited_decisions = 0
+    would_block_allowed = []
+    low_score_viable = []
+    keyword_filtered_viable = []
+
+    for event in _iter_events(events_file):
+        if event.get("event") != "decision":
+            continue
+        created_at = _parse_dt(event.get("created_at"))
+        if created_at is None:
+            continue
+        if cutoff is not None and created_at < cutoff:
+            continue
+
+        audited_decisions += 1
+        decision = str(event.get("decision") or "")
+        cluster = classify_vacancy_cluster(event, event.get("details") or "")
+        cluster_counter[cluster] += 1
+        decision_cluster_counter[(decision or "unknown", cluster)] += 1
+        sample = _filter_audit_sample(event, cluster)
+
+        if decision in FILTER_AUDIT_ALLOWED_DECISIONS and cluster == "reject_non_qa":
+            would_block_allowed.append(sample)
+        if (
+            decision == "skipped_low_score"
+            and cluster in FILTER_AUDIT_VIABLE_CLUSTERS
+            and _coerce_int(event.get("score"), default=0) >= min_viable_score
+        ):
+            low_score_viable.append(sample)
+        if (
+            decision == "skipped_keyword_filter"
+            and cluster in FILTER_AUDIT_VIABLE_CLUSTERS
+            and str(event.get("note") or "") == "relevant_keywords"
+        ):
+            keyword_filtered_viable.append(sample)
+
+    return {
+        "days": days,
+        "all_time": all_time,
+        "decisions": audited_decisions,
+        "by_cluster": cluster_counter.most_common(),
+        "by_decision_cluster": [
+            {"decision": decision, "cluster": cluster, "count": count}
+            for (decision, cluster), count in decision_cluster_counter.most_common(20)
+        ],
+        "would_block_allowed_or_manual_count": len(would_block_allowed),
+        "would_block_allowed_or_manual": would_block_allowed[:limit],
+        "low_score_viable_count": len(low_score_viable),
+        "low_score_viable": low_score_viable[:limit],
+        "keyword_filtered_viable_count": len(keyword_filtered_viable),
+        "keyword_filtered_viable": keyword_filtered_viable[:limit],
+    }
+
+
+def _coerce_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def summarize(days: int | None = None, *, events_file: str | None = None, all_time: bool = False) -> dict:
@@ -423,6 +620,12 @@ def summarize(days: int | None = None, *, events_file: str | None = None, all_ti
         "red_flagged": 0,
         "low_score": 0,
         "invitations": 0,
+        "questionnaires": 0,
+        "questionnaire_successes": 0,
+        "questionnaire_failures": 0,
+        "questionnaire_questions": 0,
+        "questionnaire_best_guess": 0,
+        "questionnaire_required": 0,
         "positive_statuses": 0,
         "rejected_statuses": 0,
         "pending_statuses": 0,
@@ -435,12 +638,35 @@ def summarize(days: int | None = None, *, events_file: str | None = None, all_ti
         "by_source": {},
         "by_query": {},
         "by_resume_variant": {},
+        "by_cluster": {},
+        "by_cover_style": {},
+        "by_retry_reason": {},
         "top_decisions": [],
     }
 
     decision_counter = Counter()
     latest_apply_by_vacancy = {}
     latest_status_by_vacancy = {}
+
+    def conversion_bucket(mapping: dict, key: str) -> dict:
+        return mapping.setdefault(
+            key or "unknown",
+            {
+                "decisions": 0,
+                "auto_applied": 0,
+                "manual": 0,
+                "viewed": 0,
+                "not_viewed": 0,
+                "pending": 0,
+                "positive": 0,
+                "rejected": 0,
+                "response_rate": 0,
+                "positive_rate": 0,
+            },
+        )
+
+    def status_is_viewed(bucket: str, detail_bucket: str) -> bool:
+        return bucket in {"positive", "rejected"} or detail_bucket == "pending_viewed"
 
     for event in events:
         event_type = event.get("event")
@@ -453,6 +679,9 @@ def summarize(days: int | None = None, *, events_file: str | None = None, all_ti
             source = event.get("source", "unknown")
             query = event.get("search_query", "")
             resume_variant = event.get("resume_variant", "")
+            cluster = event.get("cluster") or "unknown"
+            cover_style = event.get("cover_style") or ""
+            retry_reason = event.get("retry_reason") or event.get("retry_outcome") or ""
 
             source_bucket = summary["by_source"].setdefault(
                 source,
@@ -465,6 +694,12 @@ def summarize(days: int | None = None, *, events_file: str | None = None, all_ti
                 },
             )
             source_bucket["decisions"] += 1
+            cluster_bucket = conversion_bucket(summary["by_cluster"], cluster)
+            cluster_bucket["decisions"] += 1
+            retry_bucket = None
+            if retry_reason:
+                retry_bucket = conversion_bucket(summary["by_retry_reason"], retry_reason)
+                retry_bucket["decisions"] += 1
 
             if decision == "skipped_keyword_filter":
                 summary["keyword_filtered"] += 1
@@ -478,9 +713,16 @@ def summarize(days: int | None = None, *, events_file: str | None = None, all_ti
             if decision == "applied_auto":
                 summary["auto_applied"] += 1
                 source_bucket["auto_applied"] += 1
+                cluster_bucket["auto_applied"] += 1
+                if retry_bucket is not None:
+                    retry_bucket["auto_applied"] += 1
+                if cover_style:
+                    style_bucket = conversion_bucket(summary["by_cover_style"], cover_style)
+                    style_bucket["auto_applied"] += 1
                 latest_apply_by_vacancy[_vacancy_key(event)] = event
             elif decision == "already_applied":
                 source_bucket["rejected"] += 1
+                cluster_bucket["rejected"] += 1
             elif decision.startswith("manual_") or decision in {
                 "questions_required",
                 "apply_failed",
@@ -488,6 +730,7 @@ def summarize(days: int | None = None, *, events_file: str | None = None, all_ti
             }:
                 summary["manual"] += 1
                 source_bucket["manual"] += 1
+                cluster_bucket["manual"] += 1
 
             if query:
                 query_bucket = summary["by_query"].setdefault(
@@ -512,6 +755,16 @@ def summarize(days: int | None = None, *, events_file: str | None = None, all_ti
 
         elif event_type == "invitation":
             summary["invitations"] += 1
+
+        elif event_type == "questionnaire":
+            summary["questionnaires"] += 1
+            if event.get("success"):
+                summary["questionnaire_successes"] += 1
+            else:
+                summary["questionnaire_failures"] += 1
+            summary["questionnaire_questions"] += int(event.get("questions_count") or 0)
+            summary["questionnaire_best_guess"] += int(event.get("best_guess_count") or 0)
+            summary["questionnaire_required"] += int(event.get("required_count") or 0)
 
         elif event_type == "negotiation_status":
             latest_status_by_vacancy[_vacancy_key(event)] = event
@@ -556,11 +809,48 @@ def summarize(days: int | None = None, *, events_file: str | None = None, all_ti
         )
         query = apply_event.get("search_query", "")
         resume_variant = apply_event.get("resume_variant", "")
+        cluster = apply_event.get("cluster") or "unknown"
+        cover_style = apply_event.get("cover_style") or ""
+        retry_reason = apply_event.get("retry_reason") or apply_event.get("retry_outcome") or ""
+        viewed = status_is_viewed(bucket, detail_bucket)
+        not_viewed = detail_bucket == "pending_new"
+        cluster_bucket = conversion_bucket(summary["by_cluster"], cluster)
+        style_bucket = conversion_bucket(summary["by_cover_style"], cover_style) if cover_style else None
+        retry_bucket = conversion_bucket(summary["by_retry_reason"], retry_reason) if retry_reason else None
+
+        if viewed:
+            cluster_bucket["viewed"] += 1
+            if style_bucket is not None:
+                style_bucket["viewed"] += 1
+            if retry_bucket is not None:
+                retry_bucket["viewed"] += 1
+        if not_viewed:
+            cluster_bucket["not_viewed"] += 1
+            if style_bucket is not None:
+                style_bucket["not_viewed"] += 1
+            if retry_bucket is not None:
+                retry_bucket["not_viewed"] += 1
+        if bucket == "pending":
+            cluster_bucket["pending"] += 1
+            if style_bucket is not None:
+                style_bucket["pending"] += 1
+            if retry_bucket is not None:
+                retry_bucket["pending"] += 1
 
         if bucket == "positive":
             source_bucket["positive"] += 1
+            cluster_bucket["positive"] += 1
+            if style_bucket is not None:
+                style_bucket["positive"] += 1
+            if retry_bucket is not None:
+                retry_bucket["positive"] += 1
         elif bucket == "rejected":
             source_bucket["rejected"] += 1
+            cluster_bucket["rejected"] += 1
+            if style_bucket is not None:
+                style_bucket["rejected"] += 1
+            if retry_bucket is not None:
+                retry_bucket["rejected"] += 1
 
         if query:
             query_bucket = summary["by_query"].setdefault(
@@ -595,12 +885,16 @@ def summarize(days: int | None = None, *, events_file: str | None = None, all_ti
     funnel_rejected = 0
     funnel_positive = 0
     funnel_pending = 0
+    funnel_not_viewed = 0
     for vacancy_key, status_event in latest_status_by_vacancy.items():
         if vacancy_key not in latest_apply_by_vacancy:
             continue
         bucket = status_event.get("status_bucket", "unknown")
-        if bucket in ("positive", "rejected", "pending"):
+        detail_bucket = status_event.get("status_detail_bucket") or _status_detail_bucket(status_event.get("status", ""))
+        if status_is_viewed(bucket, detail_bucket):
             funnel_viewed += 1
+        if detail_bucket == "pending_new":
+            funnel_not_viewed += 1
         if bucket == "positive":
             funnel_positive += 1
         elif bucket == "rejected":
@@ -611,6 +905,7 @@ def summarize(days: int | None = None, *, events_file: str | None = None, all_ti
         "applied": funnel_applied,
         "viewed": funnel_viewed,
         "pending": funnel_pending,
+        "not_viewed": funnel_not_viewed,
         "rejected": funnel_rejected,
         "positive": funnel_positive,
         "response_rate": round(funnel_viewed / funnel_applied * 100, 1) if funnel_applied else 0,
@@ -630,18 +925,23 @@ def summarize(days: int | None = None, *, events_file: str | None = None, all_ti
             {"applications": 0, "positive": 0, "rejected": 0},
         )
         bucket = status_event.get("status_bucket", "unknown")
+        detail_bucket = status_event.get("status_detail_bucket") or _status_detail_bucket(status_event.get("status", ""))
         variant_bucket.setdefault("viewed", 0)
+        variant_bucket.setdefault("not_viewed", 0)
         variant_bucket.setdefault("pending", 0)
-        if bucket in ("positive", "rejected", "pending"):
+        if status_is_viewed(bucket, detail_bucket):
             variant_bucket["viewed"] += 1
+        if detail_bucket == "pending_new":
+            variant_bucket["not_viewed"] += 1
         if bucket == "pending":
             variant_bucket["pending"] += 1
 
-    for variant_bucket in summary["by_resume_variant"].values():
-        apps = variant_bucket.get("applications", 0)
-        viewed = variant_bucket.get("viewed", 0)
-        positive = variant_bucket.get("positive", 0)
-        variant_bucket["response_rate"] = round(viewed / apps * 100, 1) if apps else 0
-        variant_bucket["positive_rate"] = round(positive / apps * 100, 1) if apps else 0
+    for group_name in ("by_resume_variant", "by_cluster", "by_cover_style", "by_retry_reason"):
+        for bucket_values in summary[group_name].values():
+            apps = bucket_values.get("applications", bucket_values.get("auto_applied", 0))
+            viewed = bucket_values.get("viewed", 0)
+            positive = bucket_values.get("positive", 0)
+            bucket_values["response_rate"] = round(viewed / apps * 100, 1) if apps else 0
+            bucket_values["positive_rate"] = round(positive / apps * 100, 1) if apps else 0
 
     return summary

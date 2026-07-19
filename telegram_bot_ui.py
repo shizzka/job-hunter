@@ -71,6 +71,8 @@ CALLBACK_CHAT_AI_MANUAL_REPLY = "chat_ai_any"
 CALLBACK_CHAT_AI_MANUAL_SEND = "chat_send_any"
 CALLBACK_MANUAL_APPLY = "manual_apply"
 CALLBACK_MANUAL_FEEDBACK = "manual_fb"
+CALLBACK_MANUAL_BLOCK_COMPANY = "manual_block_company"
+CALLBACK_MANUAL_WHY = "manual_why"
 CALLBACK_HH_REAUTH = "hh_reauth"
 
 ADMIN_BUTTON_MAP = {
@@ -575,6 +577,26 @@ def _parse_manual_apply_callback_data(data: str) -> tuple[str, str]:
     return profile_name.strip(), token.strip()
 
 
+def _parse_manual_block_company_callback_data(data: str) -> tuple[str, str]:
+    prefix = f"{CALLBACK_MANUAL_BLOCK_COMPANY}:"
+    if not (data or "").startswith(prefix):
+        return "", ""
+    profile_name, sep, token = data[len(prefix):].partition(":")
+    if not sep:
+        return "", ""
+    return profile_name.strip(), token.strip()
+
+
+def _parse_manual_why_callback_data(data: str) -> tuple[str, str]:
+    prefix = f"{CALLBACK_MANUAL_WHY}:"
+    if not (data or "").startswith(prefix):
+        return "", ""
+    profile_name, sep, token = data[len(prefix):].partition(":")
+    if not sep:
+        return "", ""
+    return profile_name.strip(), token.strip()
+
+
 def _parse_hh_reauth_callback_data(data: str) -> str:
     prefix = f"{CALLBACK_HH_REAUTH}:"
     if not (data or "").startswith(prefix):
@@ -817,7 +839,7 @@ def build_hh_auth_result_text(result: dict) -> str:
         return "\n".join([
             "⏹ Вход HH остановлен.",
             "",
-            "Захват сессии и резюме был прерван вручную.",
+            "Захват сессии был прерван вручную.",
             "Можно запустить попытку ещё раз.",
         ])
     if result.get("timeout"):
@@ -833,13 +855,13 @@ def build_hh_auth_result_text(result: dict) -> str:
                 "✅ Вход HH завершён.",
                 "",
                 "Сессия HH сохранена.",
-                "Активные HH резюме не найдены.",
-                "Проверьте, что на HH есть опубликованное резюме.",
+                "Импорт резюме не выполнен.",
+                "Резюме можно синхронизировать отдельной командой.",
             ])
         return "\n".join([
             "❌ Вход HH завершился с ошибкой.",
             "",
-            "Не удалось захватить сессию или текущие HH резюме.",
+            "Не удалось захватить сессию HH.",
             "Администратор уже получил журнал отладки для разбора.",
         ])
 
@@ -849,12 +871,12 @@ def build_hh_auth_result_text(result: dict) -> str:
         "✅ Вход HH завершён.",
         "",
         "Сессия HH сохранена.",
-        f"Захвачено резюме: {result.get('count', 0)}",
     ]
+    if result.get("imported_resumes"):
+        lines.append(f"Захвачено резюме: {result.get('count', 0)}")
     if primary:
         lines.append(f"Основное резюме: {primary.get('title') or primary.get('id') or '—'}")
     return "\n".join(lines)
-
 
 def _client_status_label(status: str) -> str:
     mapping = {
@@ -962,19 +984,23 @@ def build_hh_auth_admin_text(result: dict, *, client: dict, debug_log_path: str 
             "",
             "✅ Сессия HH сохранена.",
             f"• Файл сессии: {result.get('cookies_file') or '—'}",
-            f"• Захвачено резюме: {result.get('count', 0)}",
         ])
-        if primary:
-            lines.append(f"• Основное резюме: {primary.get('title') or primary.get('id') or '—'}")
-        if result.get("resume_file"):
-            lines.append(f"• Файл резюме: {result.get('resume_file')}")
-        if result.get("catalog_path"):
-            lines.append(f"• Каталог HH: {result.get('catalog_path')}")
+        if result.get("imported_resumes"):
+            lines.append(f"• Захвачено резюме: {result.get('count', 0)}")
+            if primary:
+                lines.append(f"• Основное резюме: {primary.get('title') or primary.get('id') or '—'}")
+            if result.get("resume_file"):
+                lines.append(f"• Файл резюме: {result.get('resume_file')}")
+            if result.get("catalog_path"):
+                lines.append(f"• Каталог HH: {result.get('catalog_path')}")
+        else:
+            lines.append("• Импорт резюме не запускался.")
     elif result.get("authenticated"):
         lines.extend([
             "",
             "✅ Сессия HH сохранена.",
-            "• Логин выполнен, но активные HH резюме не найдены.",
+            "• Логин выполнен, но импорт резюме не завершился.",
+            "• Резюме можно синхронизировать отдельной командой.",
         ])
         if result.get("cookies_file"):
             lines.append(f"• Файл сессии: {result.get('cookies_file')}")
@@ -1166,6 +1192,77 @@ def build_status_text(
     return "\n".join(lines)
 
 
+def _format_days_label(days: int) -> str:
+    if days <= 1:
+        return "за сутки"
+    if 11 <= days % 100 <= 14:
+        suffix = "дней"
+    elif days % 10 == 1:
+        suffix = "день"
+    elif days % 10 in {2, 3, 4}:
+        suffix = "дня"
+    else:
+        suffix = "дней"
+    return f"за {days} {suffix}"
+
+
+def build_daily_summary_text(
+    *,
+    profile_name: str,
+    analytics_summary: dict,
+    recent_runs: list[dict],
+    days: int = 1,
+) -> str:
+    funnel = analytics_summary.get("funnel", {}) or {}
+    last_run = recent_runs[0] if recent_runs else None
+    lines = [
+        "📌 Ежедневная сводка Job Hunter",
+        f"Профиль {_pretty_profile_name(profile_name)} · {_format_days_label(max(1, int(days or 1)))}",
+        "",
+        (
+            f"• Прогонов: {analytics_summary.get('search_runs', 0)} | "
+            f"решений: {analytics_summary.get('decisions', 0)} | "
+            f"событий: {analytics_summary.get('events', 0)}"
+        ),
+        (
+            f"• Откликов: {analytics_summary.get('auto_applied', 0)} | "
+            f"ручных: {analytics_summary.get('manual', 0)} | "
+            f"отказов: {analytics_summary.get('rejected_statuses', 0)}"
+        ),
+    ]
+    if funnel.get("applied", 0) > 0:
+        lines.append(
+            f"• Воронка: отклики {funnel.get('applied', 0)} | "
+            f"просмотры {funnel.get('viewed', 0)} | "
+            f"ответ {funnel.get('response_rate', 0):.1f}% | "
+            f"позитив {funnel.get('positive', 0)}"
+        )
+    else:
+        lines.append("• Воронка: откликов за период нет")
+
+    questionnaires = analytics_summary.get("questionnaires", 0)
+    if questionnaires:
+        lines.append(
+            f"• Анкеты: {questionnaires} | "
+            f"успешно {analytics_summary.get('questionnaire_successes', 0)} | "
+            f"best_guess {analytics_summary.get('questionnaire_best_guess', 0)}"
+        )
+
+    retry = analytics_summary.get("by_retry_reason") or {}
+    retry_applied = sum((bucket or {}).get("auto_applied", 0) for bucket in retry.values())
+    if retry_applied:
+        lines.append(f"• Повторы: {retry_applied} отклик(ов)")
+
+    if last_run:
+        summary = format_run_summary(last_run).splitlines()
+        if summary:
+            lines.extend(["", "🕓 Последний прогон:", summary[0]])
+
+    if analytics_summary.get("events", 0) == 0:
+        lines.extend(["", "За период пока нет аналитических событий."])
+    return "\n".join(lines)
+
+
 def build_stats_text(
     *,
     profile_name: str,
@@ -1215,6 +1312,11 @@ def build_stats_text(
         f"• Отказы: {rejected_total} | Собесы: {interview_total} | Офферы: {offer_total}",
         f"• Тестовые: {test_task_total} | Инвайты: {invitation_total} | В ожидании: {pending_total}",
         (
+            f"• Анкеты: {analytics_summary.get('questionnaires', 0)} | "
+            f"успешно {analytics_summary.get('questionnaire_successes', 0)} | "
+            f"best_guess {analytics_summary.get('questionnaire_best_guess', 0)}"
+        ),
+        (
             f"• Просмотрено: {viewed_total} | "
             f"Не просмотрено: {new_total} | "
             f"Прочий позитив: {positive_other_total}"
@@ -1250,9 +1352,46 @@ def build_stats_text(
             ),
             (
                 f"• Воронка: отклики {funnel['applied']} | просмотры {funnel['viewed']} | "
-                f"ожидание {funnel.get('pending', 0)} | отказы {funnel.get('rejected', 0)} | позитив {funnel.get('positive', 0)}"
+                f"не просмотрено {funnel.get('not_viewed', 0)} | ожидание {funnel.get('pending', 0)} | "
+                f"отказы {funnel.get('rejected', 0)} | позитив {funnel.get('positive', 0)}"
             ),
         ])
+    if analytics_summary.get("by_retry_reason"):
+        top_retry = sorted(
+            analytics_summary["by_retry_reason"].items(),
+            key=lambda item: (
+                -item[1].get("positive_rate", 0),
+                -item[1].get("response_rate", 0),
+                -item[1].get("auto_applied", 0),
+                item[0],
+            ),
+        )[:3]
+        if top_retry:
+            lines.extend(["", "🔁 Повторные отклики:"])
+            for reason, bucket in top_retry:
+                lines.append(
+                    f"• {reason}: отклики {bucket.get('auto_applied', 0)} | "
+                    f"просмотры {bucket.get('viewed', 0)} | позитив {bucket.get('positive', 0)} | "
+                    f"ответ {bucket.get('response_rate', 0):.1f}%"
+                )
+    if analytics_summary.get("by_cluster"):
+        top_clusters = sorted(
+            analytics_summary["by_cluster"].items(),
+            key=lambda item: (
+                -item[1].get("positive_rate", 0),
+                -item[1].get("response_rate", 0),
+                -item[1].get("auto_applied", 0),
+                item[0],
+            ),
+        )[:3]
+        if top_clusters:
+            lines.extend(["", "🧩 Кластеры:"])
+            for cluster, bucket in top_clusters:
+                lines.append(
+                    f"• {cluster}: отклики {bucket.get('auto_applied', 0)} | "
+                    f"просмотры {bucket.get('viewed', 0)} | позитив {bucket.get('positive', 0)} | "
+                    f"ответ {bucket.get('response_rate', 0):.1f}%"
+                )
     if last_run:
         lines.extend([
             "",
@@ -1488,7 +1627,7 @@ def _format_users_text(users: list[dict]) -> str:
     return "\n".join(lines)
 
 
-_EXPORTED_HELPERS = ['_append_active_controls', '_callback_data', '_client_auth_label', '_client_display_name', '_client_status_label', '_command_conflicts_with_active', '_error_excerpt', '_extract_analyze_markdown', '_format_ai_profile_counts', '_format_elapsed', '_format_interval_label', '_format_runtime_block', '_format_users_text', '_normalize_menu', '_normalize_process_runtime', '_ok_icon', '_parse_callback_data', '_parse_chat_action_callback_data', '_parse_chat_ai_callback_data', '_parse_chat_ai_manual_callback_data', '_parse_chat_manual_send_callback_data', '_parse_chat_send_callback_data', '_parse_manual_apply_callback_data', '_parse_manual_feedback_callback_data', '_pretty_command_label', '_pretty_pid', '_pretty_profile_name', '_pretty_runtime_action', '_pretty_runtime_mode', '_pretty_runtime_status', '_pretty_value', '_redact_log_text', '_resolve_guest_command', '_resolve_message_command', '_role_label', '_role_title', '_sanitize_analyze_output', '_sanitize_command_output', '_schedule_preset_label', '_status_icon', '_status_label', '_strip_markdown_markup', '_tail_text_file', '_unique_paths', 'build_ai_limits_text', 'build_busy_reply_markup', 'build_busy_status_text', 'build_client_hh_auth_inline_markup', 'build_client_review_inline_markup', 'build_client_status_text', 'build_clients_inline_markup', 'build_clients_text', 'build_guest_reply_markup', 'build_guest_welcome_text', 'build_help_text', 'build_hh_auth_admin_text', 'build_hh_auth_result_text', 'build_hh_resumes_text', 'build_log_text', 'build_menu_section_text', 'build_profiles_text', 'build_progress_text', 'build_reply_markup', 'build_runs_text', 'build_schedule_text', 'build_stats_text', 'build_status_text', 'format_ai_snapshot_text', 'format_command_result', 'format_run_summary', 'normalize_command', 'parse_hh_auth_command_result', 'split_message']
+_EXPORTED_HELPERS = ['_append_active_controls', '_callback_data', '_client_auth_label', '_client_display_name', '_client_status_label', '_command_conflicts_with_active', '_error_excerpt', '_extract_analyze_markdown', '_format_ai_profile_counts', '_format_elapsed', '_format_interval_label', '_format_runtime_block', '_format_users_text', '_normalize_menu', '_normalize_process_runtime', '_ok_icon', '_parse_callback_data', '_parse_chat_action_callback_data', '_parse_chat_ai_callback_data', '_parse_chat_ai_manual_callback_data', '_parse_chat_manual_send_callback_data', '_parse_chat_send_callback_data', '_parse_hh_reauth_callback_data', '_parse_manual_apply_callback_data', '_parse_manual_block_company_callback_data', '_parse_manual_feedback_callback_data', '_parse_manual_why_callback_data', '_pretty_command_label', '_pretty_pid', '_pretty_profile_name', '_pretty_runtime_action', '_pretty_runtime_mode', '_pretty_runtime_status', '_pretty_value', '_redact_log_text', '_resolve_guest_command', '_resolve_message_command', '_role_label', '_role_title', '_sanitize_analyze_output', '_sanitize_command_output', '_schedule_preset_label', '_status_icon', '_status_label', '_strip_markdown_markup', '_tail_text_file', '_unique_paths', 'build_ai_limits_text', 'build_busy_reply_markup', 'build_busy_status_text', 'build_client_hh_auth_inline_markup', 'build_client_review_inline_markup', 'build_client_status_text', 'build_clients_inline_markup', 'build_clients_text', 'build_daily_summary_text', 'build_guest_reply_markup', 'build_guest_welcome_text', 'build_help_text', 'build_hh_auth_admin_text', 'build_hh_auth_result_text', 'build_hh_resumes_text', 'build_log_text', 'build_menu_section_text', 'build_profiles_text', 'build_progress_text', 'build_reply_markup', 'build_runs_text', 'build_schedule_text', 'build_stats_text', 'build_status_text', 'format_ai_snapshot_text', 'format_command_result', 'format_run_summary', 'normalize_command', 'parse_hh_auth_command_result', 'split_message']
 
 __all__ = [
     name

@@ -181,11 +181,16 @@ def _best_option_match(options: list[str], desired: str) -> str:
 
 
 async def extract_form_questions(page) -> list[dict]:
-    await page.wait_for_selector('form, div[role="listitem"]', timeout=30000)
+    await page.wait_for_selector('form, div[role="listitem"]:visible', timeout=30000)
     questions = await page.evaluate("""() => {
         const clean = (value) => String(value || '').replace(/\\u00a0/g, ' ').replace(/[ \\t]+/g, ' ').trim();
         const unique = (values) => [...new Set(values.map(clean).filter(Boolean))];
-        const items = [...document.querySelectorAll('div[role="listitem"]')];
+        const isVisible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const items = [...document.querySelectorAll('div[role="listitem"]')].filter(isVisible);
         const out = [];
         for (let idx = 0; idx < items.length; idx++) {
             const item = items[idx];
@@ -283,7 +288,12 @@ def _answers_by_index(answers: list[dict]) -> dict[int, dict]:
 
 def _asks_for_telegram(question_text: str) -> bool:
     text = _norm(question_text)
-    return any(marker in text for marker in ("telegram", "телеграм", "тг", "tg"))
+    return (
+        "telegram" in text
+        or "телеграм" in text
+        or re.search(r"(^|[^a-zа-я0-9])tg([^a-zа-я0-9]|$)", text) is not None
+        or re.search(r"(^|[^a-zа-я0-9])тг([^a-zа-я0-9]|$)", text) is not None
+    )
 
 
 def _asks_for_resume_url(question_text: str) -> bool:
@@ -381,23 +391,35 @@ def _required_text_fallback(question_text: str) -> str:
     return "Готов ответить подробнее на собеседовании."
 
 
+def _is_bare_other_option(value: str) -> bool:
+    text = _norm(value).rstrip(":")
+    return text in {"другое", "other", "ander", "anders"}
+
+
 def _required_option_fallback(options: list[str], question_text: str = "") -> list[str]:
     clean_options = [str(option or "").strip() for option in options or [] if str(option or "").strip()]
     if not clean_options:
         return []
+    non_other_options = [option for option in clean_options if not _is_bare_other_option(option)]
+    candidate_options = non_other_options or clean_options
+    qtext = _norm(question_text)
+    if "инструмент" in qtext and "мобиль" in qtext:
+        for option in candidate_options:
+            if "реальн" in _norm(option) and "смартф" in _norm(option):
+                return [option]
     preferred_markers = (
-        "qa", "тест", "гибрид", "другое", "соглас", "готов", "да", "подходит", "интерес",
+        "qa", "тест", "гибрид", "соглас", "готов", "да", "подходит", "интерес",
     )
     for marker in preferred_markers:
-        for option in clean_options:
+        for option in candidate_options:
             if marker in _norm(option):
                 return [option]
     negative_markers = ("нет", "не готов", "не подходит", "отказ", "не рассматри", "не интерес")
-    for option in clean_options:
+    for option in candidate_options:
         option_norm = _norm(option)
         if not any(marker in option_norm for marker in negative_markers):
             return [option]
-    return [clean_options[0]]
+    return [candidate_options[0]]
 
 
 def _fallback_required_answer(question: dict) -> dict | None:
@@ -470,9 +492,133 @@ def _apply_required_overrides(questions: list[dict], answers: list[dict]) -> lis
     return ordered
 
 
+def _normalize_choice_answer_values(questions: list[dict], answers: list[dict]) -> list[dict]:
+    originals = answers if isinstance(answers, list) else []
+    question_types = {}
+    for question in questions or []:
+        try:
+            question_types[int(question.get("index"))] = str(question.get("type") or "")
+        except Exception:
+            continue
+    normalized = []
+    changed = False
+    for answer in originals:
+        if not isinstance(answer, dict):
+            continue
+        try:
+            idx = int(answer.get("index"))
+        except Exception:
+            normalized.append(answer)
+            continue
+        qtype = question_types.get(idx, "")
+        if qtype not in {"radio", "checkbox"}:
+            normalized.append(answer)
+            continue
+        values = []
+        raw_options = answer.get("options") or []
+        if isinstance(raw_options, list):
+            values.extend(str(item).strip() for item in raw_options if str(item or "").strip())
+        else:
+            raw_option = str(raw_options or "").strip()
+            if raw_option:
+                values.append(raw_option)
+        raw_answer = answer.get("answer")
+        if isinstance(raw_answer, list):
+            values.extend(str(item).strip() for item in raw_answer if str(item or "").strip())
+        else:
+            raw_answer_text = str(raw_answer or "").strip()
+            if raw_answer_text:
+                values.append(raw_answer_text)
+        deduped = []
+        seen = set()
+        for value in values:
+            key = _norm(value)
+            if key and key not in seen:
+                deduped.append(value)
+                seen.add(key)
+        if not deduped:
+            normalized.append(answer)
+            continue
+        updated = dict(answer)
+        updated["options"] = deduped if qtype == "checkbox" else deduped[:1]
+        updated["answer"] = updated["options"] if qtype == "checkbox" else updated["options"][0]
+        normalized.append(updated)
+        if updated != answer:
+            changed = True
+    return normalized if changed else originals
+
+
+def _avoid_bare_other_options(questions: list[dict], answers: list[dict]) -> list[dict]:
+    answer_map = _answers_by_index(answers if isinstance(answers, list) else [])
+    changed = False
+    for question in questions or []:
+        qtype = str(question.get("type") or "")
+        if qtype not in {"radio", "checkbox"}:
+            continue
+        try:
+            idx = int(question.get("index"))
+        except Exception:
+            continue
+        answer = answer_map.get(idx) or {}
+        selected = [str(item or "").strip() for item in (answer.get("options") or []) if str(item or "").strip()]
+        if not selected:
+            raw_answer = str(answer.get("answer") or "").strip()
+            if raw_answer:
+                selected = [raw_answer]
+        if not any(_is_bare_other_option(item) for item in selected):
+            continue
+        question_options = list(question.get("options") or [])
+        cleaned = []
+        seen_cleaned = set()
+        for item in selected:
+            if _is_bare_other_option(item):
+                continue
+            match = _best_option_match(question_options, item)
+            if not match or _is_bare_other_option(match):
+                continue
+            key = _norm(match)
+            if key not in seen_cleaned:
+                cleaned.append(match)
+                seen_cleaned.add(key)
+        if not cleaned:
+            cleaned = _required_option_fallback(question_options, str(question.get("question") or ""))
+        if not cleaned:
+            continue
+        updated = dict(answer)
+        updated["options"] = cleaned if qtype == "checkbox" else cleaned[:1]
+        updated["answer"] = updated["options"][0]
+        updated["skip"] = False
+        updated["source"] = str(updated.get("source") or "") or "other_option_guard"
+        answer_map[idx] = updated
+        changed = True
+    if not changed:
+        return answers if isinstance(answers, list) else []
+    ordered = []
+    emitted: set[int] = set()
+    for question in questions or []:
+        try:
+            idx = int(question.get("index"))
+        except Exception:
+            continue
+        if idx in answer_map:
+            ordered.append(answer_map[idx])
+            emitted.add(idx)
+    for answer in answers if isinstance(answers, list) else []:
+        try:
+            idx = int(answer.get("index"))
+        except Exception:
+            continue
+        if idx not in emitted:
+            ordered.append(answer)
+            emitted.add(idx)
+    return ordered
+
+
 def _prepare_form_answers(questions: list[dict], answers: list[dict]) -> list[dict]:
+    answers = _normalize_choice_answer_values(questions, answers)
     answers = _apply_contact_overrides(questions, answers)
-    return _apply_required_overrides(questions, answers)
+    answers = _apply_required_overrides(questions, answers)
+    return _avoid_bare_other_options(questions, answers)
 
 
 async def generate_form_answers(
@@ -555,8 +701,230 @@ async def generate_form_answers(
     return _prepare_form_answers(questions, answers)
 
 
+def _looks_like_google_form_login_required(page_text: str) -> bool:
+    text = _norm(page_text)
+    return (
+        ("log in om door te gaan" in text and "ingelogd" in text)
+        or "je moet zijn ingelogd om dit formulier in te vullen" in text
+        or "sign in to continue" in text
+        or "you must be signed in to fill out this form" in text
+        or "sign in to fill out this form" in text
+        or "войдите, чтобы продолжить" in text
+        or "необходимо войти" in text
+    )
+
+
+def _is_google_form_next_button_text(value: str) -> bool:
+    text = _norm(value)
+    return text in {"далее", "next", "volgende", "continuar", "weiter"}
+
+
+def _is_google_form_submit_button_text(value: str) -> bool:
+    text = _norm(value)
+    return text in {"отправить", "submit", "verzenden", "send", "envoyer", "senden"}
+
+
+def _is_google_form_email_consent_text(value: str) -> bool:
+    text = _norm(value)
+    if not text:
+        return False
+    return (
+        ("указать" in text and "электрон" in text and "почт" in text)
+        or ("record" in text and "email" in text)
+        or ("email" in text and "address" in text and "response" in text)
+        or ("e-mailadres" in text and "antwoord" in text)
+        or ("emailadres" in text and "antwoord" in text)
+    )
+
+
+def _google_form_preview_status(questions: list[dict], fill_result: dict, *, reached_submit: bool = True) -> tuple[bool, str]:
+    filled_count = len((fill_result or {}).get("filled") or [])
+    skipped = (fill_result or {}).get("skipped") or []
+    skipped_indices = {int(item.get("index")) for item in skipped if str(item.get("index", "")).lstrip("-").isdigit()}
+    required_skipped = [q for q in questions or [] if q.get("required") and int(q.get("index", -1)) in skipped_indices]
+    if not questions:
+        return False, "form questions not found"
+    if required_skipped:
+        return False, "required form fields were not filled"
+    if filled_count <= 0:
+        return False, "form detected but no fields were filled"
+    if not reached_submit:
+        return False, "form preview did not reach submit page"
+    return True, "preview"
+
+
+def _reindex_page_questions(page_questions: list[dict], *, page_index: int, start_index: int) -> list[dict]:
+    out = []
+    for offset, question in enumerate(page_questions or []):
+        item = dict(question)
+        item["page_index"] = page_index
+        item["page_question_index"] = int(item.get("index") or offset)
+        item["index"] = start_index + offset
+        out.append(item)
+    return out
+
+
+def _merge_fill_results(results: list[dict]) -> dict:
+    filled = []
+    skipped = []
+    for result in results or []:
+        filled.extend(result.get("filled") or [])
+        skipped.extend(result.get("skipped") or [])
+    return {"filled": filled, "skipped": skipped}
+
+
+async def _fill_google_form_email_consent(page) -> bool:
+    checkboxes = await page.locator('[role="checkbox"]:visible').element_handles()
+    for checkbox in checkboxes:
+        try:
+            label = await checkbox.get_attribute("aria-label") or ""
+        except Exception:
+            label = ""
+        if not label:
+            try:
+                label = await checkbox.inner_text()
+            except Exception:
+                label = ""
+        if not _is_google_form_email_consent_text(label):
+            continue
+        try:
+            checked = await checkbox.get_attribute("aria-checked") or ""
+        except Exception:
+            checked = ""
+        if checked.casefold() == "true":
+            return True
+        try:
+            await checkbox.scroll_into_view_if_needed(timeout=5000)
+        except Exception:
+            pass
+        await _click_google_form_option(checkbox)
+        try:
+            checked = await checkbox.get_attribute("aria-checked") or ""
+        except Exception:
+            checked = ""
+        return checked.casefold() == "true"
+    return False
+
+
+async def _google_form_buttons(page) -> list[dict]:
+    buttons = await page.locator('div[role="button"]:visible, button:visible').element_handles()
+    out = []
+    for button in buttons:
+        try:
+            text = await button.inner_text()
+        except Exception:
+            text = ""
+        try:
+            aria = await button.get_attribute("aria-label") or ""
+        except Exception:
+            aria = ""
+        try:
+            disabled = await button.get_attribute("aria-disabled")
+            disabled_attr = await button.get_attribute("disabled")
+        except Exception:
+            disabled = disabled_attr = None
+        label = " ".join((text or aria or "").split())
+        out.append({
+            "element": button,
+            "text": label,
+            "disabled": str(disabled or "").casefold() == "true" or disabled_attr is not None,
+        })
+    return out
+
+
+async def _find_google_form_button(page, predicate):
+    for button in await _google_form_buttons(page):
+        if not button.get("disabled") and predicate(button.get("text") or ""):
+            return button.get("element")
+    return None
+
+
+async def _has_google_form_submit_button(page) -> bool:
+    return await _find_google_form_button(page, _is_google_form_submit_button_text) is not None
+
+
+async def _google_form_page_signature(page) -> list[str]:
+    try:
+        return _question_signature(await extract_form_questions(page))
+    except Exception:
+        return []
+
+
+async def _google_form_required_errors(page) -> list[str]:
+    try:
+        text = await page.locator("body").inner_text(timeout=3000)
+    except Exception:
+        return []
+    markers = (
+        "это обязательный вопрос",
+        "this is a required question",
+        "required question",
+        "dit is een verplichte vraag",
+    )
+    lines = []
+    for line in str(text or "").splitlines():
+        clean = " ".join(line.split())
+        if clean and any(marker in clean.casefold() for marker in markers):
+            lines.append(clean)
+    return lines[:5]
+
+
+async def _click_google_form_next(page) -> tuple[bool, str]:
+    before_signature = await _google_form_page_signature(page)
+    before_url = page.url
+    button = await _find_google_form_button(page, _is_google_form_next_button_text)
+    if not button:
+        return False, "google form next button not found"
+    try:
+        await button.scroll_into_view_if_needed(timeout=5000)
+    except Exception:
+        pass
+    await button.click(timeout=10000)
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        await page.wait_for_timeout(500)
+        if await _has_google_form_submit_button(page):
+            return True, "advanced"
+        after_signature = await _google_form_page_signature(page)
+        if after_signature and after_signature != before_signature:
+            return True, "advanced"
+        if page.url != before_url:
+            return True, "advanced"
+
+    errors = await _google_form_required_errors(page)
+    if errors:
+        return False, "google form required validation blocked next"
+    return False, "google form did not advance after next"
+
+
+async def _click_google_form_submit(page) -> bool:
+    button = await _find_google_form_button(page, _is_google_form_submit_button_text)
+    if not button:
+        return False
+    await button.click(timeout=10000)
+    await page.wait_for_timeout(3000)
+    return True
+
+
+async def _click_google_form_option(handle) -> None:
+    try:
+        await handle.click(timeout=5000)
+        return
+    except Exception as first_exc:
+        try:
+            await handle.click(timeout=5000, force=True)
+            return
+        except Exception:
+            try:
+                await handle.evaluate("el => el.click()")
+                return
+            except Exception:
+                raise first_exc
+
+
 async def fill_form(page, questions: list[dict], answers: list[dict]) -> dict:
-    items = await page.query_selector_all('div[role="listitem"]')
+    items = await page.locator('div[role="listitem"]:visible').element_handles()
     answer_map = _answers_by_index(answers)
     filled: list[dict] = []
     skipped: list[dict] = []
@@ -583,22 +951,71 @@ async def fill_form(page, questions: list[dict], answers: list[dict]) -> dict:
                     skipped.append({"index": idx, "reason": "text field not found", "question": question.get("question", "")})
                     continue
                 await field.fill(value)
+                actual = ""
+                try:
+                    actual = await field.input_value()
+                except Exception:
+                    actual = value
+                if str(actual or "").strip() != value:
+                    skipped.append({"index": idx, "reason": "text field value verification failed", "question": question.get("question", "")})
+                    continue
                 filled.append({"index": idx, "type": qtype, "answer": value})
                 continue
 
-            desired_values = list(answer.get("options") or []) or [str(answer.get("answer") or "")]
+            raw_options = answer.get("options") or []
+            if isinstance(raw_options, list):
+                desired_values = [str(value or "") for value in raw_options]
+            else:
+                desired_values = [str(raw_options or "")]
+            if not any(value.strip() for value in desired_values):
+                raw_answer = answer.get("answer")
+                if isinstance(raw_answer, list):
+                    desired_values = [str(value or "") for value in raw_answer]
+                else:
+                    desired_values = [str(raw_answer or "")]
             options = list(question.get("options") or [])
-            selected = []
-            option_handles = await item.query_selector_all('[role="radio"], [role="checkbox"]')
+            desired_matches = []
+            seen_matches = set()
             for desired in desired_values:
                 match = _best_option_match(options, str(desired))
-                if not match:
+                if not match or _is_bare_other_option(match):
                     continue
+                key = _norm(match)
+                if key not in seen_matches:
+                    desired_matches.append(match)
+                    seen_matches.add(key)
+                if qtype == "radio":
+                    break
+            selected = []
+            option_handles = await item.query_selector_all('[role="radio"], [role="checkbox"]')
+            if qtype == "checkbox":
+                desired_norms = {_norm(value) for value in desired_matches}
+                for handle in option_handles:
+                    label = (await handle.get_attribute("aria-label")) or (await handle.inner_text())
+                    checked = ""
+                    try:
+                        checked = await handle.get_attribute("aria-checked") or ""
+                    except Exception:
+                        checked = ""
+                    if checked.casefold() == "true" and _norm(label) not in desired_norms:
+                        await _click_google_form_option(handle)
+            for match in desired_matches:
                 for handle in option_handles:
                     label = (await handle.get_attribute("aria-label")) or (await handle.inner_text())
                     if _norm(label) == _norm(match):
-                        await handle.click()
-                        selected.append(match)
+                        checked = ""
+                        try:
+                            checked = await handle.get_attribute("aria-checked") or ""
+                        except Exception:
+                            checked = ""
+                        if checked.casefold() != "true":
+                            await _click_google_form_option(handle)
+                            try:
+                                checked = await handle.get_attribute("aria-checked") or ""
+                            except Exception:
+                                checked = ""
+                        if checked.casefold() == "true":
+                            selected.append(match)
                         break
                 if qtype == "radio" and selected:
                     break
@@ -672,20 +1089,106 @@ async def preview_form(
     form_url = _resolve_google_form_redirect_url(form_url)
     await page.goto(form_url, wait_until="commit", timeout=60000)
     await page.wait_for_timeout(2500)
-    questions = await extract_form_questions(page)
-    if not questions:
-        return {"ok": False, "message": "form questions not found", "form_url": form_url, "page_url": page.url}
-    answers = await generate_form_answers(questions, vacancy=vacancy, source_message=source_message)
-    if not answers:
-        answers = _reuse_cached_answers(form_url, questions)
-    answers = _prepare_form_answers(questions, answers)
-    fill_result = await fill_form(page, questions, answers)
+    page_text = ""
+    try:
+        page_text = await page.locator("body").inner_text(timeout=5000)
+    except Exception:
+        page_text = ""
+    if _looks_like_google_form_login_required(page_text):
+        token = _new_token(form_url, chat_id, message_id)
+        shot_path = os.path.join(config.HH_STATE_DIR, f"google_form_preview_{token}.png")
+        os.makedirs(os.path.dirname(shot_path), exist_ok=True)
+        await _safe_screenshot(page, shot_path)
+        detail = {
+            "ok": False,
+            "message": "google form requires Google login",
+            "token": token,
+            "form_url": form_url,
+            "original_form_url": original_form_url,
+            "page_url": page.url,
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "vacancy": vacancy or {},
+            "source_message": source_message[:1500],
+            "questions": [],
+            "answers": [],
+            "fill_result": {"filled": [], "skipped": []},
+            "screenshot_path": shot_path,
+            "created_at": int(time.time()),
+            "status": "preview_failed_login_required",
+            "profile_name": profile_name,
+        }
+        state = _load_state()
+        items = state.setdefault("items", {})
+        items[token] = detail
+        _save_state(state)
+        return detail
     token = _new_token(form_url, chat_id, message_id)
-    shot_path = os.path.join(config.HH_STATE_DIR, f"google_form_preview_{token}.png")
-    os.makedirs(os.path.dirname(shot_path), exist_ok=True)
-    await _safe_screenshot(page, shot_path)
+    all_questions: list[dict] = []
+    all_answers: list[dict] = []
+    page_results: list[dict] = []
+    page_screenshots: list[str] = []
+    reached_submit = False
+    navigation_error = ""
+    email_consent_filled = await _fill_google_form_email_consent(page)
+    max_pages = 30
+
+    for page_index in range(max_pages):
+        page_questions_raw = await extract_form_questions(page)
+        page_questions = _reindex_page_questions(
+            page_questions_raw,
+            page_index=page_index,
+            start_index=len(all_questions),
+        )
+        if not page_questions:
+            if page_index == 0:
+                return {"ok": False, "message": "form questions not found", "form_url": form_url, "page_url": page.url}
+            break
+
+        answers = await generate_form_answers(page_questions, vacancy=vacancy, source_message=source_message)
+        if not answers:
+            answers = _reuse_cached_answers(form_url, page_questions)
+        answers = _prepare_form_answers(page_questions, answers)
+        fill_result = await fill_form(page, page_questions, answers)
+
+        all_questions.extend(page_questions)
+        all_answers.extend(answers)
+        page_results.append({
+            "page_index": page_index,
+            "questions": len(page_questions),
+            "fill_result": fill_result,
+            "url": page.url,
+        })
+
+        page_shot = os.path.join(config.HH_STATE_DIR, f"google_form_preview_{token}_page{page_index + 1}.png")
+        os.makedirs(os.path.dirname(page_shot), exist_ok=True)
+        await _safe_screenshot(page, page_shot)
+        page_screenshots.append(page_shot)
+
+        if await _has_google_form_submit_button(page):
+            reached_submit = True
+            break
+        advanced, advance_message = await _click_google_form_next(page)
+        if not advanced:
+            navigation_error = advance_message
+            break
+
+    fill_result = _merge_fill_results([item.get("fill_result") or {} for item in page_results])
+    preview_ok, preview_message = _google_form_preview_status(
+        all_questions,
+        fill_result,
+        reached_submit=reached_submit,
+    )
+    if navigation_error and not reached_submit:
+        preview_ok = False
+        preview_message = navigation_error
+    shot_path = page_screenshots[-1] if page_screenshots else os.path.join(config.HH_STATE_DIR, f"google_form_preview_{token}.png")
+    if not page_screenshots:
+        os.makedirs(os.path.dirname(shot_path), exist_ok=True)
+        await _safe_screenshot(page, shot_path)
     detail = {
-        "ok": True,
+        "ok": preview_ok,
+        "message": preview_message,
         "token": token,
         "form_url": form_url,
         "original_form_url": original_form_url,
@@ -694,12 +1197,18 @@ async def preview_form(
         "message_id": message_id,
         "vacancy": vacancy or {},
         "source_message": source_message[:1500],
-        "questions": questions,
-        "answers": answers,
+        "questions": all_questions,
+        "answers": all_answers,
         "fill_result": fill_result,
+        "page_results": page_results,
+        "page_screenshots": page_screenshots,
+        "pages_total": len(page_results),
+        "reached_submit": reached_submit,
+        "navigation_error": navigation_error,
+        "email_consent_filled": email_consent_filled,
         "screenshot_path": shot_path,
         "created_at": int(time.time()),
-        "status": "preview",
+        "status": "preview" if preview_ok else "preview_failed",
         "profile_name": profile_name,
     }
     state = _load_state()
@@ -710,7 +1219,7 @@ async def preview_form(
         if int(item.get("created_at") or 0) < cutoff:
             items.pop(old_token, None)
     _save_state(state)
-    if notify:
+    if notify and detail.get("ok"):
         await notify_form_preview(detail, profile_name=profile_name)
     return detail
 
@@ -768,21 +1277,56 @@ async def submit_saved_preview(hh_client, token: str, *, notify: bool = False) -
     item = (state.get("items") or {}).get(token)
     if not item:
         return {"ok": False, "message": "google form preview token not found", "token": token}
+    preview_filled = (item.get("fill_result") or {}).get("filled") or []
+    if item.get("status") != "preview" or not preview_filled:
+        return {
+            "ok": False,
+            "message": "google form preview is not ready for submit",
+            "token": token,
+            "form_url": item.get("form_url"),
+        }
     if not hh_client._page:
         await hh_client.start(headless=True)
     page = hh_client._page
     await page.goto(item["form_url"], wait_until="domcontentloaded", timeout=60000)
     await page.wait_for_timeout(2500)
-    questions = await extract_form_questions(page)
-    fill_result = await fill_form(page, questions, item.get("answers") or [])
-    submitted = False
-    buttons = await page.query_selector_all('div[role="button"], button')
-    for button in buttons:
-        text = _norm(await button.inner_text())
-        if "отправить" in text or "submit" in text:
-            await button.click()
-            submitted = True
+
+    saved_answers = item.get("answers") or []
+    page_results: list[dict] = []
+    all_questions: list[dict] = []
+    reached_submit = False
+    navigation_error = ""
+    email_consent_filled = await _fill_google_form_email_consent(page)
+    max_pages = max(1, int(item.get("pages_total") or 30))
+    for page_index in range(max_pages):
+        page_questions_raw = await extract_form_questions(page)
+        page_questions = _reindex_page_questions(
+            page_questions_raw,
+            page_index=page_index,
+            start_index=len(all_questions),
+        )
+        if not page_questions:
             break
+        all_questions.extend(page_questions)
+        page_fill_result = await fill_form(page, page_questions, saved_answers)
+        page_results.append({
+            "page_index": page_index,
+            "questions": len(page_questions),
+            "fill_result": page_fill_result,
+            "url": page.url,
+        })
+        if await _has_google_form_submit_button(page):
+            reached_submit = True
+            break
+        advanced, advance_message = await _click_google_form_next(page)
+        if not advanced:
+            navigation_error = advance_message
+            break
+
+    fill_result = _merge_fill_results([item.get("fill_result") or {} for item in page_results])
+    submitted = False
+    if reached_submit:
+        submitted = await _click_google_form_submit(page)
     await page.wait_for_timeout(3000)
     shot_path = os.path.join(config.HH_STATE_DIR, f"google_form_submit_{token}.png")
     os.makedirs(os.path.dirname(shot_path), exist_ok=True)
@@ -802,8 +1346,13 @@ async def submit_saved_preview(hh_client, token: str, *, notify: bool = False) -
         "token": token,
         "form_url": item.get("form_url"),
         "fill_result": fill_result,
+        "page_results": page_results,
+        "pages_total": len(page_results),
+        "reached_submit": reached_submit,
+        "navigation_error": navigation_error,
+        "email_consent_filled": email_consent_filled,
         "screenshot_path": shot_path,
-        "message": "submitted" if ok else "submit clicked, verification uncertain" if submitted else "submit button not found",
+        "message": "submitted" if ok else "submit clicked, verification uncertain" if submitted else (navigation_error or "submit button not found"),
     }
     item["status"] = "submitted" if ok else "submit_uncertain" if submitted else "submit_failed"
     item["submitted_at"] = int(time.time())

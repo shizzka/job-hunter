@@ -255,7 +255,7 @@ async def select_kb_sections(
         raw = (resp.choices[0].message.content or "").strip()
         parsed = parse_llm_json(raw)
     except Exception as exc:
-        log.warning("kb section selection failed: %s", exc)
+        log.info("kb section selection skipped, using unfiltered knowledge base fallback: %s", exc)
         return []
     sel = parsed.get("selected") or []
     if not isinstance(sel, list):

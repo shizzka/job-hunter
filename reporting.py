@@ -172,6 +172,58 @@ def _format_resume_variant_breakdown(by_resume_variant: dict) -> list[str]:
         )
     return lines
 
+def _format_conversion_breakdown(by_group: dict, *, limit: int = 8) -> list[str]:
+    items = sorted(
+        by_group.items(),
+        key=lambda item: (
+            -item[1].get("positive_rate", 0),
+            -item[1].get("response_rate", 0),
+            -item[1].get("auto_applied", 0),
+            item[0],
+        ),
+    )[:limit]
+    lines = []
+    for name, bucket in items:
+        apps = bucket.get("auto_applied", bucket.get("applications", 0))
+        viewed = bucket.get("viewed", 0)
+        not_viewed = bucket.get("not_viewed", 0)
+        positive = bucket.get("positive", 0)
+        rejected = bucket.get("rejected", 0)
+        resp_rate = bucket.get("response_rate", 0)
+        pos_rate = bucket.get("positive_rate", 0)
+        lines.append(
+            "  "
+            f"{name[:24]:<24} app {apps:>3} | "
+            f"view {viewed:>3} | "
+            f"new {not_viewed:>3} | "
+            f"pos {positive:>3} | "
+            f"rej {rejected:>3} | "
+            f"resp {resp_rate:>5.1f}% | "
+            f"conv {pos_rate:>5.1f}%"
+        )
+    return lines
+
+
+def format_hh_retry_preview(candidates: list[dict], *, limit: int = 20) -> str:
+    if not candidates:
+        return "HH retry candidates: 0"
+
+    lines = [f"HH retry candidates: {len(candidates)}"]
+    for idx, item in enumerate(candidates[: max(0, limit)], start=1):
+        title = str(item.get("title") or "-").replace("\n", " ")[:48]
+        company = str(item.get("company") or "-").replace("\n", " ")[:28]
+        reason = str(item.get("_hh_retry_reason") or "retry")[:24]
+        status = str(item.get("_hh_last_status") or "-").replace("\n", " ")[:24]
+        variant = str(item.get("_hh_resume_variant") or "-")[:12]
+        retry_after = str(item.get("_hh_retry_after") or "-")[:19]
+        lines.append(
+            f"{idx:>2}. {title:<48} | {company:<28} | "
+            f"{reason:<24} | {variant:<12} | {status:<24} | {retry_after}"
+        )
+    if len(candidates) > limit:
+        lines.append(f"... ещё {len(candidates) - limit}")
+    return "\n".join(lines)
+
 
 def load_recent_run_history(limit: int = 5) -> list[dict]:
     if limit <= 0 or not os.path.exists(config.RUN_HISTORY_FILE):
@@ -193,11 +245,11 @@ def load_recent_run_history(limit: int = 5) -> list[dict]:
     return list(reversed(items))
 
 
-def print_stats():
+def print_stats(days: int | None = None):
     """Показать статистику."""
     s = seen.stats()
     recent_runs = load_recent_run_history(limit=5)
-    analytics_summary = analytics.summarize()
+    analytics_summary = analytics.summarize(days=days)
     print(f"\n📊 Статистика Job Hunter")
     print(f"{'='*40}")
     print(f"  Всего обработано: {s['total']}")
@@ -274,6 +326,15 @@ def print_stats():
         f"офферы: {analytics_summary.get('offer_statuses', 0)} | "
         f"тестовые: {analytics_summary.get('test_task_statuses', 0)}"
     )
+    if analytics_summary.get("questionnaires", 0) > 0:
+        print(
+            "  "
+            f"анкеты: {analytics_summary.get('questionnaires', 0)} | "
+            f"успешно: {analytics_summary.get('questionnaire_successes', 0)} | "
+            f"ошибки: {analytics_summary.get('questionnaire_failures', 0)} | "
+            f"вопросов: {analytics_summary.get('questionnaire_questions', 0)} | "
+            f"best_guess: {analytics_summary.get('questionnaire_best_guess', 0)}"
+        )
 
     if analytics_summary["events"] == 0:
         print("  Аналитика начнёт заполняться со следующего search/check.")
@@ -290,9 +351,28 @@ def print_stats():
         print("Воронка откликов:")
         print(f"  откликов:    {funnel['applied']:>4}")
         print(f"  просмотрено: {funnel['viewed']:>4}  ({funnel['response_rate']:.1f}%)")
+        print(f"  не просмотрено: {funnel.get('not_viewed', 0):>4}")
         print(f"  ожидание:    {funnel['pending']:>4}")
         print(f"  отказ:       {funnel['rejected']:>4}")
         print(f"  позитив:     {funnel['positive']:>4}  ({funnel['positive_rate']:.1f}% от откликов)")
+
+    if analytics_summary.get("by_retry_reason"):
+        print()
+        print("Повторные отклики:")
+        for line in _format_conversion_breakdown(analytics_summary["by_retry_reason"]):
+            print(line)
+
+    if analytics_summary.get("by_cluster"):
+        print()
+        print("Кластеры вакансий:")
+        for line in _format_conversion_breakdown(analytics_summary["by_cluster"]):
+            print(line)
+
+    if analytics_summary.get("by_cover_style"):
+        print()
+        print("Стили сопроводительных:")
+        for line in _format_conversion_breakdown(analytics_summary["by_cover_style"]):
+            print(line)
 
     if analytics_summary.get("by_resume_variant"):
         print()
@@ -311,4 +391,68 @@ def print_stats():
         print("Топ решений:")
         for action, count in analytics_summary["top_decisions"]:
             print(f"  {action:<28} {count:>4}")
+    print()
+
+
+def _format_filter_audit_sample(item: dict) -> str:
+    title = str(item.get("title") or "-").strip() or "-"
+    company = str(item.get("company") or "-").strip() or "-"
+    decision = str(item.get("decision") or "-")
+    score = item.get("score")
+    cluster = str(item.get("cluster") or "-")
+    created_at = str(item.get("created_at") or "-")
+    note = str(item.get("note") or "").strip()
+    suffix = f" | note: {note}" if note else ""
+    return f"  {created_at} | {decision:<22} | score {str(score):>4} | {cluster:<20} | {title} — {company}{suffix}"
+
+
+def _print_filter_audit_samples(title: str, count: int, items: list[dict]) -> None:
+    print()
+    print(f"{title}: {count}")
+    if not items:
+        print("  нет примеров")
+        return
+    for item in items:
+        print(_format_filter_audit_sample(item))
+        reason = str(item.get("reason") or "").strip()
+        if reason:
+            print(f"    reason: {reason}")
+
+
+def print_filter_audit(days: int | None = None, *, limit: int = 20):
+    """Показать replay-аудит текущих фильтров по analytics history."""
+    audit = analytics.audit_filters(days=days, limit=limit)
+    scope = "all-time" if audit.get("all_time") else f"{audit['days']} дн."
+    print()
+    print(f"Аудит фильтров за {scope}:")
+    print(f"{'='*40}")
+    print(f"  решений проверено: {audit.get('decisions', 0)}")
+
+    if audit.get("by_cluster"):
+        print()
+        print("Кластеры по текущей логике:")
+        for cluster, count in audit["by_cluster"][:10]:
+            print(f"  {cluster:<24} {count:>5}")
+
+    if audit.get("by_decision_cluster"):
+        print()
+        print("Топ decision x cluster:")
+        for item in audit["by_decision_cluster"][:12]:
+            print(f"  {item['decision']:<24} {item['cluster']:<22} {item['count']:>5}")
+
+    _print_filter_audit_samples(
+        "Auto/manual, которые текущий фильтр теперь отрезал бы",
+        audit.get("would_block_allowed_or_manual_count", 0),
+        audit.get("would_block_allowed_or_manual", []),
+    )
+    _print_filter_audit_samples(
+        "Low-score, но текущий кластер выглядит QA-жизнеспособным",
+        audit.get("low_score_viable_count", 0),
+        audit.get("low_score_viable", []),
+    )
+    _print_filter_audit_samples(
+        "Keyword-filtered, но текущий кластер выглядит QA-жизнеспособным",
+        audit.get("keyword_filtered_viable_count", 0),
+        audit.get("keyword_filtered_viable", []),
+    )
     print()

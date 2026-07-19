@@ -63,3 +63,34 @@ def parse_llm_json(text: str) -> dict:
         if not extracted:
             raise
         return json.loads(extracted)
+
+async def repair_llm_json(
+    client,
+    *,
+    model: str,
+    raw_text: str,
+    parse_error: str = "",
+    schema: str = "",
+    max_tokens: int = 600,
+) -> dict:
+    """Попросить LLM преобразовать почти-JSON в валидный JSON и распарсить результат."""
+    prompt = (
+        "Преобразуй ответ модели в валидный JSON. "
+        "Не добавляй markdown, пояснения или текст вне JSON.\n"
+    )
+    if schema:
+        prompt += f"\nОжидаемая схема:\n{schema.strip()}\n"
+    if parse_error:
+        prompt += f"\nОшибка парсинга:\n{parse_error.strip()}\n"
+    prompt += f"\nИсходный ответ:\n{(raw_text or '')[:4000]}"
+
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": "Ты исправляешь JSON. Ответь только валидным JSON-объектом."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0,
+        max_tokens=max_tokens,
+    )
+    return parse_llm_json(response.choices[0].message.content or "")

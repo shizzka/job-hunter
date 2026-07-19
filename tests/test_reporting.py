@@ -12,7 +12,9 @@ from reporting import (
     _format_analytics_source_breakdown,
     _format_top_query_breakdown,
     _format_resume_variant_breakdown,
+    _format_conversion_breakdown,
     _format_run_source_stats,
+    format_hh_retry_preview,
     SOURCE_ORDER,
     SOURCE_LABELS,
 )
@@ -123,3 +125,61 @@ class TestResumeVariantBreakdown:
 
     def test_variant_breakdown_empty(self):
         assert _format_resume_variant_breakdown({}) == []
+
+
+class TestConversionBreakdown:
+
+    def test_conversion_breakdown_orders_by_rates(self):
+        by_group = {
+            "manual_web_qa": {
+                "auto_applied": 20,
+                "viewed": 5,
+                "not_viewed": 3,
+                "positive": 1,
+                "rejected": 2,
+                "response_rate": 25.0,
+                "positive_rate": 5.0,
+            },
+            "api_qa": {
+                "auto_applied": 10,
+                "viewed": 8,
+                "not_viewed": 0,
+                "positive": 2,
+                "rejected": 1,
+                "response_rate": 80.0,
+                "positive_rate": 20.0,
+            },
+        }
+
+        lines = _format_conversion_breakdown(by_group)
+
+        assert len(lines) == 2
+        assert "api_qa" in lines[0]
+        assert "new" in lines[0]
+        assert "resp" in lines[0]
+
+    def test_conversion_breakdown_empty(self):
+        assert _format_conversion_breakdown({}) == []
+
+
+class TestHHRetryPreview:
+
+    def test_format_hh_retry_preview(self):
+        text = format_hh_retry_preview([
+            {
+                "title": "QA Engineer API",
+                "company": "Acme",
+                "_hh_retry_reason": "viewed_no_response",
+                "_hh_resume_variant": "fun",
+                "_hh_last_status": "Просмотрен",
+                "_hh_retry_after": "2026-01-04T10:00:00",
+            }
+        ])
+
+        assert "HH retry candidates: 1" in text
+        assert "QA Engineer API" in text
+        assert "viewed_no_response" in text
+        assert "fun" in text
+
+    def test_format_hh_retry_preview_empty(self):
+        assert format_hh_retry_preview([]) == "HH retry candidates: 0"

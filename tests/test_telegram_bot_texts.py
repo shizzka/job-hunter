@@ -73,9 +73,25 @@ def test_hh_auth_result_and_users_text_are_russian():
     assert "Cookies" not in result_text
     assert "debug log" not in result_text
     assert "Сессия HH сохранена." in result_text
+    assert "Захвачено резюме" not in result_text
     assert "profile " not in users_text
     assert "enabled" not in users_text
     assert "доступ открыт" in users_text
+
+
+def test_hh_auth_result_mentions_resume_import_only_when_requested():
+    result_text = build_hh_auth_result_text(
+        {
+            "ok": True,
+            "authenticated": True,
+            "imported_resumes": True,
+            "count": 1,
+            "resumes": [{"id": "1", "title": "QA Engineer"}],
+        }
+    )
+
+    assert "Захвачено резюме: 1" in result_text
+    assert "Основное резюме: QA Engineer" in result_text
 
 
 def test_manual_feedback_callback_parser():
@@ -84,6 +100,63 @@ def test_manual_feedback_callback_parser():
     assert _parse_manual_feedback_callback_data("manual_fb:qa:abcdef123456:good") == ("qa", "abcdef123456", "good")
     assert _parse_manual_feedback_callback_data("manual_fb:qa:abcdef123456:bad") == ("qa", "abcdef123456", "bad")
     assert _parse_manual_feedback_callback_data("manual_fb:qa:abcdef123456:wat") == ("", "", "")
+
+
+def test_manual_block_company_and_why_callback_parser_and_markup():
+    import manual_apply_queue
+    from telegram_bot_ui import (
+        _parse_manual_block_company_callback_data,
+        _parse_manual_why_callback_data,
+    )
+
+    assert _parse_manual_block_company_callback_data("manual_block_company:qa:abcdef123456") == ("qa", "abcdef123456")
+    assert _parse_manual_block_company_callback_data("manual_apply:qa:abcdef123456") == ("", "")
+    assert _parse_manual_why_callback_data("manual_why:qa:abcdef123456") == ("qa", "abcdef123456")
+    assert _parse_manual_why_callback_data("manual_apply:qa:abcdef123456") == ("", "")
+
+    markup = manual_apply_queue.build_manual_apply_markup(
+        {"source": "hh", "company": "Acme", "url": "https://hh.ru/vacancy/1"},
+        "qa",
+        "abcdef123456",
+    )
+    buttons = [button for row in markup["inline_keyboard"] for button in row]
+
+    assert any(button["text"] == "Почему?" for button in buttons)
+    assert any(button.get("callback_data") == "manual_why:qa:abcdef123456" for button in buttons)
+    assert any(button["text"] == "Не трогать компанию" for button in buttons)
+    assert any(button.get("callback_data") == "manual_block_company:qa:abcdef123456" for button in buttons)
+
+
+def test_manual_why_text_contains_decision_context():
+    import manual_apply_queue
+
+    item = {
+        "vacancy": {
+            "title": "Junior QA Engineer",
+            "company": "Acme",
+            "source_label": "hh.ru",
+            "url": "https://hh.ru/vacancy/1",
+        },
+        "evaluation": {
+            "score": 62,
+            "response_probability_score": 78,
+            "cluster": "api_qa",
+            "resume_variant": "qa_api",
+            "cover_style": "api_qa",
+            "red_flags": ["middle wording"],
+            "soft_flags": ["junior-friendly"],
+            "reason": "Хороший API-матч, но мало уверенности для автоотклика.",
+        },
+    }
+
+    text = manual_apply_queue.build_manual_why_text(item)
+
+    assert "Почему ручное решение" in text
+    assert "Junior QA Engineer @ Acme" in text
+    assert "match 62/100 | response 78/100" in text
+    assert "Кластер: api_qa" in text
+    assert "Красные флаги: middle wording" in text
+    assert "Хороший API-матч" in text
 
 
 def test_manual_chat_ai_arg_parser():
@@ -177,10 +250,12 @@ def test_chat_ai_candidate_list_markup():
 
 
 def test_hh_reauth_callback_parser():
+    from telegram_bot import _parse_hh_reauth_callback_data as bot_parse_hh_reauth_callback_data
     from telegram_bot_ui import CALLBACK_HH_REAUTH, _parse_hh_reauth_callback_data
 
     assert CALLBACK_HH_REAUTH == "hh_reauth"
     assert _parse_hh_reauth_callback_data("hh_reauth:qa") == "qa"
+    assert bot_parse_hh_reauth_callback_data("hh_reauth:qa") == "qa"
     assert _parse_hh_reauth_callback_data("hh_reauth:qa.profile-1") == "qa.profile-1"
     assert _parse_hh_reauth_callback_data("hh_reauth:bad/profile") == ""
     assert _parse_hh_reauth_callback_data("chat_ai:qa:1:2") == ""
@@ -194,3 +269,10 @@ def test_hh_reauth_notifier_markup():
 
     assert any(button.get("callback_data") == "hh_reauth:qa" for button in buttons)
     assert any(button.get("url") == "https://hh.ru/account/login" for button in buttons)
+
+
+def test_hh_auth_code_text_cleanup():
+    from telegram_bot import _clean_hh_auth_code_text
+
+    assert _clean_hh_auth_code_text("12 34-56") == "123456"
+    assert _clean_hh_auth_code_text("код: 9876") == "9876"

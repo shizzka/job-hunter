@@ -121,6 +121,54 @@ def _looks_like_hh_apply_success(value: str) -> bool:
     )
 
 
+def _looks_like_resume_boost_action(value: str) -> bool:
+    text = _normalize_text(value)
+    if not text:
+        return False
+    if "поднять" in text:
+        return "резюме" in text or len(text) <= 80
+    return (
+        "обновить дату" in text
+        or "обновить резюме" in text
+        or "обновить в поиске" in text
+        or "поднять в поиске" in text
+    )
+
+
+def _looks_like_resume_boost_unavailable(value: str) -> bool:
+    text = _normalize_text(value)
+    return (
+        "можно будет поднять" in text
+        or "поднять можно" in text
+        or "следующее поднятие" in text
+        or "станет доступно" in text
+        or "будет доступно" in text
+        or "уже поднято" in text
+    )
+
+
+def _looks_like_resume_boost_success(value: str) -> bool:
+    text = _normalize_text(value)
+    return (
+        "резюме поднято" in text
+        or "резюме обновлено" in text
+        or "поднято в поиске" in text
+        or "обновлено в поиске" in text
+    )
+
+
+def _resume_matches_target(resume: dict, resume_id: str = "", resume_title: str = "") -> bool:
+    target_id = str(resume_id or "").strip()
+    target_title = _normalize_text(resume_title)
+    current_id = str((resume or {}).get("id") or "").strip()
+    current_title = _normalize_text(str((resume or {}).get("title") or ""))
+    current_url = str((resume or {}).get("url") or "")
+    return (
+        bool(target_id and (target_id == current_id or target_id in current_url))
+        or bool(target_title and (target_title in current_title or current_title in target_title))
+    )
+
+
 def _load_resume_text() -> str:
     try:
         if os.path.exists(config.RESUME_FILE):
@@ -178,7 +226,48 @@ def _truncate_text(value: str, limit: int) -> str:
     return value[: max(0, limit - 1)].rstrip() + "…"
 
 
-from llm_utils import parse_llm_json as _parse_llm_json, strip_markdown_fence as _strip_markdown_fence
+def _format_question_answer_note(question: str, answer: str, *, control: str = "") -> str:
+    label = _truncate_text((question or "вопрос").strip(), 120)
+    value = _truncate_text((answer or "—").strip(), 220)
+    prefix = f"автоответ hh ({control}): " if control else "автоответ hh: "
+    return f"{prefix}{label} -> {value}"
+
+
+def _question_answer_item(
+    question: str,
+    answer: str,
+    *,
+    control: str = "",
+    best_guess: bool = False,
+    required: bool = False,
+    starred: bool = False,
+    skipped: bool = False,
+    skip_reason: str = "",
+) -> dict:
+    item = {
+        "question": _truncate_text((question or "вопрос").strip(), 500),
+        "answer": _truncate_text((answer or "—").strip(), 1000),
+    }
+    if control:
+        item["control"] = control
+    if best_guess:
+        item["best_guess"] = True
+    if required:
+        item["required"] = True
+    if starred:
+        item["starred"] = True
+    if skipped:
+        item["skipped"] = True
+    if skip_reason:
+        item["skip_reason"] = _truncate_text(skip_reason, 200)
+    return item
+
+
+from llm_utils import (
+    parse_llm_json as _parse_llm_json,
+    repair_llm_json as _repair_llm_json,
+    strip_markdown_fence as _strip_markdown_fence,
+)
 
 
 from prompt_blocks import (  # noqa: E402
@@ -188,6 +277,59 @@ from prompt_blocks import (  # noqa: E402
     build_knowledge_base_block as _build_knowledge_base_block,
     build_filtered_kb_block as _build_filtered_kb_block,
 )
+
+
+RISKY_QUESTION_PATTERNS = [
+    r"коммерческ\w*\s+опыт\w*.{0,80}(aqa|автотест|automation|selenium|java|playwright|cypress)",
+    r"(aqa|automation|selenium|java|playwright|cypress).{0,80}коммерческ\w*\s+опыт",
+    r"сколько\s+лет.{0,80}(aqa|автотест|automation|selenium|java|playwright|cypress)",
+]
+
+STABLE_ANSWER_LIBRARY = [
+    (
+        (r"\bapi\b", r"rest|postman|swagger|json|http"),
+        "Есть практический опыт REST API: проверяю запросы и ответы в Postman/DevTools, смотрю JSON, статусы, негативные сценарии и связь API с пользовательским поведением.",
+    ),
+    (
+        (r"postman|swagger|openapi",),
+        "Работал с Postman и Swagger/OpenAPI на уровне ручной проверки API: запросы, параметры, JSON-ответы, статусы и базовые негативные сценарии.",
+    ),
+    (
+        (r"\bsql\b|баз\w*\s+данн|select|join",),
+        "SQL на базовом уровне: SELECT-запросы, фильтрация, простые JOIN и проверка данных для тестовых сценариев.",
+    ),
+    (
+        (r"тестов\w*\s+документац|тест[-\s]?кейс|чек[-\s]?лист|баг[-\s]?репорт|test\s?case|bug\s?report",),
+        "Веду тестовую документацию: тест-кейсы, чек-листы и баг-репорты. В баге фиксирую шаги, фактический/ожидаемый результат, окружение и вложения.",
+    ),
+    (
+        (r"автотест|pytest|python|aqa|automation",),
+        "Участвовал в разработке API-автотестов на Python/pytest: помогал со сценариями, покрытием, окружением и запуском готовых тестов. Основной профиль сейчас - manual/API QA, без позиционирования как самостоятельный AQA.",
+    ),
+    (
+        (r"тестов\w*\s+задан|тестовое|test\s+task",),
+        "Готов выполнить тестовое задание, если оно разумное по объему и связано с задачами вакансии.",
+    ),
+    (
+        (r"формат\s+работ|удален|удалён|remote|офис|гибрид|график",),
+        "Готов обсуждать формат работы. В приоритете удаленный или гибридный формат, детали зависят от задач, графика и команды.",
+    ),
+]
+
+
+def _is_risky_question(question_text: str) -> bool:
+    text = _normalize_text(question_text)
+    return any(re.search(pattern, text) for pattern in RISKY_QUESTION_PATTERNS)
+
+
+def _answer_question_from_library(question_text: str, *, max_chars: int) -> str | None:
+    text = _normalize_text(question_text)
+    if not text or _is_risky_question(text):
+        return None
+    for patterns, answer in STABLE_ANSWER_LIBRARY:
+        if all(re.search(pattern, text) for pattern in patterns):
+            return _truncate_text(answer, max_chars)
+    return None
 
 
 def _anti_bot_label(kind: str) -> str:
@@ -467,15 +609,44 @@ class HHClient:
                         return parts;
                     };
 
+                    const findNearbyTaskQuestion = (el) => {
+                        let node = el;
+                        for (let depth = 0; node && depth < 7; depth += 1) {
+                            const parent = node.parentElement;
+                            if (!parent) break;
+
+                            const scoped = parent.querySelector('[data-qa="task-question"]');
+                            if (scoped) {
+                                const text = clean(scoped.innerText);
+                                if (text) return text;
+                            }
+
+                            let next = node.nextElementSibling;
+                            for (let idx = 0; next && idx < 4; idx += 1) {
+                                const candidate = next.matches?.('[data-qa="task-question"]')
+                                    ? next
+                                    : next.querySelector?.('[data-qa="task-question"]');
+                                const text = clean(candidate?.innerText || "");
+                                if (text) return text;
+                                next = next.nextElementSibling;
+                            }
+
+                            node = parent;
+                        }
+                        return "";
+                    };
+
                     const describeField = (el) => {
                         const labels = el.labels ? Array.from(el.labels).map((label) => clean(label.innerText)).filter(Boolean) : [];
                         const promptParts = collectPromptTexts(el);
                         const placeholder = clean(el.getAttribute("placeholder") || "");
-                        const questionText = clean(
+                        const taskQuestion = findNearbyTaskQuestion(el);
+                        const fallbackQuestionText = clean(
                             [labels.join(" "), ...promptParts]
                                 .filter(Boolean)
                                 .join(" ")
-                        ).slice(0, 500);
+                        );
+                        const questionText = clean(taskQuestion || fallbackQuestionText).slice(0, 500);
 
                         return {
                             question_text: questionText,
@@ -505,6 +676,9 @@ class HHClient:
                     };
 
                     const radioGroupQuestionText = (anyInput) => {
+                        const taskQuestion = findNearbyTaskQuestion(anyInput);
+                        if (taskQuestion) return taskQuestion.slice(0, 500);
+
                         const fieldset = anyInput.closest("fieldset");
                         if (fieldset) {
                             const legend = fieldset.querySelector("legend");
@@ -522,6 +696,17 @@ class HHClient:
                         const lc = (text || "").toLowerCase();
                         return lc.includes("свой вариант") || lc.includes("другое") || lc.includes("своя версия");
                     };
+
+                    const isRequired = (el, members = []) => {
+                        const all = members.length ? members : [el];
+                        return all.some((node) =>
+                            node.required ||
+                            node.getAttribute("aria-required") === "true" ||
+                            (node.closest("[aria-required='true']") !== null)
+                        );
+                    };
+
+                    const isStarred = (text) => new RegExp("(^|\\s)\\*($|\\s)|★|обязател", "i").test(text || "");
 
                     for (const el of nodes) {
                         const tag = (el.tagName || "").toLowerCase();
@@ -569,6 +754,8 @@ class HHClient:
                                 placeholder: "",
                                 options: options.slice(0, 12),
                                 max_length: 0,
+                                required: isRequired(el, members),
+                                starred: isStarred(radioGroupQuestionText(el)),
                             });
                             continue;
                         }
@@ -602,6 +789,8 @@ class HHClient:
                                 placeholder: described.placeholder,
                                 options: opts.slice(0, 12),
                                 max_length: 0,
+                                required: isRequired(el),
+                                starred: isStarred(described.question_text),
                             });
                             continue;
                         }
@@ -617,6 +806,8 @@ class HHClient:
                             question_text: described.question_text,
                             placeholder: described.placeholder,
                             max_length: Number(el.getAttribute("maxlength") || 0) || 0,
+                            required: isRequired(el),
+                            starred: isStarred(described.question_text),
                         });
                     }
 
@@ -838,6 +1029,14 @@ class HHClient:
         if field_max_length > 0:
             max_chars = min(max_chars, field_max_length)
 
+        if _is_risky_question(question_text):
+            log.info("HH auto-answer skipped risky question: %s", _truncate_text(question_text, 120))
+            return None
+
+        stable_answer = _answer_question_from_library(question_text, max_chars=max_chars)
+        if stable_answer:
+            return stable_answer
+
         vacancy_block = (
             f"Контекст вакансии (на неё откликаемся):\n{_truncate_text(vacancy_context, 1500)}\n\n"
             if vacancy_context else ""
@@ -893,7 +1092,19 @@ class HHClient:
                 max_tokens=600,
             )
             raw_text = response.choices[0].message.content or ""
-            parsed = _parse_llm_json(raw_text)
+            model = config.HH_QUESTION_MODEL or config.LLM_MODEL
+            try:
+                parsed = _parse_llm_json(raw_text)
+            except Exception as parse_exc:
+                log.info("LLM question JSON parse failed, trying repair: %s", parse_exc)
+                parsed = await _repair_llm_json(
+                    client,
+                    model=model,
+                    raw_text=raw_text,
+                    parse_error=str(parse_exc),
+                    schema='{"status": "answer" | "skip", "answer": "..."}',
+                    max_tokens=600,
+                )
         except Exception as exc:
             log.warning("LLM question answer failed: %s", exc)
             return None
@@ -1010,7 +1221,19 @@ class HHClient:
                     temperature=0.1,
                     max_tokens=600,
                 )
-                return _parse_llm_json(response.choices[0].message.content or "")
+                raw_text = response.choices[0].message.content or ""
+                try:
+                    return _parse_llm_json(raw_text)
+                except Exception as parse_exc:
+                    log.info("LLM choice JSON parse failed, trying repair: %s", parse_exc)
+                    return await _repair_llm_json(
+                        client,
+                        model=config.HH_CHOICE_MODEL or config.LLM_MODEL,
+                        raw_text=raw_text,
+                        parse_error=str(parse_exc),
+                        schema='{"status": "answer" | "skip", "selected": [{"index": 0, "custom_text": null}]}',
+                        max_tokens=600,
+                    )
             except Exception as exc:
                 log.warning("LLM choice answer failed: %s", exc)
                 return None
@@ -1131,11 +1354,35 @@ class HHClient:
 
         answers = []
         notes = []
+        question_answers = []
 
         for field in fields:
             question_text = (field.get("question_text") or field.get("placeholder") or "").strip()
             input_type = (field.get("input_type") or "text").strip().lower()
             control = (field.get("control") or "").strip().lower()
+
+            if _is_risky_question(question_text):
+                short_question = _truncate_text(question_text or "вопрос по резюме", 100)
+                answer_text = "Нужно ручное подтверждение: риск завысить опыт кандидата."
+                question_answers.append(
+                    _question_answer_item(
+                        question_text or "вопрос по резюме",
+                        answer_text,
+                        control=control or input_type,
+                        required=bool(field.get("required")),
+                        starred=bool(field.get("starred")),
+                        skipped=True,
+                        skip_reason="risky_question",
+                    )
+                )
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "message": "Требуются доп. вопросы работодателя — нужно ручное подтверждение рискованного вопроса",
+                    "notes": [f"автоответ пропущен: рискованный вопрос: {short_question}"],
+                    "question_answers": question_answers,
+                    "risky_question": short_question,
+                }
 
             # ---- choice fields (radio / checkbox / select) ----
             if control in ("radio", "checkbox", "select"):
@@ -1149,6 +1396,7 @@ class HHClient:
                         "ok": False,
                         "message": "Требуются доп. вопросы работодателя — пропускаем (нет уверенного выбора)",
                         "notes": [f"автоответ пропущен: {short_question}"],
+                        "question_answers": question_answers,
                     }
                 selected = choice["selected"]
                 selected_indices = [s["index"] for s in selected]
@@ -1165,11 +1413,20 @@ class HHClient:
                     (options[i].get("label") if i < len(options) else f"#{i}")
                     for i in selected_indices
                 ]
+                answer_text = ", ".join(picked_labels)
+                if custom_text:
+                    answer_text += f" + custom: {custom_text}"
                 bg_mark = " [best-guess]" if choice.get("best_guess") else ""
-                notes.append(
-                    f"автоответ hh ({control}){bg_mark}: {_truncate_text(question_text or 'вопрос', 80)} -> "
-                    + _truncate_text(", ".join(picked_labels), 120)
-                    + (f" + custom: {_truncate_text(custom_text, 80)}" if custom_text else "")
+                notes.append(_format_question_answer_note(question_text or "вопрос", answer_text, control=f"{control}{bg_mark}"))
+                question_answers.append(
+                    _question_answer_item(
+                        question_text or "вопрос",
+                        answer_text,
+                        control=control,
+                        best_guess=bool(choice.get("best_guess")),
+                        required=bool(field.get("required")),
+                        starred=bool(field.get("starred")),
+                    )
                 )
                 continue
 
@@ -1182,8 +1439,10 @@ class HHClient:
                         "ok": False,
                         "message": "Требуются доп. вопросы работодателя — пропускаем (не найден ответ по зарплате)",
                         "notes": ["автоответ пропущен: в резюме нет явного зарплатного ориентира"],
+                        "question_answers": question_answers,
                     }
-                notes.append(f"автоответ hh: зарплатные ожидания -> {answer}")
+                answer_question = "зарплатные ожидания"
+                notes.append(_format_question_answer_note(answer_question, str(answer)))
             else:
                 answer = await self._answer_question_with_llm(field, resume_text, page_text, vacancy_context)
                 if not answer:
@@ -1193,10 +1452,21 @@ class HHClient:
                         "ok": False,
                         "message": "Требуются доп. вопросы работодателя — пропускаем (нет уверенного ответа)",
                         "notes": [f"автоответ пропущен: {short_question}"],
+                        "question_answers": question_answers,
                     }
-                notes.append(f"автоответ hh: {_truncate_text(question_text or 'вопрос по резюме', 100)}")
+                answer_question = question_text or "вопрос по резюме"
+                notes.append(_format_question_answer_note(answer_question, str(answer)))
 
             answers.append({"field_id": field["field_id"], "answer": answer})
+            question_answers.append(
+                _question_answer_item(
+                    answer_question,
+                    str(answer),
+                    control=control or input_type,
+                    required=bool(field.get("required")),
+                    starred=bool(field.get("starred")),
+                )
+            )
 
         fill_result = await self._fill_employer_question_answers(answers)
         if int(fill_result.get("filled", 0)) != len(answers):
@@ -1205,6 +1475,7 @@ class HHClient:
                 "ok": False,
                 "message": "Требуются доп. вопросы работодателя — пропускаем (не удалось заполнить форму)",
                 "notes": notes + [f"ошибка заполнения: {', '.join(fill_result.get('errors', [])[:2])}"],
+                "question_answers": question_answers,
             }
 
         await self._page.wait_for_timeout(500)
@@ -1215,6 +1486,7 @@ class HHClient:
                 "ok": False,
                 "message": "Требуются доп. вопросы работодателя — пропускаем (не удалось отправить форму)",
                 "notes": notes,
+                "question_answers": question_answers,
             }
 
         await self._page.wait_for_timeout(4000)
@@ -1229,6 +1501,7 @@ class HHClient:
                 "ok": False,
                 "message": message,
                 "notes": notes,
+                "question_answers": question_answers,
                 "anti_bot_kind": anti_bot_kind,
             }
 
@@ -1238,6 +1511,7 @@ class HHClient:
                 "ok": True,
                 "message": "Отклик отправлен",
                 "notes": notes,
+                "question_answers": question_answers,
             }
 
         if await self._response_requires_questions():
@@ -1246,6 +1520,7 @@ class HHClient:
                 "ok": False,
                 "message": "Требуются доп. вопросы работодателя — пропускаем (форма не закрылась после автоответа)",
                 "notes": notes,
+                "question_answers": question_answers,
             }
 
         return {
@@ -1253,6 +1528,7 @@ class HHClient:
             "ok": False,
             "message": "Не удалось подтвердить отклик после автоответа на вопросы",
             "notes": notes,
+            "question_answers": question_answers,
         }
 
     async def _dismiss_magritte_dropdowns(self) -> None:
@@ -1444,6 +1720,26 @@ class HHClient:
         print("✅ Cookies сохранены!")
         if not keep_open:
             await self.stop()
+
+    async def google_login_interactive(self, form_url: str = ""):
+        """Открыть Playwright-браузер для ручного Google login и сохранить cookies."""
+        await self.start(headless=False)
+        target_url = form_url or "https://accounts.google.com/"
+        try:
+            await self._page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+        except Exception:
+            pass
+        print("\n" + "=" * 60)
+        print("Браузер открыт. Войди в Google в этом Playwright-окне.")
+        if form_url:
+            print("После входа проверь, что форма доступна для заполнения.")
+        print("После успешного входа нажми Enter здесь...")
+        print("=" * 60)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, input)
+        await self.save_session()
+        print("✅ Google cookies сохранены в профильный браузерный контекст!")
+        await self.stop()
 
     async def is_logged_in(self) -> bool:
         """Проверить залогинен ли пользователь."""
@@ -1814,6 +2110,7 @@ class HHClient:
 
         cover_letter_filled = False
         auto_answer_notes: list[str] = []
+        auto_answer_question_answers: list[dict] = []
 
         async def finalize_success(
             message: str,
@@ -1828,6 +2125,8 @@ class HHClient:
                 result["already_applied"] = True
             if notes:
                 result["notes"] = notes
+            if auto_answer_question_answers:
+                result["question_answers"] = list(auto_answer_question_answers)
             return result
 
         detect_response_controls = self._detect_response_controls
@@ -2086,6 +2385,7 @@ class HHClient:
                 log.info("Vacancy requires employer questions — trying auto-answer")
                 auto_question_result = await self._try_auto_answer_questions(vacancy_context=vacancy_context)
                 auto_answer_notes.extend(auto_question_result.get("notes") or [])
+                auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
                 if auto_question_result.get("ok"):
                     return await finalize_success(
                         auto_question_result.get("message", "Отклик отправлен"),
@@ -2098,6 +2398,8 @@ class HHClient:
                         "Требуются доп. вопросы работодателя — пропускаем",
                     ),
                     "notes": auto_answer_notes,
+                    "question_answers": list(auto_answer_question_answers),
+                    "risky_question": auto_question_result.get("risky_question", ""),
                 }
 
             if direct_response_flow:
@@ -2136,6 +2438,7 @@ class HHClient:
             log.info("Vacancy requires employer questions — trying auto-answer")
             auto_question_result = await self._try_auto_answer_questions(vacancy_context=vacancy_context)
             auto_answer_notes.extend(auto_question_result.get("notes") or [])
+            auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
             if auto_question_result.get("ok"):
                 return await finalize_success(
                     auto_question_result.get("message", "Отклик отправлен"),
@@ -2148,6 +2451,8 @@ class HHClient:
                     "Требуются доп. вопросы работодателя — пропускаем",
                 ),
                 "notes": auto_answer_notes,
+                "question_answers": list(auto_answer_question_answers),
+                    "risky_question": auto_question_result.get("risky_question", ""),
             }
 
         if resume_select or preferred_resume_title or preferred_resume_id:
@@ -2241,6 +2546,7 @@ class HHClient:
             log.info("Vacancy requires employer questions after submit — trying auto-answer")
             auto_question_result = await self._try_auto_answer_questions(vacancy_context=vacancy_context)
             auto_answer_notes.extend(auto_question_result.get("notes") or [])
+            auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
             if auto_question_result.get("ok"):
                 return await finalize_success(
                     auto_question_result.get("message", "Отклик отправлен"),
@@ -2253,6 +2559,8 @@ class HHClient:
                     "Требуются доп. вопросы работодателя — пропускаем",
                 ),
                 "notes": auto_answer_notes,
+                "question_answers": list(auto_answer_question_answers),
+                    "risky_question": auto_question_result.get("risky_question", ""),
             }
 
         if await self._apply_success_detected():
@@ -2283,6 +2591,7 @@ class HHClient:
                     log.info("Vacancy requires employer questions after retry — trying auto-answer")
                     auto_question_result = await self._try_auto_answer_questions(vacancy_context=vacancy_context)
                     auto_answer_notes.extend(auto_question_result.get("notes") or [])
+                    auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
                     if auto_question_result.get("ok"):
                         return await finalize_success(
                             auto_question_result.get("message", "Отклик отправлен"),
@@ -2295,6 +2604,8 @@ class HHClient:
                             "Требуются доп. вопросы работодателя — пропускаем",
                         ),
                         "notes": auto_answer_notes,
+                        "question_answers": list(auto_answer_question_answers),
+                        "risky_question": auto_question_result.get("risky_question", ""),
                     }
                 if await self._apply_success_detected():
                     return await finalize_success("Отклик отправлен", notes=auto_answer_notes)
@@ -2624,20 +2935,202 @@ class HHClient:
                 "a[data-qa*='title'], "
                 "a[href*='/resume/']"
             )
-            if not title_el:
-                continue
-            title = (await title_el.inner_text()).strip()
-            href = await title_el.get_attribute("href") or ""
+            card_href = await card.get_attribute("href") or ""
+            href = card_href
+            title = ""
+            if title_el:
+                title = (await title_el.inner_text()).strip()
+                href = (await title_el.get_attribute("href") or "") or href
+            if not href:
+                link_el = await card.query_selector("a[href*='/resume/']")
+                if link_el:
+                    href = await link_el.get_attribute("href") or ""
+            if not title:
+                title = (await card.inner_text()).strip()
             resume_id = ""
             if "/resume/" in href:
                 resume_id = href.split("/resume/")[-1].split("?")[0].split("/")[0]
-            if resume_id and resume_id in seen_ids:
+            if not resume_id or resume_id in seen_ids:
                 continue
-            if resume_id:
-                seen_ids.add(resume_id)
+            seen_ids.add(resume_id)
+            title = " ".join((title or resume_id).split())
+            if len(title) > 240:
+                title = title[:237].rstrip() + "..."
             resumes.append({"id": resume_id, "title": title, "url": href})
 
         return resumes
+
+    async def _save_resume_boost_debug(self, stage: str) -> dict:
+        paths = {
+            "debug_screenshot": os.path.join(config.HH_STATE_DIR, f"debug_resume_boost_{stage}.png"),
+            "debug_html": os.path.join(config.HH_STATE_DIR, f"debug_resume_boost_{stage}.html"),
+        }
+        try:
+            await self._page.screenshot(path=paths["debug_screenshot"], full_page=True)
+            html = await self._page.content()
+            with open(paths["debug_html"], "w", encoding="utf-8") as f:
+                f.write(html)
+        except Exception as e:
+            log.debug("Resume boost debug save failed: %s", e)
+        return paths
+
+    async def _element_text_summary(self, element) -> str:
+        parts = []
+        for getter in (
+            lambda: element.inner_text(),
+            lambda: element.get_attribute("aria-label"),
+            lambda: element.get_attribute("title"),
+            lambda: element.get_attribute("data-qa"),
+        ):
+            try:
+                value = await getter()
+                if value:
+                    parts.append(str(value))
+            except Exception:
+                pass
+        return " ".join(" ".join(parts).split())
+
+    async def _element_is_disabled(self, element) -> bool:
+        try:
+            disabled = await element.get_attribute("disabled")
+            aria_disabled = await element.get_attribute("aria-disabled")
+            return disabled is not None or str(aria_disabled or "").casefold() == "true"
+        except Exception:
+            return False
+
+    async def _find_resume_boost_scope(self, resume_id: str = "", resume_title: str = ""):
+        cards = await self._page.query_selector_all(
+            "[data-qa='resume'], [data-qa^='resume-card'], [data-qa*='resume-card']"
+        )
+        if not cards:
+            return None
+
+        if not resume_id and not resume_title:
+            return cards[0]
+
+        target_id = str(resume_id or "").strip()
+        target_title = _normalize_text(resume_title)
+        for card in cards:
+            try:
+                text = _normalize_text(await card.inner_text())
+                links = await card.query_selector_all("a[href*='/resume/']")
+                hrefs = []
+                for link in links:
+                    hrefs.append(await link.get_attribute("href") or "")
+                href_text = " ".join(hrefs)
+                if target_id and target_id in href_text:
+                    return card
+                if target_title and (target_title in text or text in target_title):
+                    return card
+            except Exception:
+                continue
+        return None
+
+    async def _find_resume_boost_action(self, resume_id: str = "", resume_title: str = "") -> dict:
+        scopes = []
+        scope = await self._find_resume_boost_scope(resume_id, resume_title)
+        if scope:
+            scopes.append(scope)
+        scopes.append(self._page)
+
+        for current_scope in scopes:
+            try:
+                elements = await current_scope.query_selector_all("button, a, [role='button']")
+            except Exception:
+                continue
+            for element in elements:
+                summary = await self._element_text_summary(element)
+                if not _looks_like_resume_boost_action(summary):
+                    continue
+                return {
+                    "element": element,
+                    "button_text": summary[:240],
+                    "disabled": await self._element_is_disabled(element),
+                }
+        return {}
+
+    async def _inspect_resume_boost(self, resume_id: str = "", resume_title: str = "") -> dict:
+        resumes = await self.get_resume_ids()
+        target = None
+        target_requested = bool(resume_id or resume_title)
+        if target_requested:
+            target = next((r for r in resumes if _resume_matches_target(r, resume_id, resume_title)), None)
+        elif resumes:
+            target = resumes[0]
+
+        target_id = str((target or {}).get("id") or resume_id or "").strip()
+        target_title = str((target or {}).get("title") or resume_title or "").strip()
+        body_text = await self._page_text(limit=20000)
+        debug_paths = await self._save_resume_boost_debug("status")
+
+        detail = {
+            "ok": True,
+            "can_boost": False,
+            "reason": "boost_action_not_found",
+            "resume_id": target_id,
+            "title": target_title,
+            "button_text": "",
+            "resumes_found": len(resumes),
+            "url": self._page.url,
+            **debug_paths,
+        }
+        if not resumes and not target_requested:
+            detail["ok"] = False
+            detail["reason"] = "resume_not_found"
+            return detail
+        if target_requested and not target:
+            detail["ok"] = False
+            detail["reason"] = "resume_target_not_found"
+            return detail
+
+        action = await self._find_resume_boost_action(target_id, target_title)
+        if action:
+            detail["button_text"] = action.get("button_text", "")
+            detail["_element"] = action.get("element")
+            if action.get("disabled"):
+                detail["reason"] = "boost_action_disabled"
+            else:
+                detail["can_boost"] = True
+                detail["reason"] = "boost_action_available"
+            return detail
+        if _looks_like_resume_boost_unavailable(body_text):
+            detail["reason"] = "boost_unavailable_or_cooldown"
+        return detail
+
+    async def get_resume_boost_status(self, resume_id: str = "", resume_title: str = "") -> dict:
+        """Проверить наличие кнопки поднятия резюме без клика."""
+        detail = await self._inspect_resume_boost(resume_id=resume_id, resume_title=resume_title)
+        detail.pop("_element", None)
+        return detail
+
+    async def boost_resume(self, resume_id: str = "", resume_title: str = "", confirm: str = "") -> dict:
+        """Поднять резюме вручную. Требует env-флаг и явное слово подтверждения."""
+        detail = await self._inspect_resume_boost(resume_id=resume_id, resume_title=resume_title)
+        element = detail.pop("_element", None)
+        if not config.HH_RESUME_BOOST_ENABLED:
+            detail.update({"ok": False, "can_boost": False, "reason": "boost_disabled_by_config"})
+            return detail
+        if confirm != config.HH_RESUME_BOOST_CONFIRM_TEXT:
+            detail.update({"ok": False, "can_boost": False, "reason": "boost_confirmation_required"})
+            return detail
+        if not (resume_id or resume_title) and int(detail.get("resumes_found") or 0) > 1:
+            detail.update({"ok": False, "can_boost": False, "reason": "boost_target_required"})
+            return detail
+        if not detail.get("can_boost") or not element:
+            return detail
+
+        clicked = await self._click_with_fallbacks(element, "resume_boost")
+        await self._page.wait_for_timeout(2500)
+        post_text = await self._page_text(limit=20000)
+        debug_paths = await self._save_resume_boost_debug("after_click")
+        detail.update(debug_paths)
+        if clicked and _looks_like_resume_boost_success(post_text):
+            detail.update({"ok": True, "can_boost": False, "reason": "boost_success"})
+        elif clicked:
+            detail.update({"ok": True, "can_boost": False, "reason": "boost_clicked_check_debug"})
+        else:
+            detail.update({"ok": False, "can_boost": False, "reason": "boost_click_failed"})
+        return detail
 
     # ── Скачать полное резюме ─────────────────────────────────────────────
 

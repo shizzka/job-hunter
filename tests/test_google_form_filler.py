@@ -24,12 +24,181 @@ def test_google_form_callback_data_roundtrip():
     assert gforms.parse_google_form_submit_callback_data("gform_submit:qa:not-token") == ("", "")
 
 
+def test_submit_saved_preview_rejects_unfilled_preview(monkeypatch):
+    monkeypatch.setattr(
+        gforms,
+        "_load_state",
+        lambda: {
+            "items": {
+                "abcdef123456": {
+                    "status": "preview",
+                    "form_url": "https://forms.gle/abc123",
+                    "fill_result": {"filled": [], "skipped": [{"index": 0}]},
+                }
+            }
+        },
+    )
+
+    class FakeHHClient:
+        _page = None
+
+    import asyncio
+
+    result = asyncio.run(gforms.submit_saved_preview(FakeHHClient(), "abcdef123456"))
+
+    assert result["ok"] is False
+    assert result["message"] == "google form preview is not ready for submit"
+
+
 def test_google_form_preview_markup_contains_submit_button():
     markup = gforms.build_google_form_preview_markup("qa", "abcdef123456", "https://forms.gle/abc123")
     buttons = [button for row in markup["inline_keyboard"] for button in row]
 
     assert any(button.get("url") == "https://forms.gle/abc123" for button in buttons)
     assert any(button.get("callback_data") == "gform_submit:qa:abcdef123456" for button in buttons)
+
+
+def test_google_form_login_required_detection_handles_dutch_google_message():
+    text = "Log in om door te gaan\nJe moet zijn ingelogd om dit formulier in te vullen."
+
+    assert gforms._looks_like_google_form_login_required(text) is True
+
+
+def test_google_form_button_text_helpers_handle_ru_en_nl():
+    assert gforms._is_google_form_next_button_text("Далее")
+    assert gforms._is_google_form_next_button_text("Next")
+    assert gforms._is_google_form_next_button_text("Volgende")
+    assert not gforms._is_google_form_next_button_text("Назад")
+
+    assert gforms._is_google_form_submit_button_text("Отправить")
+    assert gforms._is_google_form_submit_button_text("Submit")
+    assert gforms._is_google_form_submit_button_text("Verzenden")
+    assert not gforms._is_google_form_submit_button_text("Далее")
+
+    assert gforms._is_google_form_email_consent_text("Указать в моем ответе адрес электронной почты test@example.com")
+    assert gforms._is_google_form_email_consent_text("Record test@example.com as the email to be included with my response")
+    assert not gforms._is_google_form_email_consent_text("Смартфон на базе Android")
+
+
+def test_reindex_page_questions_preserves_page_metadata():
+    questions = [
+        {"index": 0, "dom_index": 3, "question": "ФИО"},
+        {"index": 1, "dom_index": 4, "question": "Опыт"},
+    ]
+
+    reindexed = gforms._reindex_page_questions(questions, page_index=2, start_index=7)
+
+    assert [q["index"] for q in reindexed] == [7, 8]
+    assert [q["page_question_index"] for q in reindexed] == [0, 1]
+    assert {q["page_index"] for q in reindexed} == {2}
+    assert reindexed[0]["dom_index"] == 3
+
+
+def test_asks_for_telegram_does_not_match_chatgpt():
+    assert gforms._asks_for_telegram("ник в ТГ для связи")
+    assert gforms._asks_for_telegram("Telegram username")
+    assert not gforms._asks_for_telegram("Для каких QA-задач вы использовали ChatGPT / Claude?")
+
+
+def test_prepare_form_answers_moves_checkbox_answer_list_to_options():
+    questions = [{"index": 6, "type": "checkbox", "options": ["Web", "SaaS"]}]
+    answers = [{"index": 6, "answer": ["Web", "SaaS"], "skip": False}]
+
+    prepared = gforms._prepare_form_answers(questions, answers)
+
+    assert prepared[0]["options"] == ["Web", "SaaS"]
+    assert prepared[0]["answer"] == ["Web", "SaaS"]
+
+
+def test_avoid_bare_other_options_replaces_required_other_checkbox():
+    questions = [
+        {
+            "index": 7,
+            "type": "checkbox",
+            "required": True,
+            "question": "Какими инструментами для работы с мобильными приложениями вы пользовались лично?",
+            "options": [
+                "TestFlight (для установки и тестирования бета-версий на iOS)",
+                "Тестировал только на реальных физических смартфонах",
+                "Другое:",
+            ],
+        }
+    ]
+    answers = [{"index": 7, "answer": "Другое:", "options": ["Другое:"], "skip": False}]
+
+    prepared = gforms._prepare_form_answers(questions, answers)
+
+    assert prepared[0]["options"] == ["Тестировал только на реальных физических смартфонах"]
+    assert prepared[0]["answer"] == "Тестировал только на реальных физических смартфонах"
+
+
+def test_avoid_bare_other_options_removes_other_when_other_answers_exist():
+    questions = [{"index": 1, "type": "checkbox", "options": ["Web", "Другое:"]}]
+    answers = [{"index": 1, "answer": "Web", "options": ["Web", "Другое:"], "skip": False}]
+
+    prepared = gforms._prepare_form_answers(questions, answers)
+
+    assert prepared[0]["options"] == ["Web"]
+
+
+def test_avoid_bare_other_options_drops_free_text_that_is_not_an_option():
+    questions = [
+        {
+            "index": 7,
+            "type": "checkbox",
+            "required": True,
+            "question": "Какими инструментами для работы с мобильными приложениями вы пользовались лично?",
+            "options": ["TestFlight", "Тестировал только на реальных физических смартфонах", "Другое:"],
+        }
+    ]
+    answers = [{"index": 7, "answer": ["Другое:", "Нет опыта"], "options": ["Другое:", "Нет опыта"], "skip": False}]
+
+    prepared = gforms._prepare_form_answers(questions, answers)
+
+    assert prepared[0]["options"] == ["Тестировал только на реальных физических смартфонах"]
+
+
+def test_google_form_preview_status_requires_submit_page():
+    questions = [{"index": 0, "question": "ФИО", "required": True}]
+    fill_result = {"filled": [{"index": 0}], "skipped": []}
+
+    ok, message = gforms._google_form_preview_status(questions, fill_result, reached_submit=False)
+
+    assert ok is False
+    assert "submit page" in message
+
+
+def test_google_form_preview_status_fails_when_required_field_skipped():
+    questions = [
+        {"index": 0, "question": "ФИО", "required": True},
+        {"index": 1, "question": "Комментарий", "required": False},
+    ]
+    fill_result = {"filled": [{"index": 1}], "skipped": [{"index": 0}]}
+
+    ok, message = gforms._google_form_preview_status(questions, fill_result)
+
+    assert ok is False
+    assert "required" in message
+
+
+def test_google_form_preview_status_fails_when_nothing_was_filled():
+    questions = [{"index": 0, "question": "Phone"}, {"index": 1, "question": "OS"}]
+    fill_result = {"filled": [], "skipped": [{"index": 0}, {"index": 1}]}
+
+    ok, message = gforms._google_form_preview_status(questions, fill_result)
+
+    assert ok is False
+    assert "no fields" in message
+
+
+def test_google_form_preview_status_ok_when_at_least_one_field_filled():
+    questions = [{"index": 0, "question": "Phone"}, {"index": 1, "question": "OS"}]
+    fill_result = {"filled": [{"index": 0}], "skipped": [{"index": 1}]}
+
+    ok, message = gforms._google_form_preview_status(questions, fill_result)
+
+    assert ok is True
+    assert message == "preview"
 
 
 def test_reuse_cached_answers_for_same_form(monkeypatch):

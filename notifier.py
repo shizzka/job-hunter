@@ -221,6 +221,41 @@ def _html(value, limit: int | None = 1000) -> str:
     return html.escape(text)
 
 
+def _telegram_flag(name: str, default: bool = False) -> bool:
+    return bool(getattr(config, name, default))
+
+
+def _application_requires_attention(note: str | None = None) -> bool:
+    text = (note or "").casefold()
+    if not text:
+        return False
+    attention_tokens = (
+        "ручной ai-отклик",
+        "manual_ai",
+        "best-guess",
+        "не удалось",
+        "ошиб",
+        "пропущ",
+        "fallback",
+        "anti-bot",
+        "captcha",
+        "капч",
+        "требуются",
+        "подтверд",
+        "риск",
+    )
+    return any(token in text for token in attention_tokens)
+
+
+def _should_notify_application(note: str | None = None) -> bool:
+    if _telegram_flag("TELEGRAM_NOTIFY_APPLICATIONS", False):
+        return True
+    return (
+        _telegram_flag("TELEGRAM_NOTIFY_ATTENTION_APPLICATIONS", True)
+        and _application_requires_attention(note)
+    )
+
+
 def build_hh_reauth_markup(profile_name: str = "default") -> dict:
     safe_profile = re.sub(r"[^a-zA-Z0-9_.-]+", "_", profile_name or "default")
     return {
@@ -246,7 +281,7 @@ async def notify_hh_session_required(profile_name: str = "default", reason: str 
 
 async def notify_search_started(source_labels: list[str]):
     """Уведомить о старте прогона поиска."""
-    if not source_labels:
+    if not source_labels or not _telegram_flag("TELEGRAM_NOTIFY_SEARCH_STARTED", False):
         return
 
     sources = ", ".join(source_labels)
@@ -304,11 +339,18 @@ def _format_autoanswer_notes(note: str) -> str:
 
     Если note не похож на список автоответов — возвращает его без изменений.
     """
-    if not note or "автоответ hh" not in note:
-        return note[:600]
+    if not note:
+        return ""
+    if "Анкета HH заполнена:" in note:
+        lines = [line.strip() for line in note.splitlines() if line.strip()]
+        questionnaire_at = next((idx for idx, line in enumerate(lines) if line.startswith("Анкета HH заполнена:")), 0)
+        block = "\n".join(lines[questionnaire_at:])
+        return _html(block, 1500)
+    if "автоответ hh" not in note:
+        return _html(note, 600)
     items = [item.strip() for item in note.split(";") if item.strip()]
     if not items:
-        return note[:600]
+        return _html(note, 600)
     lines = []
     for item in items:
         # эмодзи по типу
@@ -334,7 +376,7 @@ def _format_autoanswer_notes(note: str) -> str:
         # обрезаем длинные строки до 220 символов
         if len(clean) > 220:
             clean = clean[:217] + "…"
-        lines.append(f"  {icon} {clean}")
+        lines.append(f"  {icon} {_html(clean, 220)}")
     block = "\n".join(lines)
     if len(block) > 1500:
         block = block[:1497] + "…"
@@ -348,6 +390,14 @@ async def notify_application(
     note: str | None = None,
 ):
     """Уведомить об отклике на вакансию."""
+    if not _should_notify_application(note):
+        log.info(
+            "Telegram routine application notification suppressed: %s @ %s",
+            vacancy.get("title", "—"),
+            vacancy.get("company", "—"),
+        )
+        return
+
     text = (
         f"📨 <b>Отклик отправлен</b>\n\n"
         f"<b>{vacancy.get('title', '—')}</b>\n"
@@ -458,6 +508,8 @@ def _format_source_stats(source_stats: dict | None) -> str:
 
 async def notify_summary(total_found: int, applied: int, skipped: int, source_stats: dict | None = None):
     """Итог прогона поиска."""
+    if not _telegram_flag("TELEGRAM_NOTIFY_SEARCH_SUMMARY", False):
+        return
     if total_found == 0 and applied == 0:
         return  # не спамить если ничего нового
 
@@ -481,6 +533,7 @@ def _format_funnel(funnel: dict) -> str:
         f"\n\n📊 <b>Воронка</b>\n"
         f"откликов: {funnel['applied']}\n"
         f"просмотрено: {funnel['viewed']} ({funnel['response_rate']:.1f}%)\n"
+        f"не просмотрено: {funnel.get('not_viewed', 0)} | "
         f"ожидание: {funnel['pending']} | "
         f"отказ: {funnel['rejected']} | "
         f"позитив: {funnel['positive']} ({funnel['positive_rate']:.1f}%)"
@@ -507,6 +560,31 @@ def _format_ab_resume(by_resume_variant: dict) -> str:
     return "\n\n🔬 <b>A/B резюме</b>\n" + "\n".join(lines)
 
 
+def _format_conversion_group(title: str, by_group: dict) -> str:
+    if not by_group:
+        return ""
+    items = sorted(
+        by_group.items(),
+        key=lambda item: (
+            -item[1].get("positive_rate", 0),
+            -item[1].get("response_rate", 0),
+            -item[1].get("auto_applied", 0),
+            item[0],
+        ),
+    )[:5]
+    lines = []
+    for name, b in items:
+        apps = b.get("auto_applied", b.get("applications", 0))
+        lines.append(
+            f"<b>{name}</b>: "
+            f"{apps} откл, "
+            f"{b.get('viewed', 0)} просм, "
+            f"{b.get('positive', 0)} пос, "
+            f"ответ {b.get('response_rate', 0):.0f}% успех {b.get('positive_rate', 0):.0f}%"
+        )
+    return f"\n\n<b>{title}</b>\n" + "\n".join(lines)
+
+
 async def notify_digest(analytics_summary: dict):
     """Отправить полный дайджест с воронкой и A/B в Telegram."""
     if not _resolve_bot_token(_active_profile()) or not _resolve_target_chat_ids(_active_profile()):
@@ -520,11 +598,17 @@ async def notify_digest(analytics_summary: dict):
         f"ручных: {analytics_summary.get('manual', 0)}\n"
         f"фильтр: {analytics_summary.get('keyword_filtered', 0)} | "
         f"красных флагов: {analytics_summary.get('red_flagged', 0)} | "
-        f"низкий балл: {analytics_summary.get('low_score', 0)}"
+        f"низкий балл: {analytics_summary.get('low_score', 0)}\n"
+        f"анкеты: {analytics_summary.get('questionnaires', 0)} | "
+        f"успешно: {analytics_summary.get('questionnaire_successes', 0)} | "
+        f"best_guess: {analytics_summary.get('questionnaire_best_guess', 0)}"
     )
 
     funnel = analytics_summary.get("funnel", {})
     text += _format_funnel(funnel)
+    text += _format_conversion_group("🔁 Повторные отклики", analytics_summary.get("by_retry_reason", {}))
+    text += _format_conversion_group("🧩 Кластеры", analytics_summary.get("by_cluster", {}))
+    text += _format_conversion_group("✉️ Стили сопроводов", analytics_summary.get("by_cover_style", {}))
     text += _format_ab_resume(analytics_summary.get("by_resume_variant", {}))
 
     await send_message(text)

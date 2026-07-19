@@ -2,6 +2,7 @@ import asyncio
 
 import agent
 import manual_apply_queue
+import notifier
 
 
 class FakeHHClient:
@@ -72,3 +73,52 @@ def test_manual_ai_apply_does_not_submit_empty_cover(tmp_path, monkeypatch):
     assert "без текста" in notifications[0]
     assert decisions[0]["decision"] == agent.DECISION_APPLY_FAILED
     assert "no_cover_letter" in decisions[0]["evaluation"]["guard_flags"]
+
+
+def test_format_hh_question_answers_for_note_limits_output():
+    result = {
+        "question_answers": [
+            {"question": f"Вопрос {idx}", "answer": f"Ответ {idx}", "best_guess": idx == 2}
+            for idx in range(1, 11)
+        ]
+    }
+
+    note = agent._format_hh_question_answers_for_note(result)
+
+    assert "Анкета HH заполнена:" in note
+    assert "1. Вопрос 1 -> Ответ 1" in note
+    assert "2. Вопрос 2 -> Ответ 2 [best-guess]" in note
+    assert "8. Вопрос 8 -> Ответ 8" in note
+    assert "...ещё 2 ответ(ов)" in note
+    assert "Вопрос 9" not in note
+
+
+def test_format_hh_question_answers_marks_skipped_risky_question():
+    note = agent._format_hh_question_answers_for_note({
+        "question_answers": [
+            {
+                "question": "Коммерческий опыт AQA?",
+                "answer": "Нужно ручное подтверждение",
+                "skipped": True,
+                "skip_reason": "risky_question",
+            }
+        ]
+    })
+
+    assert "Коммерческий опыт AQA? -> Нужно ручное подтверждение [пропущено | risky_question]" in note
+
+
+def test_format_autoanswer_notes_for_questionnaire_escapes_html():
+    note = (
+        "автоответ hh: техническая запись\n\n"
+        "Анкета HH заполнена:\n"
+        "1. Опыт <API> & SQL -> Есть <да> & Postman"
+    )
+
+    formatted = notifier._format_autoanswer_notes(note)
+
+    assert formatted.startswith("Анкета HH заполнена:")
+    assert "автоответ hh" not in formatted
+    assert "Опыт &lt;API&gt; &amp; SQL" in formatted
+    assert "Есть &lt;да&gt; &amp; Postman" in formatted
+    assert "<API>" not in formatted
