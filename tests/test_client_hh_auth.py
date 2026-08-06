@@ -57,6 +57,28 @@ class TestClientHHAuth:
         assert profile is active
         assert profile.name == "client_42"
 
+    def test_load_hh_auth_env_reads_env_file_when_process_env_is_stale(self, tmp_path, monkeypatch):
+        import os
+
+        class DummyProfile:
+            def __init__(self, home_dir):
+                self.home_dir = str(home_dir)
+
+        env_file = tmp_path / "job-hunter.env"
+        env_file.write_text("export HH_AUTH_PHONE=+70000000000\n", encoding="utf-8")
+        profile_dir = tmp_path / "profiles" / "qa"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "profile.env").write_text("HH_SEARCH_QUERIES=QA\n", encoding="utf-8")
+
+        for key in client_hh_auth.HH_AUTH_LOGIN_ENV_KEYS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("JOB_HUNTER_ENV_FILE", str(env_file))
+        monkeypatch.setattr(client_hh_auth, "_resolve_profile", lambda profile_name: DummyProfile(profile_dir))
+
+        client_hh_auth._load_hh_auth_env("qa")
+
+        assert os.environ["HH_AUTH_PHONE"] == "+70000000000"
+
     def test_update_profile_resume_ids_writes_direct_profile_env(self, tmp_path, monkeypatch):
         class DummyProfile:
             def __init__(self, home_dir):
@@ -228,6 +250,257 @@ class TestClientHHAuth:
         assert result["count"] == 1
         assert imported_calls and imported_calls[0][1] == "client_42"
 
+    def test_submit_hh_auth_form_reports_captcha_intercept(self, monkeypatch):
+        class FakeLocator:
+            async def count(self):
+                return 1
+
+            def nth(self, idx):
+                return self
+
+            async def is_visible(self, timeout=None):
+                return True
+
+            async def click(self, timeout=None):
+                raise Exception("<img alt=\"captcha\" data-qa=\"account-captcha-picture\"/> intercepts pointer events")
+
+        class FakePage:
+            keyboard = None
+
+            def locator(self, selector):
+                return FakeLocator()
+
+        result = asyncio.run(client_hh_auth._submit_hh_auth_form(FakePage()))
+
+        assert result["status"] == client_hh_auth.HH_AUTH_STEP_CAPTCHA
+
+    def test_wait_for_hh_auth_progress_ignores_cosmetic_text_change(self, monkeypatch):
+        class FakePage:
+            url = "https://spb.hh.ru/applicant/resumes"
+            calls = 0
+
+            async def wait_for_timeout(self, timeout):
+                return None
+
+        page = FakePage()
+
+        async def fake_page_text(current_page):
+            current_page.calls += 1
+            return "Введите номер телефона Далее" if current_page.calls == 1 else "Введите номер телефона Далее Загружаем"
+
+        async def fake_has_captcha(*args, **kwargs):
+            return False
+
+        monkeypatch.setattr(client_hh_auth, "_hh_auth_page_text", fake_page_text)
+        monkeypatch.setattr(client_hh_auth, "_has_hh_auth_captcha_marker", fake_has_captcha)
+
+        result = asyncio.run(client_hh_auth._wait_for_hh_auth_progress(
+            page,
+            "https://spb.hh.ru/applicant/resumes",
+            "Введите номер телефона Далее",
+            timeout_ms=1,
+        ))
+
+        assert result["status"] == client_hh_auth.HH_AUTH_STEP_STALLED
+
+    def test_drive_hh_auth_step_routes_captcha_to_solver(self, monkeypatch):
+        class FakePage:
+            url = "https://hh.ru/account/captcha"
+
+            def is_closed(self):
+                return False
+
+        class FakeClient:
+            def __init__(self):
+                self._page = FakePage()
+
+        solver_calls = []
+
+        async def fake_page_text(page):
+            return "Подтвердите, что вы не робот"
+
+        async def fake_solver(client, profile_name, *, stage):
+            solver_calls.append((client, profile_name, stage))
+            return {"status": client_hh_auth.HH_AUTH_STEP_PROGRESS, "solver_attempted": True}
+
+        monkeypatch.setattr(client_hh_auth, "_hh_auth_page_text", fake_page_text)
+        monkeypatch.setattr(client_hh_auth, "_solve_hh_auth_captcha", fake_solver)
+
+        result = asyncio.run(
+            client_hh_auth._drive_hh_auth_step(FakeClient(), "client_42", timeout_s=30, poll_sec=1)
+        )
+
+        assert result["status"] == client_hh_auth.HH_AUTH_STEP_PROGRESS
+        assert solver_calls and solver_calls[0][1:] == ("client_42", "hh_auth:client_42:detect")
+
+    def test_run_hh_auth_capture_stops_after_repeated_stalled_submit(self, monkeypatch):
+        class DummyProfile:
+            def __init__(self):
+                self.name = "client_42"
+                self.home_dir = "/tmp/profiles/client_42"
+                self.hh = type("HH", (), {"cookies_file": "/tmp/profiles/client_42/hh_cookies.json"})()
+
+        class FakePage:
+            async def goto(self, url, wait_until=None, timeout=None):
+                return None
+
+            def is_closed(self):
+                return False
+
+        class FakeClient:
+            def __init__(self):
+                self._page = FakePage()
+
+            async def start(self, headless=False):
+                return None
+
+            async def is_logged_in_passive(self):
+                return False
+
+            async def stop(self):
+                return None
+
+        notify_calls = []
+
+        async def fake_drive_step(*args, **kwargs):
+            return {"status": client_hh_auth.HH_AUTH_STEP_STALLED, "detail": "no visible change", "url": "https://hh.ru/account/login"}
+
+        async def fake_notify(profile_name, title, detail, *, page_url=""):
+            notify_calls.append((profile_name, title, detail, page_url))
+            return True
+
+        async def fake_sleep(seconds):
+            return None
+
+        monkeypatch.setattr(client_hh_auth, "_resolve_profile", lambda profile_name: DummyProfile())
+        monkeypatch.setattr(client_hh_auth, "HHClient", FakeClient)
+        monkeypatch.setattr(client_hh_auth, "_drive_hh_auth_step", fake_drive_step)
+        monkeypatch.setattr(client_hh_auth, "_notify_hh_auth_warning", fake_notify)
+        monkeypatch.setattr(client_hh_auth.asyncio, "sleep", fake_sleep)
+
+        result = asyncio.run(
+            client_hh_auth.run_hh_auth_capture("client_42", timeout_sec=30, poll_sec=1, activate_profile=False)
+        )
+
+        assert result["ok"] is False
+        assert result["reason"] == "no_progress_after_submit"
+        assert "3 отправок" in result["error"]
+        assert len(notify_calls) == 1
+        assert "застрял" in notify_calls[0][1]
+
+    def test_run_hh_auth_capture_stops_after_unsolved_solver_captcha(self, monkeypatch):
+        class DummyProfile:
+            def __init__(self):
+                self.name = "client_42"
+                self.home_dir = "/tmp/profiles/client_42"
+                self.hh = type("HH", (), {"cookies_file": "/tmp/profiles/client_42/hh_cookies.json"})()
+
+        class FakePage:
+            async def goto(self, url, wait_until=None, timeout=None):
+                return None
+
+            def is_closed(self):
+                return False
+
+        class FakeClient:
+            def __init__(self):
+                self._page = FakePage()
+
+            async def start(self, headless=False):
+                return None
+
+            async def is_logged_in_passive(self):
+                return False
+
+            async def stop(self):
+                return None
+
+        notify_calls = []
+
+        async def fake_drive_step(*args, **kwargs):
+            return {
+                "status": client_hh_auth.HH_AUTH_STEP_CAPTCHA,
+                "solver_attempted": True,
+                "url": "https://hh.ru/account/captcha",
+            }
+
+        async def fake_notify(*args, **kwargs):
+            notify_calls.append((args, kwargs))
+            return True
+
+        monkeypatch.setattr(client_hh_auth, "_resolve_profile", lambda profile_name: DummyProfile())
+        monkeypatch.setattr(client_hh_auth, "HHClient", FakeClient)
+        monkeypatch.setattr(client_hh_auth, "_drive_hh_auth_step", fake_drive_step)
+        monkeypatch.setattr(client_hh_auth, "_notify_hh_auth_warning", fake_notify)
+
+        result = asyncio.run(
+            client_hh_auth.run_hh_auth_capture("client_42", timeout_sec=30, poll_sec=1, activate_profile=False)
+        )
+
+        assert result["ok"] is False
+        assert result["reason"] == "captcha_unsolved"
+        assert notify_calls == []
+
+    def test_run_hh_auth_capture_waits_after_captcha_warning(self, monkeypatch):
+        class DummyProfile:
+            def __init__(self):
+                self.name = "client_42"
+                self.home_dir = "/tmp/profiles/client_42"
+                self.hh = type("HH", (), {"cookies_file": "/tmp/profiles/client_42/hh_cookies.json"})()
+
+        class FakePage:
+            async def goto(self, url, wait_until=None, timeout=None):
+                return None
+
+            def is_closed(self):
+                return False
+
+        class FakeClient:
+            def __init__(self):
+                self._page = FakePage()
+                self.passive_checks = 0
+                self.saved = False
+
+            async def start(self, headless=False):
+                return None
+
+            async def is_logged_in_passive(self):
+                self.passive_checks += 1
+                return self.passive_checks >= 3
+
+            async def save_session(self):
+                self.saved = True
+
+            async def stop(self):
+                return None
+
+        notify_calls = []
+
+        async def fake_drive_step(*args, **kwargs):
+            return {"status": client_hh_auth.HH_AUTH_STEP_CAPTCHA, "url": "https://hh.ru/account/captcha"}
+
+        async def fake_notify(profile_name, title, detail, *, page_url=""):
+            notify_calls.append((profile_name, title, detail, page_url))
+            return True
+
+        async def fake_sleep(seconds):
+            return None
+
+        monkeypatch.setattr(client_hh_auth, "_resolve_profile", lambda profile_name: DummyProfile())
+        monkeypatch.setattr(client_hh_auth, "HHClient", FakeClient)
+        monkeypatch.setattr(client_hh_auth, "_drive_hh_auth_step", fake_drive_step)
+        monkeypatch.setattr(client_hh_auth, "_notify_hh_auth_warning", fake_notify)
+        monkeypatch.setattr(client_hh_auth.asyncio, "sleep", fake_sleep)
+
+        result = asyncio.run(
+            client_hh_auth.run_hh_auth_capture("client_42", timeout_sec=30, poll_sec=1, activate_profile=False)
+        )
+
+        assert result["ok"] is True
+        assert result["authenticated"] is True
+        assert len(notify_calls) == 1
+        assert "captcha" in notify_calls[0][1].casefold()
+
     def test_run_hh_auth_capture_returns_friendly_error_when_window_closed(self, monkeypatch):
         class DummyProfile:
             def __init__(self):
@@ -269,6 +542,14 @@ def test_hh_auth_prompt_detection_and_code_normalization():
     assert client_hh_auth._looks_like_hh_auth_code_prompt("Введите код из SMS") is True
     assert client_hh_auth._looks_like_hh_auth_login_prompt("Войти по телефону или email", "https://hh.ru/account/login") is True
     assert client_hh_auth._looks_like_hh_auth_login_prompt("Введите код из SMS", "https://hh.ru/account/login") is False
+    assert client_hh_auth._looks_like_hh_auth_login_prompt("Введите номер телефона для входа", "https://spb.hh.ru/applicant/resumes") is True
+    assert client_hh_auth._looks_like_hh_auth_captcha("Введите номер телефона и нажмите Далее", "https://spb.hh.ru/applicant/resumes") is False
+    assert client_hh_auth._looks_like_hh_auth_captcha("Подтвердите, что вы не робот") is True
+    assert client_hh_auth._looks_like_hh_auth_captcha("", "https://hh.ru/account/captcha") is True
+
+
+def test_hh_auth_continue_selectors_include_next_button():
+    assert "button:has-text('Далее')" in client_hh_auth.HH_AUTH_CONTINUE_SELECTORS
 
 
 def test_select_profile_resumes_filters_blank_ids_and_non_qa_titles():

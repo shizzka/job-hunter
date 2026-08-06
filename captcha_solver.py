@@ -5,7 +5,7 @@
    `HH_CAPTCHA_VISION_RETRIES` попыток (картинка обновляется кнопкой ↻ hh).
 2. Эскалация в Telegram: скрин + ждём ответа человека через captcha_bridge.
    Окно `HH_CAPTCHA_HUMAN_WINDOW_S` сек. По таймауту — soft cooldown 15 мин
-   и follow-up в TG с inline-кнопкой «🔁 Перезапустить поиск».
+   и follow-up в TG с inline-кнопкой под stage: поиск или повтор входа HH.
 
 Зависит от ``client`` — объекта типа HHClient с методами:
 - ``client._page`` — playwright Page
@@ -17,12 +17,49 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import time
 from typing import Any
 
 import config
 
 log = logging.getLogger("captcha_solver")
+
+
+def _hh_auth_profile_from_stage(stage: str) -> str:
+    parts = (stage or "").split(":")
+    if len(parts) >= 2 and parts[0] == "hh_auth":
+        profile = parts[1].strip()
+        if re.fullmatch(r"[a-zA-Z0-9_.-]+", profile):
+            return profile
+    return ""
+
+
+def _captcha_retry_markup(stage: str, request_id: str) -> dict:
+    profile_name = _hh_auth_profile_from_stage(stage)
+    if profile_name:
+        return {
+            "inline_keyboard": [[
+                {"text": "🔐 Повторить вход HH", "callback_data": f"hh_reauth:{profile_name}"},
+            ]],
+        }
+    return {
+        "inline_keyboard": [[
+            {"text": "🔁 Перезапустить поиск", "callback_data": f"captcha_retry:{request_id}"},
+        ]],
+    }
+
+
+def _captcha_timeout_text(stage: str, total_attempts: int, captcha_timeout_s: int) -> str:
+    if _hh_auth_profile_from_stage(stage):
+        return (
+            f"⚠️ Captcha #{total_attempts} не решена за {captcha_timeout_s // 60} мин — токен hh.ru истёк.\n"
+            "Нажми «🔐 Повторить вход HH», когда сможешь — бот откроет свежую captcha."
+        )
+    return (
+        f"⚠️ Captcha #{total_attempts} не решена за {captcha_timeout_s // 60} мин — токен hh.ru истёк.\n"
+        "Нажми «🔁 Перезапустить поиск» когда сможешь — бот возьмёт свежую captcha."
+    )
 
 
 async def solve_captcha_with_vision_llm(screenshot_path: str, llm_client_factory) -> str | None:
@@ -176,8 +213,11 @@ async def try_solve_captcha_interactively(
                     vision_retries -= 1
                     continue
             else:
-                log.info("vision-LLM gave no answer, skip vision retries")
-                vision_retries = 0
+                vision_retries -= 1
+                if vision_retries > 0:
+                    log.info("vision-LLM gave no answer, retry")
+                    continue
+                log.info("vision-LLM gave no answer, escalate to TG")
 
         # Этап 1: эскалация в TG.
         page_url = page.url if page else ""
@@ -191,11 +231,7 @@ async def try_solve_captcha_interactively(
             f"URL: {page_url}" if page_url else "",
         ]
         caption = "\n".join(p for p in caption_parts if p)
-        retry_markup = {
-            "inline_keyboard": [[
-                {"text": "🔁 Перезапустить поиск", "callback_data": f"captcha_retry:{request_id}"},
-            ]],
-        }
+        retry_markup = _captcha_retry_markup(stage, request_id)
         try:
             await notifier.send_photo(shot_path, caption=caption, reply_markup=retry_markup)
         except Exception as exc:
@@ -212,10 +248,7 @@ async def try_solve_captcha_interactively(
             except Exception as exc:
                 log.warning("soft cooldown record failed: %s", exc)
             try:
-                timeout_text = (
-                    f"⚠️ Captcha #{total_attempts} не решена за {captcha_timeout_s // 60} мин — токен hh.ru истёк.\n"
-                    "Нажми «🔁 Перезапустить поиск» когда сможешь — бот возьмёт свежую captcha."
-                )
+                timeout_text = _captcha_timeout_text(stage, total_attempts, captcha_timeout_s)
                 await notifier.send_message_with_markup(timeout_text, reply_markup=retry_markup)
             except Exception as exc:
                 log.warning("captcha timeout notify failed: %s", exc)

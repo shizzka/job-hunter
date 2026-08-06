@@ -63,6 +63,40 @@ def _write_text(path: str, text: str) -> str:
     return path
 
 
+def _read_env_values(path: str, keys: tuple[str, ...]) -> dict[str, str]:
+    if not path or not os.path.isfile(path):
+        return {}
+    wanted = set(keys)
+    values: dict[str, str] = {}
+    with open(path, encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if key.startswith("export "):
+                key = key[len("export "):].strip()
+            if key not in wanted:
+                continue
+            values[key] = value.strip().strip("'\"")
+    return values
+
+
+def _load_hh_auth_env(profile_name: str) -> None:
+    """Load HH auth login hints even when the parent bot has stale env."""
+    env_file = os.getenv("JOB_HUNTER_ENV_FILE", "").strip() or os.path.expanduser("~/.job-hunter/job-hunter.env")
+    values = _read_env_values(env_file, HH_AUTH_LOGIN_ENV_KEYS)
+    try:
+        profile = _resolve_profile(profile_name)
+        values.update(_read_env_values(os.path.join(profile.home_dir, "profile.env"), HH_AUTH_LOGIN_ENV_KEYS))
+    except Exception:
+        pass
+    for key, value in values.items():
+        if value and not os.getenv(key):
+            os.environ[key] = value
+
+
 def _normalize_env_value(value: str | int | None) -> str:
     raw = "" if value is None else str(value)
     return re.sub(r"\s+", " ", raw).strip()
@@ -190,6 +224,7 @@ HH_AUTH_CODE_INPUT_SELECTORS = (
 )
 
 HH_AUTH_CONTINUE_SELECTORS = (
+    "button:has-text('Далее')",
     "button:has-text('Продолжить')",
     "button:has-text('Получить код')",
     "button:has-text('Выслать код')",
@@ -208,6 +243,44 @@ HH_AUTH_PHONE_MODE_SELECTORS = (
     "button:has-text('по коду')",
     "a:has-text('по коду')",
 )
+
+HH_AUTH_CAPTCHA_SELECTORS = (
+    "iframe[src*='captcha']",
+    "iframe[src*='recaptcha']",
+    "iframe[src*='hcaptcha']",
+    "iframe[src*='smartcaptcha']",
+    "input[placeholder*='Текст с картинки' i]",
+    "input[name='captcha' i]:not([type='hidden'])",
+    "input[name*='captcha' i]:not([type='hidden'])",
+    "input[id*='captcha' i]:not([type='hidden'])",
+    "img[alt='captcha' i]",
+    "img[data-qa*='captcha' i]",
+    "[data-qa='captcha']",
+    "[data-qa*='captcha-picture' i]",
+)
+
+HH_AUTH_BLOCKED_TEXT_TOKENS = (
+    "обязательное поле",
+    "заполните поле",
+    "укажите телефон",
+    "укажите email",
+    "укажите почту",
+    "некорректный телефон",
+    "некорректный email",
+    "неверный телефон",
+    "неверный email",
+    "проверьте телефон",
+    "проверьте email",
+    "слишком много попыток",
+    "попробуйте позже",
+)
+
+HH_AUTH_STEP_IDLE = "idle"
+HH_AUTH_STEP_SUBMITTED = "submitted"
+HH_AUTH_STEP_PROGRESS = "progress"
+HH_AUTH_STEP_STALLED = "stalled"
+HH_AUTH_STEP_BLOCKED = "blocked"
+HH_AUTH_STEP_CAPTCHA = "captcha"
 
 
 def _resolve_hh_auth_login() -> str:
@@ -251,7 +324,36 @@ def _looks_like_hh_auth_login_prompt(text: str, url: str = "") -> bool:
         return False
     if "/account/login" in haystack or "/auth/" in haystack:
         return True
+    if any(token in haystack for token in ("номер телефона", "телефон или email", "телефон или почт", "введите телефон", "введите номер")):
+        return True
     return "войти" in haystack and any(token in haystack for token in ("телефон", "почт", "email", "логин"))
+
+
+def _looks_like_hh_auth_captcha(text: str, url: str = "") -> bool:
+    haystack = f"{text or ''} {url or ''}".casefold()
+    if "/account/captcha" in haystack:
+        return True
+    return any(
+        token in haystack
+        for token in (
+            "подтвердите, что вы не робот",
+            "текст с картинки",
+            "введите текст с картинки",
+            "i'm not a robot",
+            "verify you are human",
+            "не удалось проверить ваш браузер автоматически",
+        )
+    )
+
+
+def _looks_like_hh_auth_blocked(text: str) -> bool:
+    haystack = (text or "").casefold()
+    return any(token in haystack for token in HH_AUTH_BLOCKED_TEXT_TOKENS)
+
+
+def _hh_auth_page_signature(url: str, text: str) -> str:
+    compact_text = " ".join((text or "").split())
+    return f"{url or ''}\n{compact_text[:3000]}"
 
 
 async def _hh_auth_page_text(page) -> str:
@@ -308,17 +410,114 @@ async def _click_first_visible(page, selectors: tuple[str, ...]) -> bool:
         await item.click(timeout=5000)
     except TypeError:
         await item.click()
+    except Exception as exc:
+        if "captcha" in str(exc).casefold():
+            raise RuntimeError("captcha_intercepted_click") from exc
+        raise
     return True
 
 
-async def _submit_hh_auth_form(page) -> None:
-    clicked = await _click_first_visible(page, HH_AUTH_CONTINUE_SELECTORS)
+async def _has_hh_auth_captcha_marker(page, text: str, url: str) -> bool:
+    if _looks_like_hh_auth_captcha(text, url):
+        return True
+    return await _first_visible_locator(page, HH_AUTH_CAPTCHA_SELECTORS) is not None
+
+
+async def _page_has_hh_auth_prompt(page) -> bool:
+    if page is None or page.is_closed():
+        return False
+    url = str(getattr(page, "url", "") or "")
+    text = await _hh_auth_page_text(page)
+    return (
+        _looks_like_hh_auth_login_prompt(text, url)
+        or _looks_like_hh_auth_code_prompt(text, url)
+        or await _has_hh_auth_captcha_marker(page, text, url)
+        or await _first_visible_locator(page, HH_AUTH_LOGIN_INPUT_SELECTORS) is not None
+    )
+
+
+async def _solve_hh_auth_captcha(client: HHClient, profile_name: str, *, stage: str) -> dict:
+    page = client._page  # noqa: SLF001 - auth flow owns the page lifecycle
+    page_url = str(getattr(page, "url", "") or "")
+    try:
+        import captcha_solver
+        from hh_client import _get_question_answer_client
+
+        kind = await captcha_solver.handle_anti_bot_with_solver(
+            client,
+            _get_question_answer_client,
+            "captcha",
+            stage=stage,
+        )
+    except Exception as exc:
+        return {
+            "status": HH_AUTH_STEP_CAPTCHA,
+            "detail": f"Captcha solver недоступен: {exc}",
+            "url": page_url,
+            "solver_attempted": False,
+        }
+    if kind != "captcha":
+        return {
+            "status": HH_AUTH_STEP_PROGRESS,
+            "detail": "HH captcha снята через solver/Telegram bridge.",
+            "url": str(getattr(page, "url", "") or page_url),
+            "solver_attempted": True,
+        }
+    return {
+        "status": HH_AUTH_STEP_CAPTCHA,
+        "detail": "HH captcha не снята после vision/Telegram bridge.",
+        "url": str(getattr(page, "url", "") or page_url),
+        "solver_attempted": True,
+    }
+
+
+async def _wait_for_hh_auth_progress(page, before_url: str, before_text: str, *, timeout_ms: int = 7000) -> dict:
+    before_url_base = (before_url or "").split("#", 1)[0]
+    before_was_login = _looks_like_hh_auth_login_prompt(before_text, before_url)
+    deadline = time.monotonic() + max(0.5, timeout_ms / 1000)
+    last_url = before_url
+    last_text = before_text
+
+    while time.monotonic() <= deadline:
+        try:
+            await page.wait_for_timeout(500)
+        except Exception:
+            await asyncio.sleep(0.5)
+        last_url = str(getattr(page, "url", "") or "")
+        last_url_base = last_url.split("#", 1)[0]
+        last_text = await _hh_auth_page_text(page)
+        if await _has_hh_auth_captcha_marker(page, last_text, last_url):
+            return {"status": HH_AUTH_STEP_CAPTCHA, "detail": "HH показал captcha после отправки формы."}
+        if _looks_like_hh_auth_code_prompt(last_text, last_url):
+            return {"status": HH_AUTH_STEP_PROGRESS, "detail": "HH перешёл к вводу SMS-кода."}
+        if _looks_like_hh_auth_blocked(last_text):
+            return {"status": HH_AUTH_STEP_BLOCKED, "detail": "HH показал ошибку в форме логина."}
+        if last_url_base and before_url_base and last_url_base != before_url_base:
+            return {"status": HH_AUTH_STEP_PROGRESS, "detail": "HH сменил URL после отправки формы."}
+        if before_was_login and not _looks_like_hh_auth_login_prompt(last_text, last_url):
+            return {"status": HH_AUTH_STEP_PROGRESS, "detail": "HH убрал форму логина после отправки."}
+
+    return {
+        "status": HH_AUTH_STEP_STALLED,
+        "detail": "После отправки формы HH не перешёл к SMS-коду, captcha или новой странице.",
+        "url": last_url,
+    }
+
+
+async def _submit_hh_auth_form(page) -> dict:
+    try:
+        clicked = await _click_first_visible(page, HH_AUTH_CONTINUE_SELECTORS)
+    except RuntimeError as exc:
+        if str(exc) == "captcha_intercepted_click":
+            return {"status": HH_AUTH_STEP_CAPTCHA, "detail": "Captcha modal перекрыла кнопку отправки."}
+        raise
     if clicked:
-        return
+        return {"status": HH_AUTH_STEP_SUBMITTED}
     try:
         await page.keyboard.press("Enter")
+        return {"status": HH_AUTH_STEP_SUBMITTED}
     except Exception:
-        pass
+        return {"status": HH_AUTH_STEP_IDLE, "detail": "Не удалось отправить форму HH."}
 
 
 async def _fill_hh_auth_code(page, code: str) -> bool:
@@ -341,6 +540,24 @@ async def _fill_hh_auth_code(page, code: str) -> bool:
     except Exception:
         pass
     return await _fill_first_visible(page, HH_AUTH_CODE_INPUT_SELECTORS, digits)
+
+
+async def _notify_hh_auth_warning(profile_name: str, title: str, detail: str, *, page_url: str = "") -> bool:
+    try:
+        import notifier
+        safe_profile = html.escape(profile_name or "default")
+        safe_title = html.escape(title)
+        safe_detail = html.escape(detail)
+        text = (
+            f"⚠️ <b>{safe_title}</b>\n\n"
+            f"Профиль: <code>{safe_profile}</code>\n"
+            f"{safe_detail}"
+        )
+        if page_url:
+            text += f"\nURL: <code>{html.escape(page_url[:220])}</code>"
+        return await notifier.send_message(text)
+    except Exception:
+        return False
 
 
 async def _notify_hh_auth_request(kind: str, profile_name: str, prompt: str, timeout_s: int) -> bool:
@@ -387,13 +604,16 @@ async def _request_hh_auth_value(kind: str, profile_name: str, prompt: str, *, p
         hh_auth_bridge.complete_request(request_id)
 
 
-async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s: int, poll_sec: float) -> bool:
+async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s: int, poll_sec: float) -> dict:
     page = client._page  # noqa: SLF001 - auth flow owns the page lifecycle
     if page is None or page.is_closed():
-        return False
+        return {"status": HH_AUTH_STEP_IDLE, "detail": "Окно HH закрыто."}
 
     url = str(getattr(page, "url", "") or "")
     text = await _hh_auth_page_text(page)
+
+    if await _has_hh_auth_captcha_marker(page, text, url):
+        return await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:detect")
 
     if _looks_like_hh_auth_code_prompt(text, url):
         wait_s = max(1, min(int(timeout_s or 1), 900))
@@ -407,12 +627,20 @@ async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s:
         )
         code = _normalize_hh_auth_code(code)
         if not code:
-            return False
+            return {"status": HH_AUTH_STEP_IDLE, "detail": "SMS-код не получен."}
         if not await _fill_hh_auth_code(page, code):
-            return False
-        await _submit_hh_auth_form(page)
-        await page.wait_for_timeout(2500)
-        return True
+            return {"status": HH_AUTH_STEP_BLOCKED, "detail": "Не нашёл поле для ввода SMS-кода."}
+        before_url = str(getattr(page, "url", "") or "")
+        before_text = await _hh_auth_page_text(page)
+        submit_result = await _submit_hh_auth_form(page)
+        if submit_result.get("status") == HH_AUTH_STEP_CAPTCHA:
+            return await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:code_submit")
+        progress = await _wait_for_hh_auth_progress(page, before_url, before_text)
+        if progress.get("status") == HH_AUTH_STEP_CAPTCHA:
+            progress = await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:code_submit")
+        if progress.get("status") == HH_AUTH_STEP_PROGRESS:
+            progress["status"] = HH_AUTH_STEP_SUBMITTED
+        return progress
 
     if _looks_like_hh_auth_login_prompt(text, url):
         await _click_first_visible(page, HH_AUTH_PHONE_MODE_SELECTORS)
@@ -428,17 +656,58 @@ async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s:
                 poll_sec=poll_sec,
             )
         if login and await _fill_first_visible(page, HH_AUTH_LOGIN_INPUT_SELECTORS, login):
-            await _submit_hh_auth_form(page)
-            await page.wait_for_timeout(2500)
-            return True
+            before_url = str(getattr(page, "url", "") or "")
+            before_text = await _hh_auth_page_text(page)
+            submit_result = await _submit_hh_auth_form(page)
+            if submit_result.get("status") == HH_AUTH_STEP_CAPTCHA:
+                return await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:login_submit")
+            progress = await _wait_for_hh_auth_progress(page, before_url, before_text)
+            if progress.get("status") == HH_AUTH_STEP_CAPTCHA:
+                progress = await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:login_submit")
+            if progress.get("status") == HH_AUTH_STEP_PROGRESS:
+                progress["status"] = HH_AUTH_STEP_SUBMITTED
+            return progress
 
         # First HH screen may only ask for account type (applicant/employer)
         # and show a submit button. Move forward to reveal phone/email fields.
-        if "/account/login" in url.casefold() and await _click_first_visible(page, HH_AUTH_CONTINUE_SELECTORS):
-            await page.wait_for_timeout(2500)
-            return True
+        if "/account/login" in url.casefold():
+            before_url = str(getattr(page, "url", "") or "")
+            before_text = await _hh_auth_page_text(page)
+            if await _click_first_visible(page, HH_AUTH_CONTINUE_SELECTORS):
+                progress = await _wait_for_hh_auth_progress(page, before_url, before_text)
+                if progress.get("status") == HH_AUTH_STEP_CAPTCHA:
+                    progress = await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:initial_submit")
+                if progress.get("status") == HH_AUTH_STEP_PROGRESS:
+                    progress["status"] = HH_AUTH_STEP_SUBMITTED
+                return progress
 
-    return False
+    if await _first_visible_locator(page, HH_AUTH_LOGIN_INPUT_SELECTORS):
+        login = _resolve_hh_auth_login()
+        if not login:
+            wait_s = max(1, min(int(timeout_s or 1), 900))
+            login = await _request_hh_auth_value(
+                "login",
+                profile_name,
+                "На HH видна форма телефона/email, но логин не найден в env. Пришли телефон или email.",
+                page_url=url,
+                timeout_s=wait_s,
+                poll_sec=poll_sec,
+            )
+        if login and await _fill_first_visible(page, HH_AUTH_LOGIN_INPUT_SELECTORS, login):
+            before_url = str(getattr(page, "url", "") or "")
+            before_text = await _hh_auth_page_text(page)
+            submit_result = await _submit_hh_auth_form(page)
+            if submit_result.get("status") == HH_AUTH_STEP_CAPTCHA:
+                return await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:visible_login_submit")
+            progress = await _wait_for_hh_auth_progress(page, before_url, before_text)
+            if progress.get("status") == HH_AUTH_STEP_CAPTCHA:
+                progress = await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:visible_login_submit")
+            if progress.get("status") == HH_AUTH_STEP_PROGRESS:
+                progress["status"] = HH_AUTH_STEP_SUBMITTED
+            return progress
+
+    return {"status": HH_AUTH_STEP_IDLE, "detail": "На странице HH нет распознанного auth prompt.", "url": url}
+
 
 async def import_current_hh_resumes(client: HHClient, profile_name: str) -> dict:
     profile = _resolve_profile(profile_name)
@@ -493,6 +762,7 @@ async def run_hh_auth_capture(
     import_resumes: bool = False,
 ) -> dict:
     target_profile = _resolve_profile(profile_name)
+    _load_hh_auth_env(profile_name)
     if activate_profile:
         profile_mod.activate_no_lock(profile_name)
     client = HHClient()
@@ -505,6 +775,9 @@ async def run_hh_auth_capture(
         )
 
         deadline = time.monotonic() + max(1, timeout_sec)
+        stalled_submit_count = 0
+        captcha_notified = False
+        blocked_notified = False
         while time.monotonic() <= deadline:
             if client._page.is_closed():  # noqa: SLF001 - auth flow owns the page lifecycle
                 return {
@@ -518,7 +791,12 @@ async def run_hh_auth_capture(
                     "error": "Окно HH auth было закрыто до завершения входа.",
                 }
             logged_in = await client.is_logged_in_passive()
-            if not logged_in and hasattr(client, "has_auth_cookies") and await client.has_auth_cookies():
+            if (
+                not logged_in
+                and hasattr(client, "has_auth_cookies")
+                and await client.has_auth_cookies()
+                and not await _page_has_hh_auth_prompt(client._page)  # noqa: SLF001
+            ):
                 logged_in = await client.is_logged_in()
             if logged_in:
                 await client.save_session()
@@ -539,12 +817,68 @@ async def run_hh_auth_capture(
                     result["imported_resumes"] = True
                 return result
             remaining = max(1, int(deadline - time.monotonic()))
-            await _drive_hh_auth_step(
+            step = await _drive_hh_auth_step(
                 client,
                 profile_name,
                 timeout_s=remaining,
                 poll_sec=max(0.5, float(poll_sec or 1)),
             )
+            status = str(step.get("status") or HH_AUTH_STEP_IDLE)
+            if status in (HH_AUTH_STEP_SUBMITTED, HH_AUTH_STEP_PROGRESS):
+                stalled_submit_count = 0
+            elif status == HH_AUTH_STEP_STALLED:
+                stalled_submit_count += 1
+                if stalled_submit_count >= 3:
+                    detail = str(step.get("detail") or "HH не меняет страницу после отправки формы.")
+                    await _notify_hh_auth_warning(
+                        profile_name,
+                        "HH auth застрял на форме входа",
+                        f"{detail} Бот сделал 3 попытки отправить форму без видимого прогресса. Проверь номер/почту в открытом окне HH или перезапусти вход.",
+                        page_url=str(step.get("url") or getattr(client._page, "url", "") or ""),  # noqa: SLF001
+                    )
+                    return {
+                        "ok": False,
+                        "authenticated": False,
+                        "timeout": False,
+                        "profile_name": profile_name,
+                        "cookies_file": target_profile.hh.cookies_file,
+                        "count": 0,
+                        "resumes": [],
+                        "error": "HH auth застрял: после 3 отправок формы страница не изменилась. Проверь номер/почту или captcha в открытом браузере.",
+                        "reason": "no_progress_after_submit",
+                    }
+            elif status == HH_AUTH_STEP_CAPTCHA:
+                stalled_submit_count = 0
+                if step.get("solver_attempted"):
+                    return {
+                        "ok": False,
+                        "authenticated": False,
+                        "timeout": False,
+                        "profile_name": profile_name,
+                        "cookies_file": target_profile.hh.cookies_file,
+                        "count": 0,
+                        "resumes": [],
+                        "error": "HH auth остановлен: captcha не удалось снять через vision/Telegram bridge. Нажми «Повторить вход HH» из сообщения с captcha, чтобы получить свежий токен.",
+                        "reason": "captcha_unsolved",
+                    }
+                if not captcha_notified:
+                    captcha_notified = True
+                    await _notify_hh_auth_warning(
+                        profile_name,
+                        "HH показал captcha",
+                        "Captcha solver недоступен. Реши captcha вручную в открытом браузере, бот продолжит ждать вход до таймаута.",
+                        page_url=str(step.get("url") or getattr(client._page, "url", "") or ""),  # noqa: SLF001
+                    )
+            elif status == HH_AUTH_STEP_BLOCKED:
+                stalled_submit_count = 0
+                if not blocked_notified:
+                    blocked_notified = True
+                    await _notify_hh_auth_warning(
+                        profile_name,
+                        "HH не принял форму входа",
+                        str(step.get("detail") or "HH показал ошибку в форме входа. Проверь введённый телефон/email в открытом браузере."),
+                        page_url=str(step.get("url") or getattr(client._page, "url", "") or ""),  # noqa: SLF001
+                    )
             await asyncio.sleep(poll_sec)
 
         return {
