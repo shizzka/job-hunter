@@ -12,7 +12,6 @@ import re
 import signal
 import time
 import traceback
-from dataclasses import dataclass
 from datetime import datetime
 
 import analytics
@@ -26,20 +25,13 @@ import telegram_access
 import telegram_clients
 import telegram_resume_limits
 from telegram_app.api import TelegramAPIClient
+from telegram_app.subprocesses import (
+    ActiveCommandState,
+    TelegramSubprocessManager,
+)
 from telegram_bot_ui import *  # re-export UI helpers for existing imports/tests
 
 log = logging.getLogger("telegram_bot")
-
-
-@dataclass
-class ActiveCommandState:
-    label: str
-    profile_name: str
-    owner_user_id: int
-    started_at: float
-    task: asyncio.Task | None = None
-    subprocess_pid: int = 0
-    cancel_requested: bool = False
 
 
 def _build_logging_handlers() -> list[logging.Handler]:
@@ -198,13 +190,13 @@ def _build_chat_ai_candidates_markup(profile_name: str, summary: dict) -> dict |
     return {"inline_keyboard": rows} if rows else None
 
 
-class TelegramBot(TelegramAPIClient):
+class TelegramBot(TelegramAPIClient, TelegramSubprocessManager):
     def __init__(self, profile_name: str, drop_pending: bool = True):
-        super().__init__(logger=log)
+        TelegramAPIClient.__init__(self, logger=log)
+        TelegramSubprocessManager.__init__(self, admin_role=ROLE_ADMIN)
         self.profile_name = profile_name
         self.drop_pending = drop_pending
         self._stop_event = asyncio.Event()
-        self._active_commands: dict[str, ActiveCommandState] = {}
 
     async def run(self) -> None:
         if not config.TELEGRAM_CONTROL_BOT_TOKEN:
@@ -294,43 +286,6 @@ class TelegramBot(TelegramAPIClient):
         except Exception as exc:
             log.warning("chat AI audit write failed: %s", exc)
 
-    def _prune_active_commands(self) -> None:
-        stale_profiles = [
-            profile_name
-            for profile_name, command in self._active_commands.items()
-            if command.task is not None and command.task.done()
-        ]
-        for profile_name in stale_profiles:
-            self._active_commands.pop(profile_name, None)
-
-    def _all_active_commands(self) -> list[ActiveCommandState]:
-        self._prune_active_commands()
-        return sorted(
-            self._active_commands.values(),
-            key=lambda item: (item.started_at, item.profile_name),
-        )
-
-    def _active_command(self, profile_name: str) -> ActiveCommandState | None:
-        self._prune_active_commands()
-        return self._active_commands.get(profile_name)
-
-    def _has_active_command(self, profile_name: str | None = None) -> bool:
-        if profile_name is None:
-            return bool(self._all_active_commands())
-        return self._active_command(profile_name) is not None
-
-    def _active_elapsed_sec(self, command: ActiveCommandState | None) -> int:
-        if not command or command.started_at <= 0:
-            return 0
-        return max(0, int(time.monotonic() - command.started_at))
-
-    def _can_cancel_active(self, principal: dict, command: ActiveCommandState | None) -> bool:
-        if not command:
-            return False
-        if principal.get("role") == ROLE_ADMIN:
-            return True
-        return int(principal.get("user_id") or 0) == command.owner_user_id
-
     def _sync_active_runtime(self) -> None:
         active_commands = self._all_active_commands()
         if not active_commands:
@@ -344,21 +299,6 @@ class TelegramBot(TelegramAPIClient):
         if len(active_commands) > 3:
             summary += ", ..."
         self._write_runtime("command_start", f"Выполняется {len(active_commands)} команд: {summary}", "busy")
-
-    def _mark_active_command(self, *, principal: dict, label: str, profile_name: str) -> ActiveCommandState:
-        command = ActiveCommandState(
-            label=label,
-            profile_name=profile_name,
-            owner_user_id=int(principal.get("user_id") or 0),
-            started_at=time.monotonic(),
-        )
-        self._active_commands[profile_name] = command
-        self._sync_active_runtime()
-        return command
-
-    def _clear_active_command(self, profile_name: str) -> None:
-        self._active_commands.pop(profile_name, None)
-        self._sync_active_runtime()
 
     async def _send_busy_status(self, chat_id: int, principal: dict, *, profile_name: str | None = None) -> None:
         target_profile = profile_name or self._selected_profile(principal)
@@ -441,13 +381,8 @@ class TelegramBot(TelegramAPIClient):
             )
             return
 
-        command.cancel_requested = True
-        if command.subprocess_pid > 0:
-            result = runtime_control.stop_pid(
-                command.subprocess_pid,
-                timeout=15.0,
-                process_group=True,
-            )
+        result = self._request_active_command_cancel(command)
+        if result is not None:
             signal_name = result.get("signal", "SIGTERM")
             await self._send_text(
                 chat_id,
@@ -465,8 +400,6 @@ class TelegramBot(TelegramAPIClient):
             )
             return
 
-        if command.task:
-            command.task.cancel()
         await self._send_text(
             chat_id,
             (
@@ -2461,13 +2394,11 @@ class TelegramBot(TelegramAPIClient):
         async def runner() -> None:
             nonlocal progress_task
             try:
-                command_result = await runtime_control.run_command_capture(
+                command_result = await self._run_active_command_capture(
+                    active_command,
                     runtime_control.client_hh_auth_command_argv(profile_name, timeout_sec=900),
                     timeout=1800,
-                    on_start=lambda pid: setattr(active_command, "subprocess_pid", pid),
                 )
-                if active_command.cancel_requested:
-                    command_result["cancelled"] = True
                 self._append_debug_log(
                     "profile_hh_auth_capture_command_result",
                     admin_user_id=principal.get("user_id"),
@@ -2583,13 +2514,11 @@ class TelegramBot(TelegramAPIClient):
         async def runner() -> None:
             nonlocal progress_task
             try:
-                command_result = await runtime_control.run_command_capture(
+                command_result = await self._run_active_command_capture(
+                    active_command,
                     runtime_control.client_hh_auth_command_argv(profile_name, timeout_sec=900),
                     timeout=1800,
-                    on_start=lambda pid: setattr(active_command, "subprocess_pid", pid),
                 )
-                if active_command.cancel_requested:
-                    command_result["cancelled"] = True
                 self._append_debug_log(
                     "hh_auth_capture_command_result",
                     admin_user_id=principal.get("user_id"),
@@ -2764,13 +2693,11 @@ class TelegramBot(TelegramAPIClient):
 
         async def runner() -> None:
             try:
-                result = await runtime_control.run_command_capture(
+                result = await self._run_active_command_capture(
+                    active_command,
                     argv,
                     timeout=1800,
-                    on_start=lambda pid: setattr(active_command, "subprocess_pid", pid),
                 )
-                if active_command.cancel_requested:
-                    result["cancelled"] = True
                 if progress_message_id > 0:
                     await self._delete_message(chat_id, progress_message_id)
                 await self._send_text(
@@ -2838,13 +2765,11 @@ class TelegramBot(TelegramAPIClient):
                     telegram_chat_id=chat_id,
                     user_id=int(principal.get("user_id") or 0),
                 )
-                result = await runtime_control.run_command_capture(
+                result = await self._run_active_command_capture(
+                    active_command,
                     argv,
                     timeout=900,
-                    on_start=lambda pid: setattr(active_command, "subprocess_pid", pid),
                 )
-                if active_command.cancel_requested:
-                    result["cancelled"] = True
                 if progress_message_id > 0:
                     await self._delete_message(chat_id, progress_message_id)
                 if not result.get("ok") or result.get("cancelled"):
@@ -2968,13 +2893,11 @@ class TelegramBot(TelegramAPIClient):
                     force_send=force_send,
                     allow_any=allow_any,
                 )
-                result = await runtime_control.run_command_capture(
+                result = await self._run_active_command_capture(
+                    active_command,
                     argv,
                     timeout=1200,
-                    on_start=lambda pid: setattr(active_command, "subprocess_pid", pid),
                 )
-                if active_command.cancel_requested:
-                    result["cancelled"] = True
                 self._append_chat_ai_audit_event(
                     "command_result",
                     action="send" if force_send else "preview",
@@ -3116,13 +3039,11 @@ class TelegramBot(TelegramAPIClient):
         async def runner() -> None:
             nonlocal progress_task
             try:
-                result = await runtime_control.run_command_capture(
+                result = await self._run_active_command_capture(
+                    active_command,
                     runtime_control.agent_command_argv(profile_name, "--manual-apply-token", token),
                     timeout=1800,
-                    on_start=lambda pid: setattr(active_command, "subprocess_pid", pid),
                 )
-                if active_command.cancel_requested:
-                    result["cancelled"] = True
                 message = format_command_result(label, result, role=role)
                 if progress_task:
                     progress_task.cancel()
@@ -3215,13 +3136,11 @@ class TelegramBot(TelegramAPIClient):
         async def runner() -> None:
             nonlocal progress_task
             try:
-                result = await runtime_control.run_command_capture(
+                result = await self._run_active_command_capture(
+                    active_command,
                     runtime_control.agent_command_argv(profile_name, flag),
                     timeout=timeout,
-                    on_start=lambda pid: setattr(active_command, "subprocess_pid", pid),
                 )
-                if active_command.cancel_requested:
-                    result["cancelled"] = True
                 message = format_command_result(label, result, role=role)
                 send_as_document = False
                 document_name = ""
