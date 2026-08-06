@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime, timedelta
 
 import matcher
 
@@ -630,13 +631,14 @@ def test_classify_vacancy_cluster_rejects_pure_support_noise():
 
 
 def test_response_probability_score_uses_freshness_and_applicants():
+    now = datetime.now()
     fresh = matcher.estimate_response_probability_score(
         {
             "title": "Junior QA Engineer",
             "snippet": "без опыта, обучение, API",
             "salary": "100 000 ₽",
             "number_of_applicants": 5,
-            "published_at": "2026-07-09T10:00:00",
+            "published_at": (now - timedelta(hours=12)).isoformat(),
         },
         match_score=70,
         cluster="api_qa",
@@ -647,7 +649,7 @@ def test_response_probability_score_uses_freshness_and_applicants():
             "snippet": "manual web testing",
             "salary": "не указана",
             "number_of_applicants": 500,
-            "published_at": "2026-05-01T10:00:00",
+            "published_at": (now - timedelta(days=60)).isoformat(),
         },
         match_score=70,
         cluster="manual_web_qa",
