@@ -60,6 +60,7 @@ from notifier import (
     close_session as close_notify_session,
 )
 from superjob_client import SuperJobClient
+from commands import chats as chat_commands
 from commands import google_forms as google_form_commands
 
 
@@ -2295,65 +2296,12 @@ async def main():
             import facts as facts_mod
             await facts_mod.do_extract_facts()
         elif args.chat_respond:
-            import hh_chat_responder as cr
-            client = HHClient()
-            try:
-                summary = await cr.process_all(client)
-            finally:
-                try:
-                    await client.stop()
-                except Exception:
-                    pass
-            print("📋 Chat-respond summary:")
-            print(f"  Чатов проверено: {summary.get('chats_scanned', 0)}")
-            print(f"  С AI-помощником: {summary.get('with_ai', 0)}")
-            print(f"  Подозрительных HR-сообщений: {summary.get('suspicious', 0)}")
-            print(f"  Уведомлений на подтверждение: {summary.get('suspicious_notified', 0)}")
-            print(
-                "  Google Forms: "
-                f"найдено {summary.get('google_forms_found', 0)} | "
-                f"preview {summary.get('google_forms_prepared', 0)} | "
-                f"ошибок {summary.get('google_forms_failed', 0)}"
-            )
-            print(f"  Подготовлено ответов: {summary.get('answers_drafted', 0)}")
-            print(f"  Отправлено: {summary.get('answers_sent', 0)}")
-            print(f"  Пропущено: {summary.get('skipped', 0)}")
-            print(f"  Ошибок чтения: {summary.get('read_failures', 0)}")
-            for d in summary.get("details", []):
-                print(f"\n  → {d.get('vacancy')} @ {d.get('company')} ({d.get('chat_id')})")
-                if d.get("google_form"):
-                    print(f"    Google Form: {'preview готов' if d.get('ok') else 'ошибка'}")
-                    print(f"    Форма: {d.get('form_url') or '-'}")
-                    if d.get("token"):
-                        print(f"    Токен: {d.get('token')}")
-                    if not d.get("ok"):
-                        print(f"    Причина: {d.get('message') or '-'}")
-                    continue
-                if d.get("suspicious"):
-                    print(f"    Подозрительно: {d.get('question','')[:140]}")
-                    print(f"    Уведомление: {'да' if d.get('notified') else 'нет'}")
-                    continue
-                print(f"    AI: {d.get('question','')[:140]}")
-                print(f"    Ответ: {d.get('answer','')[:140]}")
-                if d.get("dry_run"):
-                    print(f"    [DRY-RUN, скрин: {d.get('preview',{}).get('screenshot_path','-')}]")
-                elif d.get("sent"):
-                    print("    [SENT ✓]")
+            await chat_commands.respond_all()
         elif args.chat_list_candidates:
-            import hh_chat_responder as cr
-            client = HHClient()
-            try:
-                summary = await cr.list_reply_candidates(
-                    client,
-                    limit=max(1, args.chat_list_limit),
-                    max_scan=max(1, args.chat_list_max_scan),
-                )
-            finally:
-                try:
-                    await client.stop()
-                except Exception:
-                    pass
-            print(json.dumps({"chat_candidates": summary}, ensure_ascii=False))
+            await chat_commands.list_candidates(
+                limit=args.chat_list_limit,
+                max_scan=args.chat_list_max_scan,
+            )
         elif args.google_form_preview:
             await google_form_commands.preview(
                 args.google_form_preview,
@@ -2367,37 +2315,13 @@ async def main():
             if not result.get("ok"):
                 sys.exit(1)
         elif args.chat_respond_one:
-            import hh_chat_responder as cr
-            client = HHClient()
-            try:
-                detail = await cr.process_one(
-                    client,
-                    args.chat_respond_one,
-                    message_id=args.chat_message_id,
-                    allow_suspicious=args.chat_allow_suspicious,
-                    allow_any=args.chat_allow_any,
-                    dry_run=False if args.chat_force_send else True,
-                    notify=True,
-                )
-            finally:
-                try:
-                    await client.stop()
-                except Exception:
-                    pass
-            print("📋 Chat one-shot summary:")
-            print(f"  Чат: {detail.get('chat_id', args.chat_respond_one)}")
-            print(f"  OK: {detail.get('ok')}")
-            print(f"  Сообщение: {detail.get('message', '')}")
-            if detail.get('already_replied'):
-                print("  Уже отвечали на это сообщение")
-            if detail.get('question'):
-                print(f"  Вопрос: {detail.get('question','')[:220]}")
-            if detail.get('answer'):
-                print(f"  Ответ: {detail.get('answer','')[:400]}")
-            if detail.get('dry_run'):
-                print(f"  DRY-RUN скрин: {(detail.get('preview') or {}).get('screenshot_path','-')}")
-            elif detail.get('sent'):
-                print("  SENT: yes")
+            await chat_commands.respond_one(
+                args.chat_respond_one,
+                message_id=args.chat_message_id,
+                allow_suspicious=args.chat_allow_suspicious,
+                allow_any=args.chat_allow_any,
+                force_send=args.chat_force_send,
+            )
         elif args.analyze_resume:
             import resume_analyzer
             resume_path = config.RESUME_FILE
