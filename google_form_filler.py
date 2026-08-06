@@ -301,13 +301,38 @@ def _asks_for_resume_url(question_text: str) -> bool:
     return "резюме" in text and any(marker in text for marker in ("ссыл", "url", "link", "продубли", "прикреп"))
 
 
+def _asks_for_email(question_text: str) -> bool:
+    text = _norm(question_text)
+    return any(marker in text for marker in ("почта", "email", "e-mail", "электронн"))
+
+
+def _asks_for_phone(question_text: str) -> bool:
+    text = _norm(question_text)
+    if any(marker in text for marker in ("телефон", "phone")):
+        return True
+    return any(marker in text for marker in ("мобильный номер", "мобильного номера", "номер мобильного"))
+
+
+def _contact_override_answer(idx: int, value: str) -> dict:
+    return {
+        "index": idx,
+        "answer": value,
+        "options": [],
+        "skip": False,
+        "confidence": "high",
+        "source": "contact_override",
+    }
+
+
 def _apply_contact_overrides(questions: list[dict], answers: list[dict]) -> list[dict]:
     from prompt_blocks import get_candidate_contacts
 
     contacts = get_candidate_contacts()
+    email = str(contacts.get("email") or "").strip()
+    phone = str(contacts.get("phone") or "").strip()
     telegram = str(contacts.get("telegram") or "").strip()
     resume_url = str(contacts.get("resume_url") or "").strip()
-    if not telegram and not resume_url:
+    if not any((email, phone, telegram, resume_url)):
         return answers if isinstance(answers, list) else []
 
     originals = answers if isinstance(answers, list) else []
@@ -319,25 +344,17 @@ def _apply_contact_overrides(questions: list[dict], answers: list[dict]) -> list
         except Exception:
             continue
         qtext = str(question.get("question") or "")
-        if telegram and _asks_for_telegram(qtext):
-            answer_map[idx] = {
-                "index": idx,
-                "answer": telegram,
-                "options": [],
-                "skip": False,
-                "confidence": "high",
-                "source": "contact_override",
-            }
+        if email and _asks_for_email(qtext):
+            answer_map[idx] = _contact_override_answer(idx, email)
+            changed = True
+        elif phone and _asks_for_phone(qtext):
+            answer_map[idx] = _contact_override_answer(idx, phone)
+            changed = True
+        elif telegram and _asks_for_telegram(qtext):
+            answer_map[idx] = _contact_override_answer(idx, telegram)
             changed = True
         elif resume_url and _asks_for_resume_url(qtext):
-            answer_map[idx] = {
-                "index": idx,
-                "answer": resume_url,
-                "options": [],
-                "skip": False,
-                "confidence": "high",
-                "source": "contact_override",
-            }
+            answer_map[idx] = _contact_override_answer(idx, resume_url)
             changed = True
     if not changed:
         return originals
@@ -363,10 +380,25 @@ def _apply_contact_overrides(questions: list[dict], answers: list[dict]) -> list
     return ordered
 
 
+def _is_placeholder_answer(value: str) -> bool:
+    text = _norm(value).rstrip(".:-")
+    return text in {
+        "не указан",
+        "не указана",
+        "не указано",
+        "не заполнен",
+        "не заполнена",
+        "не заполнено",
+        "нет данных",
+        "n/a",
+    }
+
+
 def _answer_has_value(answer: dict) -> bool:
     if not isinstance(answer, dict) or answer.get("skip"):
         return False
-    if str(answer.get("answer") or "").strip():
+    value = str(answer.get("answer") or "").strip()
+    if value and not _is_placeholder_answer(value):
         return True
     return any(str(value or "").strip() for value in (answer.get("options") or []))
 
@@ -735,6 +767,8 @@ def _looks_like_google_form_submit_success(page_text: str) -> bool:
             "ответ записан",
             "ответ отправлен",
             "форма отправлена",
+            "отправить еще один ответ",
+            "отправить ещё один ответ",
             "your response has been recorded",
             "response has been recorded",
             "submit another response",

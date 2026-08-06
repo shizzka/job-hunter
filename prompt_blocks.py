@@ -41,6 +41,22 @@ def _first_nonempty(*values: str) -> str:
 
 def get_candidate_contacts() -> dict[str, str]:
     profile_env = _read_profile_env_values()
+    email = _first_nonempty(
+        os.getenv("CANDIDATE_EMAIL"),
+        os.getenv("CONTACT_EMAIL"),
+        os.getenv("HH_AUTH_EMAIL"),
+        profile_env.get("CANDIDATE_EMAIL"),
+        profile_env.get("CONTACT_EMAIL"),
+        profile_env.get("HH_AUTH_EMAIL"),
+    )
+    phone = _first_nonempty(
+        os.getenv("CANDIDATE_PHONE"),
+        os.getenv("CONTACT_PHONE"),
+        os.getenv("HH_AUTH_PHONE"),
+        profile_env.get("CANDIDATE_PHONE"),
+        profile_env.get("CONTACT_PHONE"),
+        profile_env.get("HH_AUTH_PHONE"),
+    )
     telegram = _first_nonempty(
         os.getenv("CANDIDATE_TELEGRAM"),
         os.getenv("CONTACT_TELEGRAM"),
@@ -57,7 +73,7 @@ def get_candidate_contacts() -> dict[str, str]:
         resume_id = str(getattr(config, "HH_PRIMARY_RESUME_ID", "") or "").strip()
         if resume_id:
             resume_url = f"https://hh.ru/resume/{resume_id}"
-    return {"telegram": telegram, "resume_url": resume_url}
+    return {"email": email, "phone": phone, "telegram": telegram, "resume_url": resume_url}
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -104,11 +120,17 @@ def build_profile_note_block() -> str:
     return f"⭐ КАНОНИЧЕСКИЙ ПРОФИЛЬ КАНДИДАТА (этот блок имеет приоритет над разделом «Резюме»):\n{note}\n\n"
 
 def build_contact_block() -> str:
-    """Контакты кандидата для форм, где HR явно просит Telegram или ссылку на резюме."""
+    """Контакты кандидата для форм, где HR явно просит контакты или ссылку на резюме."""
     contacts = get_candidate_contacts()
+    email = contacts.get("email", "")
+    phone = contacts.get("phone", "")
     telegram = contacts.get("telegram", "")
     resume_url = contacts.get("resume_url", "")
     lines = []
+    if email:
+        lines.append(f"- Email для связи: {email}")
+    if phone:
+        lines.append(f"- Телефон для связи: {phone}")
     if telegram:
         lines.append(f"- Telegram для связи: {telegram}")
     if resume_url:

@@ -84,6 +84,7 @@ def test_google_form_submit_success_detection_handles_common_languages():
     assert gforms._looks_like_google_form_submit_success("Ваш ответ записан.")
     assert gforms._looks_like_google_form_submit_success("Your response has been recorded.")
     assert gforms._looks_like_google_form_submit_success("Submit another response")
+    assert gforms._looks_like_google_form_submit_success("Отправить ещё один ответ")
     assert gforms._looks_like_google_form_submit_success("Je antwoord is geregistreerd")
     assert not gforms._looks_like_google_form_submit_success("Это обязательный вопрос.")
 
@@ -235,6 +236,8 @@ def test_reuse_cached_answers_for_same_form(monkeypatch):
 def test_contact_block_contains_candidate_contacts(monkeypatch):
     from prompt_blocks import build_contact_block
 
+    monkeypatch.setenv("CANDIDATE_EMAIL", "qa@example.com")
+    monkeypatch.setenv("CANDIDATE_PHONE", "+79990000000")
     monkeypatch.setenv("CANDIDATE_TELEGRAM", "@qa_candidate")
     monkeypatch.setenv(
         "CANDIDATE_RESUME_URL",
@@ -243,8 +246,12 @@ def test_contact_block_contains_candidate_contacts(monkeypatch):
 
     block = build_contact_block()
 
+    assert "qa@example.com" in block
+    assert "+79990000000" in block
     assert "@qa_candidate" in block
     assert "https://hh.ru/resume/97cc3b12ff0f83131e0039ed1f417945634133" in block
+    assert "Email для связи" in block
+    assert "Телефон для связи" in block
     assert "Telegram для связи" in block
     assert "Ссылка на резюме" in block
 
@@ -252,6 +259,8 @@ def test_contact_block_contains_candidate_contacts(monkeypatch):
 def test_contact_overrides_replace_llm_placeholders(monkeypatch):
     from google_form_filler import _apply_contact_overrides
 
+    monkeypatch.setenv("CANDIDATE_EMAIL", "qa@example.com")
+    monkeypatch.setenv("CANDIDATE_PHONE", "+79990000000")
     monkeypatch.setenv("CANDIDATE_TELEGRAM", "@qa_candidate")
     monkeypatch.setenv(
         "CANDIDATE_RESUME_URL",
@@ -260,12 +269,16 @@ def test_contact_overrides_replace_llm_placeholders(monkeypatch):
     questions = [
         {"index": 1, "question": "Укажите ваш ТГ для связи"},
         {"index": 2, "question": "Продублируйте ваше резюме (ссылкой)"},
-        {"index": 3, "question": "Опыт"},
+        {"index": 3, "question": "Электронная почта"},
+        {"index": 4, "question": "Мобильный телефон"},
+        {"index": 5, "question": "Опыт"},
     ]
     answers = [
         {"index": 1, "answer": "@evgeny_qa", "skip": False},
         {"index": 2, "answer": "https://resume.link/evgeny_qa", "skip": False},
-        {"index": 3, "answer": "ok", "skip": False},
+        {"index": 3, "answer": "не указана", "skip": False},
+        {"index": 4, "answer": "не указан", "skip": False},
+        {"index": 5, "answer": "ok", "skip": False},
     ]
 
     patched = _apply_contact_overrides(questions, answers)
@@ -273,7 +286,22 @@ def test_contact_overrides_replace_llm_placeholders(monkeypatch):
 
     assert by_index[1]["answer"] == "@qa_candidate"
     assert by_index[2]["answer"] == "https://hh.ru/resume/97cc3b12ff0f83131e0039ed1f417945634133"
-    assert by_index[3]["answer"] == "ok"
+    assert by_index[3]["answer"] == "qa@example.com"
+    assert by_index[4]["answer"] == "+79990000000"
+    assert by_index[5]["answer"] == "ok"
+
+
+def test_required_text_placeholder_is_replaced_with_fallback():
+    questions = [
+        {"index": 2, "question": "Электронная почта", "type": "text", "required": True},
+    ]
+    answers = [{"index": 2, "answer": "не указана", "skip": False}]
+
+    patched = gforms._apply_required_overrides(questions, answers)
+
+    assert patched[0]["index"] == 2
+    assert patched[0]["answer"] == "Готов предоставить почту в чате hh.ru"
+    assert patched[0]["source"] == "required_fallback"
 
 
 def test_required_text_skip_is_replaced_with_fallback():
