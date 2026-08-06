@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import json
+import logging
 import re
 
 import config
+from llm_client import get_llm_client
+from llm_utils import parse_llm_json
+
+log = logging.getLogger("google_form_filler")
 
 
 def _norm(value: str) -> str:
@@ -399,3 +405,89 @@ def _prepare_form_answers(questions: list[dict], answers: list[dict]) -> list[di
     answers = _apply_contact_overrides(questions, answers)
     answers = _apply_required_overrides(questions, answers)
     return _avoid_bare_other_options(questions, answers)
+
+
+async def generate_form_answers(
+    questions: list[dict],
+    *,
+    vacancy: dict | None = None,
+    source_message: str = "",
+    client_factory=None,
+    json_parser=None,
+    logger=None,
+) -> list[dict]:
+    client_factory = client_factory or get_llm_client
+    json_parser = json_parser or parse_llm_json
+    logger = logger or log
+    try:
+        from hh_client import _load_resume_text
+    except Exception:
+        _load_resume_text = lambda: ""
+    from prompt_blocks import (
+        build_contact_block,
+        get_candidate_contacts,
+        build_facts_block,
+        build_filtered_kb_block,
+        build_knowledge_base_block,
+        build_profile_note_block,
+        build_salary_rule_block,
+    )
+
+    resume_text = _load_resume_text()
+    profile_note = build_profile_note_block()
+    contacts = build_contact_block()
+    facts = build_facts_block()
+    salary = build_salary_rule_block()
+    vacancy = vacancy or {}
+    vacancy_summary = f"Должность: {vacancy.get('title','')}\nКомпания: {vacancy.get('company','')}\n"
+    model = (
+        getattr(config, "HH_QUESTION_MODEL", "")
+        or getattr(config, "HH_CHAT_RESPONDER_MODEL", "")
+        or ""
+    ).strip() or config.LLM_MODEL
+    client = client_factory()
+    try:
+        knowledge = await build_filtered_kb_block(vacancy_summary, client, max_sections=5, limit_chars=8000)
+    except Exception as exc:
+        logger.warning("google form KB filter failed, fallback to full: %s", exc)
+        knowledge = build_knowledge_base_block(limit_chars=8000)
+
+    prompt = f"""Ты заполняешь Google Form от лица кандидата Евгения для отклика на работу.
+
+Отвечай честно по резюме, фактам и базе знаний. Не выдумывай опыт, инструменты, образование, гражданство, уровень английского или даты. Если опыта нет — так и напиши. Если вопрос про зарплату — используй блок зарплатных ожиданий и правило, что итоговая зарплата зависит от загрузки, ответственности, графика и условий проекта. Если вопрос просит Telegram или ссылку на резюме, используй контактные данные кандидата ниже.
+
+Для вопросов с вариантами выбери только точные тексты вариантов из options. Для checkbox можно выбрать несколько. Для text дай короткий конкретный ответ. Поле required=true — это поле со звёздочкой: его обязательно надо заполнить, skip=true для него запрещён. Если точного факта нет, дай честный короткий ответ вроде «нет релевантного опыта» или «готов обсудить подробнее на собеседовании», но не оставляй обязательное поле пустым. Skip допустим только для необязательных или служебных информационных блоков.
+
+{profile_note}{contacts}{knowledge}{facts}{salary}
+Контекст вакансии:
+{vacancy_summary}
+Сообщение HR с формой:
+{source_message[:1200]}
+
+Вопросы формы:
+{json.dumps(questions, ensure_ascii=False)}
+
+Резюме:
+{resume_text[:5000]}
+
+Верни только валидный JSON:
+{{"answers":[{{"index":0,"answer":"...","options":["точный вариант"],"skip":false,"confidence":"high|medium|low"}}]}}
+"""
+    try:
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "Ты возвращаешь только валидный JSON без markdown."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=4000,
+        )
+        parsed = json_parser((resp.choices[0].message.content or "").strip())
+    except Exception as exc:
+        logger.warning("google form answer generation failed: %s", exc)
+        return []
+    answers = parsed.get("answers") or []
+    if not isinstance(answers, list):
+        return []
+    return _prepare_form_answers(questions, answers)

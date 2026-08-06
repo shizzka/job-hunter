@@ -1,3 +1,6 @@
+import asyncio
+from types import SimpleNamespace
+
 import google_form_filler as legacy_google_forms
 from google_forms import answering
 
@@ -48,3 +51,88 @@ def test_legacy_module_reexports_answer_preparation_helpers():
 
     for name in helper_names:
         assert getattr(legacy_google_forms, name) is getattr(answering, name)
+
+
+def test_generate_form_answers_uses_injected_client_and_parser(monkeypatch):
+    import hh_client
+    import prompt_blocks
+
+    monkeypatch.setattr(hh_client, "_load_resume_text", lambda: "QA resume")
+    monkeypatch.setattr(prompt_blocks, "build_profile_note_block", lambda: "profile\n")
+    monkeypatch.setattr(prompt_blocks, "build_contact_block", lambda: "")
+    monkeypatch.setattr(prompt_blocks, "build_facts_block", lambda: "facts\n")
+    monkeypatch.setattr(prompt_blocks, "build_salary_rule_block", lambda: "")
+    monkeypatch.setattr(prompt_blocks, "build_knowledge_base_block", lambda **kwargs: "fallback\n")
+    monkeypatch.setattr(prompt_blocks, "get_candidate_contacts", lambda: {})
+    monkeypatch.setattr(answering.config, "HH_QUESTION_MODEL", "test-model")
+
+    async def filtered_knowledge(*args, **kwargs):
+        return "knowledge\n"
+
+    monkeypatch.setattr(prompt_blocks, "build_filtered_kb_block", filtered_knowledge)
+
+    class FakeCompletions:
+        def __init__(self):
+            self.request = {}
+
+        async def create(self, **kwargs):
+            self.request = kwargs
+            message = SimpleNamespace(content='{"answers":[]}')
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    completions = FakeCompletions()
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    parsed = {
+        "answers": [
+            {
+                "index": 0,
+                "answer": "Три года в QA",
+                "options": [],
+                "skip": False,
+                "confidence": "high",
+            }
+        ]
+    }
+
+    answers = asyncio.run(
+        answering.generate_form_answers(
+            [{"index": 0, "question": "Опыт", "type": "text", "required": False}],
+            vacancy={"title": "QA engineer", "company": "Example"},
+            source_message="Заполните форму",
+            client_factory=lambda: client,
+            json_parser=lambda raw: parsed,
+        )
+    )
+
+    assert answers == parsed["answers"]
+    assert completions.request["model"] == "test-model"
+    assert completions.request["temperature"] == 0.2
+    assert "QA engineer" in completions.request["messages"][1]["content"]
+    assert "Заполните форму" in completions.request["messages"][1]["content"]
+
+
+def test_legacy_generate_form_answers_forwards_patchable_dependencies(monkeypatch):
+    captured = {}
+    client_factory = lambda: object()
+    json_parser = lambda raw: {}
+
+    async def fake_generate(questions, **kwargs):
+        captured.update(kwargs)
+        return questions
+
+    monkeypatch.setattr(legacy_google_forms, "_generate_form_answers", fake_generate)
+    monkeypatch.setattr(legacy_google_forms, "get_llm_client", client_factory)
+    monkeypatch.setattr(legacy_google_forms, "parse_llm_json", json_parser)
+
+    result = asyncio.run(
+        legacy_google_forms.generate_form_answers(
+            [{"index": 0}],
+            vacancy={"title": "QA"},
+            source_message="message",
+        )
+    )
+
+    assert result == [{"index": 0}]
+    assert captured["client_factory"] is client_factory
+    assert captured["json_parser"] is json_parser
+    assert captured["logger"] is legacy_google_forms.log
