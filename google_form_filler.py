@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import html
 import httpx
 import json
@@ -15,12 +14,16 @@ from urllib.parse import parse_qs, unquote, urlparse
 import config
 from llm_client import get_llm_client
 from llm_utils import parse_llm_json
+from state_store.google_forms import (
+    STATE_FILENAME,
+    GoogleFormStateRepository,
+    new_preview_token,
+)
 
 log = logging.getLogger("google_form_filler")
 
 CALLBACK_GOOGLE_FORM_PREVIEW = "gform_preview"
 CALLBACK_GOOGLE_FORM_SUBMIT = "gform_submit"
-STATE_FILENAME = "google_form_previews.json"
 FORM_URL_RE = re.compile(r"https?://[^\s<>'\")]+", re.I)
 
 
@@ -28,30 +31,20 @@ def _safe_profile(profile_name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]+", "_", profile_name or "default")
 
 
+def _state_repository() -> GoogleFormStateRepository:
+    return GoogleFormStateRepository(config.JOB_HUNTER_HOME, logger=log)
+
+
 def _state_path() -> str:
-    return os.path.join(config.JOB_HUNTER_HOME, STATE_FILENAME)
+    return str(_state_repository().path)
 
 
 def _load_state() -> dict:
-    path = _state_path()
-    if not os.path.exists(path):
-        return {"items": {}}
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {"items": {}}
-    except Exception as exc:
-        log.warning("google form state read failed: %s", exc)
-        return {"items": {}}
+    return _state_repository().load()
 
 
 def _save_state(state: dict) -> None:
-    path = _state_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    _state_repository().save(state)
 
 
 def _is_google_form_url(value: str) -> bool:
@@ -158,8 +151,7 @@ def build_google_form_preview_markup(profile_name: str, token: str, form_url: st
 
 
 def _new_token(form_url: str, chat_id: str = "", message_id: str = "") -> str:
-    seed = f"{form_url}|{chat_id}|{message_id}|{time.time()}|{os.getpid()}"
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+    return new_preview_token(form_url, chat_id, message_id)
 
 
 def _norm(value: str) -> str:
@@ -1197,10 +1189,7 @@ async def preview_form(
             "status": "preview_failed_login_required",
             "profile_name": profile_name,
         }
-        state = _load_state()
-        items = state.setdefault("items", {})
-        items[token] = detail
-        _save_state(state)
+        _state_repository().remember(token, detail, trim_expired=False)
         return detail
     token = _new_token(form_url, chat_id, message_id)
     all_questions: list[dict] = []
@@ -1290,14 +1279,7 @@ async def preview_form(
         "status": "preview" if preview_ok else "preview_failed",
         "profile_name": profile_name,
     }
-    state = _load_state()
-    items = state.setdefault("items", {})
-    items[token] = detail
-    cutoff = int(time.time()) - 7 * 24 * 3600
-    for old_token, item in list(items.items()):
-        if int(item.get("created_at") or 0) < cutoff:
-            items.pop(old_token, None)
-    _save_state(state)
+    _state_repository().remember(token, detail, trim_expired=True)
     if notify and detail.get("ok"):
         await notify_form_preview(detail, profile_name=profile_name)
     return detail
