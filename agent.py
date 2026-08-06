@@ -60,6 +60,7 @@ from notifier import (
     close_session as close_notify_session,
 )
 from superjob_client import SuperJobClient
+from commands import google_forms as google_form_commands
 
 
 @contextmanager
@@ -2354,48 +2355,13 @@ async def main():
                     pass
             print(json.dumps({"chat_candidates": summary}, ensure_ascii=False))
         elif args.google_form_preview:
-            import google_form_filler as gforms
-            client = HHClient()
-            try:
-                detail = await gforms.preview_from_hh_chat(
-                    client,
-                    args.google_form_preview,
-                    message_id=args.chat_message_id,
-                    profile_name=args.profile,
-                    notify=True,
-                )
-            finally:
-                try:
-                    await client.stop()
-                except Exception:
-                    pass
-            print("📋 Google Form preview summary:")
-            print(f"  OK: {detail.get('ok')}")
-            print(f"  Сообщение: {detail.get('message', '')}")
-            print(f"  Чат: {detail.get('chat_id', args.google_form_preview)}")
-            print(f"  Токен: {detail.get('token', '')}")
-            print(f"  Вопросов: {len(detail.get('questions') or [])}")
-            filled = (detail.get('fill_result') or {}).get('filled') or []
-            skipped = (detail.get('fill_result') or {}).get('skipped') or []
-            print(f"  Заполнено: {len(filled)} | пропущено: {len(skipped)}")
-            if not detail.get("ok"):
-                sys.exit(1)
+            await google_form_commands.preview(
+                args.google_form_preview,
+                message_id=args.chat_message_id,
+                profile_name=args.profile,
+            )
         elif args.google_form_submit:
-            import google_form_filler as gforms
-            client = HHClient()
-            try:
-                detail = await gforms.submit_saved_preview(client, args.google_form_submit, notify=True)
-            finally:
-                try:
-                    await client.stop()
-                except Exception:
-                    pass
-            print("📋 Google Form submit summary:")
-            print(f"  OK: {detail.get('ok')}")
-            print(f"  Сообщение: {detail.get('message', '')}")
-            print(f"  Токен: {detail.get('token', args.google_form_submit)}")
-            if not detail.get("ok"):
-                sys.exit(1)
+            await google_form_commands.submit(args.google_form_submit)
         elif args.manual_apply_token:
             result = await do_manual_apply_token(args.manual_apply_token)
             if not result.get("ok"):
