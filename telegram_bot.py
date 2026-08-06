@@ -24,6 +24,12 @@ import seen
 import telegram_access
 import telegram_clients
 import telegram_resume_limits
+from telegram_app.auth_bridge import (
+    TelegramHHAuthBridge,
+    can_answer_hh_auth_prompt as _can_answer_hh_auth_prompt,
+    clean_hh_auth_code_text as _clean_hh_auth_code_text,
+    looks_like_standalone_hh_auth_code as _looks_like_standalone_hh_auth_code,
+)
 from telegram_app.api import TelegramAPIClient
 from telegram_app.subprocesses import (
     ActiveCommandState,
@@ -56,25 +62,8 @@ def _configure_logging(force: bool = False) -> None:
 _configure_logging()
 
 
-def _clean_hh_auth_code_text(text: str) -> str:
-    return "".join(re.findall(r"\d", text or ""))
-
-
-def _looks_like_standalone_hh_auth_code(text: str) -> bool:
-    value = (text or "").strip()
-    code = _clean_hh_auth_code_text(value)
-    return bool(code and code == value and 4 <= len(code) <= 8)
-
-
 def _is_menu_button_text(text: str) -> bool:
     return text in ADMIN_BUTTON_MAP or text in USER_BUTTON_MAP or text in LEGACY_BUTTON_MAP
-
-
-def _can_answer_hh_auth_prompt(principal: dict, pending: dict) -> bool:
-    profile_name = str(pending.get("profile_name") or "")
-    if principal.get("role") == ROLE_ADMIN:
-        return True
-    return bool(profile_name) and str(principal.get("profile") or "") == profile_name
 
 
 def _parse_manual_chat_ai_arg(raw: str) -> tuple[str, str]:
@@ -190,10 +179,20 @@ def _build_chat_ai_candidates_markup(profile_name: str, summary: dict) -> dict |
     return {"inline_keyboard": rows} if rows else None
 
 
-class TelegramBot(TelegramAPIClient, TelegramSubprocessManager):
+class TelegramBot(
+    TelegramAPIClient,
+    TelegramSubprocessManager,
+    TelegramHHAuthBridge,
+):
     def __init__(self, profile_name: str, drop_pending: bool = True):
         TelegramAPIClient.__init__(self, logger=log)
         TelegramSubprocessManager.__init__(self, admin_role=ROLE_ADMIN)
+        TelegramHHAuthBridge.__init__(
+            self,
+            admin_role=ROLE_ADMIN,
+            is_menu_button=_is_menu_button_text,
+            logger=log,
+        )
         self.profile_name = profile_name
         self.drop_pending = drop_pending
         self._stop_event = asyncio.Event()
@@ -505,54 +504,6 @@ class TelegramBot(TelegramAPIClient, TelegramSubprocessManager):
         for chat_id in sorted(admin_chat_ids):
             with contextlib.suppress(Exception):
                 await self._send_text(chat_id, text, reply_markup=reply_markup or build_reply_markup(ROLE_ADMIN))
-
-    async def _maybe_accept_hh_auth_response(self, chat_id: int, principal: dict, text: str) -> bool:
-        value = (text or "").strip()
-        if not value or value.startswith("/") or value.startswith("➡") or _is_menu_button_text(value):
-            return False
-        try:
-            import hh_auth_bridge
-            pending = hh_auth_bridge.peek_pending()
-        except Exception as exc:
-            log.debug("hh auth bridge peek failed: %s", exc)
-            return False
-        if not pending or not _can_answer_hh_auth_prompt(principal, pending):
-            return False
-
-        kind = str(pending.get("kind") or "code").strip()
-        profile_name = str(pending.get("profile_name") or "")
-        if kind == "code":
-            answer = _clean_hh_auth_code_text(value)
-            if not 4 <= len(answer) <= 8:
-                await self._send_text(chat_id, "🔐 Жду HH SMS-код: 4-8 цифр без лишнего текста.")
-                return True
-            label = "SMS-код HH"
-        elif kind == "login":
-            answer = value
-            if len(answer) < 3 or len(answer) > 120:
-                await self._send_text(chat_id, "🔐 Жду телефон или email для входа HH.")
-                return True
-            label = "логин HH"
-        else:
-            return False
-
-        try:
-            hh_auth_bridge.write_response(str(pending["id"]), answer)
-            self._append_debug_log(
-                "hh_auth_response_accepted",
-                user_id=principal.get("user_id"),
-                profile_name=profile_name,
-                kind=kind,
-            )
-            await self._send_text(
-                chat_id,
-                f"✅ Принял {label} для профиля {profile_name}. Ввожу в браузер HH…",
-            )
-            return True
-        except Exception as exc:
-            log.warning("hh auth response write failed: %s", exc)
-            await self._send_text(chat_id, f"❌ Не смог передать ответ в HH auth: {exc}")
-            return True
 
     def _profile_names(self) -> list[str]:
         names = profile_mod.list_profiles()
