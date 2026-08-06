@@ -23,9 +23,7 @@ ENV:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import html
-import json
 import logging
 import os
 import re
@@ -36,6 +34,13 @@ import config
 from llm_client import get_llm_client
 from llm_utils import parse_llm_json
 from google_form_filler import extract_google_form_urls
+from state_store.chat_responder import (
+    STATE_FILENAME,
+    ChatResponderStateRepository,
+    get_google_form_previews,
+    google_form_seen_key,
+    remember_google_form_preview,
+)
 from chat_screening import (
     AI_ASSISTANT_AVATAR_URLS,
     AI_NAMES,
@@ -52,7 +57,6 @@ from chat_screening import (
 log = logging.getLogger("chat_responder")
 
 CHATIK_ROOT = "https://chatik.hh.ru"
-STATE_FILENAME = "chat_responder_state.json"
 CHATIK_NAVIGATION_ATTEMPTS = 2
 CHATIK_NAVIGATION_TIMEOUT_MS = 20000
 CHATIK_READY_TIMEOUT_MS = 12000
@@ -74,31 +78,21 @@ def _is_blocked_company_preview(preview: str) -> bool:
 
 # ── State ───────────────────────────────────────────────────────────────────
 
-def _state_path() -> str:
+def _state_repository() -> ChatResponderStateRepository:
     home = os.path.dirname(config.RESUME_FILE) or os.path.expanduser("~/.job-hunter")
-    return os.path.join(home, STATE_FILENAME)
+    return ChatResponderStateRepository(home, logger=log)
+
+
+def _state_path() -> str:
+    return str(_state_repository().path)
 
 
 def load_state() -> dict:
-    p = _state_path()
-    if not os.path.exists(p):
-        return {}
-    try:
-        with open(p, encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return data
-    except Exception as exc:
-        log.warning("state read failed: %s", exc)
-    return {}
+    return _state_repository().load()
 
 
 def save_state(state: dict) -> None:
-    p = _state_path()
-    tmp = f"{p}.tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, p)
+    _state_repository().save(state)
 
 
 # ── Chat listing ────────────────────────────────────────────────────────────
@@ -926,14 +920,11 @@ async def _notify_one_chat_result(notifier, detail: dict) -> None:
 
 
 def _google_form_seen_key(form_url: str, message_id: str = "") -> str:
-    seed = f"{message_id}|{form_url}"
-    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+    return google_form_seen_key(form_url, message_id)
 
 
 def _find_unseen_google_form_message(messages: list[dict], chat_state: dict) -> dict:
-    seen = chat_state.get("google_form_previews") or {}
-    if not isinstance(seen, dict):
-        seen = {}
+    seen = get_google_form_previews(chat_state)
     for msg in reversed(messages or []):
         if msg.get("is_me"):
             continue
@@ -947,22 +938,7 @@ def _find_unseen_google_form_message(messages: list[dict], chat_state: dict) -> 
 
 
 def _remember_google_form_preview(chat_state: dict, key: str, detail: dict) -> None:
-    previews = chat_state.setdefault("google_form_previews", {})
-    if not isinstance(previews, dict):
-        previews = {}
-        chat_state["google_form_previews"] = previews
-    previews[key] = {
-        "created_at": int(time.time()),
-        "ok": bool(detail.get("ok")),
-        "status": detail.get("status") or detail.get("message") or "preview",
-        "token": detail.get("token") or "",
-        "form_url": detail.get("form_url") or detail.get("original_form_url") or "",
-        "message_id": str(detail.get("message_id") or ""),
-    }
-    if len(previews) > 30:
-        ordered = sorted(previews.items(), key=lambda item: int((item[1] or {}).get("created_at") or 0))
-        for old_key, _ in ordered[: len(previews) - 30]:
-            previews.pop(old_key, None)
+    remember_google_form_preview(chat_state, key, detail)
 
 
 async def _notify_google_form_failure(notifier, *, chat_id: str, vacancy: dict, message: dict, form_url: str, error: str) -> bool:
