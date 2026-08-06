@@ -4,6 +4,7 @@ from telegram_bot import (
     BUTTON_DAEMON_OFF,
     BUTTON_DAEMON_ON,
     BUTTON_DRYRUN,
+    BUTTON_DIAGNOSTICS,
     BUTTON_HH_AUTH,
     BUTTON_CHAT_AI,
     BUTTON_REPEAT_OFF,
@@ -12,6 +13,7 @@ from telegram_bot import (
     ROLE_USER,
     _format_users_text,
     build_ai_limits_text,
+    build_diagnostics_text,
     build_help_text,
     build_hh_auth_result_text,
     build_menu_section_text,
@@ -21,6 +23,7 @@ from telegram_bot import (
 
 def test_button_labels_are_russian():
     assert BUTTON_DRYRUN == "🧪 Тестовый прогон"
+    assert BUTTON_DIAGNOSTICS == "🩺 Диагностика"
     assert BUTTON_BACKFILL == "🗃 Пересчёт аналитики"
     assert BUTTON_AI_LIMITS == "🎁 Лимиты ИИ"
     assert BUTTON_HH_AUTH == "🔐 Вход HH"
@@ -172,6 +175,7 @@ def test_chat_ai_command_is_available_to_admin_menu():
     from telegram_bot_ui import ACTIVE_CONFLICT_COMMANDS, ADMIN_BUTTON_MAP, ADMIN_ONLY_COMMANDS
 
     assert ADMIN_BUTTON_MAP[BUTTON_CHAT_AI] == "/chat_ai"
+    assert ADMIN_BUTTON_MAP[BUTTON_DIAGNOSTICS] == "/diagnostics"
     assert "/chat_ai" in ADMIN_ONLY_COMMANDS
     assert "/chat_ai" in ACTIVE_CONFLICT_COMMANDS
     assert "/chat_ai" in build_help_text(ROLE_ADMIN, profile_name="qa")
@@ -184,6 +188,35 @@ def test_chat_ai_button_is_visible_in_admin_main_menu():
     labels = [button["text"] for row in markup["keyboard"] for button in row]
 
     assert labels[0] == BUTTON_CHAT_AI
+
+
+def test_diagnostics_button_is_visible_in_admin_monitor_menu_only():
+    from telegram_bot_ui import MENU_MONITOR, build_reply_markup
+
+    admin_markup = build_reply_markup(ROLE_ADMIN, menu=MENU_MONITOR)
+    user_markup = build_reply_markup(ROLE_USER, menu=MENU_MONITOR)
+    admin_labels = [button["text"] for row in admin_markup["keyboard"] for button in row]
+    user_labels = [button["text"] for row in user_markup["keyboard"] for button in row]
+
+    assert BUTTON_DIAGNOSTICS in admin_labels
+    assert BUTTON_DIAGNOSTICS not in user_labels
+
+
+def test_build_diagnostics_text():
+    text = build_diagnostics_text(
+        profile_name="qa",
+        generated_at="2026-07-28T13:55:00",
+        checks=[
+            {"name": "Daemon", "ok": True, "detail": "pid 1"},
+            {"name": "Telegram API", "ok": False, "detail": "timeout"},
+            {"name": "Polling", "ok": None, "detail": "recent disconnect"},
+        ],
+    )
+
+    assert "Самодиагностика Job Hunter" in text
+    assert "✅ Daemon" in text
+    assert "❌ Telegram API" in text
+    assert "есть проблемы" in text
 
 
 def test_chat_ai_manual_callback_parser():
@@ -276,3 +309,11 @@ def test_hh_auth_code_text_cleanup():
 
     assert _clean_hh_auth_code_text("12 34-56") == "123456"
     assert _clean_hh_auth_code_text("код: 9876") == "9876"
+
+
+def test_standalone_hh_auth_code_detection():
+    from telegram_bot import _looks_like_standalone_hh_auth_code
+
+    assert _looks_like_standalone_hh_auth_code("7113") is True
+    assert _looks_like_standalone_hh_auth_code("123") is False
+    assert _looks_like_standalone_hh_auth_code("код: 7113") is False

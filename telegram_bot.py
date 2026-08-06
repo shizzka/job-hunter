@@ -69,6 +69,12 @@ def _clean_hh_auth_code_text(text: str) -> str:
     return "".join(re.findall(r"\d", text or ""))
 
 
+def _looks_like_standalone_hh_auth_code(text: str) -> bool:
+    value = (text or "").strip()
+    code = _clean_hh_auth_code_text(value)
+    return bool(code and code == value and 4 <= len(code) <= 8)
+
+
 def _is_menu_button_text(text: str) -> bool:
     return text in ADMIN_BUTTON_MAP or text in USER_BUTTON_MAP or text in LEGACY_BUTTON_MAP
 
@@ -241,6 +247,10 @@ class TelegramBot:
                 for update in updates:
                     await self._handle_update(update)
                 await self._maybe_send_daily_summary()
+                try:
+                    await self._maybe_send_health_alert()
+                except Exception as exc:
+                    log.warning("health check failed: %s", exc)
         finally:
             self._write_runtime("bot_stop", "Бот Telegram остановлен", "offline")
             runtime_control.unregister_current_process(config.TELEGRAM_BOT_PID_FILE)
@@ -708,6 +718,245 @@ class TelegramBot:
 
     def _latest_run(self, profile_name: str) -> dict | None:
         return runtime_control.latest_run_entry(self._profile(profile_name).run_history_file)
+
+    def _profile_recipient_ids(self, profile_name: str) -> list[int]:
+        recipients = []
+        for item in telegram_access.list_users():
+            try:
+                user_id = int(item.get("user_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if user_id <= 0 or not item.get("enabled", True):
+                continue
+            if str(item.get("profile") or "").strip() == profile_name:
+                recipients.append(user_id)
+        if recipients:
+            return sorted(set(recipients))
+        profile = self._profile(profile_name)
+        configured = int(getattr(getattr(profile, "notify", None), "chat_id", 0) or 0)
+        fallback = int(config.NOTIFY_CHAT_ID or 0)
+        return sorted({item for item in (configured, fallback) if item > 0})
+
+    @staticmethod
+    def _format_age(seconds: float) -> str:
+        if seconds < 90:
+            return "меньше 1 мин назад"
+        minutes = int(seconds // 60)
+        if minutes < 90:
+            return f"{minutes} мин назад"
+        hours = int(minutes // 60)
+        if hours < 48:
+            return f"{hours} ч назад"
+        return f"{int(hours // 24)} дн назад"
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        if seconds < 90:
+            return "меньше 1 мин"
+        minutes = int(seconds // 60)
+        if minutes < 90:
+            return f"{minutes} мин"
+        hours = int(minutes // 60)
+        if hours < 48:
+            return f"{hours} ч"
+        return f"{int(hours // 24)} дн"
+
+    @staticmethod
+    def _parse_local_dt(value: str) -> datetime | None:
+        raw = (value or "").strip()
+        if not raw:
+            return None
+        for candidate in (raw[:19], raw):
+            try:
+                return datetime.fromisoformat(candidate)
+            except ValueError:
+                pass
+        try:
+            return datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+
+    @classmethod
+    def _age_from_iso(cls, value: str) -> float | None:
+        parsed = cls._parse_local_dt(value)
+        if not parsed:
+            return None
+        return max(0.0, (datetime.now() - parsed).total_seconds())
+
+    @classmethod
+    def _recent_log_matches(cls, text: str, markers: tuple[str, ...], *, max_age_min: int = 60) -> list[str]:
+        now = datetime.now()
+        matched = []
+        for raw_line in (text or "").splitlines():
+            line = raw_line.strip()
+            lowered = line.casefold()
+            if not any(marker.casefold() in lowered for marker in markers):
+                continue
+            parsed = cls._parse_local_dt(line[:19])
+            if parsed and (now - parsed).total_seconds() > max_age_min * 60:
+                continue
+            matched.append(line)
+        return matched[-3:]
+
+    @staticmethod
+    def _auth_cookie_names(cookies_file: str) -> set[str]:
+        try:
+            with open(cookies_file, encoding="utf-8") as f:
+                cookies = json.load(f)
+        except Exception:
+            return set()
+        if not isinstance(cookies, list):
+            return set()
+        auth_names = {"hhtoken", "hhuid", "crypted_hhuid", "crypted_id"}
+        return {str(item.get("name") or "") for item in cookies if isinstance(item, dict)} & auth_names
+
+    async def _collect_diagnostics(self, profile_name: str) -> list[dict]:
+        checks: list[dict] = []
+        profile = self._profile(profile_name)
+        search_interval_min, invite_check_interval_min = self._profile_schedule(profile_name)
+        daemon_state = self._daemon_state(profile_name)
+        bot_state = self._bot_state()
+
+        checks.append({
+            "name": "Daemon",
+            "ok": bool(daemon_state.get("running")),
+            "detail": f"pid {daemon_state.get('pid') or '-'}" if daemon_state.get("running") else "остановлен",
+        })
+        checks.append({
+            "name": "Telegram bot process",
+            "ok": bool(bot_state.get("running")),
+            "detail": f"pid {bot_state.get('pid') or '-'}" if bot_state.get("running") else "остановлен",
+        })
+
+        try:
+            me = await self._api_request("getMe", {}, timeout=15)
+            username = str((me or {}).get("username") or "bot") if isinstance(me, dict) else "bot"
+            checks.append({"name": "Telegram API", "ok": True, "detail": f"getMe ok: @{username}"})
+        except Exception as exc:
+            checks.append({"name": "Telegram API", "ok": False, "detail": str(exc)[:160]})
+
+        recipients = self._profile_recipient_ids(profile_name)
+        checks.append({
+            "name": "Telegram recipients",
+            "ok": bool(recipients),
+            "detail": f"{len(recipients)} получател(я/ей): {', '.join(map(str, recipients[:3]))}" if recipients else "нет получателей",
+        })
+
+        proxy_values = {
+            key: os.getenv(key, "").strip()
+            for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "TELEGRAM_PROXY")
+            if os.getenv(key, "").strip()
+        }
+        stale_proxy = [key for key, value in proxy_values.items() if "127.0.0.1:10809" in value]
+        checks.append({
+            "name": "Proxy env",
+            "ok": False if stale_proxy else True,
+            "detail": f"stale proxy: {', '.join(stale_proxy)}" if stale_proxy else "stale proxy не активен",
+        })
+
+        cookies = self._auth_cookie_names(profile.hh.cookies_file)
+        checks.append({
+            "name": "HH cookies",
+            "ok": bool({"hhtoken", "hhuid"} & cookies),
+            "detail": f"auth cookies: {', '.join(sorted(cookies))}" if cookies else "auth cookies не найдены",
+        })
+
+        log_path, log_tail = self._log_tail(profile_name, kind="log", lines=220)
+        hh_login_errors = self._recent_log_matches(
+            log_tail,
+            ("not logged in", "redirected to HH login", "Не залогинен", "hh.ru is not logged in"),
+            max_age_min=180,
+        )
+        checks.append({
+            "name": "HH login markers",
+            "ok": not hh_login_errors,
+            "detail": "нет свежих редиректов на login" if not hh_login_errors else hh_login_errors[-1][-140:],
+        })
+
+        if log_path and os.path.exists(log_path):
+            age = time.time() - os.path.getmtime(log_path)
+            expected_log_interval_min = max(1, min(int(search_interval_min), int(invite_check_interval_min)))
+            max_log_age = max(3 * 60 * 60, expected_log_interval_min * 3 * 60)
+            checks.append({
+                "name": "Daemon log freshness",
+                "ok": age < max_log_age,
+                "detail": f"{self._format_age(age)} · порог {self._format_duration(max_log_age)}",
+            })
+        else:
+            checks.append({"name": "Daemon log freshness", "ok": None, "detail": "лог не найден"})
+
+        latest = self._latest_run(profile_name) or {}
+        latest_age = self._age_from_iso(str(latest.get("created_at") or latest.get("finished_at") or ""))
+        if latest_age is None:
+            checks.append({"name": "Last run", "ok": None, "detail": "нет истории прогонов"})
+        else:
+            max_age = max(6 * 60 * 60, int(search_interval_min) * 3 * 60)
+            checks.append({
+                "name": "Last run",
+                "ok": latest_age < max_age,
+                "detail": f"{self._format_age(latest_age)} · ok={bool(latest.get('ok', False))}",
+            })
+
+        bot_log = runtime_control.tail_file(config.TELEGRAM_BOT_LOG_FILE, lines=120, chars=12000)
+        recent_poll_errors = self._recent_log_matches(
+            bot_log,
+            ("Failed to fetch updates", "Server disconnected", "Cannot connect to host api.telegram.org", "getUpdates failed"),
+            max_age_min=60,
+        )
+        checks.append({
+            "name": "Telegram polling log",
+            "ok": None if recent_poll_errors else True,
+            "detail": "есть свежие сетевые разрывы, API getMe проверен отдельно" if recent_poll_errors else "свежих ошибок polling нет",
+        })
+        return checks
+
+    async def _maybe_send_health_alert(self) -> None:
+        if not getattr(config, "TELEGRAM_HEALTH_CHECK_ENABLED", True):
+            return
+        state = self._load_state()
+        health_state = state.get("health_check") if isinstance(state.get("health_check"), dict) else {}
+        interval_s = max(300, int(getattr(config, "TELEGRAM_HEALTH_CHECK_INTERVAL_MIN", 60) or 60) * 60)
+        last_checked = float(health_state.get("last_checked_at") or 0)
+        if time.time() - last_checked < interval_s:
+            return
+
+        checks = await self._collect_diagnostics(self.profile_name)
+        failed = [item for item in checks if item.get("ok") is False]
+        signature = "|".join(sorted(str(item.get("name") or "") for item in failed))
+        previous_alert_signature = str(health_state.get("last_alert_signature") or "")
+        next_health_state = {
+            **health_state,
+            "last_checked_at": time.time(),
+            "last_checked_iso": datetime.now().isoformat(timespec="seconds"),
+            "last_signature": signature,
+            "last_failed_count": len(failed),
+        }
+        state["health_check"] = next_health_state
+        self._save_state(state)
+        if not failed:
+            return
+        if signature == previous_alert_signature:
+            return
+
+        text = build_diagnostics_text(
+            profile_name=self.profile_name,
+            generated_at=datetime.now().isoformat(timespec="seconds"),
+            checks=checks,
+        )
+        sent = 0
+        for user_id in self._profile_recipient_ids(self.profile_name):
+            principal = telegram_access.resolve_user(user_id) or {"user_id": user_id, "role": ROLE_ADMIN, "profile": self.profile_name}
+            result = await self._send_text_safely(user_id, text, reply_markup=self._menu_reply_markup(principal))
+            if result is not None:
+                sent += 1
+        if sent:
+            state = self._load_state()
+            health_state = state.get("health_check") if isinstance(state.get("health_check"), dict) else {}
+            health_state["last_alert_signature"] = signature
+            health_state["last_alert_at"] = datetime.now().isoformat(timespec="seconds")
+            state["health_check"] = health_state
+            self._save_state(state)
+            self._append_debug_log("health_alert_sent", profile_name=self.profile_name, failed=len(failed), recipients=sent)
 
     def _recent_runs(self, profile_name: str, limit: int = 5) -> list[dict]:
         run_history_file = self._profile(profile_name).run_history_file
@@ -1392,6 +1641,14 @@ class TelegramBot:
 
         command, arg = _resolve_message_command(text, principal.get("role", ROLE_USER))
         if not command:
+            if _looks_like_standalone_hh_auth_code(text):
+                await self._send_text(
+                    chat_id,
+                    "🔐 Похоже на HH SMS-код, но активного запроса входа сейчас нет. "
+                    "Сначала нажми восстановление HH-сессии, дождись сообщения `HH просит SMS-код`, "
+                    "и только потом пришли код сюда.",
+                    reply_markup=self._menu_reply_markup(principal),
+                )
             return
         await self._dispatch(chat_id, principal, command, arg)
 
@@ -2021,6 +2278,19 @@ class TelegramBot:
             await self._send_text(
                 chat_id,
                 f"{'✅ Пользователь удалён' if removed else '⚪️ Пользователь не найден'}: {target_user_id}",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+
+        if command == "/diagnostics":
+            checks = await self._collect_diagnostics(profile_name)
+            await self._send_text(
+                chat_id,
+                build_diagnostics_text(
+                    profile_name=profile_name,
+                    generated_at=datetime.now().isoformat(timespec="seconds"),
+                    checks=checks,
+                ),
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
