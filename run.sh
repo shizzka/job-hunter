@@ -176,22 +176,22 @@ case "$MODE" in
         $VENV agent.py $PROFILE_ARG --dry-run
         ;;
     superjob-dry-run|superjob-dryrun)
-        HH_ENABLED=0 SUPERJOB_ENABLED=1 HABR_ENABLED=0 GEEKJOB_ENABLED=0 $VENV agent.py $PROFILE_ARG --dry-run
+        $VENV agent.py $PROFILE_ARG --source superjob --dry-run
         ;;
     superjob-search|superjob)
-        HH_ENABLED=0 SUPERJOB_ENABLED=1 HABR_ENABLED=0 GEEKJOB_ENABLED=0 $VENV agent.py $PROFILE_ARG --search
+        $VENV agent.py $PROFILE_ARG --source superjob --search
         ;;
     habr-dry-run|habr-dryrun)
-        HH_ENABLED=0 SUPERJOB_ENABLED=0 HABR_ENABLED=1 GEEKJOB_ENABLED=0 $VENV agent.py $PROFILE_ARG --dry-run
+        $VENV agent.py $PROFILE_ARG --source habr --dry-run
         ;;
     habr-search|habr)
-        HH_ENABLED=0 SUPERJOB_ENABLED=0 HABR_ENABLED=1 GEEKJOB_ENABLED=0 $VENV agent.py $PROFILE_ARG --search
+        $VENV agent.py $PROFILE_ARG --source habr --search
         ;;
     geekjob-dry-run|geekjob-dryrun)
-        HH_ENABLED=0 SUPERJOB_ENABLED=0 HABR_ENABLED=0 GEEKJOB_ENABLED=1 $VENV agent.py $PROFILE_ARG --dry-run
+        $VENV agent.py $PROFILE_ARG --source geekjob --dry-run
         ;;
     geekjob-search|geekjob)
-        HH_ENABLED=0 SUPERJOB_ENABLED=0 HABR_ENABLED=0 GEEKJOB_ENABLED=1 $VENV agent.py $PROFILE_ARG --search
+        $VENV agent.py $PROFILE_ARG --source geekjob --search
         ;;
     grab-resume|resume)
         $VENV agent.py $PROFILE_ARG --grab-resume

@@ -81,6 +81,21 @@ def _temporary_config_values(**overrides):
             setattr(config, name, value)
 
 
+def _apply_source_selection(source: str) -> None:
+    source_flags = {
+        "hh": "HH_ENABLED",
+        "superjob": "SUPERJOB_ENABLED",
+        "habr": "HABR_ENABLED",
+        "geekjob": "GEEKJOB_ENABLED",
+    }
+    if not source:
+        return
+    if source not in source_flags:
+        raise ValueError(f"Unknown source: {source}")
+    for source_name, config_name in source_flags.items():
+        setattr(config, config_name, source_name == source)
+
+
 def _evaluation_with_guard_flag(evaluation: dict, flag: str) -> dict:
     updated = dict(evaluation or {})
     flags = list(updated.get("guard_flags") or [])
@@ -2101,6 +2116,12 @@ async def main():
         "--profile", default="default",
         help="Имя профиля (default = из env vars; иначе из ~/.job-hunter/profiles/<name>/profile.env)",
     )
+    parser.add_argument(
+        "--source",
+        choices=("hh", "superjob", "habr", "geekjob"),
+        default="",
+        help=argparse.SUPPRESS,
+    )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--login", action="store_true", help="Ручной логин (сохранение cookies)")
     group.add_argument("--google-login", action="store_true", help="Ручной логин в Google для Google Forms")
@@ -2188,6 +2209,7 @@ async def main():
         profile_mod.activate_no_lock(args.profile)
     else:
         profile_mod.activate(args.profile)
+    _apply_source_selection(args.source)
     _configure_logging(force=True)
     if args.profile != "default":
         log.info("Activated profile: %s", args.profile)
