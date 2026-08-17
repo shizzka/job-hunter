@@ -21,6 +21,9 @@ from hh.apply import (
     CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS as _CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS,
     apply_success_detected as _apply_success_detected,
     click_with_fallbacks as _click_with_fallbacks,
+    detect_response_controls as _detect_response_controls,
+    dismiss_magritte_dropdowns as _dismiss_magritte_dropdowns,
+    expand_cover_letter_input as _expand_cover_letter_input,
     has_archived_hh_state as _has_archived_hh_state,
     has_existing_response_ui as _has_existing_response_ui,
     looks_like_closed_or_archived_hh as _looks_like_closed_or_archived_hh,
@@ -29,6 +32,8 @@ from hh.apply import (
     page_closed_or_archived as _page_closed_or_archived,
     page_text as _page_text,
     response_requires_questions as _response_requires_questions,
+    save_debug_snapshot as _save_debug_snapshot,
+    submit_response_form_via_dom as _submit_response_form_via_dom,
 )
 from hh.browser import (
     HH_AUTH_COOKIE_NAMES,
@@ -283,82 +288,13 @@ class HHClient:
         )
 
     async def _dismiss_magritte_dropdowns(self) -> None:
-        popup_selectors = (
-            "[data-magritte-drop-base-direction]",
-            "[data-qa='drop-base']",
-        )
-        for _ in range(3):
-            popup = None
-            for selector in popup_selectors:
-                popup = await self._page.query_selector(selector)
-                if popup:
-                    break
-            if popup is None:
-                return
-
-            try:
-                await self._page.keyboard.press("Escape")
-            except Exception:
-                pass
-            await self._page.wait_for_timeout(200)
-
-            popup = None
-            for selector in popup_selectors:
-                popup = await self._page.query_selector(selector)
-                if popup:
-                    break
-            if popup is None:
-                return
-
-            try:
-                await self._page.evaluate(
-                    "() => document.activeElement && typeof document.activeElement.blur === 'function' && document.activeElement.blur()"
-                )
-            except Exception:
-                pass
-            await self._page.wait_for_timeout(100)
+        return await _dismiss_magritte_dropdowns(self)
 
     async def _expand_cover_letter_input(self) -> bool:
-        selectors = (
-            "[data-qa='add-cover-letter']",
-            "button[data-qa='add-cover-letter']",
-            "button:has-text('Добавить сопроводительное')",
-            "button:has-text('Приложить письмо')",
-            "button:has-text('Добавить письмо')",
-        )
-        for selector in selectors:
-            try:
-                button = await self._page.query_selector(selector)
-            except Exception:
-                continue
-            if not button:
-                continue
-            if await self._click_with_fallbacks(button, f"cover_letter_toggle:{selector}"):
-                await self._page.wait_for_timeout(500)
-                return True
-        return False
+        return await _expand_cover_letter_input(self)
 
     async def _submit_response_form_via_dom(self) -> bool:
-        try:
-            result = await self._page.evaluate(
-                """() => {
-                    const form = document.querySelector("form[name='vacancy_response']");
-                    if (form && typeof form.requestSubmit === 'function') {
-                        form.requestSubmit();
-                        return true;
-                    }
-                    const button = document.querySelector("[data-qa='vacancy-response-submit-popup']");
-                    if (button) {
-                        button.click();
-                        return true;
-                    }
-                    return false;
-                }"""
-            )
-        except Exception as exc:
-            log.debug("DOM submit fallback failed: %s", exc)
-            return False
-        return bool(result)
+        return await _submit_response_form_via_dom(self, logger=log)
 
     async def _detect_anti_bot_kind(self) -> str:
         current_url = (self._page.url or "").lower()
@@ -776,68 +712,14 @@ class HHClient:
     # ── Отклик на вакансию ────────────────────────────────────────────────
 
     async def _save_debug_snapshot(self, prefix: str) -> None:
-        """Сохранить скриншот + HTML текущей страницы в state-dir (для отладки)."""
-        try:
-            debug_path = os.path.join(config.HH_STATE_DIR, f"{prefix}.png")
-            debug_html = os.path.join(config.HH_STATE_DIR, f"{prefix}.html")
-            await self._page.screenshot(path=debug_path)
-            with open(debug_html, "w") as f:
-                f.write(await self._page.content())
-        except Exception:
-            pass
+        return await _save_debug_snapshot(
+            self,
+            prefix,
+            state_dir=config.HH_STATE_DIR,
+        )
 
     async def _detect_response_controls(self):
-        """Обнаружить элементы формы отклика на текущей странице.
-
-        Возвращает кортеж (current_url, response_header, questions_required,
-        resume_select, letter_field, submit_btn). Используется в apply_to_vacancy
-        чтобы определить состояние страницы после очередного шага.
-        """
-        current_url = self._page.url
-        response_header = await self._page.query_selector(
-            "h1:has-text('Отклик на вакансию'), "
-            "h2:has-text('Отклик на вакансию')"
-        )
-        questions_required = await self._response_requires_questions(current_url)
-        resume_select = await self._page.query_selector(
-            "[data-qa='resume-select'], "
-            "[data-qa*='resume-item'], "
-            "[data-qa='vacancy-response-popup-form-resume']"
-        )
-        letter_field = await self._page.query_selector(
-            "[data-qa='vacancy-response-popup-form-letter-input'], "
-            "textarea[name='letter'], "
-            "textarea[data-qa*='letter'], "
-            ".vacancy-response-popup textarea, "
-            "textarea"
-        )
-        submit_btn = await self._page.query_selector(
-            "[data-qa='vacancy-response-submit-popup'], "
-            "[data-qa='vacancy-response-letter-submit'], "
-            "button[data-qa*='submit'], "
-            "[data-qa='vacancy-response-link-top-again'], "
-            "[data-qa='vacancy-response-link-bottom-again'], "
-            "[data-qa='vacancy-response-link-top'], "
-            "[data-qa='vacancy-response-link-bottom'], "
-            "a[data-qa*='response-link']"
-        )
-        if not submit_btn:
-            # Some hh flows collapse back to the vacancy page after resume selection
-            # and expose only a link-style "Откликнуться" control.
-            submit_btn = await self._page.query_selector(
-                "button:has-text('Откликнуться'), "
-                "button:has-text('Отправить'), "
-                "a:has-text('Откликнуться'), "
-                "a:has-text('Отправить')"
-            )
-        return (
-            current_url,
-            response_header,
-            questions_required,
-            resume_select,
-            letter_field,
-            submit_btn,
-        )
+        return await _detect_response_controls(self)
 
     async def apply_to_vacancy(
         self,

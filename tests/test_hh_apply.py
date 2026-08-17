@@ -88,3 +88,53 @@ def test_legacy_response_questions_wrapper_forwards_patchable_dependencies(monke
         "current_url": "question-url",
         "logger": hh_client.log,
     }
+
+
+class FakeDomSubmitPage:
+    async def evaluate(self, script):
+        assert "form[name='vacancy_response']" in script
+        assert "vacancy-response-submit-popup" in script
+        return True
+
+
+def test_submit_response_form_via_dom_returns_page_result():
+    session = FakeSession(FakeDomSubmitPage())
+
+    assert asyncio.run(
+        hh_apply.submit_response_form_via_dom(session, logger=hh_client.log)
+    ) is True
+
+
+def test_legacy_debug_snapshot_wrapper_forwards_active_state_dir(monkeypatch):
+    client = hh_client.HHClient()
+    captured = {}
+
+    async def fake_snapshot(session, prefix, *, state_dir):
+        captured.update(session=session, prefix=prefix, state_dir=state_dir)
+
+    monkeypatch.setattr(hh_client, "_save_debug_snapshot", fake_snapshot)
+    monkeypatch.setattr(hh_client.config, "HH_STATE_DIR", "/tmp/hh-state")
+
+    asyncio.run(client._save_debug_snapshot("apply"))
+
+    assert captured == {
+        "session": client,
+        "prefix": "apply",
+        "state_dir": "/tmp/hh-state",
+    }
+
+
+def test_legacy_detect_controls_wrapper_uses_instance(monkeypatch):
+    client = hh_client.HHClient()
+    captured = {}
+
+    async def fake_detect(session):
+        captured["session"] = session
+        return ("url", None, False, None, None, None)
+
+    monkeypatch.setattr(hh_client, "_detect_response_controls", fake_detect)
+
+    result = asyncio.run(client._detect_response_controls())
+
+    assert result == ("url", None, False, None, None, None)
+    assert captured["session"] is client

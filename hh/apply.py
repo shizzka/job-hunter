@@ -1,5 +1,7 @@
 """Helpers for the HH vacancy application flow."""
 
+import os
+
 from hh.text import compact_text, normalize_text
 
 
@@ -200,4 +202,151 @@ async def response_requires_questions(session, current_url: str = "", *, logger)
     return (
         "ответьте на вопросы" in page_text
         or "для отклика необходимо ответить на несколько вопросов работодателя" in page_text
+    )
+
+
+async def dismiss_magritte_dropdowns(session) -> None:
+    popup_selectors = (
+        "[data-magritte-drop-base-direction]",
+        "[data-qa='drop-base']",
+    )
+    for _ in range(3):
+        popup = None
+        for selector in popup_selectors:
+            popup = await session._page.query_selector(selector)
+            if popup:
+                break
+        if popup is None:
+            return
+
+        try:
+            await session._page.keyboard.press("Escape")
+        except Exception:
+            pass
+        await session._page.wait_for_timeout(200)
+
+        popup = None
+        for selector in popup_selectors:
+            popup = await session._page.query_selector(selector)
+            if popup:
+                break
+        if popup is None:
+            return
+
+        try:
+            await session._page.evaluate(
+                "() => document.activeElement && typeof document.activeElement.blur === 'function' && document.activeElement.blur()"
+            )
+        except Exception:
+            pass
+        await session._page.wait_for_timeout(100)
+
+
+async def expand_cover_letter_input(session) -> bool:
+    selectors = (
+        "[data-qa='add-cover-letter']",
+        "button[data-qa='add-cover-letter']",
+        "button:has-text('Добавить сопроводительное')",
+        "button:has-text('Приложить письмо')",
+        "button:has-text('Добавить письмо')",
+    )
+    for selector in selectors:
+        try:
+            button = await session._page.query_selector(selector)
+        except Exception:
+            continue
+        if not button:
+            continue
+        if await session._click_with_fallbacks(button, f"cover_letter_toggle:{selector}"):
+            await session._page.wait_for_timeout(500)
+            return True
+    return False
+
+
+async def submit_response_form_via_dom(session, *, logger) -> bool:
+    try:
+        result = await session._page.evaluate(
+            """() => {
+                    const form = document.querySelector("form[name='vacancy_response']");
+                    if (form && typeof form.requestSubmit === 'function') {
+                        form.requestSubmit();
+                        return true;
+                    }
+                    const button = document.querySelector("[data-qa='vacancy-response-submit-popup']");
+                    if (button) {
+                        button.click();
+                        return true;
+                    }
+                    return false;
+                }"""
+        )
+    except Exception as exc:
+        logger.debug("DOM submit fallback failed: %s", exc)
+        return False
+    return bool(result)
+
+
+async def save_debug_snapshot(session, prefix: str, *, state_dir: str) -> None:
+    """Сохранить скриншот + HTML текущей страницы в state-dir (для отладки)."""
+    try:
+        debug_path = os.path.join(state_dir, f"{prefix}.png")
+        debug_html = os.path.join(state_dir, f"{prefix}.html")
+        await session._page.screenshot(path=debug_path)
+        with open(debug_html, "w") as f:
+            f.write(await session._page.content())
+    except Exception:
+        pass
+
+
+async def detect_response_controls(session):
+    """Обнаружить элементы формы отклика на текущей странице.
+
+        Возвращает кортеж (current_url, response_header, questions_required,
+        resume_select, letter_field, submit_btn). Используется в apply_to_vacancy
+        чтобы определить состояние страницы после очередного шага.
+        """
+    current_url = session._page.url
+    response_header = await session._page.query_selector(
+        "h1:has-text('Отклик на вакансию'), "
+        "h2:has-text('Отклик на вакансию')"
+    )
+    questions_required = await session._response_requires_questions(current_url)
+    resume_select = await session._page.query_selector(
+        "[data-qa='resume-select'], "
+        "[data-qa*='resume-item'], "
+        "[data-qa='vacancy-response-popup-form-resume']"
+    )
+    letter_field = await session._page.query_selector(
+        "[data-qa='vacancy-response-popup-form-letter-input'], "
+        "textarea[name='letter'], "
+        "textarea[data-qa*='letter'], "
+        ".vacancy-response-popup textarea, "
+        "textarea"
+    )
+    submit_btn = await session._page.query_selector(
+        "[data-qa='vacancy-response-submit-popup'], "
+        "[data-qa='vacancy-response-letter-submit'], "
+        "button[data-qa*='submit'], "
+        "[data-qa='vacancy-response-link-top-again'], "
+        "[data-qa='vacancy-response-link-bottom-again'], "
+        "[data-qa='vacancy-response-link-top'], "
+        "[data-qa='vacancy-response-link-bottom'], "
+        "a[data-qa*='response-link']"
+    )
+    if not submit_btn:
+        # Some hh flows collapse back to the vacancy page after resume selection
+        # and expose only a link-style "Откликнуться" control.
+        submit_btn = await session._page.query_selector(
+            "button:has-text('Откликнуться'), "
+            "button:has-text('Отправить'), "
+            "a:has-text('Откликнуться'), "
+            "a:has-text('Отправить')"
+        )
+    return (
+        current_url,
+        response_header,
+        questions_required,
+        resume_select,
+        letter_field,
+        submit_btn,
     )
