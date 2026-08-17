@@ -332,3 +332,47 @@ def test_legacy_choice_answer_wrapper_forwards_patchable_dependencies(monkeypatc
     assert captured["kwargs"]["settings"] is hh_client.config
     assert captured["kwargs"]["parse_llm_json"] is hh_client._parse_llm_json
     assert captured["kwargs"]["repair_llm_json"] is hh_client._repair_llm_json
+
+
+class DisabledQuestionSettings:
+    HH_AUTO_ANSWER_SIMPLE_QUESTIONS = False
+
+
+def test_try_auto_answer_questions_stops_when_feature_is_disabled():
+    result = asyncio.run(
+        forms.try_auto_answer_questions(
+            object(),
+            settings=DisabledQuestionSettings,
+            load_resume_text=_unexpected_dependency,
+            anti_bot_message=_unexpected_dependency,
+        )
+    )
+
+    assert result == {
+        "handled": True,
+        "ok": False,
+        "message": "Требуются доп. вопросы работодателя — пропускаем (автоответ отключён)",
+        "notes": [],
+    }
+
+
+def test_legacy_question_orchestration_forwards_patchable_dependencies(monkeypatch):
+    client = hh_client.HHClient()
+    captured = {}
+
+    async def fake_try(session, vacancy_context, **kwargs):
+        captured.update(
+            session=session,
+            vacancy_context=vacancy_context,
+            kwargs=kwargs,
+        )
+        return {"handled": True, "ok": True}
+
+    monkeypatch.setattr(hh_client, "_try_auto_answer_questions", fake_try)
+
+    assert asyncio.run(client._try_auto_answer_questions("QA vacancy"))["ok"] is True
+    assert captured["session"] is client
+    assert captured["vacancy_context"] == "QA vacancy"
+    assert captured["kwargs"]["settings"] is hh_client.config
+    assert captured["kwargs"]["load_resume_text"] is hh_client._load_resume_text
+    assert captured["kwargs"]["anti_bot_message"] is hh_client._anti_bot_message

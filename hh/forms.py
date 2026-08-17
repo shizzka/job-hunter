@@ -904,3 +904,246 @@ async def answer_choice_with_llm(
         # сдаёмся
         return {"selected": [], "is_skip": True}
     return retry
+
+
+async def try_auto_answer_questions(
+    session,
+    vacancy_context: str = "",
+    *,
+    settings,
+    load_resume_text,
+    anti_bot_message,
+) -> dict:
+    if not settings.HH_AUTO_ANSWER_SIMPLE_QUESTIONS:
+        return {
+            "handled": True,
+            "ok": False,
+            "message": "Требуются доп. вопросы работодателя — пропускаем (автоответ отключён)",
+            "notes": [],
+        }
+
+    inspected = await session._inspect_employer_questions()
+    fields = inspected.get("fields") or []
+    unsupported_fields = int(inspected.get("unsupported_fields") or 0)
+    unsupported_items = inspected.get("unsupported_items") or []
+    total_questions = len(fields) + unsupported_fields
+    page_text = inspected.get("page_text", "")
+
+    if total_questions <= 0:
+        return {
+            "handled": True,
+            "ok": False,
+            "message": "Требуются доп. вопросы работодателя — пропускаем (не удалось разобрать поля формы)",
+            "notes": [],
+        }
+
+    # unsupported_fields теперь почти всегда 0 (C1 переводит radio/checkbox/select в fields).
+    # Оставляем early-return только если есть реально неподдерживаемые поля (file/etc.).
+    if unsupported_fields:
+        unsupported_summary = []
+        for item in unsupported_items[:2]:
+            question_text = truncate_text(item.get("question_text") or "неизвестный вопрос", 120)
+            options = item.get("options") or []
+            if options:
+                question_text = f"{question_text} [{', '.join(options[:3])}]"
+            unsupported_summary.append(question_text)
+        return {
+            "handled": True,
+            "ok": False,
+            "message": "Требуются доп. вопросы работодателя — пропускаем (есть неподдерживаемые поля)",
+            "notes": [
+                "автоответ пропущен: неподдерживаемое поле в форме"
+                + (f" ({'; '.join(unsupported_summary)})" if unsupported_summary else "")
+            ],
+        }
+
+    if total_questions > settings.HH_AUTO_ANSWER_MAX_QUESTIONS:
+        return {
+            "handled": True,
+            "ok": False,
+            "message": "Требуются доп. вопросы работодателя — пропускаем (слишком много полей)",
+            "notes": [f"автоответ пропущен: полей {total_questions}, лимит {settings.HH_AUTO_ANSWER_MAX_QUESTIONS}"],
+        }
+
+    resume_text = load_resume_text()
+    salary_text = settings.HH_AUTO_ANSWER_SALARY_TEXT or extract_resume_salary_text(resume_text)
+    salary_number = settings.HH_AUTO_ANSWER_SALARY_NUMBER or extract_numeric_salary(salary_text)
+
+    answers = []
+    notes = []
+    question_answers = []
+
+    for field in fields:
+        question_text = (field.get("question_text") or field.get("placeholder") or "").strip()
+        input_type = (field.get("input_type") or "text").strip().lower()
+        control = (field.get("control") or "").strip().lower()
+
+        if is_risky_question(question_text):
+            short_question = truncate_text(question_text or "вопрос по резюме", 100)
+            answer_text = "Нужно ручное подтверждение: риск завысить опыт кандидата."
+            question_answers.append(
+                question_answer_item(
+                    question_text or "вопрос по резюме",
+                    answer_text,
+                    control=control or input_type,
+                    required=bool(field.get("required")),
+                    starred=bool(field.get("starred")),
+                    skipped=True,
+                    skip_reason="risky_question",
+                )
+            )
+            return {
+                "handled": True,
+                "ok": False,
+                "message": "Требуются доп. вопросы работодателя — нужно ручное подтверждение рискованного вопроса",
+                "notes": [f"автоответ пропущен: рискованный вопрос: {short_question}"],
+                "question_answers": question_answers,
+                "risky_question": short_question,
+            }
+
+        # ---- choice fields (radio / checkbox / select) ----
+        if control in ("radio", "checkbox", "select"):
+            choice = await session._answer_choice_with_llm(
+                field, resume_text, page_text, vacancy_context
+            )
+            if not choice or choice.get("is_skip") or not choice.get("selected"):
+                short_question = truncate_text(question_text or "вопрос по резюме", 100)
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "message": "Требуются доп. вопросы работодателя — пропускаем (нет уверенного выбора)",
+                    "notes": [f"автоответ пропущен: {short_question}"],
+                    "question_answers": question_answers,
+                }
+            selected = choice["selected"]
+            selected_indices = [s["index"] for s in selected]
+            # exactly one custom_text per field (first non-null)
+            custom_text = next((s.get("custom_text") for s in selected if s.get("custom_text")), None)
+            answers.append({
+                "field_id": field["field_id"],
+                "control": control,
+                "selected_indices": selected_indices,
+                "custom_text": custom_text,
+            })
+            options = field.get("options") or []
+            picked_labels = [
+                (options[i].get("label") if i < len(options) else f"#{i}")
+                for i in selected_indices
+            ]
+            answer_text = ", ".join(picked_labels)
+            if custom_text:
+                answer_text += f" + custom: {custom_text}"
+            bg_mark = " [best-guess]" if choice.get("best_guess") else ""
+            notes.append(format_question_answer_note(question_text or "вопрос", answer_text, control=f"{control}{bg_mark}"))
+            question_answers.append(
+                question_answer_item(
+                    question_text or "вопрос",
+                    answer_text,
+                    control=control,
+                    best_guess=bool(choice.get("best_guess")),
+                    required=bool(field.get("required")),
+                    starred=bool(field.get("starred")),
+                )
+            )
+            continue
+
+        # ---- text / textarea / number ----
+        if is_salary_question(question_text):
+            answer = salary_number if input_type == "number" else (salary_text or salary_number)
+            if not answer:
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "message": "Требуются доп. вопросы работодателя — пропускаем (не найден ответ по зарплате)",
+                    "notes": ["автоответ пропущен: в резюме нет явного зарплатного ориентира"],
+                    "question_answers": question_answers,
+                }
+            answer_question = "зарплатные ожидания"
+            notes.append(format_question_answer_note(answer_question, str(answer)))
+        else:
+            answer = await session._answer_question_with_llm(field, resume_text, page_text, vacancy_context)
+            if not answer:
+                short_question = truncate_text(question_text or "вопрос по резюме", 100)
+                return {
+                    "handled": True,
+                    "ok": False,
+                    "message": "Требуются доп. вопросы работодателя — пропускаем (нет уверенного ответа)",
+                    "notes": [f"автоответ пропущен: {short_question}"],
+                    "question_answers": question_answers,
+                }
+            answer_question = question_text or "вопрос по резюме"
+            notes.append(format_question_answer_note(answer_question, str(answer)))
+
+        answers.append({"field_id": field["field_id"], "answer": answer})
+        question_answers.append(
+            question_answer_item(
+                answer_question,
+                str(answer),
+                control=control or input_type,
+                required=bool(field.get("required")),
+                starred=bool(field.get("starred")),
+            )
+        )
+
+    fill_result = await session._fill_employer_question_answers(answers)
+    if int(fill_result.get("filled", 0)) != len(answers):
+        return {
+            "handled": True,
+            "ok": False,
+            "message": "Требуются доп. вопросы работодателя — пропускаем (не удалось заполнить форму)",
+            "notes": notes + [f"ошибка заполнения: {', '.join(fill_result.get('errors', [])[:2])}"],
+            "question_answers": question_answers,
+        }
+
+    await session._page.wait_for_timeout(500)
+
+    if not await session._submit_employer_questions():
+        return {
+            "handled": True,
+            "ok": False,
+            "message": "Требуются доп. вопросы работодателя — пропускаем (не удалось отправить форму)",
+            "notes": notes,
+            "question_answers": question_answers,
+        }
+
+    await session._page.wait_for_timeout(4000)
+
+    anti_bot_kind = await session._detect_anti_bot_kind()
+    anti_bot_kind = await session._handle_anti_bot_with_solver(anti_bot_kind, stage="questions_submit")
+    if anti_bot_kind:
+        message = anti_bot_message(anti_bot_kind, "после автоответа на вопросы")
+        session._remember_antibot_signal(anti_bot_kind, "questions_submit", message)
+        return {
+            "handled": True,
+            "ok": False,
+            "message": message,
+            "notes": notes,
+            "question_answers": question_answers,
+            "anti_bot_kind": anti_bot_kind,
+        }
+
+    if await session._apply_success_detected() or await session._has_existing_response_ui():
+        return {
+            "handled": True,
+            "ok": True,
+            "message": "Отклик отправлен",
+            "notes": notes,
+            "question_answers": question_answers,
+        }
+
+    if await session._response_requires_questions():
+        return {
+            "handled": True,
+            "ok": False,
+            "message": "Требуются доп. вопросы работодателя — пропускаем (форма не закрылась после автоответа)",
+            "notes": notes,
+            "question_answers": question_answers,
+        }
+
+    return {
+        "handled": True,
+        "ok": False,
+        "message": "Не удалось подтвердить отклик после автоответа на вопросы",
+        "notes": notes,
+        "question_answers": question_answers,
+    }
