@@ -80,3 +80,109 @@ def test_legacy_inspect_wrapper_forwards_patchable_dependencies(monkeypatch):
 
     assert asyncio.run(client._inspect_employer_questions()) == {"fields": []}
     assert captured == {"page": client._page, "logger": hh_client.log}
+
+
+class FakeFillPage:
+    def __init__(self):
+        self.plan = None
+
+    async def evaluate(self, script, plan):
+        assert "codex:auto-question-fill" in script
+        self.plan = plan
+        return {"filled": len(plan), "errors": []}
+
+
+def test_fill_employer_question_answers_passes_plan_to_page():
+    page = FakeFillPage()
+    plan = [{"field_id": "field-1", "answer": "Да"}]
+
+    result = asyncio.run(
+        forms.fill_employer_question_answers(page, plan, logger=hh_client.log)
+    )
+
+    assert result == {"filled": 1, "errors": []}
+    assert page.plan == plan
+
+
+def test_legacy_fill_wrapper_forwards_patchable_dependencies(monkeypatch):
+    client = hh_client.HHClient()
+    client._page = object()
+    captured = {}
+
+    async def fake_fill(page, answers, *, logger):
+        captured.update(page=page, answers=answers, logger=logger)
+        return {"filled": 1, "errors": []}
+
+    monkeypatch.setattr(hh_client, "_fill_employer_question_answers", fake_fill)
+    plan = [{"field_id": "field-1", "answer": "Да"}]
+
+    assert asyncio.run(client._fill_employer_question_answers(plan))["filled"] == 1
+    assert captured == {
+        "page": client._page,
+        "answers": plan,
+        "logger": hh_client.log,
+    }
+
+
+class FakeSubmitPage:
+    def __init__(self):
+        self.selectors = []
+        self.button = object()
+
+    async def query_selector(self, selector):
+        self.selectors.append(selector)
+        if selector == "button:has-text('Отправить')":
+            return self.button
+        return None
+
+
+def test_submit_employer_questions_uses_injected_fallbacks():
+    page = FakeSubmitPage()
+    clicked = []
+
+    async def submit_via_dom():
+        return False
+
+    async def click_with_fallbacks(button, label):
+        clicked.append((button, label))
+        return True
+
+    assert asyncio.run(
+        forms.submit_employer_questions(
+            page,
+            submit_response_form_via_dom=submit_via_dom,
+            click_with_fallbacks=click_with_fallbacks,
+        )
+    ) is True
+    assert clicked == [(page.button, "question_submit:button:has-text('Отправить')")]
+
+
+def test_legacy_submit_wrapper_forwards_instance_methods(monkeypatch):
+    client = hh_client.HHClient()
+    client._page = object()
+    captured = {}
+
+    async def fake_dom_submit():
+        return False
+
+    async def fake_click(element, label):
+        return False
+
+    async def fake_submit(page, *, submit_response_form_via_dom, click_with_fallbacks):
+        captured.update(
+            page=page,
+            dom=submit_response_form_via_dom,
+            click=click_with_fallbacks,
+        )
+        return True
+
+    monkeypatch.setattr(client, "_submit_response_form_via_dom", fake_dom_submit)
+    monkeypatch.setattr(client, "_click_with_fallbacks", fake_click)
+    monkeypatch.setattr(hh_client, "_submit_employer_questions", fake_submit)
+
+    assert asyncio.run(client._submit_employer_questions()) is True
+    assert captured == {
+        "page": client._page,
+        "dom": fake_dom_submit,
+        "click": fake_click,
+    }

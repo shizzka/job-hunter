@@ -32,11 +32,13 @@ from hh.forms import (
     answer_question_from_library as _answer_question_from_library,
     extract_numeric_salary as _extract_numeric_salary,
     extract_resume_salary_text as _extract_resume_salary_text,
+    fill_employer_question_answers as _fill_employer_question_answers,
     format_question_answer_note as _format_question_answer_note,
     inspect_employer_questions as _inspect_employer_questions,
     is_risky_question as _is_risky_question,
     is_salary_question as _is_salary_question,
     question_answer_item as _question_answer_item,
+    submit_employer_questions as _submit_employer_questions,
     truncate_text as _truncate_text,
 )
 from hh.resume import (
@@ -363,182 +365,14 @@ class HHClient:
         return await _inspect_employer_questions(self._page, logger=log)
 
     async def _fill_employer_question_answers(self, answers: list[dict]) -> dict:
-        try:
-            return await self._page.evaluate(
-                """(plan) => {
-                    /* codex:auto-question-fill */
-                    const dispatch = (el, name) => {
-                        el.dispatchEvent(new Event(name, { bubbles: true }));
-                    };
-                    const setValue = (el, value) => {
-                        const tag = (el.tagName || "").toLowerCase();
-                        const prototype = tag === "textarea"
-                            ? window.HTMLTextAreaElement?.prototype
-                            : window.HTMLInputElement?.prototype;
-                        const descriptor = prototype ? Object.getOwnPropertyDescriptor(prototype, "value") : null;
-                        if (descriptor && typeof descriptor.set === "function") {
-                            descriptor.set.call(el, value);
-                        } else {
-                            el.value = value;
-                        }
-                        dispatch(el, "input");
-                        dispatch(el, "change");
-                    };
-
-                    const findGroupMembers = (anchor, control) => {
-                        const name = anchor.getAttribute("name");
-                        if (!name) return [anchor];
-                        const sel = `input[type="${control}"][name="${CSS.escape(name)}"]`;
-                        return Array.from(document.querySelectorAll(sel));
-                    };
-
-                    // Find the "custom-text" companion input near a "Свой вариант" radio.
-                    // Heuristic: look in the radio's <label> for textarea/input, then in the
-                    // closest fieldset / parent block for an unbound text input that
-                    // appears AFTER the radio.
-                    const findCustomTextNear = (radio) => {
-                        const label = radio.closest("label");
-                        if (label) {
-                            const inner = label.querySelector("input[type='text'], textarea");
-                            if (inner) return inner;
-                        }
-                        const parent = radio.closest("fieldset") || radio.parentElement?.parentElement;
-                        if (!parent) return null;
-                        const candidates = Array.from(parent.querySelectorAll("input[type='text'], textarea"));
-                        // pick first that is NOT a radio's label-embedded text input of another option
-                        for (const c of candidates) {
-                            if (c.disabled) continue;
-                            // skip if it is in a *different* option's label
-                            const cLabel = c.closest("label");
-                            if (cLabel && cLabel.querySelector("input[type='radio'], input[type='checkbox']")) {
-                                // text input INSIDE a label that wraps a radio — accept only if that radio is `radio`
-                                const ownerRadio = cLabel.querySelector("input[type='radio'], input[type='checkbox']");
-                                if (ownerRadio === radio) return c;
-                                continue;
-                            }
-                            return c;
-                        }
-                        return null;
-                    };
-
-                    const clickOption = (input) => {
-                        try {
-                            input.focus();
-                        } catch (e) {}
-                        if (!input.checked) {
-                            input.click();
-                            dispatch(input, "input");
-                            dispatch(input, "change");
-                        }
-                    };
-
-                    const result = { filled: 0, errors: [] };
-                    for (const item of plan || []) {
-                        const selector = `[data-codex-auto-field-id="${item.field_id}"]`;
-                        const anchor = document.querySelector(selector);
-                        if (!anchor) {
-                            result.errors.push(`field ${item.field_id} not found`);
-                            continue;
-                        }
-                        try {
-                            const control = (item.control || "").toLowerCase();
-                            if (control === "radio" || control === "checkbox") {
-                                const members = findGroupMembers(anchor, control);
-                                if (!members.length) {
-                                    result.errors.push(`field ${item.field_id} no members`);
-                                    continue;
-                                }
-                                const selIndices = Array.isArray(item.selected_indices) ? item.selected_indices : [];
-                                if (!selIndices.length) {
-                                    result.errors.push(`field ${item.field_id} no selection`);
-                                    continue;
-                                }
-                                // For radio: uncheck not needed, native; for checkbox: clear others if exclusive flag?
-                                // We follow "select only what LLM picked" — uncheck members not in selIndices.
-                                if (control === "checkbox") {
-                                    members.forEach((m, idx) => {
-                                        const wantChecked = selIndices.includes(idx);
-                                        if (m.checked !== wantChecked) {
-                                            m.click();
-                                            dispatch(m, "input");
-                                            dispatch(m, "change");
-                                        }
-                                    });
-                                } else {
-                                    const idx = selIndices[0];
-                                    if (idx < 0 || idx >= members.length) {
-                                        result.errors.push(`field ${item.field_id} index ${idx} out of range`);
-                                        continue;
-                                    }
-                                    clickOption(members[idx]);
-                                }
-                                // If LLM provided custom_text and the chosen option is "Свой вариант"-style,
-                                // fill the companion text input.
-                                if (item.custom_text) {
-                                    const idx = selIndices[0];
-                                    const ownerRadio = members[idx] || anchor;
-                                    const txt = findCustomTextNear(ownerRadio);
-                                    if (txt) {
-                                        txt.focus();
-                                        setValue(txt, String(item.custom_text));
-                                    }
-                                }
-                                result.filled += 1;
-                            } else if (control === "select") {
-                                const selIndices = Array.isArray(item.selected_indices) ? item.selected_indices : [];
-                                if (!selIndices.length) {
-                                    result.errors.push(`field ${item.field_id} no selection`);
-                                    continue;
-                                }
-                                const opts = Array.from(anchor.querySelectorAll("option"));
-                                const idx = selIndices[0];
-                                if (idx < 0 || idx >= opts.length) {
-                                    result.errors.push(`field ${item.field_id} select index ${idx} out of range`);
-                                    continue;
-                                }
-                                anchor.focus();
-                                anchor.value = opts[idx].value;
-                                dispatch(anchor, "input");
-                                dispatch(anchor, "change");
-                                result.filled += 1;
-                            } else {
-                                anchor.focus();
-                                setValue(anchor, String(item.answer ?? ""));
-                                result.filled += 1;
-                            }
-                        } catch (err) {
-                            result.errors.push(String(err));
-                        }
-                    }
-                    return result;
-                }""",
-                answers,
-            )
-        except Exception as exc:
-            log.warning("Question form fill failed: %s", exc)
-            return {"filled": 0, "errors": [str(exc)]}
+        return await _fill_employer_question_answers(self._page, answers, logger=log)
 
     async def _submit_employer_questions(self) -> bool:
-        if await self._submit_response_form_via_dom():
-            return True
-
-        selectors = (
-            "[data-qa='vacancy-response-submit-popup']",
-            "[data-qa='vacancy-response-letter-submit']",
-            "button[data-qa*='submit']",
-            "button:has-text('Отправить')",
-            "button:has-text('Продолжить')",
-            "button:has-text('Дальше')",
-            "button:has-text('Откликнуться')",
+        return await _submit_employer_questions(
+            self._page,
+            submit_response_form_via_dom=self._submit_response_form_via_dom,
+            click_with_fallbacks=self._click_with_fallbacks,
         )
-        for selector in selectors:
-            try:
-                button = await self._page.query_selector(selector)
-            except Exception:
-                continue
-            if button and await self._click_with_fallbacks(button, f"question_submit:{selector}"):
-                return True
-        return False
 
     async def _answer_question_with_llm(
         self,

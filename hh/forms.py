@@ -410,3 +410,188 @@ async def inspect_employer_questions(page, *, logger) -> dict:
     result.setdefault("unsupported_fields", 0)
     result.setdefault("unsupported_items", [])
     return result
+
+
+async def fill_employer_question_answers(page, answers: list[dict], *, logger) -> dict:
+    try:
+        return await page.evaluate(
+            """(plan) => {
+                /* codex:auto-question-fill */
+                const dispatch = (el, name) => {
+                    el.dispatchEvent(new Event(name, { bubbles: true }));
+                };
+                const setValue = (el, value) => {
+                    const tag = (el.tagName || "").toLowerCase();
+                    const prototype = tag === "textarea"
+                        ? window.HTMLTextAreaElement?.prototype
+                        : window.HTMLInputElement?.prototype;
+                    const descriptor = prototype ? Object.getOwnPropertyDescriptor(prototype, "value") : null;
+                    if (descriptor && typeof descriptor.set === "function") {
+                        descriptor.set.call(el, value);
+                    } else {
+                        el.value = value;
+                    }
+                    dispatch(el, "input");
+                    dispatch(el, "change");
+                };
+
+                const findGroupMembers = (anchor, control) => {
+                    const name = anchor.getAttribute("name");
+                    if (!name) return [anchor];
+                    const sel = `input[type="${control}"][name="${CSS.escape(name)}"]`;
+                    return Array.from(document.querySelectorAll(sel));
+                };
+
+                // Find the "custom-text" companion input near a "Свой вариант" radio.
+                // Heuristic: look in the radio's <label> for textarea/input, then in the
+                // closest fieldset / parent block for an unbound text input that
+                // appears AFTER the radio.
+                const findCustomTextNear = (radio) => {
+                    const label = radio.closest("label");
+                    if (label) {
+                        const inner = label.querySelector("input[type='text'], textarea");
+                        if (inner) return inner;
+                    }
+                    const parent = radio.closest("fieldset") || radio.parentElement?.parentElement;
+                    if (!parent) return null;
+                    const candidates = Array.from(parent.querySelectorAll("input[type='text'], textarea"));
+                    // pick first that is NOT a radio's label-embedded text input of another option
+                    for (const c of candidates) {
+                        if (c.disabled) continue;
+                        // skip if it is in a *different* option's label
+                        const cLabel = c.closest("label");
+                        if (cLabel && cLabel.querySelector("input[type='radio'], input[type='checkbox']")) {
+                            // text input INSIDE a label that wraps a radio — accept only if that radio is `radio`
+                            const ownerRadio = cLabel.querySelector("input[type='radio'], input[type='checkbox']");
+                            if (ownerRadio === radio) return c;
+                            continue;
+                        }
+                        return c;
+                    }
+                    return null;
+                };
+
+                const clickOption = (input) => {
+                    try {
+                        input.focus();
+                    } catch (e) {}
+                    if (!input.checked) {
+                        input.click();
+                        dispatch(input, "input");
+                        dispatch(input, "change");
+                    }
+                };
+
+                const result = { filled: 0, errors: [] };
+                for (const item of plan || []) {
+                    const selector = `[data-codex-auto-field-id="${item.field_id}"]`;
+                    const anchor = document.querySelector(selector);
+                    if (!anchor) {
+                        result.errors.push(`field ${item.field_id} not found`);
+                        continue;
+                    }
+                    try {
+                        const control = (item.control || "").toLowerCase();
+                        if (control === "radio" || control === "checkbox") {
+                            const members = findGroupMembers(anchor, control);
+                            if (!members.length) {
+                                result.errors.push(`field ${item.field_id} no members`);
+                                continue;
+                            }
+                            const selIndices = Array.isArray(item.selected_indices) ? item.selected_indices : [];
+                            if (!selIndices.length) {
+                                result.errors.push(`field ${item.field_id} no selection`);
+                                continue;
+                            }
+                            // For radio: uncheck not needed, native; for checkbox: clear others if exclusive flag?
+                            // We follow "select only what LLM picked" — uncheck members not in selIndices.
+                            if (control === "checkbox") {
+                                members.forEach((m, idx) => {
+                                    const wantChecked = selIndices.includes(idx);
+                                    if (m.checked !== wantChecked) {
+                                        m.click();
+                                        dispatch(m, "input");
+                                        dispatch(m, "change");
+                                    }
+                                });
+                            } else {
+                                const idx = selIndices[0];
+                                if (idx < 0 || idx >= members.length) {
+                                    result.errors.push(`field ${item.field_id} index ${idx} out of range`);
+                                    continue;
+                                }
+                                clickOption(members[idx]);
+                            }
+                            // If LLM provided custom_text and the chosen option is "Свой вариант"-style,
+                            // fill the companion text input.
+                            if (item.custom_text) {
+                                const idx = selIndices[0];
+                                const ownerRadio = members[idx] || anchor;
+                                const txt = findCustomTextNear(ownerRadio);
+                                if (txt) {
+                                    txt.focus();
+                                    setValue(txt, String(item.custom_text));
+                                }
+                            }
+                            result.filled += 1;
+                        } else if (control === "select") {
+                            const selIndices = Array.isArray(item.selected_indices) ? item.selected_indices : [];
+                            if (!selIndices.length) {
+                                result.errors.push(`field ${item.field_id} no selection`);
+                                continue;
+                            }
+                            const opts = Array.from(anchor.querySelectorAll("option"));
+                            const idx = selIndices[0];
+                            if (idx < 0 || idx >= opts.length) {
+                                result.errors.push(`field ${item.field_id} select index ${idx} out of range`);
+                                continue;
+                            }
+                            anchor.focus();
+                            anchor.value = opts[idx].value;
+                            dispatch(anchor, "input");
+                            dispatch(anchor, "change");
+                            result.filled += 1;
+                        } else {
+                            anchor.focus();
+                            setValue(anchor, String(item.answer ?? ""));
+                            result.filled += 1;
+                        }
+                    } catch (err) {
+                        result.errors.push(String(err));
+                    }
+                }
+                return result;
+            }""",
+            answers,
+        )
+    except Exception as exc:
+        logger.warning("Question form fill failed: %s", exc)
+        return {"filled": 0, "errors": [str(exc)]}
+
+
+async def submit_employer_questions(
+    page,
+    *,
+    submit_response_form_via_dom,
+    click_with_fallbacks,
+) -> bool:
+    if await submit_response_form_via_dom():
+        return True
+
+    selectors = (
+        "[data-qa='vacancy-response-submit-popup']",
+        "[data-qa='vacancy-response-letter-submit']",
+        "button[data-qa*='submit']",
+        "button:has-text('Отправить')",
+        "button:has-text('Продолжить')",
+        "button:has-text('Дальше')",
+        "button:has-text('Откликнуться')",
+    )
+    for selector in selectors:
+        try:
+            button = await page.query_selector(selector)
+        except Exception:
+            continue
+        if button and await click_with_fallbacks(button, f"question_submit:{selector}"):
+            return True
+    return False
