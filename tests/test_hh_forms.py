@@ -186,3 +186,64 @@ def test_legacy_submit_wrapper_forwards_instance_methods(monkeypatch):
         "dom": fake_dom_submit,
         "click": fake_click,
     }
+
+
+class AnswerSettings:
+    HH_AUTO_ANSWER_USE_LLM = True
+    LLM_API_KEY = "test-key"
+    HH_AUTO_ANSWER_MAX_CHARS = 140
+    HH_QUESTION_MODEL = ""
+    LLM_MODEL = "test-model"
+
+
+def _unexpected_dependency(*args, **kwargs):
+    raise AssertionError("stable answer must not call external dependencies")
+
+
+def test_answer_question_with_llm_uses_stable_library_before_llm():
+    answer = asyncio.run(
+        forms.answer_question_with_llm(
+            {
+                "question_text": "Какой у вас опыт REST API, Postman и JSON?",
+                "input_type": "textarea",
+            },
+            "Резюме QA",
+            settings=AnswerSettings,
+            logger=hh_client.log,
+            get_question_answer_client=_unexpected_dependency,
+            build_salary_rule_block=_unexpected_dependency,
+            build_facts_block=_unexpected_dependency,
+            build_profile_note_block=_unexpected_dependency,
+            build_filtered_kb_block=_unexpected_dependency,
+            build_knowledge_base_block=_unexpected_dependency,
+            parse_llm_json=_unexpected_dependency,
+            repair_llm_json=_unexpected_dependency,
+        )
+    )
+
+    assert answer is not None
+    assert "REST API" in answer
+    assert len(answer) <= AnswerSettings.HH_AUTO_ANSWER_MAX_CHARS
+
+
+def test_legacy_text_answer_wrapper_forwards_patchable_dependencies(monkeypatch):
+    client = hh_client.HHClient()
+    captured = {}
+
+    async def fake_answer(*args, **kwargs):
+        captured.update(args=args, kwargs=kwargs)
+        return "Ответ"
+
+    monkeypatch.setattr(hh_client, "_answer_question_with_llm", fake_answer)
+    field = {"question_text": "Вопрос"}
+
+    assert asyncio.run(client._answer_question_with_llm(field, "Резюме")) == "Ответ"
+    assert captured["args"] == (field, "Резюме", "", "")
+    assert captured["kwargs"]["settings"] is hh_client.config
+    assert captured["kwargs"]["logger"] is hh_client.log
+    assert (
+        captured["kwargs"]["get_question_answer_client"]
+        is hh_client._get_question_answer_client
+    )
+    assert captured["kwargs"]["parse_llm_json"] is hh_client._parse_llm_json
+    assert captured["kwargs"]["repair_llm_json"] is hh_client._repair_llm_json

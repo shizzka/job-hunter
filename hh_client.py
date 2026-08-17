@@ -29,6 +29,7 @@ from hh.browser import (
 from hh.forms import (
     RISKY_QUESTION_PATTERNS,
     STABLE_ANSWER_LIBRARY,
+    answer_question_with_llm as _answer_question_with_llm,
     answer_question_from_library as _answer_question_from_library,
     extract_numeric_salary as _extract_numeric_salary,
     extract_resume_salary_text as _extract_resume_salary_text,
@@ -381,113 +382,22 @@ class HHClient:
         page_text: str = "",
         vacancy_context: str = "",
     ) -> str | None:
-        if not config.HH_AUTO_ANSWER_USE_LLM or not config.LLM_API_KEY or not resume_text.strip():
-            return None
-
-        question_text = (field.get("question_text") or field.get("placeholder") or "").strip()
-        if not question_text:
-            return None
-
-        field_type = (field.get("input_type") or field.get("control") or "text").strip() or "text"
-        max_chars = config.HH_AUTO_ANSWER_MAX_CHARS
-        field_max_length = int(field.get("max_length") or 0)
-        if field_max_length > 0:
-            max_chars = min(max_chars, field_max_length)
-
-        if _is_risky_question(question_text):
-            log.info("HH auto-answer skipped risky question: %s", _truncate_text(question_text, 120))
-            return None
-
-        stable_answer = _answer_question_from_library(question_text, max_chars=max_chars)
-        if stable_answer:
-            return stable_answer
-
-        vacancy_block = (
-            f"Контекст вакансии (на неё откликаемся):\n{_truncate_text(vacancy_context, 1500)}\n\n"
-            if vacancy_context else ""
+        return await _answer_question_with_llm(
+            field,
+            resume_text,
+            page_text,
+            vacancy_context,
+            settings=config,
+            logger=log,
+            get_question_answer_client=_get_question_answer_client,
+            build_salary_rule_block=_build_salary_rule_block,
+            build_facts_block=_build_facts_block,
+            build_profile_note_block=_build_profile_note_block,
+            build_filtered_kb_block=_build_filtered_kb_block,
+            build_knowledge_base_block=_build_knowledge_base_block,
+            parse_llm_json=_parse_llm_json,
+            repair_llm_json=_repair_llm_json,
         )
-        salary_block = _build_salary_rule_block()
-        facts_block = _build_facts_block()
-        profile_note_block = _build_profile_note_block()
-        # 2-pass: фильтруем KB под конкретную вакансию (если контекст есть)
-        try:
-            knowledge_block = await _build_filtered_kb_block(
-                vacancy_context, _get_question_answer_client(),
-                max_sections=5, limit_chars=8000,
-            )
-        except Exception as exc:
-            log.debug("filtered KB failed, fallback to full: %s", exc)
-            knowledge_block = _build_knowledge_base_block(limit_chars=8000)
-
-        prompt = f"""Ты отвечаешь на вопрос работодателя на hh.ru от имени кандидата.
-
-Опирайся на канонический профиль (приоритет), структурированные факты, факты из резюме и контекст вакансии. Ничего не выдумывай.
-Если ни в фактах ни в резюме нельзя ответить уверенно — верни status=skip.
-
-Тип поля: {field_type}
-Максимум символов: {max_chars}
-Вопрос: {question_text}
-Контекст формы: {_truncate_text(page_text, 1200) if page_text else "(нет)"}
-
-{profile_note_block}{knowledge_block}{salary_block}{facts_block}{vacancy_block}Резюме кандидата:
-{resume_text[:6000]}
-
-Верни ТОЛЬКО валидный JSON, без markdown-обёртки, без рассуждений до или после. Первым символом ответа должен быть `{{`, последним `}}`. Формат:
-{{
-  "status": "answer" | "skip",
-  "answer": "..."
-}}
-
-Правила:
-- для text/textarea: коротко и по делу, без приветствий, до {max_chars} символов;
-- для number: только число, без слов и знаков валюты;
-- если поле выглядит как свободное (placeholder вроде "Писать тут", "Сообщение") и явного вопроса нет — напиши краткое сопроводительное под вакансию из резюме (3–5 предложений), это не повод для skip;
-- если ответ неочевиден и из резюме фактов нет — status=skip;
-- НЕ объясняй свой ответ за пределами JSON."""
-
-        try:
-            client = _get_question_answer_client()
-            response = await client.chat.completions.create(
-                model=config.HH_QUESTION_MODEL or config.LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": "Ты отвечаешь строго в формате JSON. Не пиши никакого текста до или после JSON-объекта."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.1,
-                max_tokens=600,
-            )
-            raw_text = response.choices[0].message.content or ""
-            model = config.HH_QUESTION_MODEL or config.LLM_MODEL
-            try:
-                parsed = _parse_llm_json(raw_text)
-            except Exception as parse_exc:
-                log.info("LLM question JSON parse failed, trying repair: %s", parse_exc)
-                parsed = await _repair_llm_json(
-                    client,
-                    model=model,
-                    raw_text=raw_text,
-                    parse_error=str(parse_exc),
-                    schema='{"status": "answer" | "skip", "answer": "..."}',
-                    max_tokens=600,
-                )
-        except Exception as exc:
-            log.warning("LLM question answer failed: %s", exc)
-            return None
-
-        if parsed.get("status") != "answer":
-            return None
-
-        answer = str(parsed.get("answer", "")).strip()
-        if not answer:
-            return None
-
-        if field_type == "number":
-            answer = _extract_numeric_salary(answer) if not answer.isdigit() else answer
-            if not answer:
-                return None
-            return answer
-
-        return _truncate_text(answer, max_chars)
 
     async def _answer_choice_with_llm(
         self,
