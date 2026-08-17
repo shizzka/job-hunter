@@ -2,7 +2,9 @@
 
 import logging
 import re
+from typing import Any
 
+from chat_screening import classify_message_author
 
 log = logging.getLogger("chat_responder")
 CHATIK_ROOT = "https://chatik.hh.ru"
@@ -115,3 +117,192 @@ async def open_chatik_page(
 
     assert last_exc is not None
     raise last_exc
+
+
+async def list_chats(
+    page,
+    *,
+    chatik_root: str = CHATIK_ROOT,
+    open_page=open_chatik_page,
+) -> list[dict]:
+    """Открыть chatik root и вернуть свежие чаты с metadata.
+
+    Chatik виртуализует список: в DOM присутствует только видимое окно.
+    Поэтому нельзя сначала проскроллить вниз, а потом читать DOM — так
+    теряются свежие чаты из верхнего окна.
+    """
+    await open_page(
+        page,
+        f"{chatik_root}/",
+        '[data-qa^="chatik-open-chat-"]',
+        settle_ms=2000,
+    )
+
+    chats = await page.evaluate("""async () => {
+        const all = [...document.querySelectorAll('*')];
+        const scroller = all.filter(el => {
+            const cs = getComputedStyle(el);
+            return (cs.overflowY === 'auto' || cs.overflowY === 'scroll')
+                && el.scrollHeight > el.clientHeight + 50;
+        }).sort((a,b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0];
+        const seen = new Map();
+        const collect = () => {
+            const items = [...document.querySelectorAll('[data-qa^="chatik-open-chat-"]')];
+            for (const el of items) {
+                const qa = el.getAttribute('data-qa') || '';
+                const idMatch = qa.match(/^chatik-open-chat-(\\d+)$/);
+                if (!idMatch) continue;
+                const id = idMatch[1];
+                if (seen.has(id)) continue;
+                const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                seen.set(id, {chat_id: id, preview: text.slice(0, 300)});
+            }
+        };
+
+        collect();
+        if (scroller) {
+            scroller.scrollTop = 0;
+            await new Promise(r => setTimeout(r, 500));
+            collect();
+            let last = -1;
+            // Проверяем свежую верхнюю часть списка. Пустые записи новых откликов
+            // позже отфильтруются без открытия страницы чата.
+            for (let i = 0; i < 10; i++) {
+                scroller.scrollTop += Math.max(320, Math.floor(scroller.clientHeight * 0.75));
+                await new Promise(r => setTimeout(r, 250));
+                collect();
+                if (scroller.scrollTop === last) break;
+                last = scroller.scrollTop;
+            }
+        }
+        return [...seen.values()];
+    }""")
+    return chats
+
+
+async def extract_messages(
+    page,
+    *,
+    classify_author=classify_message_author,
+) -> dict[str, Any]:
+    """Read messages from the currently open chat without navigating."""
+    data = await page.evaluate("""() => {
+        // основные bubbles
+        const bubbles = [...document.querySelectorAll('[data-qa^="chatik-chat-message-"]')]
+            .filter(el => /^chatik-chat-message-\\d+$/.test(el.getAttribute('data-qa') || ''));
+        const out = [];
+        for (const b of bubbles) {
+            const qa = b.getAttribute('data-qa');
+            const idMatch = qa.match(/^chatik-chat-message-(\\d+)$/);
+            if (!idMatch) continue;
+            const mid = idMatch[1];
+            // text
+            const textEl = b.querySelector('[data-qa$="-text"]')
+                       || b.querySelector('[data-qa="chatik-chat-message-' + mid + '-text"]');
+            const text = textEl ? (textEl.innerText || '').trim() : '';
+            // author label inside the bubble
+            const authorEl = b.querySelector('[data-qa="chat-bubble-author-name"]');
+            const author = authorEl ? authorEl.innerText.trim() : '';
+            // Avatar can be an img or an icon with aria-label (robot recruiter).
+            const avatarImg = b.querySelector('img[alt]');
+            const avatarLabelEl = b.querySelector(
+                '[data-qa="chat-bubble-wrapper"] [aria-label]'
+            );
+            const avatarAlt = avatarImg
+                ? (avatarImg.getAttribute('alt') || '')
+                : (avatarLabelEl?.getAttribute('aria-label') || '');
+            const avatarSrc = avatarImg ? avatarImg.src : '';
+            // Incoming continuation bubbles may omit author/avatar. Outgoing CSS
+            // markers are the reliable way to identify our messages.
+            const is_me = Boolean(
+                b.querySelector('[class*="chat-bubble_outgoing"]')
+                || b.querySelector('[class*="message_my"]')
+            );
+            const links = [...b.querySelectorAll('a[href]')].map(a => ({
+                href: a.href || '',
+                text: (a.innerText || '').trim(),
+            }));
+            out.push({
+                id: mid,
+                text,
+                author,
+                avatar_alt: avatarAlt,
+                avatar_src: avatarSrc,
+                links,
+                is_ai: false,
+                is_me,
+                is_other: !is_me,
+            });
+        }
+        // page title / chat header — для extract названия вакансии и компании
+        const headerCompany = (document.querySelector('[data-qa="chat-header-title"]')
+                            || document.querySelector('header h1, h1'))?.innerText || '';
+        const vacancyLink = document.querySelector('a[href*="/vacancy/"]');
+        const vacancy = {
+            title: vacancyLink ? vacancyLink.innerText.trim() : '',
+            url: vacancyLink ? vacancyLink.href : '',
+            company: headerCompany.trim(),
+        };
+        return {messages: out, vacancy};
+    }""")
+    for message in data.get("messages", []):
+        classify_author(message)
+    return data
+
+
+async def get_messages(
+    page,
+    chat_id: str,
+    *,
+    chatik_root: str = CHATIK_ROOT,
+    ready_selector: str = CHATIK_CHAT_READY_SELECTOR,
+    open_page=open_chatik_page,
+    extract_current_messages=extract_messages,
+) -> dict[str, Any]:
+    """Открыть chat прямой URL, вернуть messages+vacancy."""
+    url = f"{chatik_root}/chat/{chat_id}"
+    await open_page(
+        page,
+        url,
+        ready_selector,
+        settle_ms=2500,
+    )
+    return await extract_current_messages(page)
+
+
+async def get_messages_safe(
+    page,
+    chat_id: str,
+    *,
+    attempts: int = 1,
+    ready_timeout_ms: int = 5000,
+    settle_ms: int = 800,
+    chatik_root: str = CHATIK_ROOT,
+    ready_selector: str = CHATIK_CHAT_READY_SELECTOR,
+    open_page=open_chatik_page,
+    extract_current_messages=extract_messages,
+    reset_page=reset_page_after_navigation_failure,
+) -> dict[str, Any]:
+    """Best-effort chat read for scanners that should skip broken/empty chats quickly."""
+    url = f"{chatik_root}/chat/{chat_id}"
+    try:
+        await open_page(
+            page,
+            url,
+            ready_selector,
+            settle_ms=settle_ms,
+            attempts=attempts,
+            ready_timeout_ms=ready_timeout_ms,
+            log_failures=False,
+        )
+        data = await extract_current_messages(page)
+        data.setdefault("error", "")
+        return data
+    except Exception as exc:
+        await reset_page(page)
+        return {
+            "messages": [],
+            "vacancy": {},
+            "error": f"{type(exc).__name__}: {str(exc).splitlines()[0][:180]}",
+            "chat_id": str(chat_id),
+        }
