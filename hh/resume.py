@@ -163,3 +163,235 @@ async def get_resume_ids(
         resumes.append({"id": resume_id, "title": title, "url": href})
 
     return resumes
+
+
+async def _save_resume_boost_debug(
+    session,
+    stage: str,
+    *,
+    settings=config,
+    logger=log,
+) -> dict:
+    paths = {
+        "debug_screenshot": os.path.join(
+            settings.HH_STATE_DIR,
+            f"debug_resume_boost_{stage}.png",
+        ),
+        "debug_html": os.path.join(
+            settings.HH_STATE_DIR,
+            f"debug_resume_boost_{stage}.html",
+        ),
+    }
+    try:
+        await session._page.screenshot(path=paths["debug_screenshot"], full_page=True)
+        html = await session._page.content()
+        with open(paths["debug_html"], "w", encoding="utf-8") as f:
+            f.write(html)
+    except Exception as e:
+        logger.debug("Resume boost debug save failed: %s", e)
+    return paths
+
+
+async def _element_text_summary(element) -> str:
+    parts = []
+    for getter in (
+        lambda: element.inner_text(),
+        lambda: element.get_attribute("aria-label"),
+        lambda: element.get_attribute("title"),
+        lambda: element.get_attribute("data-qa"),
+    ):
+        try:
+            value = await getter()
+            if value:
+                parts.append(str(value))
+        except Exception:
+            pass
+    return " ".join(" ".join(parts).split())
+
+
+async def _element_is_disabled(element) -> bool:
+    try:
+        disabled = await element.get_attribute("disabled")
+        aria_disabled = await element.get_attribute("aria-disabled")
+        return disabled is not None or str(aria_disabled or "").casefold() == "true"
+    except Exception:
+        return False
+
+
+async def _find_resume_boost_scope(
+    session,
+    resume_id: str = "",
+    resume_title: str = "",
+    *,
+    normalize_text=_normalize_text,
+):
+    cards = await session._page.query_selector_all(
+        "[data-qa='resume'], [data-qa^='resume-card'], [data-qa*='resume-card']"
+    )
+    if not cards:
+        return None
+
+    if not resume_id and not resume_title:
+        return cards[0]
+
+    target_id = str(resume_id or "").strip()
+    target_title = normalize_text(resume_title)
+    for card in cards:
+        try:
+            text = normalize_text(await card.inner_text())
+            links = await card.query_selector_all("a[href*='/resume/']")
+            hrefs = []
+            for link in links:
+                hrefs.append(await link.get_attribute("href") or "")
+            href_text = " ".join(hrefs)
+            if target_id and target_id in href_text:
+                return card
+            if target_title and (target_title in text or text in target_title):
+                return card
+        except Exception:
+            continue
+    return None
+
+
+async def _find_resume_boost_action(
+    session,
+    resume_id: str = "",
+    resume_title: str = "",
+    *,
+    looks_like_action=_looks_like_resume_boost_action,
+) -> dict:
+    scopes = []
+    scope = await session._find_resume_boost_scope(resume_id, resume_title)
+    if scope:
+        scopes.append(scope)
+    scopes.append(session._page)
+
+    for current_scope in scopes:
+        try:
+            elements = await current_scope.query_selector_all("button, a, [role='button']")
+        except Exception:
+            continue
+        for element in elements:
+            summary = await session._element_text_summary(element)
+            if not looks_like_action(summary):
+                continue
+            return {
+                "element": element,
+                "button_text": summary[:240],
+                "disabled": await session._element_is_disabled(element),
+            }
+    return {}
+
+
+async def _inspect_resume_boost(
+    session,
+    resume_id: str = "",
+    resume_title: str = "",
+    *,
+    resume_matches_target=_resume_matches_target,
+    looks_like_unavailable=_looks_like_resume_boost_unavailable,
+) -> dict:
+    resumes = await session.get_resume_ids()
+    target = None
+    target_requested = bool(resume_id or resume_title)
+    if target_requested:
+        target = next(
+            (r for r in resumes if resume_matches_target(r, resume_id, resume_title)),
+            None,
+        )
+    elif resumes:
+        target = resumes[0]
+
+    target_id = str((target or {}).get("id") or resume_id or "").strip()
+    target_title = str((target or {}).get("title") or resume_title or "").strip()
+    body_text = await session._page_text(limit=20000)
+    debug_paths = await session._save_resume_boost_debug("status")
+
+    detail = {
+        "ok": True,
+        "can_boost": False,
+        "reason": "boost_action_not_found",
+        "resume_id": target_id,
+        "title": target_title,
+        "button_text": "",
+        "resumes_found": len(resumes),
+        "url": session._page.url,
+        **debug_paths,
+    }
+    if not resumes and not target_requested:
+        detail["ok"] = False
+        detail["reason"] = "resume_not_found"
+        return detail
+    if target_requested and not target:
+        detail["ok"] = False
+        detail["reason"] = "resume_target_not_found"
+        return detail
+
+    action = await session._find_resume_boost_action(target_id, target_title)
+    if action:
+        detail["button_text"] = action.get("button_text", "")
+        detail["_element"] = action.get("element")
+        if action.get("disabled"):
+            detail["reason"] = "boost_action_disabled"
+        else:
+            detail["can_boost"] = True
+            detail["reason"] = "boost_action_available"
+        return detail
+    if looks_like_unavailable(body_text):
+        detail["reason"] = "boost_unavailable_or_cooldown"
+    return detail
+
+
+async def get_resume_boost_status(
+    session,
+    resume_id: str = "",
+    resume_title: str = "",
+) -> dict:
+    """Проверить наличие кнопки поднятия резюме без клика."""
+    detail = await session._inspect_resume_boost(
+        resume_id=resume_id,
+        resume_title=resume_title,
+    )
+    detail.pop("_element", None)
+    return detail
+
+
+async def boost_resume(
+    session,
+    resume_id: str = "",
+    resume_title: str = "",
+    confirm: str = "",
+    *,
+    settings=config,
+    looks_like_success=_looks_like_resume_boost_success,
+) -> dict:
+    """Поднять резюме вручную. Требует env-флаг и явное слово подтверждения."""
+    detail = await session._inspect_resume_boost(
+        resume_id=resume_id,
+        resume_title=resume_title,
+    )
+    element = detail.pop("_element", None)
+    if not settings.HH_RESUME_BOOST_ENABLED:
+        detail.update({"ok": False, "can_boost": False, "reason": "boost_disabled_by_config"})
+        return detail
+    if confirm != settings.HH_RESUME_BOOST_CONFIRM_TEXT:
+        detail.update({"ok": False, "can_boost": False, "reason": "boost_confirmation_required"})
+        return detail
+    if not (resume_id or resume_title) and int(detail.get("resumes_found") or 0) > 1:
+        detail.update({"ok": False, "can_boost": False, "reason": "boost_target_required"})
+        return detail
+    if not detail.get("can_boost") or not element:
+        return detail
+
+    clicked = await session._click_with_fallbacks(element, "resume_boost")
+    await session._page.wait_for_timeout(2500)
+    post_text = await session._page_text(limit=20000)
+    debug_paths = await session._save_resume_boost_debug("after_click")
+    detail.update(debug_paths)
+    if clicked and looks_like_success(post_text):
+        detail.update({"ok": True, "can_boost": False, "reason": "boost_success"})
+    elif clicked:
+        detail.update({"ok": True, "can_boost": False, "reason": "boost_clicked_check_debug"})
+    else:
+        detail.update({"ok": False, "can_boost": False, "reason": "boost_click_failed"})
+    return detail
