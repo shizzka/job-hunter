@@ -1,3 +1,5 @@
+import asyncio
+
 import hh_client
 from hh import forms
 
@@ -44,3 +46,37 @@ def test_answer_library_rejects_risky_question():
 
     assert forms.is_risky_question(question) is True
     assert forms.answer_question_from_library(question, max_chars=200) is None
+
+
+class FakeInspectPage:
+    async def evaluate(self, script):
+        assert "codex:auto-question-inspect" in script
+        return {"fields": [{"field_id": "field-1"}]}
+
+
+def test_inspect_employer_questions_repairs_missing_result_keys():
+    result = asyncio.run(
+        forms.inspect_employer_questions(FakeInspectPage(), logger=hh_client.log)
+    )
+
+    assert result == {
+        "page_text": "",
+        "fields": [{"field_id": "field-1"}],
+        "unsupported_fields": 0,
+        "unsupported_items": [],
+    }
+
+
+def test_legacy_inspect_wrapper_forwards_patchable_dependencies(monkeypatch):
+    client = hh_client.HHClient()
+    client._page = object()
+    captured = {}
+
+    async def fake_inspect(page, *, logger):
+        captured.update(page=page, logger=logger)
+        return {"fields": []}
+
+    monkeypatch.setattr(hh_client, "_inspect_employer_questions", fake_inspect)
+
+    assert asyncio.run(client._inspect_employer_questions()) == {"fields": []}
+    assert captured == {"page": client._page, "logger": hh_client.log}
