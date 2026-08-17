@@ -35,10 +35,17 @@ from llm_client import get_llm_client
 from llm_utils import parse_llm_json
 from google_form_filler import extract_google_form_urls
 from hh.chat import (
+    CHATIK_CHAT_READY_SELECTOR,
+    CHATIK_NAVIGATION_ATTEMPTS,
+    CHATIK_NAVIGATION_TIMEOUT_MS,
+    CHATIK_READY_TIMEOUT_MS,
+    CHATIK_ROOT,
     message_matches_sent_text as _chat_message_matches_sent_text,
     messages_contain_sent_text as _chat_messages_contain_sent_text,
     normalize_sent_message_text as _chat_normalize_sent_message_text,
+    open_chatik_page as _chat_open_chatik_page,
     quick_reply_choice as _chat_quick_reply_choice,
+    reset_page_after_navigation_failure as _chat_reset_page_after_navigation_failure,
 )
 from state_store.chat_responder import (
     STATE_FILENAME,
@@ -62,14 +69,6 @@ from chat_screening import (
 
 log = logging.getLogger("chat_responder")
 
-CHATIK_ROOT = "https://chatik.hh.ru"
-CHATIK_NAVIGATION_ATTEMPTS = 2
-CHATIK_NAVIGATION_TIMEOUT_MS = 20000
-CHATIK_READY_TIMEOUT_MS = 12000
-CHATIK_CHAT_READY_SELECTOR = (
-    '[data-qa^="chatik-chat-message-"], '
-    'textarea[data-qa="chatik-new-message-text"]'
-)
 
 
 def _is_application_only_preview(preview: str) -> bool:
@@ -105,10 +104,7 @@ def save_state(state: dict) -> None:
 
 async def _reset_page_after_navigation_failure(page) -> None:
     """Cancel a stuck chatik navigation before opening the next chat."""
-    try:
-        await page.goto("about:blank", wait_until="commit", timeout=10000)
-    except Exception as exc:
-        log.debug("failed to reset page after chatik navigation error: %s", exc)
+    return await _chat_reset_page_after_navigation_failure(page, logger=log)
 
 
 async def _open_chatik_page(
@@ -122,40 +118,18 @@ async def _open_chatik_page(
     log_failures: bool = True,
 ) -> None:
     """Open a chatik page and retry once after resetting a stuck tab."""
-    last_exc: Exception | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            # Chatik is an SPA; DOMContentLoaded can hang even after the useful UI
-            # is rendered. Wait for the actual chatik element instead.
-            await page.goto(
-                url,
-                wait_until="commit",
-                timeout=CHATIK_NAVIGATION_TIMEOUT_MS,
-            )
-            await page.wait_for_selector(
-                ready_selector,
-                state="attached",
-                timeout=ready_timeout_ms,
-            )
-            await page.wait_for_timeout(settle_ms)
-            return
-        except Exception as exc:
-            last_exc = exc
-            current_url = getattr(page, "url", "") or ""
-            if "account/login" in current_url:
-                raise RuntimeError(f"chatik redirected to HH login: {current_url}") from exc
-            log_method = log.warning if log_failures else log.debug
-            log_method(
-                "chatik open attempt %d/%d failed for %s: %s",
-                attempt,
-                attempts,
-                url,
-                exc,
-            )
-            await _reset_page_after_navigation_failure(page)
-
-    assert last_exc is not None
-    raise last_exc
+    return await _chat_open_chatik_page(
+        page,
+        url,
+        ready_selector,
+        settle_ms=settle_ms,
+        attempts=attempts,
+        ready_timeout_ms=ready_timeout_ms,
+        log_failures=log_failures,
+        navigation_timeout_ms=CHATIK_NAVIGATION_TIMEOUT_MS,
+        reset_page=_reset_page_after_navigation_failure,
+        logger=log,
+    )
 
 
 async def list_chats(page) -> list[dict]:

@@ -1,7 +1,11 @@
+import asyncio
+
 from hh.chat import (
+    CHATIK_CHAT_READY_SELECTOR,
     message_matches_sent_text,
     messages_contain_sent_text,
     normalize_sent_message_text,
+    open_chatik_page,
     quick_reply_choice,
 )
 
@@ -25,3 +29,53 @@ def test_quick_reply_choice_extracts_only_leading_yes_or_no():
     assert quick_reply_choice("Нет, высшего образования нет.") == "Нет"
     assert quick_reply_choice("Да. Есть опыт.") == "Да"
     assert quick_reply_choice("Готов обсудить детали.") == ""
+
+
+class FakeNavigationPage:
+    def __init__(self):
+        self.url = "about:blank"
+        self.goto_calls = []
+        self.waited_selectors = []
+        self.wait_calls = []
+
+    async def goto(self, url: str, **kwargs):
+        self.goto_calls.append((url, kwargs))
+        self.url = url
+        if len(self.goto_calls) == 1:
+            raise TimeoutError("navigation timed out")
+
+    async def wait_for_selector(self, selector: str, **kwargs):
+        self.waited_selectors.append((selector, kwargs))
+
+    async def wait_for_timeout(self, timeout_ms: int):
+        self.wait_calls.append(timeout_ms)
+
+
+def test_open_chatik_page_retries_with_injected_reset():
+    page = FakeNavigationPage()
+    reset_calls = []
+
+    async def reset_page(current_page):
+        reset_calls.append(current_page)
+
+    asyncio.run(
+        open_chatik_page(
+            page,
+            "https://chatik.hh.ru/chat/123",
+            CHATIK_CHAT_READY_SELECTOR,
+            settle_ms=25,
+            navigation_timeout_ms=321,
+            ready_timeout_ms=456,
+            reset_page=reset_page,
+        )
+    )
+
+    assert len(page.goto_calls) == 2
+    assert all(
+        call[1] == {"wait_until": "commit", "timeout": 321} for call in page.goto_calls
+    )
+    assert page.waited_selectors == [
+        (CHATIK_CHAT_READY_SELECTOR, {"state": "attached", "timeout": 456})
+    ]
+    assert page.wait_calls == [25]
+    assert reset_calls == [page]
