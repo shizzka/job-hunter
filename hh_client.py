@@ -26,6 +26,8 @@ from hh.browser import (
     start_browser as _start_browser,
     stop_browser as _stop_browser,
 )
+from hh.text import compact_text as _compact_text
+from hh.text import normalize_text as _normalize_text
 from llm_client import get_llm_client
 import proxy_utils
 
@@ -39,14 +41,6 @@ def _absolute_hh_url(url: str) -> str:
     if url.startswith("http://") or url.startswith("https://"):
         return url
     return f"{config.HH_BASE_URL}{url}"
-
-
-def _normalize_text(value: str) -> str:
-    return " ".join((value or "").split()).casefold()
-
-
-def _compact_text(value: str) -> str:
-    return "".join((value or "").split()).casefold()
 
 
 _CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS = (
