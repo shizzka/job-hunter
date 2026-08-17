@@ -46,21 +46,27 @@ def _telegram_runtime_paths() -> TelegramRuntimePaths:
     return TelegramRuntimePaths.from_config(config)
 
 
-def _build_logging_handlers() -> list[logging.Handler]:
+def _build_logging_handlers(
+    runtime_paths: TelegramRuntimePaths | None = None,
+) -> list[logging.Handler]:
+    paths = runtime_paths or _telegram_runtime_paths()
     handlers: list[logging.Handler] = [logging.StreamHandler()]
-    if config.TELEGRAM_BOT_LOG_FILE:
-        log_dir = os.path.dirname(config.TELEGRAM_BOT_LOG_FILE)
+    if paths.bot_log_file:
+        log_dir = os.path.dirname(paths.bot_log_file)
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
-        handlers.append(logging.FileHandler(config.TELEGRAM_BOT_LOG_FILE))
+        handlers.append(logging.FileHandler(paths.bot_log_file))
     return handlers
 
 
-def _configure_logging(force: bool = False) -> None:
+def _configure_logging(
+    force: bool = False,
+    runtime_paths: TelegramRuntimePaths | None = None,
+) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        handlers=_build_logging_handlers(),
+        handlers=_build_logging_handlers(runtime_paths),
         force=force,
     )
 
@@ -217,7 +223,7 @@ class TelegramBot(
 
         telegram_access.load_registry()
         runtime_control.register_current_process(
-            config.TELEGRAM_BOT_PID_FILE,
+            self.runtime_paths.bot_pid_file,
             expected_tokens=runtime_control.BOT_TOKENS,
         )
         self._write_runtime("bot_start", "Бот Telegram запущен", "idle")
@@ -256,7 +262,7 @@ class TelegramBot(
                     log.warning("health check failed: %s", exc)
         finally:
             self._write_runtime("bot_stop", "Бот Telegram остановлен", "offline")
-            runtime_control.unregister_current_process(config.TELEGRAM_BOT_PID_FILE)
+            runtime_control.unregister_current_process(self.runtime_paths.bot_pid_file)
             await self._close_sessions()
 
     def _load_state(self) -> dict:
@@ -793,7 +799,7 @@ class TelegramBot(
                 "detail": f"{self._format_age(latest_age)} · ok={bool(latest.get('ok', False))}",
             })
 
-        bot_log = runtime_control.tail_file(config.TELEGRAM_BOT_LOG_FILE, lines=120, chars=12000)
+        bot_log = runtime_control.tail_file(self.runtime_paths.bot_log_file, lines=120, chars=12000)
         recent_poll_errors = self._recent_log_matches(
             bot_log,
             ("Failed to fetch updates", "Server disconnected", "Cannot connect to host api.telegram.org", "getUpdates failed"),
@@ -974,11 +980,11 @@ class TelegramBot(
         )
 
     def _bot_state(self) -> dict:
-        bot_runtime = runtime_control.read_json_file(config.TELEGRAM_BOT_RUNTIME_FILE) or {}
+        bot_runtime = runtime_control.read_json_file(self.runtime_paths.bot_runtime_file) or {}
         fallback_pid = bot_runtime.get("pid")
         fallback_pid = int(fallback_pid) if isinstance(fallback_pid, int) else 0
         return runtime_control.describe_process(
-            config.TELEGRAM_BOT_PID_FILE,
+            self.runtime_paths.bot_pid_file,
             expected_tokens=runtime_control.BOT_TOKENS,
             fallback_pid=fallback_pid,
         )
@@ -1774,7 +1780,7 @@ class TelegramBot(
                     search_interval_min=search_interval_min,
                     invite_check_interval_min=invite_check_interval_min,
                     runtime_status=self._runtime_status(profile_name),
-                    bot_runtime=runtime_control.read_json_file(config.TELEGRAM_BOT_RUNTIME_FILE),
+                    bot_runtime=runtime_control.read_json_file(self.runtime_paths.bot_runtime_file),
                     last_run=self._latest_run(profile_name),
                     active_command=active_command.label if active_command else "",
                 ),
@@ -2192,7 +2198,7 @@ class TelegramBot(
                 admin_text = build_hh_auth_admin_text(
                     result,
                     client=telegram_clients.get_client(target_user_id) or client,
-                    debug_log_path=config.TELEGRAM_BOT_DEBUG_LOG_FILE,
+                    debug_log_path=self.runtime_paths.bot_debug_log_file,
                 )
                 await self._send_text(chat_id, admin_text, reply_markup=reply_markup)
                 with contextlib.suppress(Exception):
@@ -2217,7 +2223,7 @@ class TelegramBot(
                     build_hh_auth_admin_text(
                         {"cancelled": True, "profile_name": profile_name},
                         client=telegram_clients.get_client(target_user_id) or client,
-                        debug_log_path=config.TELEGRAM_BOT_DEBUG_LOG_FILE,
+                        debug_log_path=self.runtime_paths.bot_debug_log_file,
                     ),
                     reply_markup=reply_markup,
                 )
@@ -2249,7 +2255,7 @@ class TelegramBot(
                     (
                         "❌ Вход HH завершился с ошибкой.\n\n"
                         f"• Ошибка: {exc}\n"
-                        f"• Журнал отладки: {config.TELEGRAM_BOT_DEBUG_LOG_FILE}"
+                        f"• Журнал отладки: {self.runtime_paths.bot_debug_log_file}"
                     ),
                     reply_markup=reply_markup,
                 )
@@ -2871,8 +2877,13 @@ async def main() -> None:
     args = parser.parse_args()
 
     profile_mod.activate_no_lock(args.profile)
-    _configure_logging(force=True)
-    bot = TelegramBot(profile_name=args.profile, drop_pending=not args.keep_pending)
+    runtime_paths = _telegram_runtime_paths()
+    _configure_logging(force=True, runtime_paths=runtime_paths)
+    bot = TelegramBot(
+        profile_name=args.profile,
+        drop_pending=not args.keep_pending,
+        runtime_paths=runtime_paths,
+    )
     await bot.run()
 
 
