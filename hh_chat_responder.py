@@ -55,7 +55,7 @@ from hh.chat import (
     send_message as _chat_send_message,
     reset_page_after_navigation_failure as _chat_reset_page_after_navigation_failure,
 )
-from runtime_context import ChatResponderLimits
+from runtime_context import ChatResponderLimits, RuntimePaths
 from state_store.chat_responder import (
     STATE_FILENAME,
     ChatResponderStateRepository,
@@ -92,21 +92,26 @@ def _is_blocked_company_preview(preview: str) -> bool:
 
 # ── State ───────────────────────────────────────────────────────────────────
 
-def _state_repository() -> ChatResponderStateRepository:
-    home = os.path.dirname(config.RESUME_FILE) or os.path.expanduser("~/.job-hunter")
+def _runtime_paths() -> RuntimePaths:
+    return RuntimePaths.from_config(config)
+
+
+def _state_repository(runtime_paths: RuntimePaths | None = None) -> ChatResponderStateRepository:
+    paths = runtime_paths or _runtime_paths()
+    home = os.path.dirname(paths.resume_file) or os.path.expanduser("~/.job-hunter")
     return ChatResponderStateRepository(home, logger=log)
 
 
-def _state_path() -> str:
-    return str(_state_repository().path)
+def _state_path(runtime_paths: RuntimePaths | None = None) -> str:
+    return str(_state_repository(runtime_paths).path)
 
 
-def load_state() -> dict:
-    return _state_repository().load()
+def load_state(runtime_paths: RuntimePaths | None = None) -> dict:
+    return _state_repository(runtime_paths).load()
 
 
-def save_state(state: dict) -> None:
-    _state_repository().save(state)
+def save_state(state: dict, runtime_paths: RuntimePaths | None = None) -> None:
+    _state_repository(runtime_paths).save(state)
 
 
 # ── Chat listing ────────────────────────────────────────────────────────────

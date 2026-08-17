@@ -1,6 +1,7 @@
 import json
 
 import hh_chat_responder as chat_responder
+from runtime_context import RuntimePaths
 from state_store.chat_responder import (
     ChatResponderStateRepository,
     get_google_form_previews,
@@ -92,3 +93,24 @@ def test_chat_responder_compatibility_wrappers_use_resume_home(tmp_path, monkeyp
         tmp_path / "chat_responder_state.json"
     )
     assert chat_responder.load_state() == state
+
+
+def test_chat_responder_state_wrappers_honor_explicit_runtime_paths(tmp_path, monkeypatch):
+    paths = RuntimePaths(
+        home_dir=str(tmp_path / "profile-a"),
+        hh_state_dir=str(tmp_path / "profile-a" / "state"),
+        resume_file=str(tmp_path / "profile-a" / "resume.md"),
+    )
+    monkeypatch.setattr(
+        chat_responder.config,
+        "RESUME_FILE",
+        str(tmp_path / "profile-b" / "resume.md"),
+    )
+    state = {"42": {"replies_count": 2}}
+
+    chat_responder.save_state(state, paths)
+
+    assert chat_responder._state_path(paths) == str(
+        tmp_path / "profile-a" / "chat_responder_state.json"
+    )
+    assert chat_responder.load_state(paths) == state
