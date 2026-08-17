@@ -16,6 +16,14 @@ except ImportError:
     _STEALTH_AVAILABLE = False
 
 import config
+from hh.apply import (
+    CLOSED_OR_ARCHIVED_HH_COMPACT_MARKERS as _CLOSED_OR_ARCHIVED_HH_COMPACT_MARKERS,
+    CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS as _CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS,
+    has_archived_hh_state as _has_archived_hh_state,
+    looks_like_closed_or_archived_hh as _looks_like_closed_or_archived_hh,
+    looks_like_existing_hh_response as _looks_like_existing_hh_response,
+    looks_like_hh_apply_success as _looks_like_hh_apply_success,
+)
 from hh.browser import (
     HH_AUTH_COOKIE_NAMES,
     _ensure_dirs,
@@ -74,70 +82,6 @@ def _absolute_hh_url(url: str) -> str:
     if url.startswith("http://") or url.startswith("https://"):
         return url
     return f"{config.HH_BASE_URL}{url}"
-
-
-_CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS = (
-    "вакансия в архиве",
-    "вакансия находится в архиве",
-    "вакансия уже в архиве",
-    "вакансия перемещена в архив",
-    "вакансия закрыта",
-    "вакансия уже закрыта",
-    "закрыта и не принимает отклики",
-    "не принимает отклики",
-    "прием откликов закрыт",
-    "приём откликов закрыт",
-    "отклики больше не принимаются",
-    "вакансия неактивна",
-    "страница вакансии удалена",
-)
-_CLOSED_OR_ARCHIVED_HH_COMPACT_MARKERS = (
-    '"archived":"true"',
-    '"archived":true',
-    "'archived':'true'",
-    "'archived':true",
-    "&quot;archived&quot;:&quot;true&quot;",
-    "&quot;archived&quot;:true",
-)
-
-
-def _has_archived_hh_state(value: str) -> bool:
-    compact = _compact_text(value)
-    return any(marker in compact for marker in _CLOSED_OR_ARCHIVED_HH_COMPACT_MARKERS)
-
-
-def _looks_like_closed_or_archived_hh(value: str) -> bool:
-    if _has_archived_hh_state(value):
-        return True
-
-    compact = _compact_text(value)
-    if "<html" in compact or "<template" in compact:
-        return False
-
-    text = _normalize_text(value)
-    return any(marker in text for marker in _CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS)
-
-
-def _looks_like_existing_hh_response(value: str) -> bool:
-    text = _normalize_text(value)
-    return (
-        "вы откликнулись" in text
-        or "уже отклик" in text
-        or "отклик другим резюме" in text
-        or "откликнуться повторно" in text
-    )
-
-
-def _looks_like_hh_apply_success(value: str) -> bool:
-    text = _normalize_text(value)
-    return (
-        _looks_like_existing_hh_response(value)
-        or "резюме доставлено" in text
-        or "отклик отправлен" in text
-        or "связаться с работодателем можно в чате" in text
-    )
-
-
 
 
 def _load_resume_text() -> str:
