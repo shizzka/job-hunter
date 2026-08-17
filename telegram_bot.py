@@ -63,6 +63,8 @@ def _configure_logging(
     force: bool = False,
     runtime_paths: TelegramRuntimePaths | None = None,
 ) -> None:
+    if not force and logging.getLogger().handlers:
+        return
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",

@@ -126,6 +126,8 @@ def _build_logging_handlers() -> list[logging.Handler]:
 
 
 def _configure_logging(force: bool = False) -> None:
+    if not force and logging.getLogger().handlers:
+        return
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
