@@ -65,6 +65,7 @@ from google_forms.urls import (
 )
 from llm_client import get_llm_client
 from llm_utils import parse_llm_json
+from runtime_context import RuntimePaths
 from state_store.google_forms import (
     STATE_FILENAME,
     GoogleFormStateRepository,
@@ -81,20 +82,25 @@ def _safe_profile(profile_name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]+", "_", profile_name or "default")
 
 
-def _state_repository() -> GoogleFormStateRepository:
-    return GoogleFormStateRepository(config.JOB_HUNTER_HOME, logger=log)
+def _runtime_paths() -> RuntimePaths:
+    return RuntimePaths.from_config(config)
 
 
-def _state_path() -> str:
-    return str(_state_repository().path)
+def _state_repository(runtime_paths: RuntimePaths | None = None) -> GoogleFormStateRepository:
+    paths = runtime_paths or _runtime_paths()
+    return GoogleFormStateRepository(paths.home_dir, logger=log)
 
 
-def _load_state() -> dict:
-    return _state_repository().load()
+def _state_path(runtime_paths: RuntimePaths | None = None) -> str:
+    return str(_state_repository(runtime_paths).path)
 
 
-def _save_state(state: dict) -> None:
-    _state_repository().save(state)
+def _load_state(runtime_paths: RuntimePaths | None = None) -> dict:
+    return _state_repository(runtime_paths).load()
+
+
+def _save_state(state: dict, runtime_paths: RuntimePaths | None = None) -> None:
+    _state_repository(runtime_paths).save(state)
 
 
 def _resolve_google_form_redirect_url(form_url: str) -> str:

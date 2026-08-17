@@ -1,6 +1,7 @@
 import json
 
 import google_form_filler as gforms
+from runtime_context import RuntimePaths
 from state_store.google_forms import (
     GoogleFormStateRepository,
     new_preview_token,
@@ -92,3 +93,15 @@ def test_google_form_compatibility_wrappers_use_active_home(tmp_path, monkeypatc
     assert json.loads(
         (tmp_path / "google_form_previews.json").read_text(encoding="utf-8")
     ) == state
+
+
+def test_google_form_state_wrappers_honor_explicit_runtime_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(gforms.config, "JOB_HUNTER_HOME", str(tmp_path))
+    runtime_paths = RuntimePaths.from_config(gforms.config)
+    monkeypatch.setattr(gforms.config, "JOB_HUNTER_HOME", str(tmp_path / "other"))
+    state = {"items": {"abc": {"status": "preview"}}}
+
+    gforms._save_state(state, runtime_paths)
+
+    assert gforms._state_path(runtime_paths) == str(tmp_path / "google_form_previews.json")
+    assert gforms._load_state(runtime_paths) == state
