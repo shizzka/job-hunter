@@ -16,7 +16,13 @@ except ImportError:
     _STEALTH_AVAILABLE = False
 
 import config
-from hh.browser import _ensure_dirs, _load_cookies, _save_cookies
+from hh.browser import (
+    _ensure_dirs,
+    _load_cookies,
+    _save_cookies,
+    start_browser as _start_browser,
+    stop_browser as _stop_browser,
+)
 from llm_client import get_llm_client
 import proxy_utils
 
@@ -350,54 +356,22 @@ class HHClient:
 
     async def start(self, headless: bool | None = None):
         """Запустить браузер и загрузить cookies."""
-        _ensure_dirs()
-        self._pw = await async_playwright().start()
-
-        launch_opts = {
-            "headless": headless if headless is not None else config.HEADLESS,
-            "slow_mo": config.SLOW_MO,
-        }
-        # Прокси (Mihomo на 127.0.0.1:7897) — если hh.ru не грузится напрямую
-        proxy_url = os.environ.get("HH_PROXY", config.BROWSER_PROXY)
-        if proxy_url:
-            launch_opts["proxy"] = {"server": proxy_url}
-            log.info("Using proxy: %s", proxy_url)
-        launch_opts["env"] = proxy_utils.browser_launch_env(proxy_url)
-
-        self._browser = await self._pw.chromium.launch(**launch_opts)
-        self._context = await self._browser.new_context(
-            viewport={"width": 1280, "height": 900},
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-            locale="ru-RU",
+        return await _start_browser(
+            self,
+            headless,
+            settings=config,
+            playwright_factory=async_playwright,
+            stealth_available=_STEALTH_AVAILABLE,
+            stealth_factory=Stealth,
+            proxy_env_builder=proxy_utils.browser_launch_env,
+            ensure_dirs=_ensure_dirs,
+            load_cookies=_load_cookies,
+            logger=log,
         )
-        cookies = _load_cookies()
-        if cookies:
-            await self._context.add_cookies(cookies)
-            log.info("Loaded %d cookies", len(cookies))
-        self._page = await self._context.new_page()
-
-        # Anti-bot: применяем stealth-патчи к контексту/странице, чтобы hh.ru
-        # не палил navigator.webdriver и прочие headless-маркеры.
-        if _STEALTH_AVAILABLE:
-            try:
-                stealth = Stealth()
-                await stealth.apply_stealth_async(self._context)
-                log.info("playwright-stealth applied to context")
-            except Exception as exc:
-                log.warning("playwright-stealth failed: %s", exc)
 
     async def stop(self):
         """Закрыть браузер."""
-        if self._context:
-            cookies = await self._context.cookies()
-            _save_cookies(cookies)
-        if self._browser:
-            await self._browser.close()
-        if self._pw:
-            await self._pw.stop()
+        return await _stop_browser(self, save_cookies=_save_cookies)
 
     def consume_antibot_signal(self) -> dict | None:
         signal = self._last_antibot_signal
