@@ -433,14 +433,21 @@ async def _find_quick_reply_button(page, choice: str):
     return await _chat_find_quick_reply_button(page, choice)
 
 
-async def fill_and_preview(page, chat_id: str, text: str) -> dict:
+async def fill_and_preview(
+    page,
+    chat_id: str,
+    text: str,
+    *,
+    runtime_paths: RuntimePaths | None = None,
+) -> dict:
     """Перейти в chat, набрать текст в input. НЕ отправлять.
     Возвращает {filled, screenshot_path}."""
+    paths = runtime_paths or _runtime_paths()
     return await _chat_fill_and_preview(
         page,
         chat_id,
         text,
-        state_dir=config.HH_STATE_DIR,
+        state_dir=paths.hh_state_dir,
         chatik_root=CHATIK_ROOT,
         ready_selector=CHATIK_CHAT_READY_SELECTOR,
         now=time.time,
@@ -452,13 +459,29 @@ async def fill_and_preview(page, chat_id: str, text: str) -> dict:
     )
 
 
-async def send_message(page, chat_id: str, text: str) -> bool:
+async def send_message(
+    page,
+    chat_id: str,
+    text: str,
+    *,
+    runtime_paths: RuntimePaths | None = None,
+) -> bool:
     """Полная отправка: перейти, набрать, нажать Send."""
+    paths = runtime_paths or _runtime_paths()
+
+    async def fill_preview(current_page, current_chat_id: str, current_text: str) -> dict:
+        return await fill_and_preview(
+            current_page,
+            current_chat_id,
+            current_text,
+            runtime_paths=paths,
+        )
+
     return await _chat_send_message(
         page,
         chat_id,
         text,
-        fill_preview=fill_and_preview,
+        fill_preview=fill_preview,
         find_quick_reply=_find_quick_reply_button,
         extract_current_messages=_extract_messages,
         messages_contain=_messages_contain_sent_text,

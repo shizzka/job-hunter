@@ -1,7 +1,7 @@
 import asyncio
 
 import hh_chat_responder as chat_responder
-from runtime_context import ChatResponderLimits
+from runtime_context import ChatResponderLimits, RuntimePaths
 
 
 def test_ai_recruiter_self_intro_text_marks_named_assistant_message():
@@ -505,3 +505,44 @@ def test_process_all_uses_injected_reply_limits(monkeypatch):
     assert summary["answers_drafted"] == 1
     assert summary["skipped"] == 1
     assert sleeps == [7]
+
+
+def test_chat_preview_and_send_use_explicit_runtime_paths(tmp_path, monkeypatch):
+    paths = RuntimePaths(
+        home_dir=str(tmp_path / "profile-a"),
+        hh_state_dir=str(tmp_path / "profile-a" / "state"),
+        resume_file=str(tmp_path / "profile-a" / "resume.md"),
+    )
+    state_dirs = []
+
+    async def fake_fill(page, chat_id, text, **kwargs):
+        state_dirs.append(kwargs["state_dir"])
+        return {"filled": True}
+
+    async def fake_send(page, chat_id, text, **kwargs):
+        preview = await kwargs["fill_preview"](page, chat_id, text)
+        return bool(preview.get("filled"))
+
+    monkeypatch.setattr(chat_responder, "_chat_fill_and_preview", fake_fill)
+    monkeypatch.setattr(chat_responder, "_chat_send_message", fake_send)
+
+    preview = asyncio.run(
+        chat_responder.fill_and_preview(
+            object(),
+            "42",
+            "Answer",
+            runtime_paths=paths,
+        )
+    )
+    sent = asyncio.run(
+        chat_responder.send_message(
+            object(),
+            "42",
+            "Answer",
+            runtime_paths=paths,
+        )
+    )
+
+    assert preview == {"filled": True}
+    assert sent is True
+    assert state_dirs == [paths.hh_state_dir, paths.hh_state_dir]
