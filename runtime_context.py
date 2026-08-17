@@ -38,3 +38,24 @@ class ChatResponderLimits:
             max_replies_per_chat=int(env.get("HH_CHAT_MAX_REPLIES_PER_CHAT", "5")),
             reply_cooldown_s=int(env.get("HH_CHAT_REPLY_COOLDOWN_S", "30")),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramRuntimePaths:
+    """Process-level files captured when the Telegram bot starts."""
+
+    bot_pid_file: str
+    bot_state_file: str
+    bot_runtime_file: str
+    bot_log_file: str
+    bot_debug_log_file: str
+
+    @classmethod
+    def from_config(cls, settings: Any) -> TelegramRuntimePaths:
+        return cls(
+            bot_pid_file=os.fspath(settings.TELEGRAM_BOT_PID_FILE),
+            bot_state_file=os.fspath(settings.TELEGRAM_BOT_STATE_FILE),
+            bot_runtime_file=os.fspath(settings.TELEGRAM_BOT_RUNTIME_FILE),
+            bot_log_file=os.fspath(settings.TELEGRAM_BOT_LOG_FILE or ""),
+            bot_debug_log_file=os.fspath(settings.TELEGRAM_BOT_DEBUG_LOG_FILE or ""),
+        )

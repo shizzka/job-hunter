@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from runtime_context import ChatResponderLimits, RuntimePaths
+from runtime_context import ChatResponderLimits, RuntimePaths, TelegramRuntimePaths
 
 
 def _settings(home: str) -> SimpleNamespace:
@@ -54,3 +54,24 @@ def test_chat_responder_limits_preserve_defaults_and_validation() -> None:
     )
     with pytest.raises(ValueError):
         ChatResponderLimits.from_env({"HH_CHAT_MAX_REPLIES_PER_CHAT": "invalid"})
+
+
+def test_telegram_runtime_paths_capture_process_files() -> None:
+    settings = SimpleNamespace(
+        TELEGRAM_BOT_PID_FILE="/tmp/profile-a/bot.pid",
+        TELEGRAM_BOT_STATE_FILE="/tmp/profile-a/bot-state.json",
+        TELEGRAM_BOT_RUNTIME_FILE="/tmp/profile-a/bot-runtime.json",
+        TELEGRAM_BOT_LOG_FILE="/tmp/profile-a/bot.log",
+        TELEGRAM_BOT_DEBUG_LOG_FILE="/tmp/profile-a/bot-debug.jsonl",
+    )
+
+    paths = TelegramRuntimePaths.from_config(settings)
+    settings.TELEGRAM_BOT_STATE_FILE = "/tmp/profile-b/bot-state.json"
+
+    assert paths == TelegramRuntimePaths(
+        bot_pid_file="/tmp/profile-a/bot.pid",
+        bot_state_file="/tmp/profile-a/bot-state.json",
+        bot_runtime_file="/tmp/profile-a/bot-runtime.json",
+        bot_log_file="/tmp/profile-a/bot.log",
+        bot_debug_log_file="/tmp/profile-a/bot-debug.jsonl",
+    )
