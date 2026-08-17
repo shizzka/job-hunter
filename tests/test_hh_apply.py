@@ -195,3 +195,39 @@ def test_legacy_cover_letter_wrapper_forwards_patchable_dependencies(monkeypatch
         "cover_letter": "Cover letter",
         "logger": hh_client.log,
     }
+
+
+def test_legacy_apply_wrapper_forwards_arguments_and_dependencies(monkeypatch):
+    client = hh_client.HHClient()
+    captured = {}
+
+    async def fake_apply(*args, **kwargs):
+        captured.update(args=args, kwargs=kwargs)
+        return {"ok": True, "message": "Отклик отправлен"}
+
+    monkeypatch.setattr(hh_client, "_apply_to_vacancy", fake_apply)
+
+    result = asyncio.run(
+        client.apply_to_vacancy(
+            "/vacancy/42",
+            "Cover",
+            "/applicant/vacancy_response?vacancyId=42",
+            "QA Resume",
+            "resume-1",
+            "QA vacancy",
+        )
+    )
+
+    assert result == {"ok": True, "message": "Отклик отправлен"}
+    assert captured["args"] == (
+        client,
+        "/vacancy/42",
+        "Cover",
+        "/applicant/vacancy_response?vacancyId=42",
+        "QA Resume",
+        "resume-1",
+        "QA vacancy",
+    )
+    assert captured["kwargs"]["absolute_hh_url"] is hh_client._absolute_hh_url
+    assert captured["kwargs"]["anti_bot_message"] is hh_client._anti_bot_message
+    assert captured["kwargs"]["logger"] is hh_client.log
