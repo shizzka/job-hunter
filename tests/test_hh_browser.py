@@ -192,3 +192,62 @@ def test_hh_client_lifecycle_wrappers_forward_patchable_dependencies(monkeypatch
         "session": client,
         "save_cookies": hh_client._save_cookies,
     }
+
+
+def test_save_session_persists_current_context_cookies():
+    cookies = [{"name": "hhtoken", "value": "secret"}]
+    session = SimpleNamespace(_context=FakeLifecycleContext(cookies))
+    saved = []
+
+    asyncio.run(browser.save_session(session, save_cookies=saved.append))
+
+    assert saved == [cookies]
+
+
+def test_has_auth_cookies_supports_unscoped_context_fallback():
+    cookies = [
+        {"name": "hhtoken"},
+        {"name": "hhuid"},
+    ]
+    session = SimpleNamespace(_context=FakeLifecycleContext(cookies))
+
+    assert asyncio.run(browser.has_auth_cookies(session)) is True
+
+
+def test_has_auth_cookies_is_false_without_context():
+    session = SimpleNamespace(_context=None)
+
+    assert asyncio.run(browser.has_auth_cookies(session)) is False
+
+
+def test_hh_client_session_wrappers_forward_patchable_dependencies(monkeypatch):
+    save_call = {}
+    auth_call = {}
+
+    async def fake_save(session, **kwargs):
+        save_call["session"] = session
+        save_call.update(kwargs)
+
+    async def fake_has_auth(session, **kwargs):
+        auth_call["session"] = session
+        auth_call.update(kwargs)
+        return True
+
+    monkeypatch.setattr(hh_client, "_save_browser_session", fake_save)
+    monkeypatch.setattr(hh_client, "_has_browser_auth_cookies", fake_has_auth)
+    client = hh_client.HHClient()
+
+    asyncio.run(client.save_session())
+    has_auth = asyncio.run(client.has_auth_cookies())
+
+    assert save_call == {
+        "session": client,
+        "save_cookies": hh_client._save_cookies,
+        "logger": hh_client.log,
+    }
+    assert auth_call == {
+        "session": client,
+        "base_url": hh_client.config.HH_BASE_URL,
+        "auth_cookie_names": hh_client.HH_AUTH_COOKIE_NAMES,
+    }
+    assert has_auth is True

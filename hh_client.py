@@ -17,9 +17,12 @@ except ImportError:
 
 import config
 from hh.browser import (
+    HH_AUTH_COOKIE_NAMES,
     _ensure_dirs,
     _load_cookies,
     _save_cookies,
+    has_auth_cookies as _has_browser_auth_cookies,
+    save_session as _save_browser_session,
     start_browser as _start_browser,
     stop_browser as _stop_browser,
 )
@@ -27,7 +30,6 @@ from llm_client import get_llm_client
 import proxy_utils
 
 log = logging.getLogger("hh_client")
-HH_AUTH_COOKIE_NAMES = {"hhtoken", "hhuid", "crypted_hhuid", "crypted_id"}
 _question_answer_client = None
 
 
@@ -1632,21 +1634,19 @@ class HHClient:
 
     async def save_session(self):
         """Сохранить текущие cookies."""
-        if self._context:
-            cookies = await self._context.cookies()
-            _save_cookies(cookies)
-            log.info("Session saved (%d cookies)", len(cookies))
+        return await _save_browser_session(
+            self,
+            save_cookies=_save_cookies,
+            logger=log,
+        )
 
     async def has_auth_cookies(self) -> bool:
         """Проверить наличие auth-cookie без навигации страницы."""
-        if not self._context:
-            return False
-        try:
-            cookies = await self._context.cookies([config.HH_BASE_URL])
-        except TypeError:
-            cookies = await self._context.cookies()
-        names = {(item.get("name") or "").casefold() for item in cookies or []}
-        return "hhtoken" in names and bool(names & HH_AUTH_COOKIE_NAMES)
+        return await _has_browser_auth_cookies(
+            self,
+            base_url=config.HH_BASE_URL,
+            auth_cookie_names=HH_AUTH_COOKIE_NAMES,
+        )
 
     # ── Авторизация ───────────────────────────────────────────────────────
 

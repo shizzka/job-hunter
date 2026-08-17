@@ -17,6 +17,7 @@ import config
 import proxy_utils
 
 log = logging.getLogger("hh_client")
+HH_AUTH_COOKIE_NAMES = {"hhtoken", "hhuid", "crypted_hhuid", "crypted_id"}
 
 
 def _ensure_dirs():
@@ -98,3 +99,26 @@ async def stop_browser(session, *, save_cookies=_save_cookies):
         await session._browser.close()
     if session._pw:
         await session._pw.stop()
+
+
+async def save_session(session, *, save_cookies=_save_cookies, logger=log):
+    if session._context:
+        cookies = await session._context.cookies()
+        save_cookies(cookies)
+        logger.info("Session saved (%d cookies)", len(cookies))
+
+
+async def has_auth_cookies(
+    session,
+    *,
+    base_url: str = config.HH_BASE_URL,
+    auth_cookie_names=HH_AUTH_COOKIE_NAMES,
+) -> bool:
+    if not session._context:
+        return False
+    try:
+        cookies = await session._context.cookies([base_url])
+    except TypeError:
+        cookies = await session._context.cookies()
+    names = {(item.get("name") or "").casefold() for item in cookies or []}
+    return "hhtoken" in names and bool(names & auth_cookie_names)
