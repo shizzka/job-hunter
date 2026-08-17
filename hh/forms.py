@@ -721,3 +721,186 @@ async def answer_question_with_llm(
         return answer
 
     return truncate_text(answer, max_chars)
+
+
+async def answer_choice_with_llm(
+    field: dict,
+    resume_text: str,
+    page_text: str = "",
+    vacancy_context: str = "",
+    *,
+    settings,
+    logger,
+    get_question_answer_client,
+    build_salary_rule_block,
+    build_facts_block,
+    build_profile_note_block,
+    build_filtered_kb_block,
+    build_knowledge_base_block,
+    parse_llm_json,
+    repair_llm_json,
+) -> dict | None:
+    """Picks one (or several for checkbox) option(s) for a radio/checkbox/select field.
+
+    Returns dict {"selected": [{"index": int, "custom_text": str | None}], "is_skip": bool}
+    or None on error.
+    """
+    if not settings.HH_AUTO_ANSWER_USE_LLM or not settings.LLM_API_KEY or not resume_text.strip():
+        return None
+
+    control = (field.get("control") or "").strip().lower()
+    if control not in ("radio", "checkbox", "select"):
+        return None
+
+    options = field.get("options") or []
+    if not options:
+        return None
+
+    question_text = (field.get("question_text") or field.get("placeholder") or "").strip()
+    options_block = "\n".join(
+        f"  {opt.get('index', i)}: {opt.get('label','')[:200]}"
+        + (" [СВОЙ ВАРИАНТ — можно указать свой текст]" if opt.get("is_custom") else "")
+        for i, opt in enumerate(options)
+    )
+
+    vacancy_block = (
+        f"Контекст вакансии (на неё откликаемся):\n{truncate_text(vacancy_context, 1500)}\n\n"
+        if vacancy_context else ""
+    )
+    salary_block = build_salary_rule_block()
+    facts_block = build_facts_block()
+    profile_note_block = build_profile_note_block()
+    # 2-pass: фильтруем KB под конкретную вакансию (если контекст есть)
+    try:
+        knowledge_block = await build_filtered_kb_block(
+            vacancy_context, get_question_answer_client(),
+            max_sections=5, limit_chars=8000,
+        )
+    except Exception as exc:
+        logger.debug("filtered KB failed, fallback to full: %s", exc)
+        knowledge_block = build_knowledge_base_block(limit_chars=8000)
+
+    multi_hint = (
+        "Если уверен в нескольких — верни их в массиве selected."
+        if control == "checkbox" else
+        "Можно выбрать только ОДИН вариант."
+    )
+
+    prompt = f"""Ты выбираешь ответ работодателя на hh.ru от имени кандидата.
+
+Опирайся на структурированные факты, факты из резюме и контекст вакансии. Ничего не выдумывай.
+{multi_hint}
+Если в вариантах есть «Свой вариант» (помечен [СВОЙ ВАРИАНТ]) — выбирай его и пиши свой текст ТОЛЬКО когда ни один из готовых не подходит, но из фактов/резюме можно ответить.
+
+Тип поля: {control}
+Вопрос: {question_text}
+Контекст формы: {truncate_text(page_text, 1000) if page_text else "(нет)"}
+
+Варианты ответа:
+{options_block}
+
+{profile_note_block}{knowledge_block}{salary_block}{facts_block}{vacancy_block}Резюме кандидата:
+{resume_text[:5000]}
+
+Верни ТОЛЬКО валидный JSON, без markdown-обёртки, без рассуждений до или после. Первым символом ответа должен быть `{{`, последним `}}`. Формат:
+{{
+  "status": "answer" | "skip",
+  "selected": [
+    {{"index": 0, "custom_text": null}}
+  ]
+}}
+
+Правила:
+- index — номер варианта (целое, как в списке выше);
+- custom_text — заполняй ТОЛЬКО если выбран вариант с [СВОЙ ВАРИАНТ], иначе null. Держи custom_text короче 200 символов;
+- для radio/select selected содержит ровно один элемент;
+- для checkbox — один или несколько элементов;
+- если из резюме нельзя выбрать уверенно — status=skip;
+- НЕ объясняй свой выбор за пределами JSON."""
+
+    async def _call_llm(user_prompt: str) -> dict | None:
+        try:
+            client = get_question_answer_client()
+            response = await client.chat.completions.create(
+                model=settings.HH_CHOICE_MODEL or settings.LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "Ты отвечаешь строго в формате JSON. Не пиши никакого текста до или после JSON-объекта."},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.1,
+                max_tokens=600,
+            )
+            raw_text = response.choices[0].message.content or ""
+            try:
+                return parse_llm_json(raw_text)
+            except Exception as parse_exc:
+                logger.info("LLM choice JSON parse failed, trying repair: %s", parse_exc)
+                return await repair_llm_json(
+                    client,
+                    model=settings.HH_CHOICE_MODEL or settings.LLM_MODEL,
+                    raw_text=raw_text,
+                    parse_error=str(parse_exc),
+                    schema='{"status": "answer" | "skip", "selected": [{"index": 0, "custom_text": null}]}',
+                    max_tokens=600,
+                )
+        except Exception as exc:
+            logger.warning("LLM choice answer failed: %s", exc)
+            return None
+
+    def _normalize(parsed: dict | None, best_guess: bool) -> dict | None:
+        if not parsed:
+            return None
+        if parsed.get("status") != "answer":
+            return {"selected": [], "is_skip": True}
+        sel = parsed.get("selected") or []
+        if not isinstance(sel, list) or not sel:
+            return None
+        normalized = []
+        max_chars = settings.HH_AUTO_ANSWER_MAX_CHARS
+        for item in sel:
+            if not isinstance(item, dict):
+                continue
+            try:
+                idx = int(item.get("index"))
+            except (TypeError, ValueError):
+                continue
+            if idx < 0 or idx >= len(options):
+                continue
+            custom_text = item.get("custom_text")
+            if isinstance(custom_text, str):
+                custom_text = truncate_text(custom_text.strip(), max_chars)
+                if not custom_text:
+                    custom_text = None
+            else:
+                custom_text = None
+            normalized.append({"index": idx, "custom_text": custom_text})
+        if not normalized:
+            return None
+        if control != "checkbox":
+            normalized = normalized[:1]
+        return {"selected": normalized, "is_skip": False, "best_guess": best_guess}
+
+    # First attempt — обычный промпт с разрешённым SKIP.
+    result = _normalize(await _call_llm(prompt), best_guess=False)
+    if result is None:
+        return None
+    if not result.get("is_skip"):
+        return result
+
+    # Second attempt — best-guess (SKIP запрещён). Только для radio/select; для checkbox
+    # отказ от ответа допустим (можно ничего не выбирать).
+    if control == "checkbox":
+        return result
+
+    logger.info("choice LLM said skip, retrying with best-guess directive")
+    retry_prompt = (
+        prompt
+        + "\n\nВНИМАНИЕ: предыдущая попытка вернула skip. SKIP теперь ЗАПРЕЩЁН. "
+        "Возьми лучшее предположение из готовых вариантов (или «Свой вариант» с осторожным "
+        "нейтральным текстом). Допустимо ошибиться, лучше прикинуть чем потерять отклик."
+    )
+    retry = _normalize(await _call_llm(retry_prompt), best_guess=True)
+    if retry is None or retry.get("is_skip"):
+        # сдаёмся
+        return {"selected": [], "is_skip": True}
+    return retry

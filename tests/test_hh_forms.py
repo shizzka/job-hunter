@@ -1,4 +1,6 @@
 import asyncio
+import json
+from types import SimpleNamespace
 
 import hh_client
 from hh import forms
@@ -193,6 +195,7 @@ class AnswerSettings:
     LLM_API_KEY = "test-key"
     HH_AUTO_ANSWER_MAX_CHARS = 140
     HH_QUESTION_MODEL = ""
+    HH_CHOICE_MODEL = ""
     LLM_MODEL = "test-model"
 
 
@@ -245,5 +248,87 @@ def test_legacy_text_answer_wrapper_forwards_patchable_dependencies(monkeypatch)
         captured["kwargs"]["get_question_answer_client"]
         is hh_client._get_question_answer_client
     )
+    assert captured["kwargs"]["parse_llm_json"] is hh_client._parse_llm_json
+    assert captured["kwargs"]["repair_llm_json"] is hh_client._repair_llm_json
+
+
+class FakeChoiceCompletions:
+    def __init__(self):
+        self.calls = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        message = SimpleNamespace(
+            content='{"status":"answer","selected":[{"index":1,"custom_text":null}]}'
+        )
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+class FakeChoiceClient:
+    def __init__(self):
+        self.completions = FakeChoiceCompletions()
+        self.chat = SimpleNamespace(completions=self.completions)
+
+
+def _empty_block(*args, **kwargs):
+    return ""
+
+
+async def _empty_filtered_block(*args, **kwargs):
+    return ""
+
+
+def test_answer_choice_with_llm_normalizes_selected_option():
+    llm = FakeChoiceClient()
+    field = {
+        "control": "radio",
+        "question_text": "Готовы работать удалённо?",
+        "options": [
+            {"index": 0, "label": "Нет"},
+            {"index": 1, "label": "Да"},
+        ],
+    }
+
+    result = asyncio.run(
+        forms.answer_choice_with_llm(
+            field,
+            "Резюме QA",
+            settings=AnswerSettings,
+            logger=hh_client.log,
+            get_question_answer_client=lambda: llm,
+            build_salary_rule_block=_empty_block,
+            build_facts_block=_empty_block,
+            build_profile_note_block=_empty_block,
+            build_filtered_kb_block=_empty_filtered_block,
+            build_knowledge_base_block=_empty_block,
+            parse_llm_json=json.loads,
+            repair_llm_json=_unexpected_dependency,
+        )
+    )
+
+    assert result == {
+        "selected": [{"index": 1, "custom_text": None}],
+        "is_skip": False,
+        "best_guess": False,
+    }
+    assert llm.completions.calls[0]["model"] == AnswerSettings.LLM_MODEL
+
+
+def test_legacy_choice_answer_wrapper_forwards_patchable_dependencies(monkeypatch):
+    client = hh_client.HHClient()
+    captured = {}
+
+    async def fake_answer(*args, **kwargs):
+        captured.update(args=args, kwargs=kwargs)
+        return {"selected": [], "is_skip": True}
+
+    monkeypatch.setattr(hh_client, "_answer_choice_with_llm", fake_answer)
+    field = {"control": "radio", "options": [{"index": 0, "label": "Да"}]}
+
+    result = asyncio.run(client._answer_choice_with_llm(field, "Резюме"))
+
+    assert result == {"selected": [], "is_skip": True}
+    assert captured["args"] == (field, "Резюме", "", "")
+    assert captured["kwargs"]["settings"] is hh_client.config
     assert captured["kwargs"]["parse_llm_json"] is hh_client._parse_llm_json
     assert captured["kwargs"]["repair_llm_json"] is hh_client._repair_llm_json
