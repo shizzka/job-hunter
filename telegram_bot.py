@@ -24,6 +24,7 @@ import seen
 import telegram_access
 import telegram_clients
 import telegram_resume_limits
+from runtime_context import TelegramRuntimePaths
 from telegram_app.auth_bridge import (
     TelegramHHAuthBridge,
     can_answer_hh_auth_prompt as _can_answer_hh_auth_prompt,
@@ -39,6 +40,10 @@ from telegram_app.subprocesses import (
 from telegram_bot_ui import *  # re-export UI helpers for existing imports/tests
 
 log = logging.getLogger("telegram_bot")
+
+
+def _telegram_runtime_paths() -> TelegramRuntimePaths:
+    return TelegramRuntimePaths.from_config(config)
 
 
 def _build_logging_handlers() -> list[logging.Handler]:
@@ -186,7 +191,13 @@ class TelegramBot(
     TelegramHHAuthBridge,
     TelegramCallbackRouter,
 ):
-    def __init__(self, profile_name: str, drop_pending: bool = True):
+    def __init__(
+        self,
+        profile_name: str,
+        drop_pending: bool = True,
+        *,
+        runtime_paths: TelegramRuntimePaths | None = None,
+    ):
         TelegramAPIClient.__init__(self, logger=log)
         TelegramSubprocessManager.__init__(self, admin_role=ROLE_ADMIN)
         TelegramHHAuthBridge.__init__(
@@ -197,6 +208,7 @@ class TelegramBot(
         )
         self.profile_name = profile_name
         self.drop_pending = drop_pending
+        self.runtime_paths = runtime_paths or _telegram_runtime_paths()
         self._stop_event = asyncio.Event()
 
     async def run(self) -> None:
@@ -248,14 +260,14 @@ class TelegramBot(
             await self._close_sessions()
 
     def _load_state(self) -> dict:
-        return runtime_control.read_json_file(config.TELEGRAM_BOT_STATE_FILE) or {}
+        return runtime_control.read_json_file(self.runtime_paths.bot_state_file) or {}
 
     def _save_state(self, state: dict) -> None:
-        runtime_control.write_json_file(config.TELEGRAM_BOT_STATE_FILE, state)
+        runtime_control.write_json_file(self.runtime_paths.bot_state_file, state)
 
     def _write_runtime(self, action: str, message: str, status: str) -> None:
         runtime_control.write_json_file(
-            config.TELEGRAM_BOT_RUNTIME_FILE,
+            self.runtime_paths.bot_runtime_file,
             {
                 "action": action,
                 "message": message,
@@ -267,7 +279,7 @@ class TelegramBot(
         )
 
     def _append_chat_ai_audit_event(self, event: str, **payload: object) -> None:
-        path = getattr(config, "TELEGRAM_BOT_DEBUG_LOG_FILE", "") or ""
+        path = self.runtime_paths.bot_debug_log_file
         if not path:
             return
         record = {
@@ -1107,7 +1119,7 @@ class TelegramBot(
         )
 
     def _append_debug_log(self, event: str, **fields: object) -> None:
-        path = config.TELEGRAM_BOT_DEBUG_LOG_FILE
+        path = self.runtime_paths.bot_debug_log_file
         if not path:
             return
         try:
