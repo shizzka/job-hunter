@@ -44,6 +44,8 @@ class HHConfig(SourceConfig):
     search_salary: int = 0
     search_only_with_salary: bool = False
     search_pages: int = 3
+    matcher_auto_apply_min_score: int = 58
+    matcher_middle_challenge_min_score: int = 60
     # Резюме
     primary_resume_title: str = ""
     primary_resume_id: str = ""
@@ -55,6 +57,12 @@ class HHConfig(SourceConfig):
     resume_retry_delay_hours: int = 24
     resume_retry_on_silence: bool = False
     resume_silence_retry_delay_hours: int = 72
+    resume_viewed_retry_delay_hours: int = 72
+    resume_not_viewed_retry_delay_hours: int = 72
+    resume_retry_daily_limit: int = 3
+    resume_retry_max_per_company: int = 1
+    resume_retry_company_lookback_days: int = 30
+    resume_retry_blocked_companies: list[str] = field(default_factory=list)
     resume_retry_max_candidates_per_run: int = 5
     resume_pipeline_file: str = ""
 
@@ -328,6 +336,8 @@ def _patch_config(p: Profile):
     config.SEARCH_SALARY = p.hh.search_salary
     config.SEARCH_ONLY_WITH_SALARY = p.hh.search_only_with_salary
     config.SEARCH_PAGES = p.hh.search_pages
+    config.HH_MATCHER_AUTO_APPLY_MIN_SCORE = p.hh.matcher_auto_apply_min_score
+    config.HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE = p.hh.matcher_middle_challenge_min_score
     config.HH_PRIMARY_RESUME_TITLE = p.hh.primary_resume_title
     config.HH_PRIMARY_RESUME_ID = p.hh.primary_resume_id
     config.HH_SECONDARY_RESUME_TITLE = p.hh.secondary_resume_title
@@ -338,6 +348,12 @@ def _patch_config(p: Profile):
     config.HH_RESUME_RETRY_DELAY_HOURS = p.hh.resume_retry_delay_hours
     config.HH_RESUME_RETRY_ON_SILENCE = p.hh.resume_retry_on_silence
     config.HH_RESUME_SILENCE_RETRY_DELAY_HOURS = p.hh.resume_silence_retry_delay_hours
+    config.HH_RESUME_VIEWED_RETRY_DELAY_HOURS = p.hh.resume_viewed_retry_delay_hours
+    config.HH_RESUME_NOT_VIEWED_RETRY_DELAY_HOURS = p.hh.resume_not_viewed_retry_delay_hours
+    config.HH_RESUME_RETRY_DAILY_LIMIT = p.hh.resume_retry_daily_limit
+    config.HH_RESUME_RETRY_MAX_PER_COMPANY = p.hh.resume_retry_max_per_company
+    config.HH_RESUME_RETRY_COMPANY_LOOKBACK_DAYS = p.hh.resume_retry_company_lookback_days
+    config.HH_RESUME_RETRY_BLOCKED_COMPANIES = p.hh.resume_retry_blocked_companies
     config.HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN = p.hh.resume_retry_max_candidates_per_run
     config.HH_RESUME_PIPELINE_FILE = p.hh.resume_pipeline_file
 
@@ -403,6 +419,8 @@ def load_default_profile() -> Profile:
             search_salary=config.SEARCH_SALARY,
             search_only_with_salary=config.SEARCH_ONLY_WITH_SALARY,
             search_pages=config.SEARCH_PAGES,
+            matcher_auto_apply_min_score=config.HH_MATCHER_AUTO_APPLY_MIN_SCORE,
+            matcher_middle_challenge_min_score=config.HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE,
             primary_resume_title=config.HH_PRIMARY_RESUME_TITLE,
             primary_resume_id=config.HH_PRIMARY_RESUME_ID,
             secondary_resume_title=config.HH_SECONDARY_RESUME_TITLE,
@@ -413,6 +431,12 @@ def load_default_profile() -> Profile:
             resume_retry_delay_hours=config.HH_RESUME_RETRY_DELAY_HOURS,
             resume_retry_on_silence=config.HH_RESUME_RETRY_ON_SILENCE,
             resume_silence_retry_delay_hours=config.HH_RESUME_SILENCE_RETRY_DELAY_HOURS,
+            resume_viewed_retry_delay_hours=config.HH_RESUME_VIEWED_RETRY_DELAY_HOURS,
+            resume_not_viewed_retry_delay_hours=config.HH_RESUME_NOT_VIEWED_RETRY_DELAY_HOURS,
+            resume_retry_daily_limit=config.HH_RESUME_RETRY_DAILY_LIMIT,
+            resume_retry_max_per_company=config.HH_RESUME_RETRY_MAX_PER_COMPANY,
+            resume_retry_company_lookback_days=config.HH_RESUME_RETRY_COMPANY_LOOKBACK_DAYS,
+            resume_retry_blocked_companies=list(config.HH_RESUME_RETRY_BLOCKED_COMPANIES),
             resume_retry_max_candidates_per_run=config.HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN,
             resume_pipeline_file=config.HH_RESUME_PIPELINE_FILE,
         ),
@@ -686,6 +710,16 @@ def _apply_env_overrides(profile: Profile, env: dict[str, str]):
         profile.hh.search_queries = queries
     if "HH_SEARCH_PAGES" in env:
         profile.hh.search_pages = _int("HH_SEARCH_PAGES", profile.hh.search_pages)
+    if "HH_MATCHER_AUTO_APPLY_MIN_SCORE" in env:
+        profile.hh.matcher_auto_apply_min_score = _int(
+            "HH_MATCHER_AUTO_APPLY_MIN_SCORE",
+            profile.hh.matcher_auto_apply_min_score,
+        )
+    if "HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE" in env:
+        profile.hh.matcher_middle_challenge_min_score = _int(
+            "HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE",
+            profile.hh.matcher_middle_challenge_min_score,
+        )
     if "HH_PRIMARY_RESUME_ID" in env:
         profile.hh.primary_resume_id = env["HH_PRIMARY_RESUME_ID"].strip()
     if "HH_PRIMARY_RESUME_TITLE" in env:
@@ -709,6 +743,34 @@ def _apply_env_overrides(profile: Profile, env: dict[str, str]):
             "HH_RESUME_SILENCE_RETRY_DELAY_HOURS",
             profile.hh.resume_silence_retry_delay_hours,
         )
+    if "HH_RESUME_VIEWED_RETRY_DELAY_HOURS" in env:
+        profile.hh.resume_viewed_retry_delay_hours = _int(
+            "HH_RESUME_VIEWED_RETRY_DELAY_HOURS",
+            profile.hh.resume_viewed_retry_delay_hours,
+        )
+    if "HH_RESUME_NOT_VIEWED_RETRY_DELAY_HOURS" in env:
+        profile.hh.resume_not_viewed_retry_delay_hours = _int(
+            "HH_RESUME_NOT_VIEWED_RETRY_DELAY_HOURS",
+            profile.hh.resume_not_viewed_retry_delay_hours,
+        )
+    if "HH_RESUME_RETRY_DAILY_LIMIT" in env:
+        profile.hh.resume_retry_daily_limit = _int(
+            "HH_RESUME_RETRY_DAILY_LIMIT",
+            profile.hh.resume_retry_daily_limit,
+        )
+    if "HH_RESUME_RETRY_MAX_PER_COMPANY" in env:
+        profile.hh.resume_retry_max_per_company = _int(
+            "HH_RESUME_RETRY_MAX_PER_COMPANY",
+            profile.hh.resume_retry_max_per_company,
+        )
+    if "HH_RESUME_RETRY_COMPANY_LOOKBACK_DAYS" in env:
+        profile.hh.resume_retry_company_lookback_days = _int(
+            "HH_RESUME_RETRY_COMPANY_LOOKBACK_DAYS",
+            profile.hh.resume_retry_company_lookback_days,
+        )
+    blocked_companies = _list("HH_RESUME_RETRY_BLOCKED_COMPANIES")
+    if blocked_companies is not None:
+        profile.hh.resume_retry_blocked_companies = blocked_companies
     if "HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN" in env:
         profile.hh.resume_retry_max_candidates_per_run = _int(
             "HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN",

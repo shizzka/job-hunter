@@ -166,6 +166,28 @@ class TestApplyEnvOverrides:
         _apply_env_overrides(p, {"HH_SEARCH_QUERIES": "QA||DevOps"})
         assert p.hh.search_queries == ["QA", "DevOps"]
 
+    def test_override_hh_matcher_and_retry_policy(self):
+        p = Profile()
+        _apply_env_overrides(p, {
+            "HH_MATCHER_AUTO_APPLY_MIN_SCORE": "63",
+            "HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE": "71",
+            "HH_RESUME_VIEWED_RETRY_DELAY_HOURS": "48",
+            "HH_RESUME_NOT_VIEWED_RETRY_DELAY_HOURS": "96",
+            "HH_RESUME_RETRY_DAILY_LIMIT": "4",
+            "HH_RESUME_RETRY_MAX_PER_COMPANY": "2",
+            "HH_RESUME_RETRY_COMPANY_LOOKBACK_DAYS": "45",
+            "HH_RESUME_RETRY_BLOCKED_COMPANIES": "Acme||Example LLC",
+        })
+
+        assert p.hh.matcher_auto_apply_min_score == 63
+        assert p.hh.matcher_middle_challenge_min_score == 71
+        assert p.hh.resume_viewed_retry_delay_hours == 48
+        assert p.hh.resume_not_viewed_retry_delay_hours == 96
+        assert p.hh.resume_retry_daily_limit == 4
+        assert p.hh.resume_retry_max_per_company == 2
+        assert p.hh.resume_retry_company_lookback_days == 45
+        assert p.hh.resume_retry_blocked_companies == ["Acme", "Example LLC"]
+
     def test_override_notify(self):
         p = Profile()
         _apply_env_overrides(p, {"NOTIFY_CHAT_ID": "999"})
@@ -323,12 +345,23 @@ class TestActivateProfile:
         import profile as profile_mod
         monkeypatch.setattr(profile_mod, "_active_profile", None)
         monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
+        for name in (
+            "HH_MATCHER_AUTO_APPLY_MIN_SCORE",
+            "HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE",
+            "HH_RESUME_RETRY_DAILY_LIMIT",
+            "HH_RESUME_RETRY_BLOCKED_COMPANIES",
+        ):
+            monkeypatch.setattr(config, name, getattr(config, name))
 
         # Создаём профиль
         profile_dir = tmp_path / "profiles" / "tester"
         profile_dir.mkdir(parents=True)
         (profile_dir / "profile.env").write_text(
             "HH_ENABLED=0\n"
+            "HH_MATCHER_AUTO_APPLY_MIN_SCORE=63\n"
+            "HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE=71\n"
+            "HH_RESUME_RETRY_DAILY_LIMIT=4\n"
+            "HH_RESUME_RETRY_BLOCKED_COMPANIES=Acme||Example LLC\n"
             "NOTIFY_CHAT_ID=777\n"
             "MAX_APPLICATIONS_PER_RUN=42\n"
         )
@@ -337,6 +370,10 @@ class TestActivateProfile:
 
         # config.* должен быть пропатчен
         assert config.HH_ENABLED is False
+        assert config.HH_MATCHER_AUTO_APPLY_MIN_SCORE == 63
+        assert config.HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE == 71
+        assert config.HH_RESUME_RETRY_DAILY_LIMIT == 4
+        assert config.HH_RESUME_RETRY_BLOCKED_COMPANIES == ["Acme", "Example LLC"]
         assert config.NOTIFY_CHAT_ID == 777
         assert config.MAX_APPLICATIONS_PER_RUN == 42
         assert config.SEEN_VACANCIES_FILE == p.seen_file
