@@ -26,14 +26,15 @@ from hh.browser import (
     start_browser as _start_browser,
     stop_browser as _stop_browser,
 )
-from hh.text import compact_text as _compact_text
 from hh.resume import (
     _looks_like_resume_boost_action,
     _looks_like_resume_boost_success,
     _looks_like_resume_boost_unavailable,
     _resume_matches_target,
+    get_resume_ids as _get_resume_ids,
 )
 from hh.text import normalize_text as _normalize_text
+from hh.text import compact_text as _compact_text
 from llm_client import get_llm_client
 import proxy_utils
 
@@ -2777,98 +2778,12 @@ class HHClient:
 
     async def get_resume_ids(self) -> list[dict]:
         """Получить ID резюме пользователя."""
-        try:
-            await self._page.goto(
-                f"{config.HH_BASE_URL}/applicant/resumes",
-                wait_until="domcontentloaded",
-                timeout=30000,
-            )
-        except Exception as e:
-            log.warning("Resume page navigation issue: %s", e)
-
-        await self._page.wait_for_timeout(4000)
-        await self._dismiss_whats_new_modal()
-
-        # Дебаг: скриншот и URL
-        current_url = self._page.url
-        log.info("Resume page URL: %s", current_url)
-        debug_screenshot = os.path.join(config.HH_STATE_DIR, "debug_resumes.png")
-        debug_html = os.path.join(config.HH_STATE_DIR, "debug_resumes.html")
-        try:
-            await self._page.screenshot(path=debug_screenshot)
-            html = await self._page.content()
-            with open(debug_html, "w") as f:
-                f.write(html)
-            log.info("Debug saved: %s, %s", debug_screenshot, debug_html)
-        except Exception as e:
-            log.debug("Debug save failed: %s", e)
-
-        anti_bot_kind = await self._detect_anti_bot_kind()
-        if anti_bot_kind:
-            message = _anti_bot_message(anti_bot_kind, "на странице резюме")
-            self._remember_antibot_signal(anti_bot_kind, "resume_page", message)
-            log.warning("hh.ru anti-bot (%s) on resume page: %s", anti_bot_kind, self._page.url)
-            return []
-
-        resumes = []
-
-        # Стратегия 1: data-qa селекторы (новый дизайн: resume-card-link-*)
-        cards = await self._page.query_selector_all("[data-qa='resume'], [data-qa^='resume-card-link-']")
-        log.info("Strategy 1 (data-qa='resume'/resume-card-link): %d cards", len(cards))
-
-        # Стратегия 2: ссылки с /resume/ в href
-        if not cards:
-            cards = await self._page.query_selector_all("a[href*='/resume/']")
-            log.info("Strategy 2 (a[href*='/resume/']): %d links", len(cards))
-            seen_ids = set()
-            for link in cards:
-                href = await link.get_attribute("href") or ""
-                if "/resume/" not in href:
-                    continue
-                resume_id = href.split("/resume/")[-1].split("?")[0].split("/")[0]
-                if not resume_id or resume_id in seen_ids:
-                    continue
-                seen_ids.add(resume_id)
-                title = (await link.inner_text()).strip() or resume_id
-                if not title or len(title) > 200:
-                    title = resume_id
-                resumes.append({"id": resume_id, "title": title, "url": href})
-            return resumes
-
-        # Стратегия 1 продолжение: парсим карточки
-        # Селектор хватает и контейнер [data-qa='resume'], и ссылку
-        # [data-qa^='resume-card-link-'] внутри той же карточки → дедуп по id.
-        seen_ids: set[str] = set()
-        for card in cards:
-            title_el = await card.query_selector(
-                "[data-qa='resume-title'], "
-                "a[data-qa*='title'], "
-                "a[href*='/resume/']"
-            )
-            card_href = await card.get_attribute("href") or ""
-            href = card_href
-            title = ""
-            if title_el:
-                title = (await title_el.inner_text()).strip()
-                href = (await title_el.get_attribute("href") or "") or href
-            if not href:
-                link_el = await card.query_selector("a[href*='/resume/']")
-                if link_el:
-                    href = await link_el.get_attribute("href") or ""
-            if not title:
-                title = (await card.inner_text()).strip()
-            resume_id = ""
-            if "/resume/" in href:
-                resume_id = href.split("/resume/")[-1].split("?")[0].split("/")[0]
-            if not resume_id or resume_id in seen_ids:
-                continue
-            seen_ids.add(resume_id)
-            title = " ".join((title or resume_id).split())
-            if len(title) > 240:
-                title = title[:237].rstrip() + "..."
-            resumes.append({"id": resume_id, "title": title, "url": href})
-
-        return resumes
+        return await _get_resume_ids(
+            self,
+            anti_bot_message=_anti_bot_message,
+            settings=config,
+            logger=log,
+        )
 
     async def _save_resume_boost_debug(self, stage: str) -> dict:
         paths = {
