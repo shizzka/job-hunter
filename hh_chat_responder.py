@@ -34,6 +34,12 @@ import config
 from llm_client import get_llm_client
 from llm_utils import parse_llm_json
 from google_form_filler import extract_google_form_urls
+from hh.chat import (
+    message_matches_sent_text as _chat_message_matches_sent_text,
+    messages_contain_sent_text as _chat_messages_contain_sent_text,
+    normalize_sent_message_text as _chat_normalize_sent_message_text,
+    quick_reply_choice as _chat_quick_reply_choice,
+)
 from state_store.chat_responder import (
     STATE_FILENAME,
     ChatResponderStateRepository,
@@ -488,23 +494,22 @@ async def _dismiss_cookies_banner(page) -> None:
 
 
 def _normalize_sent_message_text(value: str) -> str:
-    return re.sub(r"\s+", " ", (value or "").replace("\xa0", " ")).strip()
+    return _chat_normalize_sent_message_text(value)
 
 
 def _message_matches_sent_text(actual: str, expected: str) -> bool:
-    actual_norm = _normalize_sent_message_text(actual)
-    expected_norm = _normalize_sent_message_text(expected)
-    if not actual_norm or not expected_norm:
-        return False
-    prefix_len = min(len(expected_norm), max(20, len(expected_norm) // 2))
-    return actual_norm.startswith(expected_norm[:prefix_len])
+    return _chat_message_matches_sent_text(
+        actual,
+        expected,
+        normalize_text=_normalize_sent_message_text,
+    )
 
 
 def _messages_contain_sent_text(messages: list[dict], expected: str) -> bool:
-    return any(
-        message.get("is_me")
-        and _message_matches_sent_text(message.get("text") or "", expected)
-        for message in messages[-8:]
+    return _chat_messages_contain_sent_text(
+        messages,
+        expected,
+        message_matches=_message_matches_sent_text,
     )
 
 
@@ -560,12 +565,10 @@ def _deterministic_chat_answer(question: str) -> str | None:
 
 
 def _quick_reply_choice(text: str) -> str:
-    match = re.match(
-        r"^(да|нет)(?:[\s,.:;!?—-]|$)",
-        _normalize_sent_message_text(text),
-        re.I,
+    return _chat_quick_reply_choice(
+        text,
+        normalize_text=_normalize_sent_message_text,
     )
-    return match.group(1).capitalize() if match else ""
 
 
 async def _find_quick_reply_button(page, choice: str):
