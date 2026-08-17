@@ -605,15 +605,22 @@ def _short_chat_text(value: str, limit: int = 220) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
-async def list_reply_candidates(hh_client, *, limit: int = 8, max_scan: int = 25) -> dict:
+async def list_reply_candidates(
+    hh_client,
+    *,
+    limit: int = 8,
+    max_scan: int = 25,
+    runtime_paths: RuntimePaths | None = None,
+) -> dict:
     # Return recent incoming HH chat messages that can be answered from Telegram buttons.
+    paths = runtime_paths or _runtime_paths()
     if not hh_client._page:
         await hh_client.start(headless=True)
     page = hh_client._page
     await page.goto("https://hh.ru/", wait_until="domcontentloaded", timeout=30000)
     await page.wait_for_timeout(1500)
 
-    state = load_state()
+    state = load_state(paths)
     candidates: list[dict[str, Any]] = []
     summary = {
         "ok": True,
@@ -785,9 +792,19 @@ async def _notify_google_form_failure(notifier, *, chat_id: str, vacancy: dict, 
     return await notifier.send_message_with_markup(caption)
 
 
-async def _prepare_google_form_preview_from_message(page, *, chat_id: str, vacancy: dict, message: dict, form_url: str, notifier) -> dict:
+async def _prepare_google_form_preview_from_message(
+    page,
+    *,
+    chat_id: str,
+    vacancy: dict,
+    message: dict,
+    form_url: str,
+    notifier,
+    runtime_paths: RuntimePaths | None = None,
+) -> dict:
     import google_form_filler as gforms
 
+    paths = runtime_paths or _runtime_paths()
     form_page = await page.context.new_page()
     try:
         detail = await gforms.preview_form(
@@ -799,6 +816,7 @@ async def _prepare_google_form_preview_from_message(page, *, chat_id: str, vacan
             vacancy=vacancy,
             source_message=message.get("text") or "",
             notify=bool(notifier),
+            runtime_paths=paths,
         )
         if not detail.get("ok"):
             detail.setdefault("chat_id", chat_id)
@@ -849,8 +867,10 @@ async def process_one(
     allow_any: bool = False,
     dry_run: bool | None = None,
     notify: bool = False,
+    runtime_paths: RuntimePaths | None = None,
 ) -> dict:
     """Generate/send one reply for a specific chat message after human approval."""
+    paths = runtime_paths or _runtime_paths()
     if dry_run is None:
         dry_run = not bool(int(os.getenv("HH_CHAT_AUTOSEND", "0") or 0))
 
@@ -869,7 +889,7 @@ async def process_one(
         return {"ok": False, "message": "target message is ours", "chat_id": chat_id}
 
     target_id = str(target.get("id") or "")
-    state = load_state()
+    state = load_state(paths)
     chat_state = state.setdefault(str(chat_id), {})
     if chat_state.get("last_replied_msg_id") == target_id:
         return {"ok": True, "already_replied": True, "message": "already replied", "chat_id": chat_id}
@@ -919,17 +939,17 @@ async def process_one(
         "manual_any": is_manual_any,
     }
     if dry_run:
-        preview = await fill_and_preview(page, chat_id, answer)
+        preview = await fill_and_preview(page, chat_id, answer, runtime_paths=paths)
         detail["preview"] = preview
         detail["sent"] = False
     else:
-        ok = await send_message(page, chat_id, answer)
+        ok = await send_message(page, chat_id, answer, runtime_paths=paths)
         detail["sent"] = ok
         if ok:
             chat_state["last_replied_msg_id"] = target_id
             chat_state["replies_count"] = int(chat_state.get("replies_count", 0)) + 1
             chat_state["last_reply_at"] = time.time()
-            save_state(state)
+            save_state(state, paths)
         else:
             detail["ok"] = False
             detail["message"] = "send failed"
@@ -951,6 +971,7 @@ async def process_all(
     max_replies_per_chat: int | None = None,
     *,
     limits: ChatResponderLimits | None = None,
+    runtime_paths: RuntimePaths | None = None,
 ) -> dict:
     """Main entry: polling + reply.
 
@@ -958,6 +979,7 @@ async def process_all(
     """
     if dry_run is None:
         dry_run = not bool(int(os.getenv("HH_CHAT_AUTOSEND", "0") or 0))
+    paths = runtime_paths or _runtime_paths()
     runtime_limits = limits or ChatResponderLimits.from_env(os.environ)
     max_replies = max_replies_per_chat or runtime_limits.max_replies_per_chat
 
@@ -969,7 +991,7 @@ async def process_all(
     await page.goto("https://hh.ru/", wait_until="domcontentloaded", timeout=30000)
     await page.wait_for_timeout(1500)
 
-    state = load_state()
+    state = load_state(paths)
     summary = {
         "chats_scanned": 0,
         "with_ai": 0,
@@ -1042,9 +1064,10 @@ async def process_all(
                 message=form_msg,
                 form_url=form_url,
                 notifier=notifier,
+                runtime_paths=paths,
             )
             _remember_google_form_preview(chat_state, form_item["key"], detail)
-            save_state(state)
+            save_state(state, paths)
             if detail.get("ok"):
                 summary["google_forms_prepared"] += 1
             else:
@@ -1113,7 +1136,7 @@ async def process_all(
                 summary["suspicious_notified"] += 1
                 chat_state["last_suspicious_msg_id"] = last_id
                 chat_state["last_suspicious_at"] = time.time()
-                save_state(state)
+                save_state(state, paths)
             summary["details"].append({
                 "chat_id": chat_id,
                 "vacancy": vac.get("title", ""),
@@ -1152,7 +1175,7 @@ async def process_all(
 
         if dry_run:
             # Превью: набираем текст без отправки + скрин
-            preview = await fill_and_preview(page, chat_id, answer)
+            preview = await fill_and_preview(page, chat_id, answer, runtime_paths=paths)
             detail["dry_run"] = True
             detail["preview"] = preview
             if notifier:
@@ -1172,14 +1195,14 @@ async def process_all(
                     log.warning("notify dry-run failed: %s", exc)
         else:
             # реальная отправка
-            ok = await send_message(page, chat_id, answer)
+            ok = await send_message(page, chat_id, answer, runtime_paths=paths)
             detail["sent"] = ok
             if ok:
                 summary["answers_sent"] += 1
                 chat_state["last_replied_msg_id"] = last_id
                 chat_state["replies_count"] = replies_so_far + 1
                 chat_state["last_reply_at"] = time.time()
-                save_state(state)
+                save_state(state, paths)
                 if notifier:
                     try:
                         caption = (

@@ -432,7 +432,7 @@ def test_get_messages_safe_returns_empty_result_on_timeout(monkeypatch):
     assert "TimeoutError" in result["error"]
 
 
-def test_process_all_uses_injected_reply_limits(monkeypatch):
+def test_process_all_uses_injected_reply_limits(tmp_path, monkeypatch):
     import hh_client
     import notifier
 
@@ -462,6 +462,13 @@ def test_process_all_uses_injected_reply_limits(monkeypatch):
         "vacancy": {"title": "QA", "company": "Example"},
     }
     sleeps = []
+    loaded_paths = []
+    preview_paths = []
+    paths = RuntimePaths(
+        home_dir=str(tmp_path / "profile-a"),
+        hh_state_dir=str(tmp_path / "profile-a" / "state"),
+        resume_file=str(tmp_path / "profile-a" / "resume.md"),
+    )
 
     async def fake_list_chats(page):
         return chats
@@ -473,6 +480,7 @@ def test_process_all_uses_injected_reply_limits(monkeypatch):
         return "About one year of practical QA experience."
 
     async def fake_fill_and_preview(*args, **kwargs):
+        preview_paths.append(kwargs.get("runtime_paths"))
         return {}
 
     async def fake_sleep(seconds):
@@ -481,8 +489,12 @@ def test_process_all_uses_injected_reply_limits(monkeypatch):
     async def fake_notify(*args, **kwargs):
         return True
 
+    def fake_load_state(runtime_paths=None):
+        loaded_paths.append(runtime_paths)
+        return {"limited": {"replies_count": 3}}
+
     monkeypatch.setattr(hh_client, "_load_resume_text", lambda: "QA resume")
-    monkeypatch.setattr(chat_responder, "load_state", lambda: {"limited": {"replies_count": 3}})
+    monkeypatch.setattr(chat_responder, "load_state", fake_load_state)
     monkeypatch.setattr(chat_responder, "list_chats", fake_list_chats)
     monkeypatch.setattr(chat_responder, "get_messages", fake_get_messages)
     monkeypatch.setattr(chat_responder, "generate_answer", fake_generate_answer)
@@ -498,6 +510,7 @@ def test_process_all_uses_injected_reply_limits(monkeypatch):
                 max_replies_per_chat=3,
                 reply_cooldown_s=7,
             ),
+            runtime_paths=paths,
         )
     )
 
@@ -505,6 +518,8 @@ def test_process_all_uses_injected_reply_limits(monkeypatch):
     assert summary["answers_drafted"] == 1
     assert summary["skipped"] == 1
     assert sleeps == [7]
+    assert loaded_paths == [paths]
+    assert preview_paths == [paths]
 
 
 def test_chat_preview_and_send_use_explicit_runtime_paths(tmp_path, monkeypatch):
