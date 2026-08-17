@@ -52,6 +52,7 @@ from hh.chat import (
     normalize_sent_message_text as _chat_normalize_sent_message_text,
     open_chatik_page as _chat_open_chatik_page,
     quick_reply_choice as _chat_quick_reply_choice,
+    send_message as _chat_send_message,
     reset_page_after_navigation_failure as _chat_reset_page_after_navigation_failure,
 )
 from state_store.chat_responder import (
@@ -447,46 +448,16 @@ async def fill_and_preview(page, chat_id: str, text: str) -> dict:
 
 async def send_message(page, chat_id: str, text: str) -> bool:
     """Полная отправка: перейти, набрать, нажать Send."""
-    result = await fill_and_preview(page, chat_id, text)
-    if not result.get("filled"):
-        return False
-    quick_reply = result.get("quick_reply") or ""
-    btn = (
-        await _find_quick_reply_button(page, quick_reply)
-        if quick_reply
-        else await page.query_selector('[data-qa="chatik-do-send-message"]')
-    )
-    if not btn:
-        log.warning("send button not found (quick_reply=%r)", quick_reply)
-        return False
-    try:
-        await btn.click()
-        await page.wait_for_timeout(2500)
-    except Exception as exc:
-        log.warning("send click failed: %s", exc)
-        return False
-
-    last = {}
-    try:
-        for _ in range(5):
-            data = await _extract_messages(page)
-            messages = data.get("messages", [])
-            last = messages[-1] if messages else {}
-            if _messages_contain_sent_text(messages, quick_reply or text):
-                return True
-            await page.wait_for_timeout(1000)
-    except Exception as exc:
-        log.warning("send verification failed to read current chat %s: %s", chat_id, exc)
-        return False
-
-    log.warning(
-        "send verification failed for chat %s: last_is_me=%s last_author=%r last_text=%r",
+    return await _chat_send_message(
+        page,
         chat_id,
-        bool(last.get("is_me")),
-        last.get("author") or "",
-        (last.get("text") or "")[:160],
+        text,
+        fill_preview=fill_and_preview,
+        find_quick_reply=_find_quick_reply_button,
+        extract_current_messages=_extract_messages,
+        messages_contain=_messages_contain_sent_text,
+        logger=log,
     )
-    return False
 
 
 # ── Approval lane for suspicious HR messages ───────────────────────────────

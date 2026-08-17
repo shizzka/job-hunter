@@ -401,3 +401,57 @@ async def fill_and_preview(
     except Exception:
         shot_path = ""
     return {"filled": True, "screenshot_path": shot_path}
+
+
+async def send_message(
+    page,
+    chat_id: str,
+    text: str,
+    *,
+    fill_preview,
+    find_quick_reply=find_quick_reply_button,
+    extract_current_messages=extract_messages,
+    messages_contain=messages_contain_sent_text,
+    logger=log,
+) -> bool:
+    """Полная отправка: перейти, набрать, нажать Send."""
+    result = await fill_preview(page, chat_id, text)
+    if not result.get("filled"):
+        return False
+    quick_reply = result.get("quick_reply") or ""
+    button = (
+        await find_quick_reply(page, quick_reply)
+        if quick_reply
+        else await page.query_selector('[data-qa="chatik-do-send-message"]')
+    )
+    if not button:
+        logger.warning("send button not found (quick_reply=%r)", quick_reply)
+        return False
+    try:
+        await button.click()
+        await page.wait_for_timeout(2500)
+    except Exception as exc:
+        logger.warning("send click failed: %s", exc)
+        return False
+
+    last = {}
+    try:
+        for _ in range(5):
+            data = await extract_current_messages(page)
+            messages = data.get("messages", [])
+            last = messages[-1] if messages else {}
+            if messages_contain(messages, quick_reply or text):
+                return True
+            await page.wait_for_timeout(1000)
+    except Exception as exc:
+        logger.warning("send verification failed to read current chat %s: %s", chat_id, exc)
+        return False
+
+    logger.warning(
+        "send verification failed for chat %s: last_is_me=%s last_author=%r last_text=%r",
+        chat_id,
+        bool(last.get("is_me")),
+        last.get("author") or "",
+        (last.get("text") or "")[:160],
+    )
+    return False

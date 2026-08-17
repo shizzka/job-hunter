@@ -12,6 +12,7 @@ from hh.chat import (
     messages_contain_sent_text,
     normalize_sent_message_text,
     open_chatik_page,
+    send_message,
     quick_reply_choice,
 )
 
@@ -347,3 +348,73 @@ def test_fill_and_preview_fills_textarea_without_sending():
     assert page.input.value == "Готов обсудить детали."
     assert page.wait_calls == [500]
     assert page.screenshot_paths == ["/tmp/chat-state/chat_preview_456_789.png"]
+
+
+class FakeSendButton:
+    def __init__(self):
+        self.clicked = False
+
+    async def click(self):
+        self.clicked = True
+
+
+class FakeSendPage:
+    def __init__(self):
+        self.button = FakeSendButton()
+        self.wait_calls = []
+        self.selectors = []
+
+    async def query_selector(self, selector: str):
+        self.selectors.append(selector)
+        return self.button
+
+    async def wait_for_timeout(self, timeout_ms: int):
+        self.wait_calls.append(timeout_ms)
+
+
+def test_send_message_clicks_and_verifies_own_message_before_follow_up():
+    page = FakeSendPage()
+    expected = "Рассматриваю предложения от 80 000 ₽ на руки."
+
+    async def fill_preview(*args):
+        return {"filled": True, "screenshot_path": ""}
+
+    async def extract_current_messages(current_page):
+        assert current_page is page
+        return {
+            "messages": [
+                {"text": expected + "\n\n08:47", "is_me": True},
+                {"text": "Есть высшее образование?", "is_me": False},
+            ]
+        }
+
+    result = asyncio.run(
+        send_message(
+            page,
+            "123",
+            expected,
+            fill_preview=fill_preview,
+            extract_current_messages=extract_current_messages,
+        )
+    )
+
+    assert result is True
+    assert page.selectors == ['[data-qa="chatik-do-send-message"]']
+    assert page.button.clicked is True
+    assert page.wait_calls == [2500]
+
+
+def test_send_message_stops_when_preview_was_not_filled():
+    async def fill_preview(*args):
+        return {"filled": False, "reason": "input not found"}
+
+    result = asyncio.run(
+        send_message(
+            object(),
+            "123",
+            "Ответ",
+            fill_preview=fill_preview,
+        )
+    )
+
+    assert result is False
