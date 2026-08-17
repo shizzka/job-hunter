@@ -1,7 +1,9 @@
 """Low-level helpers for HH chat browser workflows."""
 
 import logging
+import os
 import re
+import time
 from typing import Any
 
 from chat_screening import classify_message_author
@@ -306,3 +308,96 @@ async def get_messages_safe(
             "error": f"{type(exc).__name__}: {str(exc).splitlines()[0][:180]}",
             "chat_id": str(chat_id),
         }
+
+
+async def dismiss_cookies_banner(page) -> None:
+    """Закрыть баннер «Мы используем файлы cookie» если есть — чтобы не перекрывал скрин."""
+    for selector in (
+        '[data-qa="cookies-policy-informer-accept"]',
+        '[data-qa="cookies-policy-banner-accept"]',
+        'button:has-text("Понятно")',
+    ):
+        try:
+            button = await page.query_selector(selector)
+        except Exception:
+            button = None
+        if button:
+            try:
+                await button.click()
+                await page.wait_for_timeout(400)
+                return
+            except Exception:
+                continue
+
+
+async def find_quick_reply_button(page, choice: str):
+    if not choice:
+        return None
+    for button in await page.query_selector_all("button"):
+        try:
+            if (await button.inner_text()).strip() != choice:
+                continue
+            if await button.is_visible() and await button.is_enabled():
+                return button
+        except Exception:
+            continue
+    return None
+
+
+async def fill_and_preview(
+    page,
+    chat_id: str,
+    text: str,
+    *,
+    state_dir: str,
+    chatik_root: str = CHATIK_ROOT,
+    ready_selector: str = CHATIK_CHAT_READY_SELECTOR,
+    now=time.time,
+    path_join=os.path.join,
+    open_page=open_chatik_page,
+    dismiss_cookies=dismiss_cookies_banner,
+    choose_quick_reply=quick_reply_choice,
+    find_quick_reply=find_quick_reply_button,
+) -> dict:
+    """Перейти в chat, набрать текст в input. НЕ отправлять.
+    Возвращает {filled, screenshot_path}."""
+    url = f"{chatik_root}/chat/{chat_id}"
+    await open_page(
+        page,
+        url,
+        ready_selector,
+        settle_ms=2000,
+    )
+    await dismiss_cookies(page)
+    quick_reply = choose_quick_reply(text)
+    quick_button = await find_quick_reply(page, quick_reply)
+    if quick_button:
+        shot_path = path_join(
+            state_dir,
+            f"chat_preview_{chat_id}_{int(now())}.png",
+        )
+        try:
+            await page.screenshot(path=shot_path)
+        except Exception:
+            shot_path = ""
+        return {
+            "filled": True,
+            "quick_reply": quick_reply,
+            "screenshot_path": shot_path,
+        }
+
+    inp = await page.query_selector('textarea[data-qa="chatik-new-message-text"]')
+    if not inp:
+        return {"filled": False, "reason": "input not found"}
+    await inp.focus()
+    await inp.fill(text)
+    await page.wait_for_timeout(500)
+    shot_path = path_join(
+        state_dir,
+        f"chat_preview_{chat_id}_{int(now())}.png",
+    )
+    try:
+        await page.screenshot(path=shot_path)
+    except Exception:
+        shot_path = ""
+    return {"filled": True, "screenshot_path": shot_path}

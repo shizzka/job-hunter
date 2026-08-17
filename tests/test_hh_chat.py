@@ -2,6 +2,9 @@ import asyncio
 
 from hh.chat import (
     CHATIK_CHAT_READY_SELECTOR,
+    dismiss_cookies_banner,
+    fill_and_preview,
+    find_quick_reply_button,
     extract_messages,
     get_messages_safe,
     list_chats,
@@ -165,3 +168,182 @@ def test_get_messages_safe_returns_structured_error_with_injected_dependencies()
     assert result["chat_id"] == "123"
     assert result["error"] == "TimeoutError: chat did not render"
     assert reset_calls == [page]
+
+
+class FakeCookieButton:
+    def __init__(self, text: str = ""):
+        self.text = text
+        self.clicked = False
+
+    async def click(self):
+        self.clicked = True
+
+    async def inner_text(self):
+        return self.text
+
+    async def is_visible(self):
+        return True
+
+    async def is_enabled(self):
+        return True
+
+
+class FakeCookiePage:
+    def __init__(self, button):
+        self.button = button
+        self.selectors = []
+        self.wait_calls = []
+
+    async def query_selector(self, selector: str):
+        self.selectors.append(selector)
+        if selector == '[data-qa="cookies-policy-banner-accept"]':
+            return self.button
+        return None
+
+    async def wait_for_timeout(self, timeout_ms: int):
+        self.wait_calls.append(timeout_ms)
+
+
+def test_dismiss_cookies_banner_uses_existing_selector_order():
+    button = FakeCookieButton()
+    page = FakeCookiePage(button)
+
+    asyncio.run(dismiss_cookies_banner(page))
+
+    assert page.selectors == [
+        '[data-qa="cookies-policy-informer-accept"]',
+        '[data-qa="cookies-policy-banner-accept"]',
+    ]
+    assert button.clicked is True
+    assert page.wait_calls == [400]
+
+
+class FakeQuickReplyPage:
+    def __init__(self, buttons):
+        self.buttons = buttons
+
+    async def query_selector_all(self, selector: str):
+        assert selector == "button"
+        return self.buttons
+
+
+def test_find_quick_reply_button_returns_visible_enabled_exact_match():
+    ignored = FakeCookieButton("Нет")
+    expected = FakeCookieButton("Да")
+    page = FakeQuickReplyPage([ignored, expected])
+
+    result = asyncio.run(find_quick_reply_button(page, "Да"))
+
+    assert result is expected
+
+
+class FakePreviewPage:
+    def __init__(self):
+        self.screenshot_paths = []
+
+    async def screenshot(self, *, path: str):
+        self.screenshot_paths.append(path)
+
+
+def test_fill_and_preview_keeps_quick_reply_unsubmitted():
+    page = FakePreviewPage()
+    open_calls = []
+    dismiss_calls = []
+    quick_button = object()
+
+    async def open_page(*args, **kwargs):
+        open_calls.append((args, kwargs))
+
+    async def dismiss_cookies(current_page):
+        dismiss_calls.append(current_page)
+
+    async def find_quick_reply(current_page, choice: str):
+        assert current_page is page
+        assert choice == "Да"
+        return quick_button
+
+    result = asyncio.run(
+        fill_and_preview(
+            page,
+            "123",
+            "Да, готов.",
+            state_dir="/tmp/chat-state",
+            now=lambda: 456.9,
+            open_page=open_page,
+            dismiss_cookies=dismiss_cookies,
+            find_quick_reply=find_quick_reply,
+        )
+    )
+
+    assert result == {
+        "filled": True,
+        "quick_reply": "Да",
+        "screenshot_path": "/tmp/chat-state/chat_preview_123_456.png",
+    }
+    assert open_calls == [
+        (
+            (
+                page,
+                "https://chatik.hh.ru/chat/123",
+                CHATIK_CHAT_READY_SELECTOR,
+            ),
+            {"settle_ms": 2000},
+        )
+    ]
+    assert dismiss_calls == [page]
+    assert page.screenshot_paths == ["/tmp/chat-state/chat_preview_123_456.png"]
+
+
+class FakeTextInput:
+    def __init__(self):
+        self.focused = False
+        self.value = ""
+
+    async def focus(self):
+        self.focused = True
+
+    async def fill(self, value: str):
+        self.value = value
+
+
+class FakeTextPreviewPage(FakePreviewPage):
+    def __init__(self):
+        super().__init__()
+        self.input = FakeTextInput()
+        self.wait_calls = []
+
+    async def query_selector(self, selector: str):
+        assert selector == 'textarea[data-qa="chatik-new-message-text"]'
+        return self.input
+
+    async def wait_for_timeout(self, timeout_ms: int):
+        self.wait_calls.append(timeout_ms)
+
+
+def test_fill_and_preview_fills_textarea_without_sending():
+    page = FakeTextPreviewPage()
+
+    async def no_op(*args, **kwargs):
+        return None
+
+    result = asyncio.run(
+        fill_and_preview(
+            page,
+            "456",
+            "Готов обсудить детали.",
+            state_dir="/tmp/chat-state",
+            now=lambda: 789,
+            open_page=no_op,
+            dismiss_cookies=no_op,
+            find_quick_reply=no_op,
+        )
+    )
+
+    assert result == {
+        "filled": True,
+        "screenshot_path": "/tmp/chat-state/chat_preview_456_789.png",
+    }
+    assert page.input.focused is True
+    assert page.input.value == "Готов обсудить детали."
+    assert page.wait_calls == [500]
+    assert page.screenshot_paths == ["/tmp/chat-state/chat_preview_456_789.png"]

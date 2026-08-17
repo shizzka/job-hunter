@@ -40,6 +40,9 @@ from hh.chat import (
     CHATIK_NAVIGATION_TIMEOUT_MS,
     CHATIK_READY_TIMEOUT_MS,
     CHATIK_ROOT,
+    dismiss_cookies_banner as _chat_dismiss_cookies_banner,
+    fill_and_preview as _chat_fill_and_preview,
+    find_quick_reply_button as _chat_find_quick_reply_button,
     extract_messages as _chat_extract_messages,
     get_messages as _chat_get_messages,
     get_messages_safe as _chat_get_messages_safe,
@@ -338,22 +341,7 @@ async def generate_answer(
 
 async def _dismiss_cookies_banner(page) -> None:
     """Закрыть баннер «Мы используем файлы cookie» если есть — чтобы не перекрывал скрин."""
-    for sel in (
-        '[data-qa="cookies-policy-informer-accept"]',
-        '[data-qa="cookies-policy-banner-accept"]',
-        'button:has-text("Понятно")',
-    ):
-        try:
-            btn = await page.query_selector(sel)
-        except Exception:
-            btn = None
-        if btn:
-            try:
-                await btn.click()
-                await page.wait_for_timeout(400)
-                return
-            except Exception:
-                continue
+    return await _chat_dismiss_cookies_banner(page)
 
 
 def _normalize_sent_message_text(value: str) -> str:
@@ -435,56 +423,26 @@ def _quick_reply_choice(text: str) -> str:
 
 
 async def _find_quick_reply_button(page, choice: str):
-    if not choice:
-        return None
-    for button in await page.query_selector_all("button"):
-        try:
-            if (await button.inner_text()).strip() != choice:
-                continue
-            if await button.is_visible() and await button.is_enabled():
-                return button
-        except Exception:
-            continue
-    return None
+    return await _chat_find_quick_reply_button(page, choice)
 
 
 async def fill_and_preview(page, chat_id: str, text: str) -> dict:
     """Перейти в chat, набрать текст в input. НЕ отправлять.
     Возвращает {filled, screenshot_path}."""
-    url = f"{CHATIK_ROOT}/chat/{chat_id}"
-    await _open_chatik_page(
+    return await _chat_fill_and_preview(
         page,
-        url,
-        CHATIK_CHAT_READY_SELECTOR,
-        settle_ms=2000,
+        chat_id,
+        text,
+        state_dir=config.HH_STATE_DIR,
+        chatik_root=CHATIK_ROOT,
+        ready_selector=CHATIK_CHAT_READY_SELECTOR,
+        now=time.time,
+        path_join=os.path.join,
+        open_page=_open_chatik_page,
+        dismiss_cookies=_dismiss_cookies_banner,
+        choose_quick_reply=_quick_reply_choice,
+        find_quick_reply=_find_quick_reply_button,
     )
-    await _dismiss_cookies_banner(page)
-    quick_reply = _quick_reply_choice(text)
-    quick_button = await _find_quick_reply_button(page, quick_reply)
-    if quick_button:
-        shot_path = os.path.join(config.HH_STATE_DIR, f"chat_preview_{chat_id}_{int(time.time())}.png")
-        try:
-            await page.screenshot(path=shot_path)
-        except Exception:
-            shot_path = ""
-        return {
-            "filled": True,
-            "quick_reply": quick_reply,
-            "screenshot_path": shot_path,
-        }
-
-    inp = await page.query_selector('textarea[data-qa="chatik-new-message-text"]')
-    if not inp:
-        return {"filled": False, "reason": "input not found"}
-    await inp.focus()
-    await inp.fill(text)
-    await page.wait_for_timeout(500)
-    shot_path = os.path.join(config.HH_STATE_DIR, f"chat_preview_{chat_id}_{int(time.time())}.png")
-    try:
-        await page.screenshot(path=shot_path)
-    except Exception:
-        shot_path = ""
-    return {"filled": True, "screenshot_path": shot_path}
 
 
 async def send_message(page, chat_id: str, text: str) -> bool:
