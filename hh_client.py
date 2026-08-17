@@ -1,5 +1,4 @@
 """Playwright-based клиент для hh.ru — поиск, отклик, мониторинг приглашений."""
-import json
 import os
 import time
 import asyncio
@@ -17,30 +16,13 @@ except ImportError:
     _STEALTH_AVAILABLE = False
 
 import config
+from hh.browser import _ensure_dirs, _load_cookies, _save_cookies
 from llm_client import get_llm_client
 import proxy_utils
 
 log = logging.getLogger("hh_client")
 HH_AUTH_COOKIE_NAMES = {"hhtoken", "hhuid", "crypted_hhuid", "crypted_id"}
 _question_answer_client = None
-
-
-def _ensure_dirs():
-    os.makedirs(os.path.dirname(config.HH_COOKIES_FILE), exist_ok=True)
-    os.makedirs(config.HH_STATE_DIR, exist_ok=True)
-
-
-def _load_cookies() -> list[dict] | None:
-    if os.path.exists(config.HH_COOKIES_FILE):
-        with open(config.HH_COOKIES_FILE) as f:
-            return json.load(f)
-    return None
-
-
-def _save_cookies(cookies: list[dict]):
-    _ensure_dirs()
-    with open(config.HH_COOKIES_FILE, "w") as f:
-        json.dump(cookies, f, ensure_ascii=False, indent=2)
 
 
 def _absolute_hh_url(url: str) -> str:
