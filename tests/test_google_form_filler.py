@@ -1,4 +1,7 @@
+import asyncio
+
 import google_form_filler as gforms
+from runtime_context import RuntimePaths
 
 
 def test_extract_google_form_urls_from_text_and_hh_redirect():
@@ -28,7 +31,7 @@ def test_submit_saved_preview_rejects_unfilled_preview(monkeypatch):
     monkeypatch.setattr(
         gforms,
         "_load_state",
-        lambda: {
+        lambda runtime_paths=None: {
             "items": {
                 "abcdef123456": {
                     "status": "preview",
@@ -42,12 +45,129 @@ def test_submit_saved_preview_rejects_unfilled_preview(monkeypatch):
     class FakeHHClient:
         _page = None
 
-    import asyncio
-
     result = asyncio.run(gforms.submit_saved_preview(FakeHHClient(), "abcdef123456"))
 
     assert result["ok"] is False
     assert result["message"] == "google form preview is not ready for submit"
+
+
+def test_preview_form_uses_one_runtime_path_snapshot(tmp_path, monkeypatch):
+    token = "abcdef123456"
+    paths = RuntimePaths(
+        home_dir=str(tmp_path / "profile-a"),
+        hh_state_dir=str(tmp_path / "profile-a" / "state"),
+        resume_file=str(tmp_path / "profile-a" / "resume.md"),
+    )
+    monkeypatch.setattr(gforms.config, "HH_STATE_DIR", str(tmp_path / "profile-b" / "state"))
+    monkeypatch.setattr(gforms, "_new_token", lambda *args: token)
+    screenshots = []
+
+    class FakeLocator:
+        async def inner_text(self, **kwargs):
+            return "Log in om door te gaan\nJe moet zijn ingelogd om dit formulier in te vullen."
+
+    class FakePage:
+        url = "https://docs.google.com/forms/d/e/example/viewform"
+
+        async def goto(self, url, **kwargs):
+            self.url = url
+
+        async def wait_for_timeout(self, timeout):
+            return None
+
+        def locator(self, selector):
+            return FakeLocator()
+
+    async def fake_screenshot(page, path):
+        screenshots.append(path)
+
+    monkeypatch.setattr(gforms, "_safe_screenshot", fake_screenshot)
+
+    detail = asyncio.run(
+        gforms.preview_form(
+            FakePage(),
+            "https://docs.google.com/forms/d/e/example/viewform",
+            profile_name="qa",
+            runtime_paths=paths,
+        )
+    )
+
+    expected_shot = str(tmp_path / "profile-a" / "state" / f"google_form_preview_{token}.png")
+    assert screenshots == [expected_shot]
+    assert detail["screenshot_path"] == expected_shot
+    assert gforms._load_state(paths)["items"][token]["profile_name"] == "qa"
+
+
+def test_submit_saved_preview_uses_one_runtime_path_snapshot(tmp_path, monkeypatch):
+    token = "abcdef123456"
+    paths = RuntimePaths(
+        home_dir=str(tmp_path / "profile-a"),
+        hh_state_dir=str(tmp_path / "profile-a" / "state"),
+        resume_file=str(tmp_path / "profile-a" / "resume.md"),
+    )
+    state = {
+        "items": {
+            token: {
+                "status": "preview",
+                "form_url": "https://docs.google.com/forms/d/e/example/viewform",
+                "fill_result": {"filled": [{"index": 0}], "skipped": []},
+                "answers": [{"index": 0, "answer": "Eugene"}],
+                "pages_total": 1,
+            }
+        }
+    }
+    saved_paths = []
+    screenshots = []
+    monkeypatch.setattr(gforms.config, "HH_STATE_DIR", str(tmp_path / "profile-b" / "state"))
+    monkeypatch.setattr(gforms, "_load_state", lambda runtime_paths=None: state)
+    monkeypatch.setattr(gforms, "_save_state", lambda value, runtime_paths=None: saved_paths.append(runtime_paths))
+
+    class FakePage:
+        url = ""
+
+        async def goto(self, url, **kwargs):
+            self.url = url
+
+        async def wait_for_timeout(self, timeout):
+            return None
+
+    class FakeHHClient:
+        _page = FakePage()
+
+    async def false_result(*args, **kwargs):
+        return False
+
+    async def true_result(*args, **kwargs):
+        return True
+
+    async def success_result(*args, **kwargs):
+        return True, "Your response has been recorded."
+
+    async def questions_result(*args, **kwargs):
+        return [{"index": 0, "question": "Name", "required": True}]
+
+    async def fill_result(*args, **kwargs):
+        return {"filled": [{"index": 0}], "skipped": []}
+
+    async def fake_screenshot(page, path):
+        screenshots.append(path)
+
+    monkeypatch.setattr(gforms, "_fill_google_form_email_consent", false_result)
+    monkeypatch.setattr(gforms, "extract_form_questions", questions_result)
+    monkeypatch.setattr(gforms, "fill_form", fill_result)
+    monkeypatch.setattr(gforms, "_has_google_form_submit_button", true_result)
+    monkeypatch.setattr(gforms, "_click_google_form_submit", true_result)
+    monkeypatch.setattr(gforms, "_wait_google_form_submit_success", success_result)
+    monkeypatch.setattr(gforms, "_safe_screenshot", fake_screenshot)
+
+    result = asyncio.run(
+        gforms.submit_saved_preview(FakeHHClient(), token, runtime_paths=paths)
+    )
+
+    expected_shot = str(tmp_path / "profile-a" / "state" / f"google_form_submit_{token}.png")
+    assert result["ok"] is True
+    assert screenshots == [expected_shot]
+    assert saved_paths == [paths]
 
 
 def test_google_form_preview_markup_contains_submit_button():

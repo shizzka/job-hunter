@@ -208,11 +208,15 @@ async def generate_form_answers(
     )
 
 
-def _reuse_cached_answers(form_url: str, questions: list[dict]) -> list[dict]:
+def _reuse_cached_answers(
+    form_url: str,
+    questions: list[dict],
+    runtime_paths: RuntimePaths | None = None,
+) -> list[dict]:
     signature = _question_signature(questions)
     if not signature:
         return []
-    state = _load_state()
+    state = _load_state(runtime_paths) if runtime_paths is not None else _load_state()
     candidates = []
     for item in (state.get("items") or {}).values():
         if not _same_google_form_url(item.get("form_url") or item.get("original_form_url") or "", form_url):
@@ -253,7 +257,9 @@ async def preview_form(
     vacancy: dict | None = None,
     source_message: str = "",
     notify: bool = False,
+    runtime_paths: RuntimePaths | None = None,
 ) -> dict:
+    paths = runtime_paths or _runtime_paths()
     original_form_url = form_url
     form_url = _resolve_google_form_redirect_url(form_url)
     await page.goto(form_url, wait_until="commit", timeout=60000)
@@ -265,7 +271,7 @@ async def preview_form(
         page_text = ""
     if _looks_like_google_form_login_required(page_text):
         token = _new_token(form_url, chat_id, message_id)
-        shot_path = os.path.join(config.HH_STATE_DIR, f"google_form_preview_{token}.png")
+        shot_path = os.path.join(paths.hh_state_dir, f"google_form_preview_{token}.png")
         os.makedirs(os.path.dirname(shot_path), exist_ok=True)
         await _safe_screenshot(page, shot_path)
         detail = {
@@ -287,7 +293,7 @@ async def preview_form(
             "status": "preview_failed_login_required",
             "profile_name": profile_name,
         }
-        _state_repository().remember(token, detail, trim_expired=False)
+        _state_repository(paths).remember(token, detail, trim_expired=False)
         return detail
     token = _new_token(form_url, chat_id, message_id)
     all_questions: list[dict] = []
@@ -313,7 +319,7 @@ async def preview_form(
 
         answers = await generate_form_answers(page_questions, vacancy=vacancy, source_message=source_message)
         if not answers:
-            answers = _reuse_cached_answers(form_url, page_questions)
+            answers = _reuse_cached_answers(form_url, page_questions, paths)
         answers = _prepare_form_answers(page_questions, answers)
         fill_result = await fill_form(page, page_questions, answers)
 
@@ -326,7 +332,7 @@ async def preview_form(
             "url": page.url,
         })
 
-        page_shot = os.path.join(config.HH_STATE_DIR, f"google_form_preview_{token}_page{page_index + 1}.png")
+        page_shot = os.path.join(paths.hh_state_dir, f"google_form_preview_{token}_page{page_index + 1}.png")
         os.makedirs(os.path.dirname(page_shot), exist_ok=True)
         await _safe_screenshot(page, page_shot)
         page_screenshots.append(page_shot)
@@ -348,7 +354,7 @@ async def preview_form(
     if navigation_error and not reached_submit:
         preview_ok = False
         preview_message = navigation_error
-    shot_path = page_screenshots[-1] if page_screenshots else os.path.join(config.HH_STATE_DIR, f"google_form_preview_{token}.png")
+    shot_path = page_screenshots[-1] if page_screenshots else os.path.join(paths.hh_state_dir, f"google_form_preview_{token}.png")
     if not page_screenshots:
         os.makedirs(os.path.dirname(shot_path), exist_ok=True)
         await _safe_screenshot(page, shot_path)
@@ -377,7 +383,7 @@ async def preview_form(
         "status": "preview" if preview_ok else "preview_failed",
         "profile_name": profile_name,
     }
-    _state_repository().remember(token, detail, trim_expired=True)
+    _state_repository(paths).remember(token, detail, trim_expired=True)
     if notify and detail.get("ok"):
         await notify_form_preview(detail, profile_name=profile_name)
     return detail
@@ -390,9 +396,11 @@ async def preview_from_hh_chat(
     message_id: str = "",
     profile_name: str = "default",
     notify: bool = False,
+    runtime_paths: RuntimePaths | None = None,
 ) -> dict:
     import hh_chat_responder as cr
 
+    paths = runtime_paths or _runtime_paths()
     if not hh_client._page:
         await hh_client.start(headless=True)
     page = hh_client._page
@@ -425,14 +433,22 @@ async def preview_from_hh_chat(
             vacancy=data.get("vacancy") or {},
             source_message=(target.get("text") or ""),
             notify=notify,
+            runtime_paths=paths,
         )
     finally:
         with contextlib.suppress(Exception):
             await form_page.close()
 
 
-async def submit_saved_preview(hh_client, token: str, *, notify: bool = False) -> dict:
-    state = _load_state()
+async def submit_saved_preview(
+    hh_client,
+    token: str,
+    *,
+    notify: bool = False,
+    runtime_paths: RuntimePaths | None = None,
+) -> dict:
+    paths = runtime_paths or _runtime_paths()
+    state = _load_state(paths)
     item = (state.get("items") or {}).get(token)
     if not item:
         return {"ok": False, "message": "google form preview token not found", "token": token}
@@ -490,7 +506,7 @@ async def submit_saved_preview(hh_client, token: str, *, notify: bool = False) -
         submitted = await _click_google_form_submit(page)
         if submitted:
             submit_success, submit_page_text = await _wait_google_form_submit_success(page)
-    shot_path = os.path.join(config.HH_STATE_DIR, f"google_form_submit_{token}.png")
+    shot_path = os.path.join(paths.hh_state_dir, f"google_form_submit_{token}.png")
     os.makedirs(os.path.dirname(shot_path), exist_ok=True)
     await _safe_screenshot(page, shot_path)
     ok = bool(submitted and submit_success)
@@ -512,7 +528,7 @@ async def submit_saved_preview(hh_client, token: str, *, notify: bool = False) -
     item["status"] = "submitted" if ok else "submit_uncertain" if submitted else "submit_failed"
     item["submitted_at"] = int(time.time())
     item["submit_result"] = result
-    _save_state(state)
+    _save_state(state, paths)
     if notify:
         await notify_form_submit(result)
     return result
