@@ -24,6 +24,7 @@ from hh.apply import (
     detect_response_controls as _detect_response_controls,
     dismiss_magritte_dropdowns as _dismiss_magritte_dropdowns,
     expand_cover_letter_input as _expand_cover_letter_input,
+    fill_cover_letter_post_apply as _fill_cover_letter_post_apply,
     has_archived_hh_state as _has_archived_hh_state,
     has_existing_response_ui as _has_existing_response_ui,
     looks_like_closed_or_archived_hh as _looks_like_closed_or_archived_hh,
@@ -1261,132 +1262,11 @@ class HHClient:
         return {"ok": False, "message": "Не удалось подтвердить отклик"}
 
     async def _fill_cover_letter_post_apply(self, cover_letter: str):
-        """Заполнить сопроводительное письмо на странице после успешного отклика."""
-        try:
-            letter_selectors = (
-                "textarea[placeholder*='Сопроводительное']",
-                "textarea[placeholder*='сопроводительное']",
-                "textarea[placeholder*='Сообщение']",
-                "textarea[placeholder*='сообщение']",
-                "textarea[name='letter']",
-                "textarea",
-                "input[placeholder*='Сообщение']",
-                "[contenteditable='true'][role='textbox']",
-                "[contenteditable='true']",
-            )
-            send_selectors = (
-                "button:has-text('Отправить')",
-                "[data-qa*='send']",
-                "[type='submit']",
-            )
-
-            surfaces = [self._page]
-            page_frames = getattr(self._page, "frames", None)
-            if page_frames:
-                surfaces.extend(frame for frame in page_frames if frame is not self._page.main_frame)
-
-            snippet = _normalize_text(cover_letter[:120])
-            await self._expand_cover_letter_input()
-            for surface in surfaces:
-                try:
-                    surface_text = await surface.evaluate(
-                        "() => document.body ? document.body.innerText.slice(0, 12000) : ''"
-                    )
-                except Exception:
-                    surface_text = ""
-                if snippet and snippet in _normalize_text(surface_text):
-                    log.info("Cover letter already visible after apply; skipping duplicate send")
-                    return
-
-                for selector in letter_selectors:
-                    try:
-                        letter_field = await surface.query_selector(selector)
-                    except Exception:
-                        continue
-                    if not letter_field:
-                        continue
-
-                    try:
-                        await letter_field.scroll_into_view_if_needed()
-                    except Exception:
-                        pass
-
-                    try:
-                        await letter_field.click()
-                    except Exception:
-                        pass
-
-                    await self._page.wait_for_timeout(300)
-
-                    filled = False
-                    try:
-                        await letter_field.fill("")
-                        await letter_field.type(cover_letter, delay=20)
-                        filled = True
-                    except Exception:
-                        try:
-                            await letter_field.evaluate(
-                                """(el, value) => {
-                                    el.focus();
-                                    if ('value' in el) {
-                                        el.value = '';
-                                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                                        el.value = value;
-                                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                                        return;
-                                    }
-                                    if (el.isContentEditable) {
-                                        el.textContent = value;
-                                        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: value }));
-                                    }
-                                }""",
-                                cover_letter,
-                            )
-                            filled = True
-                        except Exception:
-                            filled = False
-
-                    if not filled:
-                        continue
-
-                    await self._page.wait_for_timeout(500)
-
-                    sent = False
-                    for send_selector in send_selectors:
-                        try:
-                            send_btn = await surface.query_selector(send_selector)
-                        except Exception:
-                            continue
-                        if not send_btn:
-                            continue
-                        try:
-                            await send_btn.scroll_into_view_if_needed()
-                        except Exception:
-                            pass
-                        try:
-                            await send_btn.click()
-                            await self._page.wait_for_timeout(2000)
-                            sent = True
-                            break
-                        except Exception:
-                            continue
-
-                    if not sent:
-                        try:
-                            await letter_field.press("Enter")
-                            await self._page.wait_for_timeout(2000)
-                            sent = True
-                        except Exception:
-                            pass
-
-                    if sent:
-                        log.info("Cover letter sent after apply")
-                        return
-
-            log.debug("No cover letter field found after apply")
-        except Exception as e:
-            log.warning("Failed to fill cover letter post-apply: %s", e)
+        return await _fill_cover_letter_post_apply(
+            self,
+            cover_letter,
+            logger=log,
+        )
 
     # ── Проверка откликов / приглашений ───────────────────────────────────
 

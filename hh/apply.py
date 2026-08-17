@@ -350,3 +350,132 @@ async def detect_response_controls(session):
         letter_field,
         submit_btn,
     )
+
+
+async def fill_cover_letter_post_apply(session, cover_letter: str, *, logger):
+    """Заполнить сопроводительное письмо на странице после успешного отклика."""
+    try:
+        letter_selectors = (
+            "textarea[placeholder*='Сопроводительное']",
+            "textarea[placeholder*='сопроводительное']",
+            "textarea[placeholder*='Сообщение']",
+            "textarea[placeholder*='сообщение']",
+            "textarea[name='letter']",
+            "textarea",
+            "input[placeholder*='Сообщение']",
+            "[contenteditable='true'][role='textbox']",
+            "[contenteditable='true']",
+        )
+        send_selectors = (
+            "button:has-text('Отправить')",
+            "[data-qa*='send']",
+            "[type='submit']",
+        )
+
+        surfaces = [session._page]
+        page_frames = getattr(session._page, "frames", None)
+        if page_frames:
+            surfaces.extend(frame for frame in page_frames if frame is not session._page.main_frame)
+
+        snippet = normalize_text(cover_letter[:120])
+        await session._expand_cover_letter_input()
+        for surface in surfaces:
+            try:
+                surface_text = await surface.evaluate(
+                    "() => document.body ? document.body.innerText.slice(0, 12000) : ''"
+                )
+            except Exception:
+                surface_text = ""
+            if snippet and snippet in normalize_text(surface_text):
+                logger.info("Cover letter already visible after apply; skipping duplicate send")
+                return
+
+            for selector in letter_selectors:
+                try:
+                    letter_field = await surface.query_selector(selector)
+                except Exception:
+                    continue
+                if not letter_field:
+                    continue
+
+                try:
+                    await letter_field.scroll_into_view_if_needed()
+                except Exception:
+                    pass
+
+                try:
+                    await letter_field.click()
+                except Exception:
+                    pass
+
+                await session._page.wait_for_timeout(300)
+
+                filled = False
+                try:
+                    await letter_field.fill("")
+                    await letter_field.type(cover_letter, delay=20)
+                    filled = True
+                except Exception:
+                    try:
+                        await letter_field.evaluate(
+                            """(el, value) => {
+                                    el.focus();
+                                    if ('value' in el) {
+                                        el.value = '';
+                                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                                        el.value = value;
+                                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                                        return;
+                                    }
+                                    if (el.isContentEditable) {
+                                        el.textContent = value;
+                                        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: value }));
+                                    }
+                                }""",
+                            cover_letter,
+                        )
+                        filled = True
+                    except Exception:
+                        filled = False
+
+                if not filled:
+                    continue
+
+                await session._page.wait_for_timeout(500)
+
+                sent = False
+                for send_selector in send_selectors:
+                    try:
+                        send_btn = await surface.query_selector(send_selector)
+                    except Exception:
+                        continue
+                    if not send_btn:
+                        continue
+                    try:
+                        await send_btn.scroll_into_view_if_needed()
+                    except Exception:
+                        pass
+                    try:
+                        await send_btn.click()
+                        await session._page.wait_for_timeout(2000)
+                        sent = True
+                        break
+                    except Exception:
+                        continue
+
+                if not sent:
+                    try:
+                        await letter_field.press("Enter")
+                        await session._page.wait_for_timeout(2000)
+                        sent = True
+                    except Exception:
+                        pass
+
+                if sent:
+                    logger.info("Cover letter sent after apply")
+                    return
+
+        logger.debug("No cover letter field found after apply")
+    except Exception as e:
+        logger.warning("Failed to fill cover letter post-apply: %s", e)

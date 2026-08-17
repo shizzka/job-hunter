@@ -138,3 +138,60 @@ def test_legacy_detect_controls_wrapper_uses_instance(monkeypatch):
 
     assert result == ("url", None, False, None, None, None)
     assert captured["session"] is client
+
+
+class ExistingCoverLetterPage:
+    frames = []
+
+    async def evaluate(self, script):
+        assert "document.body" in script
+        return "HELLO   WORLD"
+
+    async def query_selector(self, selector):
+        raise AssertionError("already visible cover letter must not be sent again")
+
+
+class ExistingCoverLetterSession:
+    def __init__(self):
+        self._page = ExistingCoverLetterPage()
+        self.expanded = False
+
+    async def _expand_cover_letter_input(self):
+        self.expanded = True
+        return True
+
+
+def test_fill_cover_letter_post_apply_skips_duplicate_visible_text():
+    session = ExistingCoverLetterSession()
+
+    asyncio.run(
+        hh_apply.fill_cover_letter_post_apply(
+            session,
+            "Hello world",
+            logger=hh_client.log,
+        )
+    )
+
+    assert session.expanded is True
+
+
+def test_legacy_cover_letter_wrapper_forwards_patchable_dependencies(monkeypatch):
+    client = hh_client.HHClient()
+    captured = {}
+
+    async def fake_fill(session, cover_letter, *, logger):
+        captured.update(
+            session=session,
+            cover_letter=cover_letter,
+            logger=logger,
+        )
+
+    monkeypatch.setattr(hh_client, "_fill_cover_letter_post_apply", fake_fill)
+
+    asyncio.run(client._fill_cover_letter_post_apply("Cover letter"))
+
+    assert captured == {
+        "session": client,
+        "cover_letter": "Cover letter",
+        "logger": hh_client.log,
+    }
