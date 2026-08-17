@@ -55,6 +55,7 @@ from hh.chat import (
     send_message as _chat_send_message,
     reset_page_after_navigation_failure as _chat_reset_page_after_navigation_failure,
 )
+from runtime_context import ChatResponderLimits
 from state_store.chat_responder import (
     STATE_FILENAME,
     ChatResponderStateRepository,
@@ -916,14 +917,21 @@ async def process_one(
 
 # ── Main process loop ──────────────────────────────────────────────────────
 
-async def process_all(hh_client, dry_run: bool | None = None, max_replies_per_chat: int | None = None) -> dict:
+async def process_all(
+    hh_client,
+    dry_run: bool | None = None,
+    max_replies_per_chat: int | None = None,
+    *,
+    limits: ChatResponderLimits | None = None,
+) -> dict:
     """Main entry: polling + reply.
 
     dry_run: если None — берётся из env HH_CHAT_AUTOSEND (0 = dry-run).
     """
     if dry_run is None:
         dry_run = not bool(int(os.getenv("HH_CHAT_AUTOSEND", "0") or 0))
-    max_replies = max_replies_per_chat or int(os.getenv("HH_CHAT_MAX_REPLIES_PER_CHAT", "5"))
+    runtime_limits = limits or ChatResponderLimits.from_env(os.environ)
+    max_replies = max_replies_per_chat or runtime_limits.max_replies_per_chat
 
     if not hh_client._page:
         await hh_client.start(headless=True)
@@ -1161,6 +1169,6 @@ async def process_all(hh_client, dry_run: bool | None = None, max_replies_per_ch
 
         summary["details"].append(detail)
         # cooldown между ответами в разных чатах
-        await asyncio.sleep(int(os.getenv("HH_CHAT_REPLY_COOLDOWN_S", "30")))
+        await asyncio.sleep(runtime_limits.reply_cooldown_s)
 
     return summary

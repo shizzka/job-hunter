@@ -1,6 +1,7 @@
 import asyncio
 
 import hh_chat_responder as chat_responder
+from runtime_context import ChatResponderLimits
 
 
 def test_ai_recruiter_self_intro_text_marks_named_assistant_message():
@@ -429,3 +430,78 @@ def test_get_messages_safe_returns_empty_result_on_timeout(monkeypatch):
     assert result["vacancy"] == {}
     assert result["chat_id"] == "123"
     assert "TimeoutError" in result["error"]
+
+
+def test_process_all_uses_injected_reply_limits(monkeypatch):
+    import hh_client
+    import notifier
+
+    class FakePage:
+        async def goto(self, *args, **kwargs):
+            return None
+
+        async def wait_for_timeout(self, timeout):
+            return None
+
+    class FakeHHClient:
+        _page = FakePage()
+
+    chats = [
+        {"chat_id": "limited", "preview": "First question"},
+        {"chat_id": "drafted", "preview": "Second question"},
+    ]
+    messages = {
+        "messages": [
+            {
+                "id": "1",
+                "text": "What is your QA experience?",
+                "is_ai": True,
+                "is_me": False,
+            }
+        ],
+        "vacancy": {"title": "QA", "company": "Example"},
+    }
+    sleeps = []
+
+    async def fake_list_chats(page):
+        return chats
+
+    async def fake_get_messages(page, chat_id):
+        return messages
+
+    async def fake_generate_answer(*args, **kwargs):
+        return "About one year of practical QA experience."
+
+    async def fake_fill_and_preview(*args, **kwargs):
+        return {}
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    async def fake_notify(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(hh_client, "_load_resume_text", lambda: "QA resume")
+    monkeypatch.setattr(chat_responder, "load_state", lambda: {"limited": {"replies_count": 3}})
+    monkeypatch.setattr(chat_responder, "list_chats", fake_list_chats)
+    monkeypatch.setattr(chat_responder, "get_messages", fake_get_messages)
+    monkeypatch.setattr(chat_responder, "generate_answer", fake_generate_answer)
+    monkeypatch.setattr(chat_responder, "fill_and_preview", fake_fill_and_preview)
+    monkeypatch.setattr(chat_responder.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(notifier, "send_message_with_markup", fake_notify)
+
+    summary = asyncio.run(
+        chat_responder.process_all(
+            FakeHHClient(),
+            dry_run=True,
+            limits=ChatResponderLimits(
+                max_replies_per_chat=3,
+                reply_cooldown_s=7,
+            ),
+        )
+    )
+
+    assert summary["chats_scanned"] == 2
+    assert summary["answers_drafted"] == 1
+    assert summary["skipped"] == 1
+    assert sleeps == [7]
