@@ -333,6 +333,50 @@ class TestClientHHAuth:
         assert result["status"] == client_hh_auth.HH_AUTH_STEP_PROGRESS
         assert solver_calls and solver_calls[0][1:] == ("client_42", "hh_auth:client_42:detect")
 
+    def test_drive_hh_auth_step_prefers_login_form_over_stale_captcha_marker(self, monkeypatch):
+        class FakePage:
+            url = "https://hh.ru/account/login"
+
+            def is_closed(self):
+                return False
+
+        class FakeClient:
+            def __init__(self):
+                self._page = FakePage()
+
+        solver_calls = []
+
+        async def fake_page_text(page):
+            return "Введите номер телефона Далее Подтвердите, что вы не робот"
+
+        async def fake_has_captcha(*args, **kwargs):
+            return True
+
+        async def fake_solver(*args, **kwargs):
+            solver_calls.append(True)
+            return {"status": client_hh_auth.HH_AUTH_STEP_CAPTCHA, "solver_attempted": True}
+
+        async def fake_locator(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(client_hh_auth, "_hh_auth_page_text", fake_page_text)
+        monkeypatch.setattr(client_hh_auth, "_has_hh_auth_captcha_marker", fake_has_captcha)
+        monkeypatch.setattr(client_hh_auth, "_solve_hh_auth_captcha", fake_solver)
+        monkeypatch.setattr(client_hh_auth, "_first_visible_locator", fake_locator)
+        monkeypatch.setattr(client_hh_auth, "_resolve_hh_auth_login", lambda: "")
+
+        async def fake_request(*args, **kwargs):
+            return ""
+
+        monkeypatch.setattr(client_hh_auth, "_request_hh_auth_value", fake_request)
+
+        result = asyncio.run(
+            client_hh_auth._drive_hh_auth_step(FakeClient(), "client_42", timeout_s=1, poll_sec=1)
+        )
+
+        assert result["status"] == client_hh_auth.HH_AUTH_STEP_IDLE
+        assert solver_calls == []
+
     def test_run_hh_auth_capture_stops_after_repeated_stalled_submit(self, monkeypatch):
         class DummyProfile:
             def __init__(self):

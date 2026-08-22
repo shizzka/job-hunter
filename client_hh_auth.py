@@ -612,9 +612,6 @@ async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s:
     url = str(getattr(page, "url", "") or "")
     text = await _hh_auth_page_text(page)
 
-    if await _has_hh_auth_captcha_marker(page, text, url):
-        return await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:detect")
-
     if _looks_like_hh_auth_code_prompt(text, url):
         wait_s = max(1, min(int(timeout_s or 1), 900))
         code = await _request_hh_auth_value(
@@ -641,6 +638,15 @@ async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s:
         if progress.get("status") == HH_AUTH_STEP_PROGRESS:
             progress["status"] = HH_AUTH_STEP_SUBMITTED
         return progress
+
+    # HH may leave the old CAPTCHA node in the DOM while showing the next
+    # login form. Prefer an actionable auth prompt; only then handle CAPTCHA.
+    if (
+        not _looks_like_hh_auth_login_prompt(text, url)
+        and not await _first_visible_locator(page, HH_AUTH_LOGIN_INPUT_SELECTORS)
+        and await _has_hh_auth_captcha_marker(page, text, url)
+    ):
+        return await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:detect")
 
     if _looks_like_hh_auth_login_prompt(text, url):
         await _click_first_visible(page, HH_AUTH_PHONE_MODE_SELECTORS)
