@@ -158,6 +158,26 @@ def test_stop_browser_saves_cookies_and_closes_resources():
     assert playwright.stopped is True
 
 
+def test_stop_browser_ignores_closed_context_and_still_releases_resources():
+    class ClosedContext(FakeLifecycleContext):
+        async def cookies(self):
+            raise RuntimeError("BrowserContext has been closed")
+
+    context = ClosedContext([])
+    browser_instance = FakeLifecycleBrowser(context)
+    playwright = FakePlaywright(FakeChromium(browser_instance))
+    session = SimpleNamespace(_context=context, _browser=browser_instance, _pw=playwright, _page=object())
+
+    asyncio.run(browser.stop_browser(session))
+
+    assert browser_instance.closed is True
+    assert playwright.stopped is True
+    assert session._context is None
+    assert session._browser is None
+    assert session._pw is None
+    assert session._page is None
+
+
 def test_hh_client_lifecycle_wrappers_forward_patchable_dependencies(monkeypatch):
     start_call = {}
     stop_call = {}

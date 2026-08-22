@@ -92,13 +92,29 @@ async def start_browser(
 
 
 async def stop_browser(session, *, save_cookies=_save_cookies):
-    if session._context:
-        cookies = await session._context.cookies()
-        save_cookies(cookies)
-    if session._browser:
-        await session._browser.close()
-    if session._pw:
-        await session._pw.stop()
+    context = getattr(session, "_context", None)
+    browser = getattr(session, "_browser", None)
+    playwright = getattr(session, "_pw", None)
+    try:
+        if context:
+            try:
+                cookies = await context.cookies()
+                save_cookies(cookies)
+            except Exception as exc:
+                # Ctrl-C or an externally closed page may tear down the
+                # Playwright context before the owning task reaches cleanup.
+                log.debug("skip HH cookie save during browser shutdown: %s", exc)
+    finally:
+        try:
+            if browser:
+                await browser.close()
+        finally:
+            if playwright:
+                await playwright.stop()
+            session._context = None
+            session._browser = None
+            session._pw = None
+            session._page = None
 
 
 async def save_session(session, *, save_cookies=_save_cookies, logger=log):
