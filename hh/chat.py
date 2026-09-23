@@ -13,9 +13,13 @@ CHATIK_ROOT = "https://chatik.hh.ru"
 CHATIK_NAVIGATION_ATTEMPTS = 2
 CHATIK_NAVIGATION_TIMEOUT_MS = 20000
 CHATIK_READY_TIMEOUT_MS = 12000
+CHATIK_MESSAGE_INPUT_SELECTORS = (
+    'textarea[data-qa="chatik-new-message-text"]',
+    'textarea[data-qa="text-input"]',
+)
 CHATIK_CHAT_READY_SELECTOR = (
     '[data-qa^="chatik-chat-message-"], '
-    'textarea[data-qa="chatik-new-message-text"]'
+    + ", ".join(CHATIK_MESSAGE_INPUT_SELECTORS)
 )
 
 
@@ -141,12 +145,20 @@ async def list_chats(
     )
 
     chats = await page.evaluate("""async () => {
+        const firstChat = document.querySelector('[data-qa^="chatik-open-chat-"]');
+        const ancestors = [];
+        for (let el = firstChat?.parentElement; el; el = el.parentElement) {
+            ancestors.push(el);
+        }
         const all = [...document.querySelectorAll('*')];
-        const scroller = all.filter(el => {
+        const scrollCandidates = (ancestors.length ? ancestors : all).filter(el => {
             const cs = getComputedStyle(el);
             return (cs.overflowY === 'auto' || cs.overflowY === 'scroll')
                 && el.scrollHeight > el.clientHeight + 50;
-        }).sort((a,b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0];
+        });
+        const scroller = scrollCandidates.sort(
+            (a,b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)
+        )[0];
         const seen = new Map();
         const collect = () => {
             const items = [...document.querySelectorAll('[data-qa^="chatik-open-chat-"]')];
@@ -167,13 +179,16 @@ async def list_chats(
             await new Promise(r => setTimeout(r, 500));
             collect();
             let last = -1;
-            // Проверяем свежую верхнюю часть списка. Пустые записи новых откликов
-            // позже отфильтруются без открытия страницы чата.
-            for (let i = 0; i < 10; i++) {
+            let bottomPasses = 0;
+            // Виртуальный список HH бывает длиннее десяти экранов. Идём до
+            // устойчивого низа, чтобы вопросы не терялись между окнами.
+            for (let i = 0; i < 60; i++) {
                 scroller.scrollTop += Math.max(320, Math.floor(scroller.clientHeight * 0.75));
                 await new Promise(r => setTimeout(r, 250));
                 collect();
-                if (scroller.scrollTop === last) break;
+                const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4;
+                bottomPasses = atBottom ? bottomPasses + 1 : 0;
+                if (scroller.scrollTop === last && bottomPasses >= 2) break;
                 last = scroller.scrollTop;
             }
         }
@@ -386,7 +401,11 @@ async def fill_and_preview(
             "screenshot_path": shot_path,
         }
 
-    inp = await page.query_selector('textarea[data-qa="chatik-new-message-text"]')
+    inp = None
+    for selector in CHATIK_MESSAGE_INPUT_SELECTORS:
+        inp = await page.query_selector(selector)
+        if inp:
+            break
     if not inp:
         return {"filled": False, "reason": "input not found"}
     await inp.focus()
@@ -417,6 +436,11 @@ async def send_message(
     """Полная отправка: перейти, набрать, нажать Send."""
     result = await fill_preview(page, chat_id, text)
     if not result.get("filled"):
+        logger.warning(
+            "message input was not filled for chat %s: %s",
+            chat_id,
+            result.get("reason") or "unknown reason",
+        )
         return False
     quick_reply = result.get("quick_reply") or ""
     button = (

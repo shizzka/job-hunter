@@ -260,10 +260,11 @@ def test_callback_router_starts_google_form_actions(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("data", "force_send", "allow_any", "answer_text"),
+    ("data", "force_send", "allow_any", "alternative", "answer_text"),
     [
         (
             "chat_ai:qa:5416682595:14513855732",
+            False,
             False,
             False,
             "Генерирую ответ через ИИ…",
@@ -272,19 +273,36 @@ def test_callback_router_starts_google_form_actions(monkeypatch):
             "chat_send:qa:5416682595:14513855732",
             True,
             False,
+            False,
             "Отправляю ответ в HH…",
         ),
         (
             "chat_ai_any:qa:5416682595:14513855732",
             False,
             True,
+            False,
             "Генерирую ответ через ИИ…",
         ),
         (
             "chat_send_any:qa:5416682595:14513855732",
             True,
             True,
+            False,
             "Отправляю ответ в HH…",
+        ),
+        (
+            "chat_ai_alt:qa:5416682595:14513855732",
+            False,
+            False,
+            True,
+            "Генерирую другой вариант…",
+        ),
+        (
+            "chat_ai_any_alt:qa:5416682595:14513855732",
+            False,
+            True,
+            True,
+            "Генерирую другой вариант…",
         ),
     ],
 )
@@ -292,6 +310,7 @@ def test_callback_router_starts_chat_ai_action(
     data,
     force_send,
     allow_any,
+    alternative,
     answer_text,
     monkeypatch,
 ):
@@ -308,6 +327,7 @@ def test_callback_router_starts_chat_ai_action(
         hh_message_id,
         force_send=False,
         allow_any=False,
+        alternative=False,
     ):
         starts.append(
             {
@@ -317,6 +337,7 @@ def test_callback_router_starts_chat_ai_action(
                 "hh_message_id": hh_message_id,
                 "force_send": force_send,
                 "allow_any": allow_any,
+                "alternative": alternative,
             }
         )
 
@@ -345,6 +366,7 @@ def test_callback_router_starts_chat_ai_action(
             "hh_message_id": "14513855732",
             "force_send": force_send,
             "allow_any": allow_any,
+            "alternative": alternative,
         }
     ]
     assert calls["answers"] == [
@@ -352,7 +374,7 @@ def test_callback_router_starts_chat_ai_action(
     ]
     assert audits[0][0] == "callback"
     assert audits[0][1]["action"] == (
-        "send" if force_send else "preview"
+        "send" if force_send else "alternative" if alternative else "preview"
     )
 
 

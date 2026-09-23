@@ -179,6 +179,58 @@ async def apply_success_detected(session, *, looks_like_apply_success, logger) -
     return looks_like_apply_success(page_text)
 
 
+async def first_visible_element(page, selectors):
+    """Вернуть первый видимый элемент по приоритетному списку селекторов."""
+    for selector in selectors:
+        try:
+            elements = await page.query_selector_all(selector)
+        except Exception:
+            continue
+        for element in elements:
+            try:
+                if await element.is_visible():
+                    return element
+            except Exception:
+                continue
+
+    # Совместимость с простыми page-адаптерами и тестовыми doubles, где
+    # query_selector_all отсутствует или не реализован полностью.
+    for selector in selectors:
+        try:
+            element = await page.query_selector(selector)
+        except Exception:
+            continue
+        if element is None:
+            continue
+        try:
+            if await element.is_visible():
+                return element
+        except Exception:
+            return element
+    return None
+
+
+async def response_submit_button(session):
+    """Найти submit активной формы, не захватывая кнопку под modal overlay."""
+    return await first_visible_element(
+        session._page,
+        (
+            "[data-qa='modal-overlay'] [data-qa='vacancy-response-submit-popup']",
+            "[role='dialog'] [data-qa='vacancy-response-submit-popup']",
+            "form[name='vacancy_response'] [data-qa='vacancy-response-submit-popup']",
+            "[data-qa='vacancy-response-submit-popup']",
+            "[data-qa='vacancy-response-letter-submit']",
+            "form[name='vacancy_response'] button[type='submit']",
+            "button[data-qa*='submit']",
+            "[data-qa='vacancy-response-link-top-again']",
+            "[data-qa='vacancy-response-link-bottom-again']",
+            "[data-qa='vacancy-response-link-top']",
+            "[data-qa='vacancy-response-link-bottom']",
+            "a[data-qa*='response-link']",
+        ),
+    )
+
+
 async def response_requires_questions(session, current_url: str = "", *, logger) -> bool:
     page_url = (current_url or session._page.url or "").lower()
     if "vacancy_response_question" in page_url:
@@ -267,12 +319,44 @@ async def submit_response_form_via_dom(session, *, logger) -> bool:
     try:
         result = await session._page.evaluate(
             """() => {
-                    const form = document.querySelector("form[name='vacancy_response']");
+                    const visible = (element) => {
+                        if (!element || element.getClientRects().length === 0) {
+                            return false;
+                        }
+                        const style = window.getComputedStyle(element);
+                        return style.visibility !== 'hidden' && style.display !== 'none';
+                    };
+                    const buttonSelector = [
+                        "[data-qa='vacancy-response-submit-popup']",
+                        "[data-qa='vacancy-response-letter-submit']",
+                        "button[type='submit']"
+                    ].join(",");
+                    const roots = [
+                        ...document.querySelectorAll(
+                            "[data-qa='modal-overlay'], [role='dialog']"
+                        )
+                    ].filter(visible);
+                    let button = null;
+                    for (const root of roots) {
+                        button = [...root.querySelectorAll(buttonSelector)].find(visible);
+                        if (button) {
+                            break;
+                        }
+                    }
+                    if (!button) {
+                        button = [...document.querySelectorAll(buttonSelector)].find(visible);
+                    }
+                    const form = button?.form
+                        || button?.closest("form[name='vacancy_response']")
+                        || [...document.querySelectorAll("form[name='vacancy_response']")].find(visible);
                     if (form && typeof form.requestSubmit === 'function') {
-                        form.requestSubmit();
+                        if (button && button.form === form) {
+                            form.requestSubmit(button);
+                        } else {
+                            form.requestSubmit();
+                        }
                         return true;
                     }
-                    const button = document.querySelector("[data-qa='vacancy-response-submit-popup']");
                     if (button) {
                         button.click();
                         return true;
@@ -323,16 +407,7 @@ async def detect_response_controls(session):
         ".vacancy-response-popup textarea, "
         "textarea"
     )
-    submit_btn = await session._page.query_selector(
-        "[data-qa='vacancy-response-submit-popup'], "
-        "[data-qa='vacancy-response-letter-submit'], "
-        "button[data-qa*='submit'], "
-        "[data-qa='vacancy-response-link-top-again'], "
-        "[data-qa='vacancy-response-link-bottom-again'], "
-        "[data-qa='vacancy-response-link-top'], "
-        "[data-qa='vacancy-response-link-bottom'], "
-        "a[data-qa*='response-link']"
-    )
+    submit_btn = await response_submit_button(session)
     if not submit_btn:
         # Some hh flows collapse back to the vacancy page after resume selection
         # and expose only a link-style "Откликнуться" control.
@@ -969,11 +1044,11 @@ async def apply_to_vacancy(
         _,
         submit_btn_retry,
     ) = await detect_response_controls()
-    if response_header is not None and not questions_required and submit_btn_retry is not None:
-        logger.info("Retrying hh submit after inconclusive response state")
+    if not questions_required and submit_btn_retry is not None:
         await session._dismiss_magritte_dropdowns()
         retried = await session._submit_response_form_via_dom()
         if retried:
+            logger.info("Retrying hh submit via active DOM form after inconclusive response state")
             await session._page.wait_for_timeout(4000)
             anti_bot_kind = await session._detect_anti_bot_kind()
             anti_bot_kind = await session._handle_anti_bot_with_solver(anti_bot_kind, stage="apply_submit_retry")

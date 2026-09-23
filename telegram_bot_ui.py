@@ -24,11 +24,13 @@ BUTTON_CHAT_LOG = "💬 Лог чатов"
 BUTTON_SEARCH = "🔎 Поиск"
 BUTTON_DRYRUN = "🧪 Тестовый прогон"
 BUTTON_CHECK = "📬 Инвайты"
+BUTTON_HH_RESPONSES = "📨 Отклики HH"
 BUTTON_DIGEST = "📰 Дайджест"
 BUTTON_ANALYZE = "🧠 Анализ резюме"
 BUTTON_BACKFILL = "🗃 Пересчёт аналитики"
 BUTTON_GRAB_RESUME = "📄 Забрать резюме"
 BUTTON_CHAT_AI = "🤖 Ответ ИИ в чат"
+BUTTON_FORMS = "📝 Анкеты"
 BUTTON_AI_LIMITS = "🎁 Лимиты ИИ"
 BUTTON_CLIENTS = "🧑‍💼 Клиенты"
 BUTTON_CLIENT_START = "🆕 Стать клиентом"
@@ -70,6 +72,8 @@ CALLBACK_CHAT_AI_REPLY = "chat_ai"
 CALLBACK_CHAT_AI_SEND = "chat_send"
 CALLBACK_CHAT_AI_MANUAL_REPLY = "chat_ai_any"
 CALLBACK_CHAT_AI_MANUAL_SEND = "chat_send_any"
+CALLBACK_CHAT_AI_ALTERNATIVE = "chat_ai_alt"
+CALLBACK_CHAT_AI_MANUAL_ALTERNATIVE = "chat_ai_any_alt"
 CALLBACK_MANUAL_APPLY = "manual_apply"
 CALLBACK_MANUAL_FEEDBACK = "manual_fb"
 CALLBACK_MANUAL_BLOCK_COMPANY = "manual_block_company"
@@ -90,11 +94,13 @@ ADMIN_BUTTON_MAP = {
     BUTTON_SEARCH: "/search",
     BUTTON_DRYRUN: "/dryrun",
     BUTTON_CHECK: "/check",
+    BUTTON_HH_RESPONSES: "/hh_responses",
     BUTTON_DIGEST: "/digest",
     BUTTON_ANALYZE: "/analyze",
     BUTTON_BACKFILL: "/backfill",
     BUTTON_GRAB_RESUME: "/grabresume",
     BUTTON_CHAT_AI: "/chat_ai",
+    BUTTON_FORMS: "/forms",
     BUTTON_AI_LIMITS: "/ai_limits",
     BUTTON_CLIENTS: "/clients",
     BUTTON_HH_AUTH: "/hh_auth",
@@ -127,6 +133,7 @@ USER_BUTTON_MAP = {
     BUTTON_DRYRUN: "/dryrun",
     BUTTON_ANALYZE: "/analyze",
     BUTTON_CHECK: "/check",
+    BUTTON_HH_RESPONSES: "/hh_responses",
     BUTTON_HH_AUTH: "/hh_auth",
     BUTTON_HH_RESUMES: "/hh_resumes",
     BUTTON_SCHEDULE: "/schedule",
@@ -170,6 +177,8 @@ LEGACY_BUTTON_MAP = {
     "Dry-run": "/dryrun",
     "Тестовый прогон": "/dryrun",
     "Инвайты": "/check",
+    "Отклики HH": "/hh_responses",
+    "Счётчик откликов HH": "/hh_responses",
     "Дайджест": "/digest",
     "Анализ резюме": "/analyze",
     "AI лимиты": "/ai_limits",
@@ -200,6 +209,7 @@ LEGACY_BUTTON_MAP = {
     "Остановить": "/cancel_active",
 }
 ADMIN_ONLY_COMMANDS = {
+    "/forms",
     "/profiles", "/profile", "/users", "/grant", "/revoke",
     "/digest", "/backfill", "/grabresume",
     "/chat_ai", "/ai_chat", "/chat_answer",
@@ -432,7 +442,7 @@ def build_reply_markup(
             rows = [
                 [{"text": BUTTON_STATUS}, {"text": BUTTON_DIAGNOSTICS}],
                 [{"text": BUTTON_STATS}, {"text": BUTTON_RUNS}],
-                [{"text": BUTTON_CHECK}],
+                [{"text": BUTTON_CHECK}, {"text": BUTTON_HH_RESPONSES}],
                 [{"text": BUTTON_LOG}, {"text": BUTTON_CHAT_LOG}],
                 [{"text": BUTTON_MENU}],
             ]
@@ -441,7 +451,8 @@ def build_reply_markup(
                 [{"text": BUTTON_SEARCH}, {"text": BUTTON_DRYRUN}],
                 [{"text": BUTTON_CANCEL_ACTIVE}],
                 [{"text": BUTTON_ANALYZE}, {"text": BUTTON_DIGEST}],
-                [{"text": BUTTON_CHAT_AI}],
+                [{"text": BUTTON_CHAT_AI}, {"text": BUTTON_HH_RESPONSES}],
+                [{"text": BUTTON_FORMS}],
                 [{"text": BUTTON_HH_AUTH}, {"text": BUTTON_HH_RESUMES}],
                 [{"text": BUTTON_BACKFILL}, {"text": BUTTON_GRAB_RESUME}],
                 [{"text": BUTTON_MENU}],
@@ -463,7 +474,7 @@ def build_reply_markup(
             ]
         else:
             rows = [
-                [{"text": BUTTON_CHAT_AI}],
+                [{"text": BUTTON_CHAT_AI}, {"text": BUTTON_FORMS}],
                 [{"text": BUTTON_MENU_MONITOR}, {"text": BUTTON_MENU_RUN}],
                 [{"text": BUTTON_MENU_REPEAT}, {"text": BUTTON_MENU_ADMIN}],
                 [{"text": BUTTON_PROFILES}, {"text": BUTTON_HELP}],
@@ -473,6 +484,7 @@ def build_reply_markup(
             rows = [
                 [{"text": BUTTON_STATUS}, {"text": BUTTON_STATS}],
                 [{"text": BUTTON_RUNS}, {"text": BUTTON_CHECK}],
+                [{"text": BUTTON_HH_RESPONSES}],
                 [{"text": BUTTON_LOG}, {"text": BUTTON_CHAT_LOG}],
                 [{"text": BUTTON_MENU}],
             ]
@@ -566,6 +578,14 @@ def _parse_chat_send_callback_data(data: str) -> tuple[str, str, str]:
 
 def _parse_chat_ai_manual_callback_data(data: str) -> tuple[str, str, str]:
     return _parse_chat_action_callback_data(data, CALLBACK_CHAT_AI_MANUAL_REPLY)
+
+
+def _parse_chat_ai_alternative_callback_data(data: str) -> tuple[str, str, str]:
+    return _parse_chat_action_callback_data(data, CALLBACK_CHAT_AI_ALTERNATIVE)
+
+
+def _parse_chat_ai_manual_alternative_callback_data(data: str) -> tuple[str, str, str]:
+    return _parse_chat_action_callback_data(data, CALLBACK_CHAT_AI_MANUAL_ALTERNATIVE)
 
 
 def _parse_chat_manual_send_callback_data(data: str) -> tuple[str, str, str]:
@@ -739,6 +759,7 @@ def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default") ->
         "",
         "⚡ Основные действия доступны через кнопки меню.",
         "• «Мониторинг»: статус, статистика, прогоны, инвайты",
+        "• Счётчик HH: кнопка «Отклики HH» или команда /hh_responses",
         "• «Запуск»: поиск, тестовый прогон, ИИ-анализ, вход HH",
         "• Ответ ИИ в HH-чат: кнопка открывает список последних входящих; /chat_ai ссылка_на_чат или chat_id — ручной аварийный ввод",
         "• «Повтор»: расписание и периодические запуски",
@@ -765,6 +786,7 @@ def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
             "• Статус процесса и расписания",
             "• Статистика откликов и прогоны",
             "• Проверка инвайтов",
+            "• Точный счётчик откликов из аккаунта HH",
         ])
     if section == MENU_RUN:
         lines = [
@@ -1536,6 +1558,39 @@ def build_log_text(profile_name: str, *, kind: str, path: str, content: str, lin
     ])
 
 
+def _format_counter_number(value: object) -> str:
+    try:
+        number = int(value or 0)
+    except (TypeError, ValueError):
+        number = 0
+    return f"{number:,}".replace(",", " ")
+
+
+def build_hh_response_count_text(snapshot: dict) -> str:
+    profile_name = str(snapshot.get("profile") or "default")
+    lines = [
+        f"📨 Отклики HH — {_pretty_profile_name(profile_name)}",
+        "",
+        f"Всего за всё время: {_format_counter_number(snapshot.get('total'))}",
+        f"• Активные: {_format_counter_number(snapshot.get('active'))}",
+        f"• Архив: {_format_counter_number(snapshot.get('archived'))}",
+        f"• Удалённые: {_format_counter_number(snapshot.get('deleted'))}",
+    ]
+
+    delta = snapshot.get("delta")
+    if isinstance(delta, dict) and delta:
+        total_delta = int(delta.get("total", 0) or 0)
+        delta_text = f"+{total_delta}" if total_delta > 0 else str(total_delta)
+        lines.extend(["", f"Изменение с прошлого замера: {delta_text}"])
+    else:
+        lines.extend(["", "Первый сохранённый замер."])
+
+    fetched_at = str(snapshot.get("fetched_at") or "").strip()
+    if fetched_at:
+        lines.append(f"Обновлено: {fetched_at.replace('T', ' ', 1)}")
+    return "\n".join(lines)
+
+
 def _pretty_command_label(label: str) -> str:
     mapping = {
         "search": "Поиск вакансий",
@@ -1546,6 +1601,9 @@ def _pretty_command_label(label: str) -> str:
         "hh auth capture": "Авторизация HH и захват резюме",
         "analytics backfill": "Пересчёт аналитики",
         "grab resume": "Загрузка резюме",
+        "chat AI reply": "ИИ-ответ в HH-чат",
+        "chat AI alternative": "Другой вариант ИИ-ответа",
+        "chat AI send": "Отправка ИИ-ответа в HH-чат",
     }
     return mapping.get(label, label)
 
@@ -1666,7 +1724,7 @@ def _format_users_text(users: list[dict]) -> str:
     return "\n".join(lines)
 
 
-_EXPORTED_HELPERS = ['_append_active_controls', '_callback_data', '_client_auth_label', '_client_display_name', '_client_status_label', '_command_conflicts_with_active', '_error_excerpt', '_extract_analyze_markdown', '_format_ai_profile_counts', '_format_elapsed', '_format_interval_label', '_format_runtime_block', '_format_users_text', '_normalize_menu', '_normalize_process_runtime', '_ok_icon', '_parse_callback_data', '_parse_chat_action_callback_data', '_parse_chat_ai_callback_data', '_parse_chat_ai_manual_callback_data', '_parse_chat_manual_send_callback_data', '_parse_chat_send_callback_data', '_parse_hh_reauth_callback_data', '_parse_manual_apply_callback_data', '_parse_manual_block_company_callback_data', '_parse_manual_feedback_callback_data', '_parse_manual_why_callback_data', '_pretty_command_label', '_pretty_pid', '_pretty_profile_name', '_pretty_runtime_action', '_pretty_runtime_mode', '_pretty_runtime_status', '_pretty_value', '_redact_log_text', '_resolve_guest_command', '_resolve_message_command', '_role_label', '_role_title', '_sanitize_analyze_output', '_sanitize_command_output', '_schedule_preset_label', '_status_icon', '_status_label', '_strip_markdown_markup', '_tail_text_file', '_unique_paths', 'build_ai_limits_text', 'build_busy_reply_markup', 'build_busy_status_text', 'build_client_hh_auth_inline_markup', 'build_client_review_inline_markup', 'build_client_status_text', 'build_clients_inline_markup', 'build_clients_text', 'build_daily_summary_text', 'build_diagnostics_text', 'build_guest_reply_markup', 'build_guest_welcome_text', 'build_help_text', 'build_hh_auth_admin_text', 'build_hh_auth_result_text', 'build_hh_resumes_text', 'build_log_text', 'build_menu_section_text', 'build_profiles_text', 'build_progress_text', 'build_reply_markup', 'build_runs_text', 'build_schedule_text', 'build_stats_text', 'build_status_text', 'format_ai_snapshot_text', 'format_command_result', 'format_run_summary', 'normalize_command', 'parse_hh_auth_command_result', 'split_message']
+_EXPORTED_HELPERS = ['_append_active_controls', '_callback_data', '_client_auth_label', '_client_display_name', '_client_status_label', '_command_conflicts_with_active', '_error_excerpt', '_extract_analyze_markdown', '_format_ai_profile_counts', '_format_counter_number', '_format_elapsed', '_format_interval_label', '_format_runtime_block', '_format_users_text', '_normalize_menu', '_normalize_process_runtime', '_ok_icon', '_parse_callback_data', '_parse_chat_action_callback_data', '_parse_chat_ai_callback_data', '_parse_chat_ai_manual_callback_data', '_parse_chat_manual_send_callback_data', '_parse_chat_send_callback_data', '_parse_hh_reauth_callback_data', '_parse_manual_apply_callback_data', '_parse_manual_block_company_callback_data', '_parse_manual_feedback_callback_data', '_parse_manual_why_callback_data', '_pretty_command_label', '_pretty_pid', '_pretty_profile_name', '_pretty_runtime_action', '_pretty_runtime_mode', '_pretty_runtime_status', '_pretty_value', '_redact_log_text', '_resolve_guest_command', '_resolve_message_command', '_role_label', '_role_title', '_sanitize_analyze_output', '_sanitize_command_output', '_schedule_preset_label', '_status_icon', '_status_label', '_strip_markdown_markup', '_tail_text_file', '_unique_paths', 'build_ai_limits_text', 'build_busy_reply_markup', 'build_busy_status_text', 'build_client_hh_auth_inline_markup', 'build_client_review_inline_markup', 'build_client_status_text', 'build_clients_inline_markup', 'build_clients_text', 'build_daily_summary_text', 'build_diagnostics_text', 'build_guest_reply_markup', 'build_guest_welcome_text', 'build_help_text', 'build_hh_auth_admin_text', 'build_hh_auth_result_text', 'build_hh_resumes_text', 'build_hh_response_count_text', 'build_log_text', 'build_menu_section_text', 'build_profiles_text', 'build_progress_text', 'build_reply_markup', 'build_runs_text', 'build_schedule_text', 'build_stats_text', 'build_status_text', 'format_ai_snapshot_text', 'format_command_result', 'format_run_summary', 'normalize_command', 'parse_hh_auth_command_result', 'split_message']
 
 __all__ = [
     name

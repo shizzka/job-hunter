@@ -112,6 +112,7 @@ def test_submit_saved_preview_uses_one_runtime_path_snapshot(tmp_path, monkeypat
                 "form_url": "https://docs.google.com/forms/d/e/example/viewform",
                 "fill_result": {"filled": [{"index": 0}], "skipped": []},
                 "answers": [{"index": 0, "answer": "Eugene"}],
+                "questions": [{"index": 0, "question": "Name", "required": True}],
                 "pages_total": 1,
             }
         }
@@ -257,8 +258,8 @@ def test_avoid_bare_other_options_replaces_required_other_checkbox():
 
     prepared = gforms._prepare_form_answers(questions, answers)
 
-    assert prepared[0]["options"] == ["Тестировал только на реальных физических смартфонах"]
-    assert prepared[0]["answer"] == "Тестировал только на реальных физических смартфонах"
+    assert prepared[0]["skip"] is True
+    assert prepared[0]["confidence"] == "low"
 
 
 def test_avoid_bare_other_options_removes_other_when_other_answers_exist():
@@ -267,7 +268,7 @@ def test_avoid_bare_other_options_removes_other_when_other_answers_exist():
 
     prepared = gforms._prepare_form_answers(questions, answers)
 
-    assert prepared[0]["options"] == ["Web"]
+    assert prepared[0]["skip"] is True
 
 
 def test_avoid_bare_other_options_drops_free_text_that_is_not_an_option():
@@ -284,7 +285,8 @@ def test_avoid_bare_other_options_drops_free_text_that_is_not_an_option():
 
     prepared = gforms._prepare_form_answers(questions, answers)
 
-    assert prepared[0]["options"] == ["Тестировал только на реальных физических смартфонах"]
+    assert prepared[0]["skip"] is True
+    assert prepared[0]["confidence"] == "low"
 
 
 def test_google_form_preview_status_requires_submit_page():
@@ -484,3 +486,86 @@ def test_cached_answer_quality_prefers_non_fallback_answers():
     fallback = [{"index": 1, "answer": "generic", "skip": False, "source": "required_fallback"}]
 
     assert gforms._cached_answer_quality(good) > gforms._cached_answer_quality(fallback)
+
+
+def test_preview_form_question_extraction_failure_keeps_screenshot_and_state(tmp_path, monkeypatch):
+    token = "failed123456"
+    paths = RuntimePaths(
+        home_dir=str(tmp_path / "profile-a"),
+        hh_state_dir=str(tmp_path / "profile-a" / "state"),
+        resume_file=str(tmp_path / "profile-a" / "resume.md"),
+    )
+    screenshots = []
+
+    class FakeLocator:
+        async def inner_text(self, **kwargs):
+            return "Google Forms"
+
+    class FakePage:
+        url = "https://docs.google.com/forms/d/e/example/viewform"
+
+        async def goto(self, url, **kwargs):
+            self.url = url
+
+        async def wait_for_timeout(self, timeout):
+            return None
+
+        def locator(self, selector):
+            return FakeLocator()
+
+    async def no_questions(page):
+        return []
+
+    async def fake_screenshot(page, path):
+        screenshots.append(path)
+
+    async def false_result(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(gforms, "_new_token", lambda *args: token)
+    monkeypatch.setattr(gforms, "extract_form_questions", no_questions)
+    monkeypatch.setattr(gforms, "_safe_screenshot", fake_screenshot)
+    monkeypatch.setattr(gforms, "_fill_google_form_email_consent", false_result)
+
+    detail = asyncio.run(
+        gforms.preview_form(
+            FakePage(),
+            "https://docs.google.com/forms/d/e/example/viewform",
+            profile_name="qa",
+            runtime_paths=paths,
+        )
+    )
+
+    expected = str(tmp_path / "profile-a" / "state" / f"google_form_preview_{token}.png")
+    assert detail["ok"] is False
+    assert detail["message"] == "form questions not found"
+    assert detail["screenshot_path"] == expected
+    assert screenshots == [expected]
+    assert gforms._load_state(paths)["items"][token]["status"] == "preview_failed_questions_not_found"
+
+
+def test_notify_form_submit_sends_failure_screenshot(monkeypatch, tmp_path):
+    import notifier
+
+    screenshot = tmp_path / "submit-failed.png"
+    screenshot.write_bytes(b"png")
+    sent = []
+
+    async def fake_send_photo(path, caption="", **kwargs):
+        sent.append((path, caption))
+        return True
+
+    monkeypatch.setattr(notifier, "send_photo", fake_send_photo)
+
+    result = asyncio.run(
+        gforms.notify_form_submit({
+            "ok": False,
+            "message": "submit button not found",
+            "form_url": "https://forms.gle/example",
+            "screenshot_path": str(screenshot),
+        })
+    )
+
+    assert result is True
+    assert sent[0][0] == str(screenshot)
+    assert "submit button not found" in sent[0][1]

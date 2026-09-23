@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import html
 import httpx
 import logging
 import os
@@ -154,11 +155,14 @@ def parse_google_form_submit_callback_data(data: str) -> tuple[str, str]:
     return profile_name, token
 
 
-def build_google_form_preview_markup(profile_name: str, token: str, form_url: str) -> dict:
+def build_google_form_preview_markup(profile_name: str, token: str, form_url: str, *, can_submit: bool = True) -> dict:
     rows = [[{"text": "Открыть форму", "url": form_url}]]
+    edit_data = f"gf:view:{_safe_profile(profile_name)}:{token}:0"
+    if len(edit_data.encode("utf-8")) <= 64:
+        rows.append([{"text": "✏️ Проверить / изменить ответы", "callback_data": edit_data}])
     callback_data = google_form_submit_callback_data(profile_name, token)
-    if len(callback_data.encode("utf-8")) <= 64:
-        rows.append([{"text": "Отправить форму", "callback_data": callback_data}])
+    if can_submit and len(callback_data.encode("utf-8")) <= 64:
+        rows.append([{"text": "✅ Всё ок, отправить", "callback_data": callback_data}])
     return {"inline_keyboard": rows}
 
 
@@ -258,7 +262,10 @@ async def preview_form(
     source_message: str = "",
     notify: bool = False,
     runtime_paths: RuntimePaths | None = None,
+    saved_draft: dict | None = None,
+    manual_edits: dict | None = None,
 ) -> dict:
+    from google_forms.drafts import needs_review, replay_answers
     paths = runtime_paths or _runtime_paths()
     original_form_url = form_url
     form_url = _resolve_google_form_redirect_url(form_url)
@@ -269,14 +276,15 @@ async def preview_form(
         page_text = await page.locator("body").inner_text(timeout=5000)
     except Exception:
         page_text = ""
-    if _looks_like_google_form_login_required(page_text):
+    already_submitted = "/alreadyresponded" in page.url or "вы уже заполнили форму" in page_text.casefold()
+    if _looks_like_google_form_login_required(page_text) or already_submitted:
         token = _new_token(form_url, chat_id, message_id)
         shot_path = os.path.join(paths.hh_state_dir, f"google_form_preview_{token}.png")
         os.makedirs(os.path.dirname(shot_path), exist_ok=True)
         await _safe_screenshot(page, shot_path)
         detail = {
             "ok": False,
-            "message": "google form requires Google login",
+            "message": "Форма уже заполнена; повторная отправка запрещена" if already_submitted else "google form requires Google login",
             "token": token,
             "form_url": form_url,
             "original_form_url": original_form_url,
@@ -290,10 +298,12 @@ async def preview_form(
             "fill_result": {"filled": [], "skipped": []},
             "screenshot_path": shot_path,
             "created_at": int(time.time()),
-            "status": "preview_failed_login_required",
+            "status": "already_submitted" if already_submitted else "preview_failed_login_required",
             "profile_name": profile_name,
         }
         _state_repository(paths).remember(token, detail, trim_expired=False)
+        if notify:
+            await notify_form_preview(detail, profile_name=profile_name)
         return detail
     token = _new_token(form_url, chat_id, message_id)
     all_questions: list[dict] = []
@@ -314,14 +324,45 @@ async def preview_form(
         )
         if not page_questions:
             if page_index == 0:
-                return {"ok": False, "message": "form questions not found", "form_url": form_url, "page_url": page.url}
+                shot_path = os.path.join(paths.hh_state_dir, f"google_form_preview_{token}.png")
+                os.makedirs(os.path.dirname(shot_path), exist_ok=True)
+                await _safe_screenshot(page, shot_path)
+                detail = {
+                    "ok": False,
+                    "message": "form questions not found",
+                    "token": token,
+                    "form_url": form_url,
+                    "original_form_url": original_form_url,
+                    "page_url": page.url,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "vacancy": vacancy or {},
+                    "source_message": source_message[:1500],
+                    "questions": [],
+                    "answers": [],
+                    "fill_result": {"filled": [], "skipped": []},
+                    "screenshot_path": shot_path,
+                    "created_at": int(time.time()),
+                    "status": "preview_failed_questions_not_found",
+                    "profile_name": profile_name,
+                }
+                _state_repository(paths).remember(token, detail, trim_expired=True)
+                if notify:
+                    await notify_form_preview(detail, profile_name=profile_name)
+                return detail
             break
 
-        answers = await generate_form_answers(page_questions, vacancy=vacancy, source_message=source_message)
-        if not answers:
+        saved_answers, missing = replay_answers(page_questions, saved_draft, manual_edits or {}) if saved_draft else ([], page_questions)
+        answers = await generate_form_answers(missing, vacancy=vacancy, source_message=source_message) if missing else []
+        if not answers and not saved_draft:
             answers = _reuse_cached_answers(form_url, page_questions, paths)
         answers = _prepare_form_answers(page_questions, answers)
-        fill_result = await fill_form(page, page_questions, answers)
+        # Previously reviewed answers and manual edits must win over LLM/contact overrides.
+        answer_map = {int(a["index"]): a for a in answers}
+        answer_map.update({int(a["index"]): a for a in saved_answers})
+        answers = [answer_map.get(int(q["index"]), {"index": q["index"], "skip": True, "confidence": "low"}) for q in page_questions]
+        safe_answers = [{**a, "skip": True} if needs_review(q, a) else a for q, a in zip(page_questions, answers)]
+        fill_result = await fill_form(page, page_questions, safe_answers)
 
         all_questions.extend(page_questions)
         all_answers.extend(answers)
@@ -354,6 +395,10 @@ async def preview_form(
     if navigation_error and not reached_submit:
         preview_ok = False
         preview_message = navigation_error
+    review_indices = [q["index"] for q, a in zip(all_questions, all_answers) if needs_review(q, a)]
+    if review_indices:
+        preview_ok = False
+        preview_message = "Нужны уточнения через Telegram"
     shot_path = page_screenshots[-1] if page_screenshots else os.path.join(paths.hh_state_dir, f"google_form_preview_{token}.png")
     if not page_screenshots:
         os.makedirs(os.path.dirname(shot_path), exist_ok=True)
@@ -371,6 +416,7 @@ async def preview_form(
         "source_message": source_message[:1500],
         "questions": all_questions,
         "answers": all_answers,
+        "review_indices": review_indices,
         "fill_result": fill_result,
         "page_results": page_results,
         "page_screenshots": page_screenshots,
@@ -380,11 +426,11 @@ async def preview_form(
         "email_consent_filled": email_consent_filled,
         "screenshot_path": shot_path,
         "created_at": int(time.time()),
-        "status": "preview" if preview_ok else "preview_failed",
+        "status": "preview" if preview_ok else "needs_input" if review_indices else "preview_failed",
         "profile_name": profile_name,
     }
     _state_repository(paths).remember(token, detail, trim_expired=True)
-    if notify and detail.get("ok"):
+    if notify:
         await notify_form_preview(detail, profile_name=profile_name)
     return detail
 
@@ -452,6 +498,12 @@ async def submit_saved_preview(
     item = (state.get("items") or {}).get(token)
     if not item:
         return {"ok": False, "message": "google form preview token not found", "token": token}
+    from google_forms.drafts import edits_store, manual_answers, needs_review
+    if manual_answers(paths.home_dir, token) or edits_store(paths.home_dir).load().get(token, {}).get("superseded_by"):
+        return {"ok": False, "message": "Черновик изменён. Нажмите «Проверить заполнение» и отправляйте новый preview.", "token": token}
+    answer_by_index = {int(a["index"]): a for a in item.get("answers", [])}
+    if any(needs_review(q, answer_by_index.get(int(q["index"]), {})) for q in item.get("questions", [])):
+        return {"ok": False, "message": "Нужны уточнения. Откройте черновик через /forms.", "token": token}
     preview_filled = (item.get("fill_result") or {}).get("filled") or []
     if item.get("status") != "preview" or not preview_filled:
         return {
@@ -482,6 +534,11 @@ async def submit_saved_preview(
         )
         if not page_questions:
             break
+        from google_forms.drafts import question_key
+        expected = (item.get("questions") or [])[len(all_questions):len(all_questions) + len(page_questions)]
+        if [question_key(q) for q in page_questions] != [question_key(q) for q in expected]:
+            navigation_error = "Вопросы формы изменились. Требуется новый preview."
+            break
         all_questions.extend(page_questions)
         page_fill_result = await fill_form(page, page_questions, saved_answers)
         page_results.append({
@@ -502,7 +559,11 @@ async def submit_saved_preview(
     submitted = False
     submit_success = False
     submit_page_text = ""
-    if reached_submit:
+    ready, validation_message = _google_form_preview_status(all_questions, fill_result, reached_submit=reached_submit)
+    if ready and len(all_questions) != len(item.get("questions") or []):
+        ready = False
+        validation_message = "Изменился состав страниц формы. Требуется новый preview."
+    if ready:
         submitted = await _click_google_form_submit(page)
         if submitted:
             submit_success, submit_page_text = await _wait_google_form_submit_success(page)
@@ -523,7 +584,7 @@ async def submit_saved_preview(
         "email_consent_filled": email_consent_filled,
         "screenshot_path": shot_path,
         "submit_page_text": submit_page_text[:1500],
-        "message": "submitted" if ok else "submit clicked, verification uncertain" if submitted else (navigation_error or "submit button not found"),
+        "message": "submitted" if ok else "submit clicked, verification uncertain" if submitted else (navigation_error or validation_message),
     }
     item["status"] = "submitted" if ok else "submit_uncertain" if submitted else "submit_failed"
     item["submitted_at"] = int(time.time())
@@ -540,16 +601,56 @@ async def notify_form_preview(detail: dict, *, profile_name: str) -> bool:
     questions = detail.get("questions") or []
     filled = (detail.get("fill_result") or {}).get("filled") or []
     skipped = (detail.get("fill_result") or {}).get("skipped") or []
-    title = html.escape((detail.get("vacancy") or {}).get("title") or "Google Form")
-    caption = (
-        "<b>Подготовил заполнение Google Form</b>\n"
-        f"{title}\n\n"
-        f"Вопросов: {len(questions)} | заполнено: {len(filled)} | пропущено: {len(skipped)}\n"
-        "Проверь скрин и отправляй только если всё выглядит нормально."
-    )
-    markup = build_google_form_preview_markup(profile_name, detail["token"], detail["form_url"])
+    title = html.escape(str((detail.get("vacancy") or {}).get("title") or "Google Form")[:160])
+    uncertain = []
+    for answer in detail.get("answers") or []:
+        if str(answer.get("confidence") or "").casefold() in {"low", "medium"}:
+            try:
+                idx = int(answer.get("index"))
+            except Exception:
+                continue
+            question = next((q for q in questions if int(q.get("index", -1)) == idx), {})
+            uncertain.append(str(question.get("question") or f"поле {idx + 1}"))
+    uncertain.extend(str(item.get("question") or f"поле {item.get('index', '')}") for item in skipped)
+    uncertain = list(dict.fromkeys(item for item in uncertain if item))
+    if detail.get("ok"):
+        caption = (
+            "<b>Подготовил черновик Google Form</b>\n"
+            f"{title}\n\n"
+            f"Вопросов: {len(questions)} | заполнено: {len(filled)} | пропущено: {len(skipped)}"
+        )
+        if uncertain:
+            caption += "\n\n<b>Нужно проверить/уточнить:</b>\n" + "\n".join(f"• {html.escape(item[:180])}" for item in uncertain[:12])
+        caption += "\n\nПроверь скрин и отправляй только после подтверждения."
+        markup = build_google_form_preview_markup(profile_name, detail["token"], detail["form_url"])
+    else:
+        reason = html.escape(str(detail.get("message") or "unknown error")[:400])
+        form_url = str(detail.get("form_url") or detail.get("original_form_url") or "")
+        caption = (
+            "⚠️ <b>Google Form не удалось подготовить</b>\n"
+            f"{title}\n\n"
+            f"Причина: {reason}\n"
+            f"Вопросов найдено: {len(questions)} | заполнено: {len(filled)} | пропущено: {len(skipped)}"
+        )
+        if uncertain:
+            caption += "\n\n<b>Поля для ручной проверки:</b>\n" + "\n".join(f"• {html.escape(item[:180])}" for item in uncertain[:12])
+        markup = (
+            {"inline_keyboard": [[{"text": "Открыть форму", "url": form_url}]]}
+            if form_url
+            else None
+        )
+        if questions and detail.get("token"):
+            caption += "\n\nОтветьте на вопросы через кнопку редактирования ниже."
+            markup = build_google_form_preview_markup(profile_name, detail["token"], form_url, can_submit=False)
+    if len(caption) > 3500:
+        caption = ("<b>Черновик Google Form</b>\n" + title +
+                   f"\nПолей: {len(questions)}; заполнено: {len(filled)}; уточнить: {len(uncertain)}.\n"
+                   "Все вопросы доступны через кнопку редактирования или /forms.")
     screenshot_path = detail.get("screenshot_path") or ""
     if screenshot_path and os.path.exists(screenshot_path):
+        if len(caption) > 950:
+            await notifier.send_photo(screenshot_path, caption="Черновик Google Form: вопросы и кнопки в следующем сообщении.")
+            return await notifier.send_message_with_markup(caption, reply_markup=markup)
         return await notifier.send_photo(screenshot_path, caption=caption, reply_markup=markup)
     return await notifier.send_message_with_markup(caption, reply_markup=markup)
 
@@ -560,7 +661,10 @@ async def notify_form_submit(result: dict) -> bool:
     status = "✅" if result.get("ok") else "⚠️"
     text = (
         f"{status} <b>Google Form submit</b>\n\n"
-        f"Статус: {html.escape(result.get('message') or '')}\n"
+        f"Причина/статус: {html.escape(result.get('message') or '')}\n"
         f"Форма: {html.escape(result.get('form_url') or '')}"
     )
+    screenshot_path = result.get("screenshot_path") or ""
+    if screenshot_path and os.path.exists(screenshot_path):
+        return await notifier.send_photo(screenshot_path, caption=text)
     return await notifier.send_message_with_markup(text)

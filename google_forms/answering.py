@@ -50,6 +50,18 @@ def _asks_for_telegram(question_text: str) -> bool:
     )
 
 
+def _asks_for_telegram_contact(question_text: str) -> bool:
+    """Различать поле контакта от вопроса про Telegram-инструменты/ботов."""
+    text = _norm(question_text)
+    if not _asks_for_telegram(text):
+        return False
+    if text.rstrip(' :*?') in {"telegram", "тг", "tg", "телеграм"}:
+        return True
+    contact_markers = ("ник", "username", "юзернейм", "контакт", "связ", "написать", "ссылка на телеграм")
+    tool_markers = ("инструмент", "бот", "используете", "использовал", "технолог")
+    return any(marker in text for marker in contact_markers) and not any(marker in text for marker in tool_markers)
+
+
 def _asks_for_resume_url(question_text: str) -> bool:
     text = _norm(question_text)
     return "резюме" in text and any(marker in text for marker in ("ссыл", "url", "link", "продубли", "прикреп"))
@@ -62,6 +74,8 @@ def _asks_for_email(question_text: str) -> bool:
 
 def _asks_for_phone(question_text: str) -> bool:
     text = _norm(question_text)
+    if any(marker in text for marker in ("модель", "марка", "смартфон", "устройств")):
+        return False
     if any(marker in text for marker in ("телефон", "phone")):
         return True
     return any(marker in text for marker in ("мобильный номер", "мобильного номера", "номер мобильного"))
@@ -104,7 +118,7 @@ def _apply_contact_overrides(questions: list[dict], answers: list[dict]) -> list
         elif phone and _asks_for_phone(qtext):
             answer_map[idx] = _contact_override_answer(idx, phone)
             changed = True
-        elif telegram and _asks_for_telegram(qtext):
+        elif telegram and _asks_for_telegram_contact(qtext):
             answer_map[idx] = _contact_override_answer(idx, telegram)
             changed = True
         elif resume_url and _asks_for_resume_url(qtext):
@@ -403,8 +417,24 @@ def _avoid_bare_other_options(questions: list[dict], answers: list[dict]) -> lis
 def _prepare_form_answers(questions: list[dict], answers: list[dict]) -> list[dict]:
     answers = _normalize_choice_answer_values(questions, answers)
     answers = _apply_contact_overrides(questions, answers)
-    answers = _apply_required_overrides(questions, answers)
-    return _avoid_bare_other_options(questions, answers)
+    # Exact personal facts should not depend on LLM paraphrasing.
+    from facts import load_facts
+    confirmed = load_facts().get("confirmed", {})
+    by_index = _answers_by_index(answers)
+    for q in questions:
+        if q.get("type") != "text":
+            continue
+        text = _norm(q.get("question", ""))
+        field = "date_of_birth" if "дата рождения" in text or "date of birth" in text else ""
+        if ("модель" in text or "марка" in text) and ("телефон" in text or "смартфон" in text):
+            field = "phone_model"
+        if field and confirmed.get(field):
+            by_index[int(q["index"])] = {**_contact_override_answer(int(q["index"]), str(confirmed[field])), "source": "confirmed_fact"}
+    answers = list(by_index.values())
+    # Missing personal facts are questions for the user, not fabricated fallbacks.
+    return [{**a, "skip": True, "confidence": "low"}
+            if any(_is_bare_other_option(str(o)) for o in a.get("options", [])) else a
+            for a in answers]
 
 
 async def generate_form_answers(
@@ -456,7 +486,7 @@ async def generate_form_answers(
 
 Отвечай честно по резюме, фактам и базе знаний. Не выдумывай опыт, инструменты, образование, гражданство, уровень английского или даты. Если опыта нет — так и напиши. Если вопрос про зарплату — используй блок зарплатных ожиданий и правило, что итоговая зарплата зависит от загрузки, ответственности, графика и условий проекта. Если вопрос просит Telegram или ссылку на резюме, используй контактные данные кандидата ниже.
 
-Для вопросов с вариантами выбери только точные тексты вариантов из options. Для checkbox можно выбрать несколько. Для text дай короткий конкретный ответ. Поле required=true — это поле со звёздочкой: его обязательно надо заполнить, skip=true для него запрещён. Если точного факта нет, дай честный короткий ответ вроде «нет релевантного опыта» или «готов обсудить подробнее на собеседовании», но не оставляй обязательное поле пустым. Skip допустим только для необязательных или служебных информационных блоков.
+Для вопросов с вариантами выбери только точные тексты вариантов из options. Для checkbox можно выбрать несколько. Для text дай конкретный ответ. Если подтверждённого факта недостаточно, верни skip=true и confidence=low даже для required=true: кандидат ответит на этот вопрос через Telegram. Отсутствие сведений не означает отсутствие опыта. Не заполняй пробелы шаблоном «готов обсудить на собеседовании». high означает, что ответ прямо подтверждается фактами; medium/low требуют уточнения кандидатом.
 
 {profile_note}{contacts}{knowledge}{facts}{salary}
 Контекст вакансии:

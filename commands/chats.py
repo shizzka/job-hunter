@@ -80,6 +80,7 @@ async def respond_one(
     allow_suspicious: bool,
     allow_any: bool,
     force_send: bool,
+    alternative: bool = False,
 ) -> None:
     import hh_chat_responder as cr
 
@@ -93,6 +94,7 @@ async def respond_one(
             allow_any=allow_any,
             dry_run=False if force_send else True,
             notify=True,
+            alternative=alternative,
         )
     finally:
         await _stop_client(client)

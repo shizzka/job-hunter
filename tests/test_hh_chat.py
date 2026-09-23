@@ -122,6 +122,9 @@ def test_list_chats_uses_injected_navigation_and_returns_evaluated_rows():
         )
     ]
     assert "[data-qa^=\"chatik-open-chat-\"]" in page.scripts[0]
+    assert "firstChat?.parentElement" in page.scripts[0]
+    assert "i < 60" in page.scripts[0]
+    assert "bottomPasses" in page.scripts[0]
 
 
 def test_extract_messages_runs_injected_author_classifier():
@@ -348,6 +351,42 @@ def test_fill_and_preview_fills_textarea_without_sending():
     assert page.input.value == "Готов обсудить детали."
     assert page.wait_calls == [500]
     assert page.screenshot_paths == ["/tmp/chat-state/chat_preview_456_789.png"]
+
+
+def test_fill_and_preview_uses_new_hh_text_input_selector_as_fallback():
+    page = FakeTextPreviewPage()
+    selectors = []
+
+    async def query_selector(selector: str):
+        selectors.append(selector)
+        if selector == 'textarea[data-qa="text-input"]':
+            return page.input
+        return None
+
+    page.query_selector = query_selector
+
+    async def no_op(*args, **kwargs):
+        return None
+
+    result = asyncio.run(
+        fill_and_preview(
+            page,
+            "456",
+            "Готов обсудить детали.",
+            state_dir="/tmp/chat-state",
+            now=lambda: 789,
+            open_page=no_op,
+            dismiss_cookies=no_op,
+            find_quick_reply=no_op,
+        )
+    )
+
+    assert result["filled"] is True
+    assert selectors == [
+        'textarea[data-qa="chatik-new-message-text"]',
+        'textarea[data-qa="text-input"]',
+    ]
+    assert page.input.value == "Готов обсудить детали."
 
 
 class FakeSendButton:

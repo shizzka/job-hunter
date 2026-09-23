@@ -187,6 +187,57 @@ class TestClientHHAuth:
         assert imported_calls == []
         assert FakeClient.instance._page.goto_calls == ["https://hh.ru/account/login"]
 
+    def test_run_hh_auth_capture_retries_transient_login_navigation_error(self, monkeypatch):
+        class DummyProfile:
+            name = "client_42"
+            home_dir = "/tmp/profiles/client_42"
+            hh = type("HH", (), {"cookies_file": "/tmp/profiles/client_42/hh_cookies.json"})()
+
+        class FakePage:
+            def __init__(self):
+                self.goto_calls = 0
+
+            async def goto(self, url, wait_until=None, timeout=None):
+                self.goto_calls += 1
+                if self.goto_calls == 1:
+                    raise RuntimeError("Page.goto: net::ERR_CONNECTION_CLOSED")
+
+            def is_closed(self):
+                return False
+
+        class FakeClient:
+            instance = None
+
+            def __init__(self):
+                self._page = FakePage()
+                FakeClient.instance = self
+
+            async def start(self, headless=False):
+                return None
+
+            async def is_logged_in_passive(self):
+                return True
+
+            async def save_session(self):
+                return None
+
+            async def stop(self):
+                return None
+
+        async def fake_sleep(seconds):
+            assert seconds == 2
+
+        monkeypatch.setattr(client_hh_auth, "_resolve_profile", lambda profile_name: DummyProfile())
+        monkeypatch.setattr(client_hh_auth, "HHClient", FakeClient)
+        monkeypatch.setattr(client_hh_auth.asyncio, "sleep", fake_sleep)
+
+        result = asyncio.run(
+            client_hh_auth.run_hh_auth_capture("client_42", timeout_sec=5, activate_profile=False)
+        )
+
+        assert result["authenticated"] is True
+        assert FakeClient.instance._page.goto_calls == 2
+
     def test_run_hh_auth_capture_imports_resumes_only_when_requested(self, monkeypatch):
         class DummyProfile:
             def __init__(self):

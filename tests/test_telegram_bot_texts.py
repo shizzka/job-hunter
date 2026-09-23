@@ -6,6 +6,7 @@ from telegram_bot import (
     BUTTON_DRYRUN,
     BUTTON_DIAGNOSTICS,
     BUTTON_HH_AUTH,
+    BUTTON_HH_RESPONSES,
     BUTTON_CHAT_AI,
     BUTTON_REPEAT_OFF,
     MENU_RUN,
@@ -16,6 +17,7 @@ from telegram_bot import (
     build_diagnostics_text,
     build_help_text,
     build_hh_auth_result_text,
+    build_hh_response_count_text,
     build_menu_section_text,
     format_ai_snapshot_text,
 )
@@ -27,6 +29,7 @@ def test_button_labels_are_russian():
     assert BUTTON_BACKFILL == "🗃 Пересчёт аналитики"
     assert BUTTON_AI_LIMITS == "🎁 Лимиты ИИ"
     assert BUTTON_HH_AUTH == "🔐 Вход HH"
+    assert BUTTON_HH_RESPONSES == "📨 Отклики HH"
     assert BUTTON_CHAT_AI == "🤖 Ответ ИИ в чат"
     assert BUTTON_DAEMON_ON == "🟢 Демон: вкл"
     assert BUTTON_DAEMON_OFF == "⛔ Демон: выкл"
@@ -200,6 +203,38 @@ def test_diagnostics_button_is_visible_in_admin_monitor_menu_only():
 
     assert BUTTON_DIAGNOSTICS in admin_labels
     assert BUTTON_DIAGNOSTICS not in user_labels
+
+
+def test_hh_response_button_is_visible_and_mapped_for_both_roles():
+    from telegram_bot_ui import ADMIN_BUTTON_MAP, MENU_MONITOR, USER_BUTTON_MAP, build_reply_markup
+
+    for role in (ROLE_ADMIN, ROLE_USER):
+        markup = build_reply_markup(role, menu=MENU_MONITOR)
+        labels = [button["text"] for row in markup["keyboard"] for button in row]
+        assert BUTTON_HH_RESPONSES in labels
+
+    assert ADMIN_BUTTON_MAP[BUTTON_HH_RESPONSES] == "/hh_responses"
+    assert USER_BUTTON_MAP[BUTTON_HH_RESPONSES] == "/hh_responses"
+
+
+def test_build_hh_response_count_text():
+    text = build_hh_response_count_text(
+        {
+            "profile": "qa",
+            "fetched_at": "2026-09-11T12:00:00+03:00",
+            "active": 119,
+            "archived": 1611,
+            "deleted": 7,
+            "total": 1737,
+            "delta": {"active": 2, "archived": 1, "deleted": 0, "total": 3},
+        }
+    )
+
+    assert "Всего за всё время: 1 737" in text
+    assert "Активные: 119" in text
+    assert "Архив: 1 611" in text
+    assert "Удалённые: 7" in text
+    assert "Изменение с прошлого замера: +3" in text
 
 
 def test_build_diagnostics_text():

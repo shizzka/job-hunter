@@ -106,7 +106,12 @@ def _evaluation_with_guard_flag(evaluation: dict, flag: str) -> dict:
 
 
 def _build_logging_handlers() -> list[logging.Handler]:
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    # The background launcher redirects stdout/stderr to LOG_FILE. In that
+    # mode a StreamHandler would write every record a second time to the same
+    # file; keep it only for an interactive terminal.
+    handlers: list[logging.Handler] = []
+    if not os.environ.get("JOB_HUNTER_BACKGROUND") and sys.stdout.isatty():
+        handlers.append(logging.StreamHandler())
 
     if config.LOG_FILE:
         log_dir = os.path.dirname(config.LOG_FILE)
@@ -1440,14 +1445,21 @@ async def do_search(dry_run: bool = False) -> dict:
                         hh_auto_apply_guard_note = hh_guard.format_block_note(hh_status)
                         guard_suffix = f"\n{hh_auto_apply_guard_note}"
                 if source == "hh" and anti_bot_kind:
-                    # Captcha во время apply — guard уже включился, остальные hh-вакансии
-                    # уйдут в deferred. Эту тоже тихо откладываем (без notify, без seen).
+                    # Guard откладывает следующие HH-вакансии, но текущая ошибка
+                    # не должна исчезать молча: отправляем причину и снимок страницы.
                     log.info(
                         "  hh deferred (captcha during apply): %s @ %s",
                         v.get("title", ""), v.get("company", ""),
                     )
                     result["skipped"] += 1
                     bucket["deferred"] = bucket.get("deferred", 0) + 1
+                    await notify_needs_manual(
+                        v,
+                        score,
+                        reason,
+                        note=f"Автоотклик HH остановлен: {hh_auto_apply_guard_note}",
+                        screenshot_path=snapshot.get("screenshot"),
+                    )
                     continue
                 await set_hunter_status("search_manual", f"Ручной {short_label}: ошибка", "busy")
                 seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
@@ -1483,6 +1495,7 @@ async def do_search(dry_run: bool = False) -> dict:
                         + (f" {hh_auto_apply_guard_note}" if guard_suffix else "")
                         + (f" Снимок: {snapshot['screenshot']}" if snapshot.get("screenshot") else "")
                     ),
+                    screenshot_path=snapshot.get("screenshot"),
                 )
                 continue
 
@@ -1567,6 +1580,7 @@ async def do_search(dry_run: bool = False) -> dict:
                         + (f" {apply_note_text}." if apply_note_text else "")
                         + (f" Снимок: {snapshot['screenshot']}" if snapshot.get("screenshot") else "")
                     ),
+                    screenshot_path=snapshot.get("screenshot"),
                 )
                 continue
 
@@ -1636,32 +1650,16 @@ async def do_search(dry_run: bool = False) -> dict:
 
                 await notify_application(v, score, cover, note=apply_note_text or None)
             else:
-                apply_message = apply_result.get("message", "unknown")
+                apply_message = str(
+                    apply_result.get("message")
+                    or "HH не подтвердил отправку отклика после нажатия кнопки"
+                )
                 if source == "hh" and "не удалось подтвердить отклик" in str(apply_message).casefold():
-                    seen.mark_seen(vid, v, "apply_unconfirmed_no_manual")
-                    hh_pipeline.mark_terminal(vid, "apply_unconfirmed")
-                    result["skipped"] += 1
-                    bucket["rejected"] += 1
-                    analytics.record_decision(
-                        run_id=run_id,
-                        vacancy=v,
-                        decision=DECISION_ALREADY_APPLIED,
-                        evaluation=cover_evaluation,
-                        details=details,
-                        resume_variant=hh_resume_variant,
-                        note=f"hh:{apply_message}; suppressed_manual",
-                    )
-                    await set_hunter_status(
-                        "search_skip_existing",
-                        "HH отклик не подтверждён, ручную задачу не создаю",
-                        "working",
-                    )
-                    log.info(
-                        "  hh apply unconfirmed; suppressing manual task for %s: %s",
+                    log.warning(
+                        "  hh apply unconfirmed; escalating to manual task for %s: %s",
                         vid,
                         apply_message,
                     )
-                    continue
                 snapshot = await _save_autoapply_failure_snapshot(
                     source,
                     vid,
@@ -1722,13 +1720,19 @@ async def do_search(dry_run: bool = False) -> dict:
                     geekjob_ready_message = apply_message
 
                 if source == "hh" and anti_bot_kind:
-                    # Captcha при отклике — guard уже включился, тихо откладываем эту вакансию.
                     log.info(
                         "  hh deferred (captcha at apply): %s @ %s",
                         v.get("title", ""), v.get("company", ""),
                     )
                     result["skipped"] += 1
                     bucket["deferred"] = bucket.get("deferred", 0) + 1
+                    await notify_needs_manual(
+                        v,
+                        score,
+                        reason,
+                        note=f"Автоотклик HH остановлен: {hh_auto_apply_guard_note}",
+                        screenshot_path=snapshot.get("screenshot"),
+                    )
                     continue
 
                 await set_hunter_status("search_manual", f"Ручной {short_label}: не ушёл", "busy")
@@ -1763,8 +1767,9 @@ async def do_search(dry_run: bool = False) -> dict:
                     note=(
                         f"Автоотклик {source_label} не завершился: {apply_message}"
                         + (f" {hh_auto_apply_guard_note}" if guard_suffix else "")
-                        + (f" Снимок: {snapshot['screenshot']}" if snapshot.get("screenshot") else "")
+                        + (" Ниже — снимок страницы после сбоя." if snapshot.get("screenshot") else "")
                     ),
+                    screenshot_path=snapshot.get("screenshot"),
                 )
 
             # Пауза между откликами
@@ -2156,11 +2161,14 @@ async def main():
     group.add_argument("--chat-respond-one", metavar="CHAT_ID", help="Ответить в конкретном hh-чате после ручного подтверждения")
     group.add_argument("--google-form-preview", metavar="CHAT_ID", help="Подготовить заполнение Google Form из HH-чата")
     group.add_argument("--google-form-submit", metavar="TOKEN", help="Отправить ранее подготовленную Google Form по токену")
+    group.add_argument("--google-form-recheck", metavar="TOKEN", help="Проверить черновик Google Form после ручных правок")
+    group.add_argument("--google-form-recheck-submit", metavar="TOKEN", help="Проверить и отправить подтверждённые ответы Google Form")
     group.add_argument("--manual-apply-token", metavar="TOKEN", help="Отправить yellow-zone отклик по Telegram token")
     parser.add_argument("--chat-message-id", default="", help="ID сообщения в hh-чате для --chat-respond-one")
     parser.add_argument("--chat-allow-suspicious", action="store_true", help="Разрешить ответ на подозрительное HR-сообщение без явного AI-маркера")
     parser.add_argument("--chat-allow-any", action="store_true", help="Для ручного запуска разрешить AI-preview по любому последнему входящему сообщению")
     parser.add_argument("--chat-force-send", action="store_true", help="Для --chat-respond-one отправить ответ сразу, без dry-run preview")
+    parser.add_argument("--chat-alternative", action="store_true", help="Для --chat-respond-one подготовить другую формулировку ответа")
     parser.add_argument("--chat-list-limit", type=int, default=8, help="Сколько HH-чатов показать для ручного AI-ответа")
     parser.add_argument("--chat-list-max-scan", type=int, default=25, help="Сколько свежих HH-чатов просмотреть для списка ручного AI-ответа")
     parser.add_argument("--hh-resume-boost-confirm", default="", help="Слово подтверждения для --hh-resume-boost")
@@ -2278,6 +2286,10 @@ async def main():
             )
         elif args.google_form_submit:
             await google_form_commands.submit(args.google_form_submit)
+        elif args.google_form_recheck:
+            await google_form_commands.recheck(args.google_form_recheck, profile_name=args.profile)
+        elif args.google_form_recheck_submit:
+            await google_form_commands.recheck(args.google_form_recheck_submit, profile_name=args.profile, submit_after=True)
         elif args.manual_apply_token:
             result = await do_manual_apply_token(args.manual_apply_token)
             if not result.get("ok"):
@@ -2289,6 +2301,7 @@ async def main():
                 allow_suspicious=args.chat_allow_suspicious,
                 allow_any=args.chat_allow_any,
                 force_send=args.chat_force_send,
+                alternative=args.chat_alternative,
             )
         elif args.analyze_resume:
             import resume_analyzer

@@ -16,6 +16,30 @@ import config
 import profile as profile_mod
 from hh_client import HHClient
 
+_TRANSIENT_HH_NAVIGATION_ERRORS = (
+    "net::ERR_CONNECTION_CLOSED",
+    "net::ERR_CONNECTION_RESET",
+    "net::ERR_CONNECTION_REFUSED",
+    "net::ERR_TIMED_OUT",
+    "net::ERR_NAME_NOT_RESOLVED",
+)
+
+
+def _is_transient_hh_navigation_error(exc: Exception) -> bool:
+    return any(marker in str(exc) for marker in _TRANSIENT_HH_NAVIGATION_ERRORS)
+
+
+async def _open_hh_login(page, url: str, *, attempts: int = 3) -> None:
+    """Open HH login, tolerating short-lived local network disconnects."""
+    for attempt in range(max(1, attempts)):
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            return
+        except Exception as exc:
+            if not _is_transient_hh_navigation_error(exc) or attempt + 1 >= attempts:
+                raise
+            await asyncio.sleep(2 * (attempt + 1))
+
 
 def _resolve_profile(profile_name: str):
     try:
@@ -774,10 +798,9 @@ async def run_hh_auth_capture(
     client = HHClient()
     try:
         await client.start(headless=False)
-        await client._page.goto(  # noqa: SLF001 - reusing existing HH client page flow
+        await _open_hh_login(  # noqa: SLF001 - auth flow owns the browser page
+            client._page,
             f"{config.HH_BASE_URL}/account/login",
-            wait_until="domcontentloaded",
-            timeout=60000,
         )
 
         deadline = time.monotonic() + max(1, timeout_sec)

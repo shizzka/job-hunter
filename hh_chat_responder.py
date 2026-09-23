@@ -238,6 +238,7 @@ async def generate_answer(
     *,
     question_message: dict[str, Any] | None = None,
     question_kind: str = "AI-помощника",
+    alternative: bool = False,
 ) -> str | None:
     """Сгенерировать ответ на вопрос AI-помощника или approved suspicious HR message."""
     if not messages:
@@ -283,6 +284,11 @@ async def generate_answer(
 
     dialog_block = _format_dialog(messages, take_last=10)
 
+    alternative_instruction = (
+        "\nНужен альтернативный вариант: сформулируй ответ другими словами и с другим порядком фактов, "
+        "но используй только подтверждённые факты.\n"
+        if alternative else ""
+    )
     prompt = f"""Ты отвечаешь в чате hh.ru от лица кандидата на вопрос работодателя.
 
 Тип вопроса: {question_kind}. Если это похоже на автоматический HR-скрининг, отвечай так же конкретно, как AI-помощнику, но без упоминания, что собеседник является ботом. На вопрос о зарплатных ожиданиях отвечай по блоку зарплатных ожиданий ниже.
@@ -295,6 +301,7 @@ async def generate_answer(
 
 {profile_note}{knowledge}{facts}{salary}{vacancy_block}История диалога (последние 10 реплик):
 {dialog_block}
+{alternative_instruction}
 
 Текущий вопрос:
 "{question}"
@@ -323,7 +330,7 @@ async def generate_answer(
                 {"role": "system", "content": "Ты отвечаешь строго JSON. Никакого текста до или после JSON-объекта."},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.3,
+            temperature=0.55 if alternative else 0.3,
             max_tokens=600,
         )
         raw = (resp.choices[0].message.content or "").strip()
@@ -516,6 +523,14 @@ def chat_ai_manual_callback_data(profile_name: str, chat_id: str, message_id: st
     return _chat_callback_data("chat_ai_any", profile_name, chat_id, message_id)
 
 
+def chat_ai_alternative_callback_data(profile_name: str, chat_id: str, message_id: str) -> str:
+    return _chat_callback_data("chat_ai_alt", profile_name, chat_id, message_id)
+
+
+def chat_ai_manual_alternative_callback_data(profile_name: str, chat_id: str, message_id: str) -> str:
+    return _chat_callback_data("chat_ai_any_alt", profile_name, chat_id, message_id)
+
+
 def chat_manual_send_callback_data(profile_name: str, chat_id: str, message_id: str) -> str:
     return _chat_callback_data("chat_send_any", profile_name, chat_id, message_id)
 
@@ -541,8 +556,17 @@ def build_chat_answer_preview_markup(
         if allow_any
         else chat_send_callback_data(profile_name, chat_id, message_id)
     )
+    alternative_data = (
+        chat_ai_manual_alternative_callback_data(profile_name, chat_id, message_id)
+        if allow_any else chat_ai_alternative_callback_data(profile_name, chat_id, message_id)
+    )
+    actions = []
+    if len(alternative_data.encode("utf-8")) <= 64:
+        actions.append({"text": "🔄 Другой вариант", "callback_data": alternative_data})
     if len(callback_data.encode("utf-8")) <= 64:
-        rows.append([{"text": "Отправить ответ", "callback_data": callback_data}])
+        actions.append({"text": "✅ Отправить", "callback_data": callback_data})
+    if actions:
+        rows.append(actions)
     return {"inline_keyboard": rows}
 
 
@@ -763,6 +787,10 @@ def _find_unseen_google_form_message(messages: list[dict], chat_state: dict) -> 
         for form_url in urls:
             message_id = str(msg.get("id") or "")
             key = _google_form_seen_key(form_url, message_id)
+            previous = seen.get(key) or {}
+            # Любой результат терминален для автоматического цикла.
+            # Ошибки и формы, требующие ручного уточнения, повторяем только
+            # по явной команде/кнопке, иначе один чат зациклит весь проход.
             if key not in seen:
                 return {"message": msg, "form_url": form_url, "key": key}
     return {}
@@ -772,7 +800,16 @@ def _remember_google_form_preview(chat_state: dict, key: str, detail: dict) -> N
     remember_google_form_preview(chat_state, key, detail)
 
 
-async def _notify_google_form_failure(notifier, *, chat_id: str, vacancy: dict, message: dict, form_url: str, error: str) -> bool:
+async def _notify_google_form_failure(
+    notifier,
+    *,
+    chat_id: str,
+    vacancy: dict,
+    message: dict,
+    form_url: str,
+    error: str,
+    screenshot_path: str = "",
+) -> bool:
     if notifier is None:
         return False
     title = html.escape((vacancy.get("title") or "Google Form")[:160])
@@ -789,6 +826,8 @@ async def _notify_google_form_failure(notifier, *, chat_id: str, vacancy: dict, 
         f"<a href='{safe_form_url}'>Открыть форму</a> · "
         f"<a href='{CHATIK_ROOT}/chat/{safe_chat_id}'>Открыть чат</a>"
     )
+    if screenshot_path and os.path.exists(screenshot_path):
+        return await notifier.send_photo(screenshot_path, caption=caption)
     return await notifier.send_message_with_markup(caption)
 
 
@@ -815,10 +854,13 @@ async def _prepare_google_form_preview_from_message(
             message_id=str(message.get("id") or ""),
             vacancy=vacancy,
             source_message=message.get("text") or "",
-            notify=bool(notifier),
+            notify=False,
             runtime_paths=paths,
         )
-        if not detail.get("ok"):
+        if detail.get("ok") or detail.get("questions") or detail.get("status") == "already_submitted":
+            if notifier:
+                await gforms.notify_form_preview(detail, profile_name=_active_profile_name())
+        else:
             detail.setdefault("chat_id", chat_id)
             detail.setdefault("message_id", str(message.get("id") or ""))
             detail.setdefault("vacancy", vacancy)
@@ -830,9 +872,20 @@ async def _prepare_google_form_preview_from_message(
                 message=message,
                 form_url=detail.get("form_url") or form_url,
                 error=detail.get("message") or "preview failed",
+                screenshot_path=detail.get("screenshot_path") or "",
             )
     except Exception as exc:
         log.warning("google form preview failed for chat %s: %s", chat_id, exc)
+        screenshot_path = os.path.join(
+            paths.hh_state_dir,
+            f"google_form_failed_{int(time.time())}_{chat_id}.png",
+        )
+        os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+        try:
+            await form_page.screenshot(path=screenshot_path, full_page=True)
+        except Exception as screenshot_exc:
+            screenshot_path = ""
+            log.warning("google form failure screenshot failed for chat %s: %s", chat_id, screenshot_exc)
         detail = {
             "ok": False,
             "message": f"{type(exc).__name__}: {exc}",
@@ -841,6 +894,7 @@ async def _prepare_google_form_preview_from_message(
             "form_url": form_url,
             "vacancy": vacancy,
             "status": "preview_failed",
+            "screenshot_path": screenshot_path,
         }
         await _notify_google_form_failure(
             notifier,
@@ -849,6 +903,7 @@ async def _prepare_google_form_preview_from_message(
             message=message,
             form_url=form_url,
             error=detail["message"],
+            screenshot_path=screenshot_path,
         )
     finally:
         try:
@@ -865,6 +920,7 @@ async def process_one(
     message_id: str = "",
     allow_suspicious: bool = False,
     allow_any: bool = False,
+    alternative: bool = False,
     dry_run: bool | None = None,
     notify: bool = False,
     runtime_paths: RuntimePaths | None = None,
@@ -923,6 +979,7 @@ async def process_one(
             if is_manual_any
             else "AI-помощник"
         ),
+        alternative=alternative,
     )
     if not answer:
         return {"ok": False, "message": "LLM did not produce answer", "chat_id": chat_id}

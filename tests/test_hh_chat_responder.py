@@ -56,6 +56,23 @@ def test_known_hh_ai_avatar_still_marks_ai_message():
     assert classified["is_ai"] is True
 
 
+def test_hh_employer_would_like_to_know_prompt_is_ai_without_loaded_avatar():
+    message = {
+        "id": "15333334103",
+        "text": "Работодатель хотел бы узнать: почему вам интересна данная стажировка?",
+        "author": "HR",
+        "avatar_alt": "",
+        "avatar_src": "",
+        "is_me": False,
+    }
+
+    classified = chat_responder._classify_message_author(message)
+
+    assert classified["is_ai"] is True
+    assert classified["is_ai_suspect"] is False
+    assert classified["is_other"] is False
+
+
 def test_robot_recruiter_author_label_marks_ai_message():
     message = {
         "id": "14020977208",
@@ -400,14 +417,19 @@ def test_remember_google_form_preview_keeps_bounded_state():
     assert "key-34" in previews
 
 
-def test_preview_markup_contains_send_callback():
+def test_preview_markup_contains_alternative_and_send_callbacks():
     markup = chat_responder.build_chat_answer_preview_markup("qa", "5394116371", "14410048077")
     buttons = [button for row in markup["inline_keyboard"] for button in row]
 
     assert any(button.get("text") == "Открыть чат" and button.get("url") for button in buttons)
     assert any(
-        button.get("text") == "Отправить ответ"
+        button.get("text") == "✅ Отправить"
         and button.get("callback_data") == "chat_send:qa:5394116371:14410048077"
+        for button in buttons
+    )
+    assert any(
+        button.get("text") == "🔄 Другой вариант"
+        and button.get("callback_data") == "chat_ai_alt:qa:5394116371:14410048077"
         for button in buttons
     )
 
@@ -561,3 +583,16 @@ def test_chat_preview_and_send_use_explicit_runtime_paths(tmp_path, monkeypatch)
     assert preview == {"filled": True}
     assert sent is True
     assert state_dirs == [paths.hh_state_dir, paths.hh_state_dir]
+
+
+def test_find_unseen_google_form_message_does_not_retry_failed_preview_automatically():
+    messages = [
+        {"id": "10", "text": "Заполните https://forms.gle/abc123", "is_me": False},
+    ]
+    url = "https://forms.gle/abc123"
+    key = chat_responder._google_form_seen_key(url, "10")
+    chat_state = {"google_form_previews": {key: {"ok": False, "status": "preview_failed"}}}
+
+    item = chat_responder._find_unseen_google_form_message(messages, chat_state)
+
+    assert item == {}

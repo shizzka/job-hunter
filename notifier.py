@@ -398,17 +398,22 @@ async def notify_application(
         )
         return
 
+    title = _html(vacancy.get("title", "—"), 300)
+    source = _html(vacancy.get("source_label", vacancy.get("source", "—")), 100)
+    company = _html(vacancy.get("company", "—"), 300)
+    salary = _html(vacancy.get("salary", "не указана"), 200)
+    url = _html(vacancy.get("url", ""), 2000)
     text = (
         f"📨 <b>Отклик отправлен</b>\n\n"
-        f"<b>{vacancy.get('title', '—')}</b>\n"
-        f"🌐 {vacancy.get('source_label', vacancy.get('source', '—'))}\n"
-        f"🏢 {vacancy.get('company', '—')}\n"
-        f"💰 {vacancy.get('salary', 'не указана')}\n"
+        f"<b>{title}</b>\n"
+        f"🌐 {source}\n"
+        f"🏢 {company}\n"
+        f"💰 {salary}\n"
         f"📊 Совпадение: {score}/100\n\n"
-        f"<a href=\"{vacancy.get('url', '')}\">Открыть вакансию</a>"
+        f"<a href=\"{url}\">Открыть вакансию</a>"
     )
     if cover_letter:
-        text += f"\n\n💬 <i>{cover_letter[:300]}</i>"
+        text += f"\n\n💬 <i>{_html(cover_letter, 300)}</i>"
     if note:
         formatted = _format_autoanswer_notes(note)
         # если форматтер вернул multiline — даём отдельный заголовок «Анкета»
@@ -421,11 +426,14 @@ async def notify_application(
 
 async def notify_invitation(invitation: dict):
     """Уведомить о приглашении на собеседование!"""
+    title = _html(invitation.get("title", "—"), 300)
+    company = _html(invitation.get("company", "—"), 300)
+    url = _html(invitation.get("url", ""), 2000)
     text = (
         f"🎉 <b>ПРИГЛАШЕНИЕ!</b>\n\n"
-        f"<b>{invitation.get('title', '—')}</b>\n"
-        f"🏢 {invitation.get('company', '—')}\n\n"
-        f"<a href=\"{invitation.get('url', '')}\">Посмотреть</a>\n\n"
+        f"<b>{title}</b>\n"
+        f"🏢 {company}\n\n"
+        f"<a href=\"{url}\">Посмотреть</a>\n\n"
         f"⚡ Проверь hh.ru и ответь!"
     )
     await send_message(text)
@@ -437,24 +445,35 @@ async def notify_needs_manual(
     reason: str,
     note: str | None = None,
     reply_markup: dict | None = None,
+    screenshot_path: str | None = None,
 ):
     """Уведомить о подходящей вакансии, где нужен ручной отклик."""
     extra_note = note or "Работодатель требует ответить на вопросы"
+    title = _html(vacancy.get("title", "—"), 300)
+    source = _html(vacancy.get("source_label", vacancy.get("source", "—")), 100)
+    company = _html(vacancy.get("company", "—"), 300)
+    salary = _html(vacancy.get("salary", "не указана"), 200)
+    url = _html(vacancy.get("url", ""), 2000)
     text = (
         f"📝 <b>Подходящая вакансия (нужен ручной отклик)</b>\n\n"
-        f"<b>{vacancy.get('title', '—')}</b>\n"
-        f"🌐 {vacancy.get('source_label', vacancy.get('source', '—'))}\n"
-        f"🏢 {vacancy.get('company', '—')}\n"
-        f"💰 {vacancy.get('salary', 'не указана')}\n"
+        f"<b>{title}</b>\n"
+        f"🌐 {source}\n"
+        f"🏢 {company}\n"
+        f"💰 {salary}\n"
         f"📊 Совпадение: {score}/100\n\n"
-        f"⚠️ {extra_note}\n"
-        f"💡 {reason[:250] if reason else 'Нужно проверить вакансию вручную'}\n\n"
-        f"<a href=\"{vacancy.get('url', '')}\">Открыть и откликнуться</a>"
+        f"⚠️ {_html(extra_note, 600)}\n"
+        f"💡 {_html(reason[:250] if reason else 'Нужно проверить вакансию вручную', 300)}\n\n"
+        f"<a href=\"{url}\">Открыть и откликнуться</a>"
     )
+    if screenshot_path and os.path.exists(screenshot_path):
+        return await send_photo(
+            screenshot_path,
+            caption=text,
+            reply_markup=reply_markup,
+        )
     if reply_markup:
-        await send_message_with_markup(text, reply_markup=reply_markup)
-    else:
-        await send_message(text)
+        return await send_message_with_markup(text, reply_markup=reply_markup)
+    return await send_message(text)
 
 
 def _format_source_stats(source_stats: dict | None) -> str:

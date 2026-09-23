@@ -5,7 +5,7 @@ import google_form_filler as legacy_google_forms
 from google_forms import answering
 
 
-def test_prepare_form_answers_applies_contacts_and_required_fallbacks(monkeypatch):
+def test_prepare_form_answers_applies_contacts_but_does_not_invent_consent(monkeypatch):
     monkeypatch.setenv("CANDIDATE_EMAIL", "qa@example.com")
     questions = [
         {"index": 1, "question": "Электронная почта", "type": "text", "required": True},
@@ -27,8 +27,8 @@ def test_prepare_form_answers_applies_contacts_and_required_fallbacks(monkeypatc
 
     assert by_index[1]["answer"] == "qa@example.com"
     assert by_index[1]["source"] == "contact_override"
-    assert by_index[2]["options"] == ["Да"]
-    assert by_index[2]["source"] == "required_fallback"
+    assert by_index[2]["skip"] is True
+    assert by_index[2].get("source") != "required_fallback"
 
 
 def test_required_salary_fallback_uses_configured_baseline(monkeypatch):

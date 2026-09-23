@@ -91,18 +91,62 @@ def test_legacy_response_questions_wrapper_forwards_patchable_dependencies(monke
 
 
 class FakeDomSubmitPage:
+    def __init__(self):
+        self.script = ""
+
     async def evaluate(self, script):
+        self.script = script
         assert "form[name='vacancy_response']" in script
         assert "vacancy-response-submit-popup" in script
+        assert "modal-overlay" in script
+        assert "requestSubmit(button)" in script
         return True
 
 
 def test_submit_response_form_via_dom_returns_page_result():
-    session = FakeSession(FakeDomSubmitPage())
+    page = FakeDomSubmitPage()
+    session = FakeSession(page)
 
     assert asyncio.run(
         hh_apply.submit_response_form_via_dom(session, logger=hh_client.log)
     ) is True
+
+
+class FakeVisibleElement:
+    def __init__(self, visible=True):
+        self.visible = visible
+
+    async def is_visible(self):
+        return self.visible
+
+
+class FakeSubmitLookupPage:
+    def __init__(self, active, background):
+        self.active = active
+        self.background = background
+        self.selectors = []
+
+    async def query_selector_all(self, selector):
+        self.selectors.append(selector)
+        if selector.startswith("[data-qa='modal-overlay']"):
+            return [self.active]
+        if selector == "[data-qa='vacancy-response-submit-popup']":
+            return [self.background, self.active]
+        return []
+
+
+def test_response_submit_button_prefers_active_modal_over_background_control():
+    active = FakeVisibleElement()
+    background = FakeVisibleElement()
+    page = FakeSubmitLookupPage(active, background)
+    session = FakeSession(page)
+
+    result = asyncio.run(hh_apply.response_submit_button(session))
+
+    assert result is active
+    assert page.selectors == [
+        "[data-qa='modal-overlay'] [data-qa='vacancy-response-submit-popup']"
+    ]
 
 
 def test_legacy_debug_snapshot_wrapper_forwards_active_state_dir(monkeypatch):

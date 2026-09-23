@@ -10,12 +10,14 @@ import logging
 import os
 import re
 import signal
+import sys
 import time
 import traceback
 from datetime import datetime
 
 import analytics
 import client_hh_auth
+import hh_response_counter
 import manual_apply_queue
 import config
 import profile as profile_mod
@@ -33,6 +35,7 @@ from telegram_app.auth_bridge import (
 )
 from telegram_app.api import TelegramAPIClient
 from telegram_app.callbacks import TelegramCallbackRouter
+from telegram_app.forms import TelegramFormEditor
 from telegram_app.subprocesses import (
     ActiveCommandState,
     TelegramSubprocessManager,
@@ -50,7 +53,11 @@ def _build_logging_handlers(
     runtime_paths: TelegramRuntimePaths | None = None,
 ) -> list[logging.Handler]:
     paths = runtime_paths or _telegram_runtime_paths()
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    # The background launcher redirects stdout/stderr to the bot log. Avoid
+    # duplicating every record through a StreamHandler in that same file.
+    handlers: list[logging.Handler] = []
+    if not os.environ.get("JOB_HUNTER_BACKGROUND") and sys.stdout.isatty():
+        handlers.append(logging.StreamHandler())
     if paths.bot_log_file:
         log_dir = os.path.dirname(paths.bot_log_file)
         if log_dir:
@@ -198,6 +205,7 @@ class TelegramBot(
     TelegramSubprocessManager,
     TelegramHHAuthBridge,
     TelegramCallbackRouter,
+    TelegramFormEditor,
 ):
     def __init__(
         self,
@@ -1402,6 +1410,9 @@ class TelegramBot(
 
         text = (message.get("text") or "").strip()
 
+        if await self._accept_form_answer(chat_id, principal, message):
+            return
+
         if await self._maybe_accept_hh_auth_response(chat_id, principal, text):
             return
 
@@ -1475,6 +1486,10 @@ class TelegramBot(
 
         if command in ADMIN_ONLY_COMMANDS and role != ROLE_ADMIN:
             await self._send_text(chat_id, "🔒 Нужны права администратора.", reply_markup=self._menu_reply_markup(principal))
+            return
+
+        if command == "/forms":
+            await self._list_forms(chat_id, principal, profile_name)
             return
 
         menu_commands = {
@@ -1786,6 +1801,53 @@ class TelegramBot(
                     last_run=self._latest_run(profile_name),
                     active_command=active_command.label if active_command else "",
                 ),
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+
+        if command in {"/hh_responses", "/hh_response_count"}:
+            target_profile = self._profile(profile_name)
+            await self._send_chat_action(chat_id)
+            try:
+                snapshot = await asyncio.to_thread(
+                    hh_response_counter.refresh,
+                    profile_name=profile_name,
+                    home_dir=target_profile.home_dir,
+                    cookies_file=target_profile.hh.cookies_file,
+                    base_url=config.HH_BASE_URL,
+                )
+            except hh_response_counter.HHResponseCounterError as exc:
+                log.warning(
+                    "HH response counter failed for profile %s: %s",
+                    profile_name,
+                    exc,
+                )
+                await self._send_text(
+                    chat_id,
+                    f"❌ Не удалось обновить счётчик HH:\n{exc}",
+                    reply_markup=self._menu_reply_markup(principal),
+                )
+                return
+            except Exception:
+                log.exception("Unexpected HH response counter failure for %s", profile_name)
+                await self._send_text(
+                    chat_id,
+                    "❌ Не удалось обновить счётчик HH. Подробности записаны в лог бота.",
+                    reply_markup=self._menu_reply_markup(principal),
+                )
+                return
+
+            self._append_debug_log(
+                "hh_response_counter_updated",
+                profile_name=profile_name,
+                active=snapshot.get("active", 0),
+                archived=snapshot.get("archived", 0),
+                deleted=snapshot.get("deleted", 0),
+                total=snapshot.get("total", 0),
+            )
+            await self._send_text(
+                chat_id,
+                build_hh_response_count_text(snapshot),
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
@@ -2487,6 +2549,7 @@ class TelegramBot(
         hh_message_id: str,
         force_send: bool = False,
         allow_any: bool = False,
+        alternative: bool = False,
     ) -> None:
         role = principal.get("role", ROLE_USER)
         reply_markup = self._menu_reply_markup(principal)
@@ -2494,7 +2557,7 @@ class TelegramBot(
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
             return
 
-        label = "chat AI send" if force_send else "chat AI reply"
+        label = "chat AI send" if force_send else "chat AI alternative" if alternative else "chat AI reply"
         active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
         progress_message = await self._send_text_safely(
             chat_id,
@@ -2530,6 +2593,8 @@ class TelegramBot(
                     argv.append("--chat-allow-any")
                 if force_send:
                     argv.append("--chat-force-send")
+                if alternative:
+                    argv.append("--chat-alternative")
                 self._append_chat_ai_audit_event(
                     "command_start",
                     action="send" if force_send else "preview",
@@ -2538,6 +2603,7 @@ class TelegramBot(
                     hh_message_id=hh_message_id,
                     force_send=force_send,
                     allow_any=allow_any,
+                    alternative=alternative,
                 )
                 result = await self._run_active_command_capture(
                     active_command,
@@ -2552,6 +2618,7 @@ class TelegramBot(
                     hh_message_id=hh_message_id,
                     force_send=force_send,
                     allow_any=allow_any,
+                    alternative=alternative,
                     ok=bool(result.get("ok")),
                     returncode=result.get("returncode"),
                     timeout=bool(result.get("timeout")),
@@ -2577,6 +2644,7 @@ class TelegramBot(
                         hh_message_id=hh_message_id,
                         force_send=force_send,
                         allow_any=allow_any,
+                        alternative=alternative,
                         telegram_message_id=int((sent_message or {}).get("message_id") or 0),
                     )
                 except Exception as exc:
@@ -2588,6 +2656,7 @@ class TelegramBot(
                         hh_message_id=hh_message_id,
                         force_send=force_send,
                         allow_any=allow_any,
+                        alternative=alternative,
                         cli_ok=bool(result.get("ok")),
                         error=str(exc),
                     )
@@ -2601,6 +2670,7 @@ class TelegramBot(
                     hh_message_id=hh_message_id,
                     force_send=force_send,
                     allow_any=allow_any,
+                    alternative=alternative,
                 )
                 if progress_task:
                     progress_task.cancel()
@@ -2623,6 +2693,7 @@ class TelegramBot(
                     hh_message_id=hh_message_id,
                     force_send=force_send,
                     allow_any=allow_any,
+                    alternative=alternative,
                     error=str(exc),
                 )
                 log.error("Chat AI reply failed: %s", exc, exc_info=True)

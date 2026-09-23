@@ -11,8 +11,10 @@ import telegram_clients
 from telegram_bot_ui import (
     CALLBACK_CHAT_AI_MANUAL_REPLY,
     CALLBACK_CHAT_AI_MANUAL_SEND,
+    CALLBACK_CHAT_AI_MANUAL_ALTERNATIVE,
     CALLBACK_CHAT_AI_REPLY,
     CALLBACK_CHAT_AI_SEND,
+    CALLBACK_CHAT_AI_ALTERNATIVE,
     CALLBACK_CLIENT_APPROVE,
     CALLBACK_CLIENT_HH_AUTH,
     CALLBACK_CLIENT_REJECT,
@@ -25,7 +27,9 @@ from telegram_bot_ui import (
     ROLE_USER,
     _parse_callback_data,
     _parse_chat_ai_callback_data,
+    _parse_chat_ai_alternative_callback_data,
     _parse_chat_ai_manual_callback_data,
+    _parse_chat_ai_manual_alternative_callback_data,
     _parse_chat_manual_send_callback_data,
     _parse_chat_send_callback_data,
     _parse_hh_reauth_callback_data,
@@ -61,6 +65,17 @@ class TelegramCallbackRouter:
         message_id = int(message.get("message_id") or 0)
         if chat_id <= 0:
             await self._answer_callback_query(callback_id, "Не удалось определить чат.", show_alert=True)
+            return
+
+        if raw_data.startswith("gf:"):
+            if (message.get("chat") or {}).get("type") != "private":
+                await self._answer_callback_query(callback_id, "Откройте личный чат бота.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id)
+            try:
+                await self._form_callback(chat_id, principal, raw_data)
+            except ValueError as exc:
+                await self._send_text(chat_id, str(exc))
             return
 
         if raw_data.startswith(f"{CALLBACK_HH_REAUTH}:"):
@@ -138,6 +153,25 @@ class TelegramCallbackRouter:
             )
             return
 
+        if raw_data.startswith(f"{CALLBACK_CHAT_AI_MANUAL_ALTERNATIVE}:"):
+            profile_name, hh_chat_id, hh_message_id = _parse_chat_ai_manual_alternative_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names():
+                await self._answer_callback_query(callback_id, "Не удалось определить профиль.", show_alert=True)
+                return
+            self._append_chat_ai_audit_event(
+                "callback", action="alternative", telegram_chat_id=chat_id,
+                telegram_message_id=message_id, user_id=user_id, profile_name=profile_name,
+                hh_chat_id=hh_chat_id, hh_message_id=hh_message_id, allow_any=True,
+            )
+            await self._answer_callback_query(callback_id, "Генерирую другой вариант…")
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            await self._start_chat_ai_reply(
+                chat_id, principal, profile_name=profile_name, hh_chat_id=hh_chat_id,
+                hh_message_id=hh_message_id, allow_any=True, alternative=True,
+            )
+            return
+
         if raw_data.startswith(f"{CALLBACK_CHAT_AI_MANUAL_SEND}:"):
             profile_name, hh_chat_id, hh_message_id = _parse_chat_manual_send_callback_data(raw_data)
             if not profile_name or profile_name not in self._profile_names():
@@ -192,6 +226,25 @@ class TelegramCallbackRouter:
                 profile_name=profile_name,
                 hh_chat_id=hh_chat_id,
                 hh_message_id=hh_message_id,
+            )
+            return
+
+        if raw_data.startswith(f"{CALLBACK_CHAT_AI_ALTERNATIVE}:"):
+            profile_name, hh_chat_id, hh_message_id = _parse_chat_ai_alternative_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names():
+                await self._answer_callback_query(callback_id, "Не удалось определить профиль.", show_alert=True)
+                return
+            self._append_chat_ai_audit_event(
+                "callback", action="alternative", telegram_chat_id=chat_id,
+                telegram_message_id=message_id, user_id=user_id, profile_name=profile_name,
+                hh_chat_id=hh_chat_id, hh_message_id=hh_message_id,
+            )
+            await self._answer_callback_query(callback_id, "Генерирую другой вариант…")
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            await self._start_chat_ai_reply(
+                chat_id, principal, profile_name=profile_name, hh_chat_id=hh_chat_id,
+                hh_message_id=hh_message_id, alternative=True,
             )
             return
 

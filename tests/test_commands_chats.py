@@ -84,6 +84,7 @@ def test_respond_one_preserves_options_and_preview(monkeypatch, capsys):
             "allow_any": False,
             "dry_run": True,
             "notify": True,
+            "alternative": False,
         }
         return {
             "ok": True,
