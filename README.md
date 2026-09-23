@@ -21,14 +21,16 @@ Current public status: `OBT` (open beta testing) → freeware. Expect selector d
 ### Employer questionnaires (hh.ru)
 - Auto-answers post-application forms: text/textarea/number, **radio/checkbox/select** (including "Custom option" with custom text)
 - Vacancy context, structured facts, relevant knowledge-base sections, and the canonical candidate profile are injected into the LLM prompt
-- Required/starred fields are treated as mandatory; radio/select gets a retry-without-skip pass where the LLM must make a best guess instead of giving up
+- Required/starred fields are treated as mandatory. Unknown or low-confidence answers remain visible for review instead of being replaced with invented defaults
 - Auto-answers are forwarded to the Telegram application notification alongside the questions
 
 ### Google Forms from recruiter chats
 - Detects Google Forms links in HH chat messages, including `hh.ru/away?to=...` redirects and `forms.gle` short links
 - Builds a Telegram preview with detected fields and proposed answers before submission
 - Uses resume, structured facts, relevant knowledge-base sections, and candidate profile to fill fields; required fields are prioritized
-- Submits only after Telegram confirmation and stores preview state outside the repository
+- Telegram draft editor (`📝 Анкеты`) lets you correct text, radio, and checkbox answers from a phone; after each correction it returns to the question list
+- Rechecks the live form before `✅ All good, submit`; changed questions or unresolved answers block submission
+- Stores previews and per-form manual edits outside the repository. See [Google Forms editing](docs/GOOGLE_FORM_EDITING.md)
 
 ### hh.ru captcha (hybrid solver)
 - Stage 0: vision-LLM (`qwen3-vl:235b-instruct`) recognises text from the captcha image automatically
@@ -39,7 +41,7 @@ Current public status: `OBT` (open beta testing) → freeware. Expect selector d
 - Polls chats on `chatik.hh.ru` every 30 minutes (cron) and also runs as a search piggyback
 - Detects official hh.ru bots ("ИИ-помощник", "Робот-помощник") via avatar, author labels, and self-introduction text
 - Detects suspicious scripted HR screening messages that look like AI but are sent under a normal recruiter name
-- Telegram can list fresh incoming chat candidates from the main menu (`Ответ ИИ в чат`), generate a one-off AI reply, and send it only after confirmation
+- Telegram can list fresh incoming chat candidates from the main menu (`Ответ ИИ в чат`), generate a one-off AI reply, generate an alternative wording, and send the selected draft only after confirmation
 - Candidate rows can also expose Google Form buttons when a recruiter asks to fill an external form
 - Safety: max replies per chat, duplicate-message guard, cooldown between replies, and deterministic safe answers for sensitive questions such as study certificates
 
@@ -346,6 +348,7 @@ Runtime state is intentionally stored outside the repository, by default in `~/.
 - `chat_responder_state.json` — last_replied_msg_id, suspicious-message notification state, and replies_count per chat
 - `manual_apply_queue.json` — Telegram-confirmed yellow-zone AI application queue
 - `google_form_previews.json` — saved Google Form previews awaiting Telegram submit confirmation
+- `google_form_edits.json` — manual per-draft answers entered through Telegram
 - `hh_guard_state.json` — apply counter + anti-bot blocks
 - runtime status
 - Playwright debug screenshots and HTML dumps (including `captcha_*.png` and `chat_preview_*.png`)
@@ -389,6 +392,7 @@ Telegram notifications and AI Office integration are both optional. If you leave
 - LLM quality depends entirely on your prompt provider, model, and resume/knowledge base.
 - Suspicious HR-screening detection is heuristic. It intentionally does not auto-send to normal recruiter-looking accounts; Telegram approval is required before an answer is sent.
 - Google Forms filling is best-effort and intended for ordinary recruiter questionnaires; the bot previews answers before submitting.
+- Telegram editing supports text, radio, and checkbox fields. File uploads and an `Other` option with an extra field still require opening the form directly.
 - Ollama Cloud has weekly quotas — if you hit it, temporarily switch keys (see `~/.job-hunter/llm-providers.env`) or use a different model.
 
 ## Docs
@@ -396,6 +400,7 @@ Telegram notifications and AI Office integration are both optional. If you leave
 - [Architecture](docs/ARCHITECTURE.md)
 - [Operations](docs/OPERATIONS.md)
 - [Publication Notes](docs/PUBLICATION.md)
+- [Google Forms editing](docs/GOOGLE_FORM_EDITING.md)
 - [Changelog](CHANGELOG.md)
 
 ## License
