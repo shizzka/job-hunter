@@ -52,8 +52,8 @@ BUTTON_REPEAT_OFF = "🛑 Повтор: выкл"
 BUTTON_PROFILES = "🧾 Профили"
 BUTTON_USERS = "👥 Пользователи"
 BUTTON_HELP = "❓ Помощь"
-BUTTON_MENU = "🏠 Меню"
-BUTTON_BACK = "◀️ Назад"
+BUTTON_MENU = "🏠 Главное"
+BUTTON_BACK = "◀ Назад"
 BUTTON_BUSY = "⏳ Выполняется..."
 BUTTON_CANCEL_ACTIVE = "⏹ Остановить"
 BUTTON_MENU_MONITOR = "📊 Мониторинг"
@@ -127,7 +127,7 @@ ADMIN_BUTTON_MAP = {
     BUTTON_USERS: "/users",
     BUTTON_HELP: "/help",
     BUTTON_MENU: "/menu",
-    BUTTON_BACK: "/menu",
+    BUTTON_BACK: "/back",
     BUTTON_BUSY: "/busy",
     BUTTON_CANCEL_ACTIVE: "/cancel_active",
 }
@@ -159,7 +159,7 @@ USER_BUTTON_MAP = {
     BUTTON_REPEAT_OFF: "/repeat_off",
     BUTTON_HELP: "/help",
     BUTTON_MENU: "/menu",
-    BUTTON_BACK: "/menu",
+    BUTTON_BACK: "/back",
     BUTTON_BUSY: "/busy",
     BUTTON_CANCEL_ACTIVE: "/cancel_active",
 }
@@ -225,7 +225,11 @@ LEGACY_BUTTON_MAP = {
     "Пользователи": "/users",
     "Помощь": "/help",
     "Меню": "/menu",
-    "Назад": "/menu",
+    "Главное": "/menu",
+    "🏠 Главное": "/menu",
+    "Назад": "/back",
+    "◀️ Назад": "/back",
+    "◀ Назад": "/back",
     "Выполняется...": "/busy",
     "Остановить": "/cancel_active",
 }
@@ -415,6 +419,11 @@ def _append_active_controls(rows: list[list[dict[str, str]]], *, active: bool, c
     return [*rows, busy_row]
 
 
+def _navigation_rows() -> list[list[dict[str, str]]]:
+    """The same, predictable exit from every first-level section."""
+    return [[{"text": BUTTON_BACK}, {"text": BUTTON_MENU}]]
+
+
 def _command_conflicts_with_active(command: str) -> bool:
     return command in ACTIVE_CONFLICT_COMMANDS
 
@@ -465,18 +474,17 @@ def build_reply_markup(
                 [{"text": BUTTON_STATS}, {"text": BUTTON_RUNS}],
                 [{"text": BUTTON_CHECK}, {"text": BUTTON_HH_RESPONSES}],
                 [{"text": BUTTON_LOG}, {"text": BUTTON_CHAT_LOG}],
-                [{"text": BUTTON_MENU}],
+                *_navigation_rows(),
             ]
         elif menu == MENU_RUN:
             rows = [
                 [{"text": BUTTON_SEARCH}, {"text": BUTTON_DRYRUN}],
-                [{"text": BUTTON_CANCEL_ACTIVE}],
                 [{"text": BUTTON_ANALYZE}, {"text": BUTTON_DIGEST}],
                 [{"text": BUTTON_CHAT_AI}, {"text": BUTTON_HH_RESPONSES}],
                 [{"text": BUTTON_FORMS}],
                 [{"text": BUTTON_HH_AUTH}, {"text": BUTTON_HH_RESUMES}],
                 [{"text": BUTTON_BACKFILL}, {"text": BUTTON_GRAB_RESUME}],
-                [{"text": BUTTON_MENU}],
+                *_navigation_rows(),
             ]
         elif menu == MENU_REPEAT:
             rows = [
@@ -484,7 +492,7 @@ def build_reply_markup(
                 [{"text": BUTTON_REPEAT_3DAY}, {"text": BUTTON_REPEAT_DAILY}],
                 [{"text": BUTTON_REPEAT_WEEKLY}, {"text": BUTTON_REPEAT_OFF}],
                 [{"text": BUTTON_DAEMON_ON}, {"text": BUTTON_DAEMON_OFF}],
-                [{"text": BUTTON_MENU}],
+                *_navigation_rows(),
             ]
         elif menu == MENU_SEARCH:
             rows = [
@@ -493,14 +501,14 @@ def build_reply_markup(
                 [{"text": BUTTON_SEARCH_RESUME}],
                 [{"text": BUTTON_DRYRUN}, {"text": BUTTON_SEARCH}],
                 [{"text": BUTTON_SCHEDULE}],
-                [{"text": BUTTON_MENU}],
+                *_navigation_rows(),
             ]
         elif menu == MENU_ADMIN:
             rows = [
                 [{"text": BUTTON_PROFILES}, {"text": BUTTON_USERS}],
                 [{"text": BUTTON_CLIENTS}],
                 [{"text": BUTTON_AI_LIMITS}, {"text": BUTTON_HELP}],
-                [{"text": BUTTON_MENU}],
+                *_navigation_rows(),
             ]
         else:
             rows = [
@@ -508,7 +516,7 @@ def build_reply_markup(
                 [{"text": BUTTON_SEARCH_SETTINGS}],
                 [{"text": BUTTON_MENU_MONITOR}, {"text": BUTTON_MENU_RUN}],
                 [{"text": BUTTON_MENU_REPEAT}, {"text": BUTTON_MENU_ADMIN}],
-                [{"text": BUTTON_PROFILES}, {"text": BUTTON_HELP}],
+                [{"text": BUTTON_HELP}],
             ]
     else:
         if menu == MENU_MONITOR:
@@ -517,22 +525,21 @@ def build_reply_markup(
                 [{"text": BUTTON_RUNS}, {"text": BUTTON_CHECK}],
                 [{"text": BUTTON_HH_RESPONSES}],
                 [{"text": BUTTON_LOG}, {"text": BUTTON_CHAT_LOG}],
-                [{"text": BUTTON_MENU}],
+                *_navigation_rows(),
             ]
         elif menu == MENU_RUN:
             rows = [
                 [{"text": BUTTON_SEARCH}, {"text": BUTTON_DRYRUN}],
-                [{"text": BUTTON_CANCEL_ACTIVE}],
                 [{"text": BUTTON_ANALYZE}],
                 [{"text": BUTTON_HH_AUTH}, {"text": BUTTON_HH_RESUMES}],
-                [{"text": BUTTON_MENU}],
+                *_navigation_rows(),
             ]
         elif menu == MENU_REPEAT:
             rows = [
                 [{"text": BUTTON_SCHEDULE}],
                 [{"text": BUTTON_REPEAT_3DAY}, {"text": BUTTON_REPEAT_DAILY}],
                 [{"text": BUTTON_REPEAT_WEEKLY}, {"text": BUTTON_REPEAT_OFF}],
-                [{"text": BUTTON_MENU}],
+                *_navigation_rows(),
             ]
         elif menu == MENU_SEARCH:
             rows = [
@@ -541,7 +548,7 @@ def build_reply_markup(
                 [{"text": BUTTON_SEARCH_RESUME}],
                 [{"text": BUTTON_DRYRUN}, {"text": BUTTON_SEARCH}],
                 [{"text": BUTTON_SCHEDULE}],
-                [{"text": BUTTON_MENU}],
+                *_navigation_rows(),
             ]
         else:
             rows = [
@@ -553,7 +560,7 @@ def build_reply_markup(
     return {
         "keyboard": rows,
         "resize_keyboard": True,
-        "is_persistent": active or menu == MENU_MAIN,
+        "is_persistent": True,
     }
 
 
@@ -799,6 +806,7 @@ def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default") ->
         f"📁 Профиль: {_pretty_profile_name(profile_name)}",
         "",
         "⚡ Основные действия доступны через кнопки меню.",
+        "• «Мой поиск»: ключевые слова, резюме и ИИ-черновик запросов",
         "• «Мониторинг»: статус, статистика, прогоны, инвайты",
         "• Счётчик HH: кнопка «Отклики HH» или команда /hh_responses",
         "• «Запуск»: поиск, тестовый прогон, ИИ-анализ, вход HH",

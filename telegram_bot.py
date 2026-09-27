@@ -1674,6 +1674,9 @@ class TelegramBot(
         if command == "/cancel_active":
             await self._cancel_active_command(chat_id, principal, profile_name=profile_name)
             return
+        if command == "/back":
+            await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_MAIN)
+            return
         if active_command and _command_conflicts_with_active(command):
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
             return

@@ -53,6 +53,32 @@ def test_search_settings_menu_is_available_to_regular_user():
     assert "🧾 Выбрать резюме" in labels
 
 
+def test_every_section_has_persistent_back_and_home_navigation():
+    from telegram_bot_ui import (
+        BUTTON_BACK,
+        BUTTON_MENU,
+        MENU_ADMIN,
+        MENU_MONITOR,
+        MENU_REPEAT,
+        MENU_RUN,
+        MENU_SEARCH,
+        build_reply_markup,
+        normalize_command,
+    )
+
+    assert normalize_command("/back") == ("/back", "")
+    for role, menus in (
+        (ROLE_ADMIN, (MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH, MENU_ADMIN)),
+        (ROLE_USER, (MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH)),
+    ):
+        for menu in menus:
+            markup = build_reply_markup(role, menu=menu)
+            labels = [button["text"] for row in markup["keyboard"] for button in row]
+            assert BUTTON_BACK in labels
+            assert BUTTON_MENU in labels
+            assert markup["is_persistent"] is True
+
+
 def test_help_and_run_menu_do_not_use_old_anglicisms():
     help_text = build_help_text(ROLE_ADMIN, profile_name="qa")
     run_text = build_menu_section_text(MENU_RUN, role=ROLE_USER, profile_name="qa")
