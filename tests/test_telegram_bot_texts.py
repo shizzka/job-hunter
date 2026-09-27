@@ -25,6 +25,8 @@ from telegram_bot import (
 
 
 def test_button_labels_are_russian():
+    from telegram_bot import BUTTON_SEARCH_SETTINGS, BUTTON_SEARCH_USE_DRAFT
+
     assert BUTTON_DRYRUN == "🧪 Тестовый прогон"
     assert BUTTON_DIAGNOSTICS == "🩺 Диагностика"
     assert BUTTON_BACKFILL == "🗃 Пересчёт аналитики"
@@ -35,6 +37,20 @@ def test_button_labels_are_russian():
     assert BUTTON_DAEMON_ON == "🟢 Демон: вкл"
     assert BUTTON_DAEMON_OFF == "⛔ Демон: выкл"
     assert BUTTON_REPEAT_OFF == "🛑 Повтор: выкл"
+    assert BUTTON_SEARCH_SETTINGS == "🎯 Мой поиск"
+    assert BUTTON_SEARCH_USE_DRAFT == "✅ Сохранить предложенное"
+
+
+def test_search_settings_menu_is_available_to_regular_user():
+    from telegram_bot_ui import MENU_SEARCH, build_reply_markup
+
+    markup = build_reply_markup(ROLE_USER, menu=MENU_SEARCH)
+    labels = [button["text"] for row in markup["keyboard"] for button in row]
+
+    assert "✏️ Изменить запросы" in labels
+    assert "✨ Предложить ИИ" in labels
+    assert "✅ Сохранить предложенное" in labels
+    assert "🧾 Выбрать резюме" in labels
 
 
 def test_help_and_run_menu_do_not_use_old_anglicisms():

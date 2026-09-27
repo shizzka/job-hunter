@@ -22,6 +22,11 @@ BUTTON_RUNS = "🕓 Прогоны"
 BUTTON_LOG = "📜 Лог поиска"
 BUTTON_CHAT_LOG = "💬 Лог чатов"
 BUTTON_SEARCH = "🔎 Поиск"
+BUTTON_SEARCH_SETTINGS = "🎯 Мой поиск"
+BUTTON_SEARCH_EDIT = "✏️ Изменить запросы"
+BUTTON_SEARCH_SUGGEST = "✨ Предложить ИИ"
+BUTTON_SEARCH_USE_DRAFT = "✅ Сохранить предложенное"
+BUTTON_SEARCH_RESUME = "🧾 Выбрать резюме"
 BUTTON_DRYRUN = "🧪 Тестовый прогон"
 BUTTON_CHECK = "📬 Инвайты"
 BUTTON_HH_RESPONSES = "📨 Отклики HH"
@@ -63,6 +68,7 @@ MENU_MONITOR = "monitor"
 MENU_RUN = "run"
 MENU_REPEAT = "repeat"
 MENU_ADMIN = "admin"
+MENU_SEARCH = "search_settings"
 PROGRESS_FRAMES = ["⏳", "⌛️", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕"]
 CLIENT_ONBOARDING_STEPS = ("full_name", "target_role", "target_location", "notes")
 CALLBACK_CLIENT_APPROVE = "ca"
@@ -92,6 +98,11 @@ ADMIN_BUTTON_MAP = {
     BUTTON_LOG: "/log",
     BUTTON_CHAT_LOG: "/chat_log",
     BUTTON_SEARCH: "/search",
+    BUTTON_SEARCH_SETTINGS: "/search_settings",
+    BUTTON_SEARCH_EDIT: "/search_edit",
+    BUTTON_SEARCH_SUGGEST: "/search_suggest",
+    BUTTON_SEARCH_USE_DRAFT: "/search_use_draft",
+    BUTTON_SEARCH_RESUME: "/search_resume",
     BUTTON_DRYRUN: "/dryrun",
     BUTTON_CHECK: "/check",
     BUTTON_HH_RESPONSES: "/hh_responses",
@@ -130,6 +141,11 @@ USER_BUTTON_MAP = {
     BUTTON_LOG: "/log",
     BUTTON_CHAT_LOG: "/chat_log",
     BUTTON_SEARCH: "/search",
+    BUTTON_SEARCH_SETTINGS: "/search_settings",
+    BUTTON_SEARCH_EDIT: "/search_edit",
+    BUTTON_SEARCH_SUGGEST: "/search_suggest",
+    BUTTON_SEARCH_USE_DRAFT: "/search_use_draft",
+    BUTTON_SEARCH_RESUME: "/search_resume",
     BUTTON_DRYRUN: "/dryrun",
     BUTTON_ANALYZE: "/analyze",
     BUTTON_CHECK: "/check",
@@ -174,6 +190,11 @@ LEGACY_BUTTON_MAP = {
     "лог чатов": "/chat_log",
     "чат лог": "/chat_log",
     "Поиск": "/search",
+    "Мой поиск": "/search_settings",
+    "Изменить запросы": "/search_edit",
+    "Предложить ИИ": "/search_suggest",
+    "Сохранить предложенное": "/search_use_draft",
+    "Выбрать резюме": "/search_resume",
     "Dry-run": "/dryrun",
     "Тестовый прогон": "/dryrun",
     "Инвайты": "/check",
@@ -379,9 +400,9 @@ def _format_runtime_block(title: str, runtime: dict) -> list[str]:
 
 def _normalize_menu(role: str, menu: str | None) -> str:
     if role == ROLE_ADMIN:
-        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_ADMIN}
+        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_ADMIN, MENU_SEARCH}
     else:
-        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT}
+        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH}
     return menu if menu in allowed else MENU_MAIN
 
 
@@ -465,6 +486,15 @@ def build_reply_markup(
                 [{"text": BUTTON_DAEMON_ON}, {"text": BUTTON_DAEMON_OFF}],
                 [{"text": BUTTON_MENU}],
             ]
+        elif menu == MENU_SEARCH:
+            rows = [
+                [{"text": BUTTON_SEARCH_EDIT}, {"text": BUTTON_SEARCH_SUGGEST}],
+                [{"text": BUTTON_SEARCH_USE_DRAFT}],
+                [{"text": BUTTON_SEARCH_RESUME}],
+                [{"text": BUTTON_DRYRUN}, {"text": BUTTON_SEARCH}],
+                [{"text": BUTTON_SCHEDULE}],
+                [{"text": BUTTON_MENU}],
+            ]
         elif menu == MENU_ADMIN:
             rows = [
                 [{"text": BUTTON_PROFILES}, {"text": BUTTON_USERS}],
@@ -475,6 +505,7 @@ def build_reply_markup(
         else:
             rows = [
                 [{"text": BUTTON_CHAT_AI}, {"text": BUTTON_FORMS}],
+                [{"text": BUTTON_SEARCH_SETTINGS}],
                 [{"text": BUTTON_MENU_MONITOR}, {"text": BUTTON_MENU_RUN}],
                 [{"text": BUTTON_MENU_REPEAT}, {"text": BUTTON_MENU_ADMIN}],
                 [{"text": BUTTON_PROFILES}, {"text": BUTTON_HELP}],
@@ -503,8 +534,18 @@ def build_reply_markup(
                 [{"text": BUTTON_REPEAT_WEEKLY}, {"text": BUTTON_REPEAT_OFF}],
                 [{"text": BUTTON_MENU}],
             ]
+        elif menu == MENU_SEARCH:
+            rows = [
+                [{"text": BUTTON_SEARCH_EDIT}, {"text": BUTTON_SEARCH_SUGGEST}],
+                [{"text": BUTTON_SEARCH_USE_DRAFT}],
+                [{"text": BUTTON_SEARCH_RESUME}],
+                [{"text": BUTTON_DRYRUN}, {"text": BUTTON_SEARCH}],
+                [{"text": BUTTON_SCHEDULE}],
+                [{"text": BUTTON_MENU}],
+            ]
         else:
             rows = [
+                [{"text": BUTTON_SEARCH_SETTINGS}],
                 [{"text": BUTTON_MENU_MONITOR}, {"text": BUTTON_MENU_RUN}],
                 [{"text": BUTTON_MENU_REPEAT}, {"text": BUTTON_HELP}],
             ]
@@ -815,6 +856,15 @@ def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
         else:
             lines.append("• Остановить повтор, не прерывая текущий разовый поиск")
         return "\n".join(lines)
+    if section == MENU_SEARCH:
+        return "\n".join([
+            f"🎯 Мой поиск · профиль {profile_title}",
+            "",
+            "• Посмотрите и измените ключевые слова",
+            "• Попросите ИИ предложить черновик по резюме",
+            "• Запустите тестовый или обычный поиск",
+            "• Расписание управляет только этим профилем",
+        ])
     if section == MENU_ADMIN:
         return "\n".join([
             f"⚙️ Админ-раздел профиля {profile_title}",

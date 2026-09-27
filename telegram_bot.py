@@ -22,6 +22,7 @@ import manual_apply_queue
 import config
 import profile as profile_mod
 import runtime_control
+import search_query_suggester
 import seen
 import telegram_access
 import telegram_clients
@@ -627,6 +628,194 @@ class TelegramBot(
                 "INVITE_CHECK_INTERVAL_MIN": int(invite_minutes),
             },
         )
+
+    def _search_settings_state(self, user_id: int) -> dict:
+        state = self._load_state()
+        return dict(((state.get("user_state") or {}).get(str(user_id)) or {}))
+
+    def _set_search_settings_state(self, user_id: int, **fields: object) -> dict:
+        state = self._load_state()
+        user_state = state.setdefault("user_state", {})
+        entry = user_state.setdefault(str(user_id), {})
+        entry.update(fields)
+        entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        self._save_state(state)
+        return dict(entry)
+
+    def _clear_search_settings_state(self, user_id: int, *keys: str) -> None:
+        state = self._load_state()
+        entry = (state.setdefault("user_state", {})).setdefault(str(user_id), {})
+        for key in keys:
+            entry.pop(key, None)
+        entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        self._save_state(state)
+
+    def _reload_profile_daemon(self, profile_name: str) -> bool:
+        """Restart an already enabled profile daemon so it reloads profile.env."""
+        state = self._daemon_state(profile_name)
+        if not state.get("running"):
+            return False
+        profile = self._profile(profile_name)
+        stopped = runtime_control.stop_process(
+            profile.daemon_pid_file,
+            expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
+            fallback_pid=state.get("pid") or 0,
+        )
+        if not stopped.get("ok"):
+            raise RuntimeError("Не удалось остановить текущий повтор поиска.")
+        restarted = runtime_control.start_background_process(
+            runtime_control.agent_command_argv(profile_name, "--daemon"),
+            pid_file=profile.daemon_pid_file,
+            log_file=profile.log_file,
+            expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
+            fallback_pid=0,
+        )
+        if not restarted.get("ok"):
+            raise RuntimeError("Не удалось заново запустить повтор поиска.")
+        return True
+
+    def _search_settings_text(self, profile_name: str, *, user_id: int) -> str:
+        profile = self._profile(profile_name)
+        client = self._client_record(user_id) or {}
+        queries = profile.hh.search_queries
+        lines = [
+            f"🎯 Мой поиск · профиль {_pretty_profile_name(profile_name)}",
+            "",
+            "🔑 Ключевые слова:",
+        ]
+        lines.extend(f"{index}. {query}" for index, query in enumerate(queries, start=1))
+        lines.extend([
+            "",
+            f"📄 Резюме HH: {profile.hh.primary_resume_title or 'ещё не выбрано'}",
+            f"🎯 Направление: {client.get('target_role') or 'не указано'}",
+            f"📍 Локация: {client.get('target_location') or 'настроена в профиле'}",
+            f"🔁 Повтор: {_schedule_preset_label(profile.search_interval_min)}",
+            "",
+            "ИИ только предложит черновик. Запросы сохраняются или меняются только по вашей команде.",
+        ])
+        return "\n".join(lines)
+
+    async def _accept_search_query_input(self, chat_id: int, principal: dict, text: str) -> bool:
+        state = self._search_settings_state(principal["user_id"])
+        input_kind = state.get("search_input")
+        if input_kind not in {"queries", "resume"}:
+            return False
+        if _is_menu_button_text(text):
+            return False
+        if text.strip().casefold() in {"отмена", "/cancel"}:
+            self._clear_search_settings_state(principal["user_id"], "search_input")
+            await self._send_text(
+                chat_id,
+                "Изменение запросов отменено.",
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+            )
+            return True
+        if input_kind == "resume":
+            try:
+                index = int(text.strip())
+                catalog = client_hh_auth.load_hh_resume_catalog(self._selected_profile(principal))
+                item = catalog[index - 1]
+                resume_id = str(item.get("id") or "").strip()
+                title = str(item.get("title") or "").strip()
+                if not resume_id:
+                    raise ValueError
+                env_file = profile_mod.update_profile_env(
+                    self._selected_profile(principal),
+                    {
+                        "HH_PRIMARY_RESUME_ID": resume_id,
+                        "HH_PRIMARY_RESUME_TITLE": title,
+                    },
+                )
+                try:
+                    restarted = self._reload_profile_daemon(self._selected_profile(principal))
+                    restart_note = "\n🔁 Повтор перезапущен с новым резюме." if restarted else ""
+                except RuntimeError as exc:
+                    restart_note = f"\n⚠️ Резюме сохранено, но повтор не перезапустился: {exc}"
+            except (ValueError, IndexError, TypeError):
+                await self._send_text(
+                    chat_id,
+                    "❌ Отправьте номер резюме из списка или «Отмена».",
+                    reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+                )
+                return True
+            self._clear_search_settings_state(principal["user_id"], "search_input")
+            await self._send_text(
+                chat_id,
+                f"✅ Основное резюме выбрано: {title or resume_id}\nФайл настроек: {env_file}" + restart_note,
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+            )
+            return True
+        try:
+            queries = search_query_suggester.normalize_queries(text)
+            env_file = profile_mod.update_profile_env(
+                self._selected_profile(principal),
+                {"HH_SEARCH_QUERIES": search_query_suggester.queries_to_env_value(queries)},
+            )
+            try:
+                restarted = self._reload_profile_daemon(self._selected_profile(principal))
+                restart_note = "\n🔁 Повтор перезапущен с новыми настройками." if restarted else ""
+            except RuntimeError as exc:
+                restart_note = f"\n⚠️ Запросы сохранены, но повтор не перезапустился: {exc}"
+        except (search_query_suggester.SearchQueryValidationError, ValueError) as exc:
+            await self._send_text(
+                chat_id,
+                f"❌ {exc}\n\nОтправьте список ещё раз: один запрос в строке. Для отмены: Отмена.",
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+            )
+            return True
+        self._clear_search_settings_state(principal["user_id"], "search_input", "search_query_draft")
+        await self._send_text(
+            chat_id,
+            "✅ Запросы сохранены для вашего профиля. Следующий поиск возьмёт именно этот список.\n"
+            f"Файл настроек: {env_file}" + restart_note,
+            reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+        )
+        return True
+
+    async def _start_search_query_suggestion(self, chat_id: int, principal: dict, *, profile_name: str) -> None:
+        if self._has_active_command(profile_name):
+            await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+            return
+        active_command = self._mark_active_command(
+            principal=principal,
+            label="suggest search queries",
+            profile_name=profile_name,
+        )
+        await self._send_text(
+            chat_id,
+            "✨ Подбираю варианты по вашему резюме. Это черновик: без вашего подтверждения настройки не изменятся.",
+            reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+        )
+
+        async def runner() -> None:
+            try:
+                profile = self._profile(profile_name)
+                client = self._client_record(principal["user_id"]) or {}
+                queries = await search_query_suggester.suggest_queries(
+                    resume_path=profile.resume_file,
+                    target_role=str(client.get("target_role") or ""),
+                    current_queries=profile.hh.search_queries,
+                )
+                self._set_search_settings_state(principal["user_id"], search_query_draft=queries)
+                rendered = "\n".join(f"{index}. {query}" for index, query in enumerate(queries, start=1))
+                await self._send_text(
+                    chat_id,
+                    "✨ ИИ предложил черновик:\n" + rendered +
+                    "\n\nЧтобы применить его, нажмите «Сохранить предложенное». "
+                    "Или нажмите «Изменить запросы» и отправьте свой список.",
+                    reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+                )
+            except Exception as exc:
+                log.warning("Search query suggestion failed for %s: %s", profile_name, exc)
+                await self._send_text(
+                    chat_id,
+                    "❌ Не удалось получить предложения ИИ. Текущие запросы не менялись.",
+                    reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+                )
+            finally:
+                self._clear_active_command(profile_name)
+
+        active_command.task = asyncio.create_task(runner())
 
     def _latest_run(self, profile_name: str) -> dict | None:
         return runtime_control.latest_run_entry(self._profile(profile_name).run_history_file)
@@ -1418,6 +1607,9 @@ class TelegramBot(
         if await self._accept_form_answer(chat_id, principal, message):
             return
 
+        if await self._accept_search_query_input(chat_id, principal, text):
+            return
+
         if await self._maybe_accept_hh_auth_response(chat_id, principal, text):
             return
 
@@ -1505,6 +1697,81 @@ class TelegramBot(
         }
         if command in menu_commands:
             await self._send_menu(chat_id, principal, profile_name=profile_name, menu=menu_commands[command])
+            return
+
+        if command == "/search_settings":
+            self._set_selected_menu(principal["user_id"], MENU_SEARCH)
+            await self._send_text(
+                chat_id,
+                self._search_settings_text(profile_name, user_id=principal["user_id"]),
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+            )
+            return
+
+        if command == "/search_edit":
+            self._set_search_settings_state(principal["user_id"], search_input="queries")
+            await self._send_text(
+                chat_id,
+                "✏️ Отправьте новый список: один поисковый запрос в строке.\n"
+                "Например:\nQA engineer\nManual QA Engineer\nТестировщик ПО\n\n"
+                "Список заменит текущий. Для отмены отправьте «Отмена».",
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+            )
+            return
+
+        if command == "/search_suggest":
+            await self._start_search_query_suggestion(chat_id, principal, profile_name=profile_name)
+            return
+
+        if command == "/search_use_draft":
+            draft = self._search_settings_state(principal["user_id"]).get("search_query_draft") or []
+            try:
+                queries = search_query_suggester.normalize_queries(draft)
+                env_file = profile_mod.update_profile_env(
+                    profile_name,
+                    {"HH_SEARCH_QUERIES": search_query_suggester.queries_to_env_value(queries)},
+                )
+                try:
+                    restarted = self._reload_profile_daemon(profile_name)
+                    restart_note = "\n🔁 Повтор перезапущен с новыми настройками." if restarted else ""
+                except RuntimeError as exc:
+                    restart_note = f"\n⚠️ Запросы сохранены, но повтор не перезапустился: {exc}"
+            except (search_query_suggester.SearchQueryValidationError, ValueError):
+                await self._send_text(
+                    chat_id,
+                    "ℹ️ Сначала нажмите «Предложить ИИ» или отправьте свой список через «Изменить запросы».",
+                    reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+                )
+                return
+            self._clear_search_settings_state(principal["user_id"], "search_query_draft")
+            await self._send_text(
+                chat_id,
+                "✅ Черновик ИИ сохранён. Следующий поиск будет использовать эти запросы.\n"
+                f"Файл настроек: {env_file}" + restart_note,
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+            )
+            return
+
+        if command == "/search_resume":
+            catalog = client_hh_auth.load_hh_resume_catalog(profile_name)
+            if not catalog:
+                await self._send_text(
+                    chat_id,
+                    "🧾 Пока нет списка резюме HH. Сначала нажмите «Вход HH», затем повторите попытку.",
+                    reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+                )
+                return
+            lines = ["🧾 Выберите резюме для поиска. Отправьте его номер:", ""]
+            for index, item in enumerate(catalog, start=1):
+                title = str(item.get("title") or item.get("id") or "Без названия")
+                lines.append(f"{index}. {title}")
+            lines.append("\nДля отмены отправьте «Отмена».")
+            self._set_search_settings_state(principal["user_id"], search_input="resume")
+            await self._send_text(
+                chat_id,
+                "\n".join(lines),
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+            )
             return
 
         if command == "/profiles":

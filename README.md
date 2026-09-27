@@ -65,6 +65,12 @@ Current public status: `OBT` (open beta testing) → freeware. Expect selector d
 - Supports isolated user profiles for multi-user setups
 - Persists `seen`, cookies, runtime status, knowledge base, and debug artifacts outside the repository
 
+### Personal search controls in Telegram
+
+Each approved Telegram user is bound to an isolated profile with its own HH session, resume, seen history, applications, and search settings. Users cannot access another profile's data.
+
+The `🎯 My search` section lets a user remotely replace HH search phrases, ask the LLM for an editable draft based on their resume, select a primary HH resume, run a test or real search for their own profile, and enable that profile's repeat daemon. LLM suggestions are never saved or run automatically: the user explicitly saves or edits them first.
+
 ## Supported Sources
 
 | Source | Search | Details | Auto-apply |
