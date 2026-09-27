@@ -6,6 +6,7 @@
 import json
 import os
 import tempfile
+from datetime import datetime
 from unittest import mock
 
 import pytest
@@ -180,6 +181,20 @@ class TestSummarize:
         assert s["by_source"]["hh"]["rejected"] == 1
         assert "hh" in s["by_source"]
         assert "QA" in s["by_query"]
+
+    def test_summarize_respects_calendar_day_bounds(self, isolated_analytics):
+        self._seed_events(isolated_analytics, [
+            {"event": "decision", "decision": "applied_auto", "source": "hh", "created_at": "2026-09-26T23:35:24"},
+            {"event": "decision", "decision": "applied_auto", "source": "hh", "created_at": "2026-09-27T08:01:18"},
+            {"event": "decision", "decision": "applied_auto", "source": "hh", "created_at": "2026-09-27T20:00:00"},
+        ])
+
+        summary = analytics.summarize(
+            start_at=datetime(2026, 9, 27),
+            end_at=datetime(2026, 9, 27, 20),
+        )
+
+        assert summary["auto_applied"] == 1
 
 
     def test_filter_audit_replays_current_classifier(self, isolated_analytics):

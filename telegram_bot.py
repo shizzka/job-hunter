@@ -896,14 +896,19 @@ class TelegramBot(
             "recent_runs": self._recent_runs(profile_name, limit=3),
         }
 
-    def _daily_summary_snapshot(self, profile_name: str) -> dict:
+    def _daily_summary_snapshot(self, profile_name: str, *, now: datetime | None = None) -> dict:
         profile = self._profile(profile_name)
-        days = max(1, int(getattr(config, "TELEGRAM_DAILY_SUMMARY_DAYS", 1) or 1))
+        current = now or datetime.now()
+        start_of_day = current.replace(hour=0, minute=0, second=0, microsecond=0)
         return {
             "profile_name": profile_name,
-            "analytics_summary": analytics.summarize(events_file=profile.analytics_events_file, days=days),
+            "analytics_summary": analytics.summarize(
+                events_file=profile.analytics_events_file,
+                start_at=start_of_day,
+                end_at=current,
+            ),
             "recent_runs": self._recent_runs(profile_name, limit=1),
-            "days": days,
+            "period_label": f"Сегодня, с 00:00 до {current:%H:%M}",
         }
 
     def _daily_summary_due(self, now: datetime | None = None) -> tuple[bool, str]:
@@ -942,12 +947,12 @@ class TelegramBot(
         for user_id, principal in sorted(recipients.items()):
             profile_name = str(principal.get("profile") or self.profile_name or "default")
             try:
-                snapshot = self._daily_summary_snapshot(profile_name)
+                snapshot = self._daily_summary_snapshot(profile_name, now=datetime.now())
                 text = build_daily_summary_text(
                     profile_name=profile_name,
                     analytics_summary=snapshot["analytics_summary"],
                     recent_runs=snapshot["recent_runs"],
-                    days=snapshot["days"],
+                    period_label=snapshot["period_label"],
                 )
                 result = await self._send_text_safely(
                     user_id,

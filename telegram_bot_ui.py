@@ -1273,12 +1273,14 @@ def build_daily_summary_text(
     analytics_summary: dict,
     recent_runs: list[dict],
     days: int = 1,
+    period_label: str = "",
 ) -> str:
     funnel = analytics_summary.get("funnel", {}) or {}
     last_run = recent_runs[0] if recent_runs else None
     lines = [
         "📌 Ежедневная сводка Job Hunter",
-        f"Профиль {_pretty_profile_name(profile_name)} · {_format_days_label(max(1, int(days or 1)))}",
+        f"Профиль {_pretty_profile_name(profile_name)} · "
+        f"{period_label or _format_days_label(max(1, int(days or 1)))}",
         "",
         (
             f"• Прогонов: {analytics_summary.get('search_runs', 0)} | "

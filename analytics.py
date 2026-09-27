@@ -595,15 +595,26 @@ def _coerce_int(value, default: int = 0) -> int:
         return default
 
 
-def summarize(days: int | None = None, *, events_file: str | None = None, all_time: bool = False) -> dict:
+def summarize(
+    days: int | None = None,
+    *,
+    events_file: str | None = None,
+    all_time: bool = False,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+) -> dict:
     days = days if days is not None else config.ANALYTICS_RECENT_DAYS
-    cutoff = None if all_time else (_now() - timedelta(days=max(0, days)))
+    cutoff = start_at if start_at is not None else (
+        None if all_time else (_now() - timedelta(days=max(0, days)))
+    )
     events = []
     for event in _iter_events(events_file):
         created_at = _parse_dt(event.get("created_at"))
         if created_at is None:
             continue
         if cutoff is not None and created_at < cutoff:
+            continue
+        if end_at is not None and created_at >= end_at:
             continue
         events.append(event)
 

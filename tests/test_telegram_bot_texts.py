@@ -15,6 +15,7 @@ from telegram_bot import (
     _format_users_text,
     build_ai_limits_text,
     build_diagnostics_text,
+    build_daily_summary_text,
     build_help_text,
     build_hh_auth_result_text,
     build_hh_response_count_text,
@@ -46,6 +47,17 @@ def test_help_and_run_menu_do_not_use_old_anglicisms():
         assert "AI-" not in text
         assert "AI " not in text
         assert "HH auth" not in text
+
+
+def test_daily_summary_can_show_calendar_day_period():
+    text = build_daily_summary_text(
+        profile_name="qa",
+        analytics_summary={"search_runs": 0, "events": 0, "decisions": 0, "auto_applied": 0, "manual": 0, "rejected_statuses": 0},
+        recent_runs=[],
+        period_label="Сегодня, с 00:00 до 20:00",
+    )
+
+    assert "Профиль QA · Сегодня, с 00:00 до 20:00" in text
 
 
 def test_ai_texts_are_russian():
