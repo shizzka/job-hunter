@@ -27,6 +27,20 @@ BUTTON_SEARCH_EDIT = "✏️ Изменить запросы"
 BUTTON_SEARCH_SUGGEST = "✨ Предложить ИИ"
 BUTTON_SEARCH_USE_DRAFT = "✅ Сохранить предложенное"
 BUTTON_SEARCH_RESUME = "🧾 Выбрать резюме"
+BUTTON_SEARCH_CONDITIONS = "⚙️ Условия поиска"
+BUTTON_SEARCH_EXPERIENCE = "👤 Опыт"
+BUTTON_SEARCH_SALARY = "💰 Зарплата от"
+BUTTON_SEARCH_SALARY_TOGGLE = "💵 Только с зарплатой"
+BUTTON_SEARCH_REMOTE = "🏠 Только удалёнка"
+BUTTON_SEARCH_APPLICATION_MODE = "🛡 Режим откликов"
+BUTTON_EXPERIENCE_ANY = "👤 Любой опыт"
+BUTTON_EXPERIENCE_NONE = "🌱 Без опыта"
+BUTTON_EXPERIENCE_1_3 = "1–3 года"
+BUTTON_EXPERIENCE_3_6 = "3–6 лет"
+BUTTON_EXPERIENCE_6_PLUS = "6+ лет"
+BUTTON_APPLICATION_PREVIEW = "👀 Только показать"
+BUTTON_APPLICATION_CONFIRM = "✋ Подтверждать"
+BUTTON_APPLICATION_AUTO = "⚡ Автоотклик"
 BUTTON_DRYRUN = "🧪 Тестовый прогон"
 BUTTON_CHECK = "📬 Инвайты"
 BUTTON_HH_RESPONSES = "📨 Отклики HH"
@@ -69,6 +83,9 @@ MENU_RUN = "run"
 MENU_REPEAT = "repeat"
 MENU_ADMIN = "admin"
 MENU_SEARCH = "search_settings"
+MENU_SEARCH_CONDITIONS = "search_conditions"
+MENU_APPLICATION_MODE = "application_mode"
+MENU_EXPERIENCE = "search_experience"
 PROGRESS_FRAMES = ["⏳", "⌛️", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕"]
 CLIENT_ONBOARDING_STEPS = ("full_name", "target_role", "target_location", "notes")
 CALLBACK_CLIENT_APPROVE = "ca"
@@ -103,6 +120,20 @@ ADMIN_BUTTON_MAP = {
     BUTTON_SEARCH_SUGGEST: "/search_suggest",
     BUTTON_SEARCH_USE_DRAFT: "/search_use_draft",
     BUTTON_SEARCH_RESUME: "/search_resume",
+    BUTTON_SEARCH_CONDITIONS: "/search_conditions",
+    BUTTON_SEARCH_EXPERIENCE: "/search_experience",
+    BUTTON_SEARCH_SALARY: "/search_salary",
+    BUTTON_SEARCH_SALARY_TOGGLE: "/search_salary_toggle",
+    BUTTON_SEARCH_REMOTE: "/search_remote_toggle",
+    BUTTON_SEARCH_APPLICATION_MODE: "/search_application_mode",
+    BUTTON_EXPERIENCE_ANY: "/search_experience_any",
+    BUTTON_EXPERIENCE_NONE: "/search_experience_none",
+    BUTTON_EXPERIENCE_1_3: "/search_experience_1_3",
+    BUTTON_EXPERIENCE_3_6: "/search_experience_3_6",
+    BUTTON_EXPERIENCE_6_PLUS: "/search_experience_6_plus",
+    BUTTON_APPLICATION_PREVIEW: "/search_application_preview",
+    BUTTON_APPLICATION_CONFIRM: "/search_application_confirm",
+    BUTTON_APPLICATION_AUTO: "/search_application_auto",
     BUTTON_DRYRUN: "/dryrun",
     BUTTON_CHECK: "/check",
     BUTTON_HH_RESPONSES: "/hh_responses",
@@ -146,6 +177,20 @@ USER_BUTTON_MAP = {
     BUTTON_SEARCH_SUGGEST: "/search_suggest",
     BUTTON_SEARCH_USE_DRAFT: "/search_use_draft",
     BUTTON_SEARCH_RESUME: "/search_resume",
+    BUTTON_SEARCH_CONDITIONS: "/search_conditions",
+    BUTTON_SEARCH_EXPERIENCE: "/search_experience",
+    BUTTON_SEARCH_SALARY: "/search_salary",
+    BUTTON_SEARCH_SALARY_TOGGLE: "/search_salary_toggle",
+    BUTTON_SEARCH_REMOTE: "/search_remote_toggle",
+    BUTTON_SEARCH_APPLICATION_MODE: "/search_application_mode",
+    BUTTON_EXPERIENCE_ANY: "/search_experience_any",
+    BUTTON_EXPERIENCE_NONE: "/search_experience_none",
+    BUTTON_EXPERIENCE_1_3: "/search_experience_1_3",
+    BUTTON_EXPERIENCE_3_6: "/search_experience_3_6",
+    BUTTON_EXPERIENCE_6_PLUS: "/search_experience_6_plus",
+    BUTTON_APPLICATION_PREVIEW: "/search_application_preview",
+    BUTTON_APPLICATION_CONFIRM: "/search_application_confirm",
+    BUTTON_APPLICATION_AUTO: "/search_application_auto",
     BUTTON_DRYRUN: "/dryrun",
     BUTTON_ANALYZE: "/analyze",
     BUTTON_CHECK: "/check",
@@ -195,6 +240,12 @@ LEGACY_BUTTON_MAP = {
     "Предложить ИИ": "/search_suggest",
     "Сохранить предложенное": "/search_use_draft",
     "Выбрать резюме": "/search_resume",
+    "Условия поиска": "/search_conditions",
+    "Опыт": "/search_experience",
+    "Зарплата от": "/search_salary",
+    "Только с зарплатой": "/search_salary_toggle",
+    "Только удалёнка": "/search_remote_toggle",
+    "Режим откликов": "/search_application_mode",
     "Dry-run": "/dryrun",
     "Тестовый прогон": "/dryrun",
     "Инвайты": "/check",
@@ -404,9 +455,9 @@ def _format_runtime_block(title: str, runtime: dict) -> list[str]:
 
 def _normalize_menu(role: str, menu: str | None) -> str:
     if role == ROLE_ADMIN:
-        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_ADMIN, MENU_SEARCH}
+        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_ADMIN, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE}
     else:
-        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH}
+        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE}
     return menu if menu in allowed else MENU_MAIN
 
 
@@ -499,8 +550,28 @@ def build_reply_markup(
                 [{"text": BUTTON_SEARCH_EDIT}, {"text": BUTTON_SEARCH_SUGGEST}],
                 [{"text": BUTTON_SEARCH_USE_DRAFT}],
                 [{"text": BUTTON_SEARCH_RESUME}],
+                [{"text": BUTTON_SEARCH_CONDITIONS}, {"text": BUTTON_SEARCH_APPLICATION_MODE}],
                 [{"text": BUTTON_DRYRUN}, {"text": BUTTON_SEARCH}],
                 [{"text": BUTTON_SCHEDULE}],
+                *_navigation_rows(),
+            ]
+        elif menu == MENU_SEARCH_CONDITIONS:
+            rows = [
+                [{"text": BUTTON_SEARCH_EXPERIENCE}, {"text": BUTTON_SEARCH_SALARY}],
+                [{"text": BUTTON_SEARCH_SALARY_TOGGLE}, {"text": BUTTON_SEARCH_REMOTE}],
+                *_navigation_rows(),
+            ]
+        elif menu == MENU_APPLICATION_MODE:
+            rows = [
+                [{"text": BUTTON_APPLICATION_PREVIEW}],
+                [{"text": BUTTON_APPLICATION_CONFIRM}, {"text": BUTTON_APPLICATION_AUTO}],
+                *_navigation_rows(),
+            ]
+        elif menu == MENU_EXPERIENCE:
+            rows = [
+                [{"text": BUTTON_EXPERIENCE_ANY}, {"text": BUTTON_EXPERIENCE_NONE}],
+                [{"text": BUTTON_EXPERIENCE_1_3}, {"text": BUTTON_EXPERIENCE_3_6}],
+                [{"text": BUTTON_EXPERIENCE_6_PLUS}],
                 *_navigation_rows(),
             ]
         elif menu == MENU_ADMIN:
@@ -546,8 +617,28 @@ def build_reply_markup(
                 [{"text": BUTTON_SEARCH_EDIT}, {"text": BUTTON_SEARCH_SUGGEST}],
                 [{"text": BUTTON_SEARCH_USE_DRAFT}],
                 [{"text": BUTTON_SEARCH_RESUME}],
+                [{"text": BUTTON_SEARCH_CONDITIONS}, {"text": BUTTON_SEARCH_APPLICATION_MODE}],
                 [{"text": BUTTON_DRYRUN}, {"text": BUTTON_SEARCH}],
                 [{"text": BUTTON_SCHEDULE}],
+                *_navigation_rows(),
+            ]
+        elif menu == MENU_SEARCH_CONDITIONS:
+            rows = [
+                [{"text": BUTTON_SEARCH_EXPERIENCE}, {"text": BUTTON_SEARCH_SALARY}],
+                [{"text": BUTTON_SEARCH_SALARY_TOGGLE}, {"text": BUTTON_SEARCH_REMOTE}],
+                *_navigation_rows(),
+            ]
+        elif menu == MENU_APPLICATION_MODE:
+            rows = [
+                [{"text": BUTTON_APPLICATION_PREVIEW}],
+                [{"text": BUTTON_APPLICATION_CONFIRM}, {"text": BUTTON_APPLICATION_AUTO}],
+                *_navigation_rows(),
+            ]
+        elif menu == MENU_EXPERIENCE:
+            rows = [
+                [{"text": BUTTON_EXPERIENCE_ANY}, {"text": BUTTON_EXPERIENCE_NONE}],
+                [{"text": BUTTON_EXPERIENCE_1_3}, {"text": BUTTON_EXPERIENCE_3_6}],
+                [{"text": BUTTON_EXPERIENCE_6_PLUS}],
                 *_navigation_rows(),
             ]
         else:
@@ -870,6 +961,7 @@ def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
             "",
             "• Посмотрите и измените ключевые слова",
             "• Попросите ИИ предложить черновик по резюме",
+            "• Настройте опыт, зарплату, удалёнку и режим откликов",
             "• Запустите тестовый или обычный поиск",
             "• Расписание управляет только этим профилем",
         ])

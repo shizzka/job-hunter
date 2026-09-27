@@ -1210,6 +1210,41 @@ async def do_search(dry_run: bool = False) -> dict:
                 "geekjob": geekjob_client,
             }.get(source)
 
+            # HH can be configured per user to only show suitable jobs, or to
+            # wait for an explicit Telegram confirmation before AI applies.
+            hh_application_mode = getattr(config, "HH_APPLICATION_MODE", "auto")
+            if source == "hh" and hh_application_mode in {"preview", "confirm"}:
+                profile_name = profile_mod.active().name
+                candidate = manual_apply_queue.create_candidate(
+                    v, evaluation, details, profile_name=profile_name,
+                )
+                token = candidate.get("token", "")
+                is_confirmation = hh_application_mode == "confirm"
+                reply_markup = manual_apply_queue.build_manual_apply_markup(
+                    v,
+                    profile_name,
+                    token,
+                    allow_ai_apply=is_confirmation,
+                )
+                mode_label = "подтверждение" if is_confirmation else "просмотр"
+                action_note = (
+                    "Нажмите «Откликнуться с ИИ», чтобы отправить отклик."
+                    if is_confirmation
+                    else "Отклик не отправляется в режиме просмотра. Откройте вакансию сами."
+                )
+                await _mark_manual(
+                    f"Ручной HH: {mode_label}",
+                    f"manual_hh_{hh_application_mode}",
+                    f"manual_hh_{hh_application_mode}",
+                    f"Режим «{mode_label}». {action_note}",
+                    v, vid, score, reason, evaluation, details,
+                    result, bucket, run_id, set_hunter_status,
+                    resume_variant=hh_resume_variant,
+                    reply_markup=reply_markup,
+                    analytics_note=f"hh_application_mode:{hh_application_mode}",
+                )
+                continue
+
             if source == "hh":
                 if not hh_auto_apply_guard_note:
                     hh_can_auto_apply, hh_guard_note = hh_guard.can_auto_apply()

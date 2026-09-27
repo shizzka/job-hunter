@@ -48,6 +48,13 @@ def test_manual_apply_queue_roundtrip(tmp_path, monkeypatch):
     compact_buttons = [button for row in compact_markup["inline_keyboard"] for button in row]
     assert not any(str(button.get("callback_data", "")).startswith("manual_fb:") for button in compact_buttons)
 
+    preview_markup = manual_apply_queue.build_manual_apply_markup(
+        item["vacancy"], "qa", token, allow_ai_apply=False,
+    )
+    preview_buttons = [button for row in preview_markup["inline_keyboard"] for button in row]
+    assert not any(button.get("callback_data") == callback_data for button in preview_buttons)
+    assert any(button.get("url") == "https://hh.ru/vacancy/123" for button in preview_buttons)
+
     feedback = manual_apply_queue.record_feedback(token, "good", user_id=42)
     assert feedback["status"] == "pending"
     assert feedback["feedback"] == "good"

@@ -85,6 +85,10 @@ SEARCH_PROFILES = [
 SEARCH_EXPERIENCE = ""   # "" = любой, "noExperience", "between1And3", "between3And6", "moreThan6"
 SEARCH_SALARY = 0        # минимальная зарплата (0 = не фильтровать)
 SEARCH_ONLY_WITH_SALARY = False  # только с указанной зарплатой
+HH_SEARCH_REMOTE_ONLY = _env_flag("HH_SEARCH_REMOTE_ONLY", "0")  # оставить только удалённые профили поиска
+HH_APPLICATION_MODE = os.getenv("HH_APPLICATION_MODE", "auto").strip().lower()  # preview, confirm, auto
+if HH_APPLICATION_MODE not in {"preview", "confirm", "auto"}:
+    HH_APPLICATION_MODE = "auto"
 SEARCH_PAGES = 3                 # сколько страниц листать (hh.ru даёт ~50 на страницу)
 HH_FRESH_SEARCH_ENABLED = _env_flag("HH_FRESH_SEARCH_ENABLED", "1")
 HH_FRESH_SEARCH_INTERVAL_MIN = _env_int("HH_FRESH_SEARCH_INTERVAL_MIN", "120")

@@ -326,6 +326,7 @@ def build_manual_apply_markup(
     token: str,
     *,
     include_feedback: bool = True,
+    allow_ai_apply: bool = True,
 ) -> dict | None:
     rows = []
     url = (vacancy.get("url") or "").strip()
@@ -333,7 +334,7 @@ def build_manual_apply_markup(
         rows.append([{"text": "Открою сам", "url": url}])
     callback_data = manual_apply_callback_data(profile_name, token)
     is_hh = (vacancy.get("source") or "hh") == "hh"
-    if is_hh and len(callback_data.encode("utf-8")) <= 64:
+    if allow_ai_apply and is_hh and len(callback_data.encode("utf-8")) <= 64:
         rows.append([{"text": "Откликнуться с ИИ", "callback_data": callback_data}])
     why_data = manual_why_callback_data(profile_name, token)
     if len(why_data.encode("utf-8")) <= 64:

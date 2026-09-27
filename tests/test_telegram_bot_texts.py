@@ -51,6 +51,40 @@ def test_search_settings_menu_is_available_to_regular_user():
     assert "✨ Предложить ИИ" in labels
     assert "✅ Сохранить предложенное" in labels
     assert "🧾 Выбрать резюме" in labels
+    assert "⚙️ Условия поиска" in labels
+    assert "🛡 Режим откликов" in labels
+
+
+def test_search_conditions_and_application_modes_are_available_to_regular_user():
+    from telegram_bot_ui import (
+        MENU_APPLICATION_MODE,
+        MENU_EXPERIENCE,
+        MENU_SEARCH_CONDITIONS,
+        build_reply_markup,
+    )
+
+    condition_labels = [
+        button["text"]
+        for row in build_reply_markup(ROLE_USER, menu=MENU_SEARCH_CONDITIONS)["keyboard"]
+        for button in row
+    ]
+    assert "👤 Опыт" in condition_labels
+    assert "💰 Зарплата от" in condition_labels
+    assert "🏠 Только удалёнка" in condition_labels
+
+    mode_labels = [
+        button["text"]
+        for row in build_reply_markup(ROLE_USER, menu=MENU_APPLICATION_MODE)["keyboard"]
+        for button in row
+    ]
+    assert {"👀 Только показать", "✋ Подтверждать", "⚡ Автоотклик"} <= set(mode_labels)
+
+    experience_labels = [
+        button["text"]
+        for row in build_reply_markup(ROLE_USER, menu=MENU_EXPERIENCE)["keyboard"]
+        for button in row
+    ]
+    assert "1–3 года" in experience_labels
 
 
 def test_every_section_has_persistent_back_and_home_navigation():

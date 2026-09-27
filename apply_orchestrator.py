@@ -94,7 +94,7 @@ async def dispatch_apply(
 def is_auto_apply_enabled(source: str) -> bool:
     """Проверить, включён ли автоотклик для данного источника."""
     return {
-        "hh": True,
+        "hh": getattr(config, "HH_APPLICATION_MODE", "auto") == "auto",
         "superjob": config.SUPERJOB_AUTO_APPLY,
         "habr": config.HABR_AUTO_APPLY,
         "geekjob": config.GEEKJOB_AUTO_APPLY,

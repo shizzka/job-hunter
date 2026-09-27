@@ -105,7 +105,10 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
                 "rejected": 0,
             },
         )
-    for profile in config.SEARCH_PROFILES:
+    search_profiles = config.SEARCH_PROFILES
+    if getattr(config, "HH_SEARCH_REMOTE_ONLY", False):
+        search_profiles = [profile for profile in search_profiles if profile.get("schedule") == "remote"]
+    for profile in search_profiles:
         area = profile["area"]
         schedule = profile.get("schedule", "")
         area_label = f"area={area}" + (f",schedule={schedule}" if schedule else "")

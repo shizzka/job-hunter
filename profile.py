@@ -43,6 +43,8 @@ class HHConfig(SourceConfig):
     search_experience: str = ""
     search_salary: int = 0
     search_only_with_salary: bool = False
+    search_remote_only: bool = False
+    application_mode: str = "auto"
     search_pages: int = 3
     matcher_auto_apply_min_score: int = 58
     matcher_middle_challenge_min_score: int = 60
@@ -335,6 +337,8 @@ def _patch_config(p: Profile):
     config.SEARCH_EXPERIENCE = p.hh.search_experience
     config.SEARCH_SALARY = p.hh.search_salary
     config.SEARCH_ONLY_WITH_SALARY = p.hh.search_only_with_salary
+    config.HH_SEARCH_REMOTE_ONLY = p.hh.search_remote_only
+    config.HH_APPLICATION_MODE = p.hh.application_mode
     config.SEARCH_PAGES = p.hh.search_pages
     config.HH_MATCHER_AUTO_APPLY_MIN_SCORE = p.hh.matcher_auto_apply_min_score
     config.HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE = p.hh.matcher_middle_challenge_min_score
@@ -411,13 +415,15 @@ def load_default_profile() -> Profile:
         telegram_bot_debug_log_file=config.TELEGRAM_BOT_DEBUG_LOG_FILE,
         hh=HHConfig(
             enabled=config.HH_ENABLED,
-            auto_apply=True,  # hh всегда auto
+            auto_apply=True,
             cookies_file=config.HH_COOKIES_FILE,
             search_queries=list(config.SEARCH_QUERIES),
             search_profiles=list(config.SEARCH_PROFILES),
             search_experience=config.SEARCH_EXPERIENCE,
             search_salary=config.SEARCH_SALARY,
             search_only_with_salary=config.SEARCH_ONLY_WITH_SALARY,
+            search_remote_only=config.HH_SEARCH_REMOTE_ONLY,
+            application_mode=config.HH_APPLICATION_MODE,
             search_pages=config.SEARCH_PAGES,
             matcher_auto_apply_min_score=config.HH_MATCHER_AUTO_APPLY_MIN_SCORE,
             matcher_middle_challenge_min_score=config.HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE,
@@ -576,6 +582,8 @@ def create_profile(name: str, search_queries: list[str] | None = None) -> Profil
         f"\n"
         f"# Поисковые запросы hh.ru (разделитель ||)\n"
         f"HH_SEARCH_QUERIES={queries_str}\n"
+        f"# Отклики hh.ru: preview — только показать, confirm — по кнопке, auto — автоматически\n"
+        f"HH_APPLICATION_MODE=confirm\n"
         f"\n"
         f"# Источники (1=вкл, 0=выкл)\n"
         f"HH_ENABLED=1\n"
@@ -710,6 +718,22 @@ def _apply_env_overrides(profile: Profile, env: dict[str, str]):
         profile.hh.search_queries = queries
     if "HH_SEARCH_PAGES" in env:
         profile.hh.search_pages = _int("HH_SEARCH_PAGES", profile.hh.search_pages)
+    if "HH_SEARCH_EXPERIENCE" in env:
+        value = env["HH_SEARCH_EXPERIENCE"].strip()
+        if value in {"", "noExperience", "between1And3", "between3And6", "moreThan6"}:
+            profile.hh.search_experience = value
+    if "HH_SEARCH_SALARY" in env:
+        profile.hh.search_salary = max(0, _int("HH_SEARCH_SALARY", profile.hh.search_salary))
+    if "HH_SEARCH_ONLY_WITH_SALARY" in env:
+        profile.hh.search_only_with_salary = _flag(
+            "HH_SEARCH_ONLY_WITH_SALARY", profile.hh.search_only_with_salary
+        )
+    if "HH_SEARCH_REMOTE_ONLY" in env:
+        profile.hh.search_remote_only = _flag("HH_SEARCH_REMOTE_ONLY", profile.hh.search_remote_only)
+    if "HH_APPLICATION_MODE" in env:
+        value = env["HH_APPLICATION_MODE"].strip().lower()
+        if value in {"preview", "confirm", "auto"}:
+            profile.hh.application_mode = value
     if "HH_MATCHER_AUTO_APPLY_MIN_SCORE" in env:
         profile.hh.matcher_auto_apply_min_score = _int(
             "HH_MATCHER_AUTO_APPLY_MIN_SCORE",

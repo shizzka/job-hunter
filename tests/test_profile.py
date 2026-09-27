@@ -188,6 +188,22 @@ class TestApplyEnvOverrides:
         assert p.hh.resume_retry_company_lookback_days == 45
         assert p.hh.resume_retry_blocked_companies == ["Acme", "Example LLC"]
 
+    def test_override_hh_search_conditions_and_application_mode(self):
+        p = Profile()
+        _apply_env_overrides(p, {
+            "HH_SEARCH_EXPERIENCE": "between3And6",
+            "HH_SEARCH_SALARY": "180000",
+            "HH_SEARCH_ONLY_WITH_SALARY": "1",
+            "HH_SEARCH_REMOTE_ONLY": "true",
+            "HH_APPLICATION_MODE": "confirm",
+        })
+
+        assert p.hh.search_experience == "between3And6"
+        assert p.hh.search_salary == 180000
+        assert p.hh.search_only_with_salary is True
+        assert p.hh.search_remote_only is True
+        assert p.hh.application_mode == "confirm"
+
     def test_override_notify(self):
         p = Profile()
         _apply_env_overrides(p, {"NOTIFY_CHAT_ID": "999"})

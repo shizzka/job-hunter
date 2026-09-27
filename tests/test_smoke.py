@@ -98,6 +98,12 @@ class TestApplyOrchestrator:
         from apply_orchestrator import is_auto_apply_enabled
         assert is_auto_apply_enabled("hh") is True
 
+    def test_is_auto_apply_enabled_hh_respects_application_mode(self, monkeypatch):
+        import apply_orchestrator
+
+        monkeypatch.setattr(apply_orchestrator.config, "HH_APPLICATION_MODE", "confirm", raising=False)
+        assert apply_orchestrator.is_auto_apply_enabled("hh") is False
+
     def test_is_auto_apply_enabled_unknown(self):
         from apply_orchestrator import is_auto_apply_enabled
         assert is_auto_apply_enabled("unknown") is False

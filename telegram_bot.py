@@ -690,15 +690,82 @@ class TelegramBot(
             f"🎯 Направление: {client.get('target_role') or 'не указано'}",
             f"📍 Локация: {client.get('target_location') or 'настроена в профиле'}",
             f"🔁 Повтор: {_schedule_preset_label(profile.search_interval_min)}",
+            f"🛡 Режим откликов: {self._application_mode_label(profile.hh.application_mode)}",
             "",
             "ИИ только предложит черновик. Запросы сохраняются или меняются только по вашей команде.",
         ])
         return "\n".join(lines)
 
+    @staticmethod
+    def _application_mode_label(value: str) -> str:
+        return {
+            "preview": "только показать",
+            "confirm": "подтверждать",
+            "auto": "автоотклик",
+        }.get(value, "автоотклик")
+
+    @staticmethod
+    def _experience_label(value: str) -> str:
+        return {
+            "": "любой",
+            "noExperience": "без опыта",
+            "between1And3": "1–3 года",
+            "between3And6": "3–6 лет",
+            "moreThan6": "6+ лет",
+        }.get(value, "любой")
+
+    def _search_conditions_text(self, profile_name: str) -> str:
+        hh = self._profile(profile_name).hh
+        salary = f"{hh.search_salary:,} ₽".replace(",", " ") if hh.search_salary else "не задана"
+        return "\n".join([
+            "⚙️ Условия поиска",
+            "",
+            f"👤 Опыт: {self._experience_label(hh.search_experience)}",
+            f"💰 Зарплата от: {salary}",
+            f"💵 Только с указанной зарплатой: {'да' if hh.search_only_with_salary else 'нет'}",
+            f"🏠 Только удалёнка: {'да' if hh.search_remote_only else 'нет'}",
+            "",
+            "Изменения сохраняются в вашем профиле и подхватываются повтором сразу.",
+        ])
+
+    def _application_mode_text(self, profile_name: str) -> str:
+        mode = self._profile(profile_name).hh.application_mode
+        return "\n".join([
+            "🛡 Режим откликов",
+            "",
+            f"Сейчас: {self._application_mode_label(mode)}.",
+            "👀 Только показать — пришлёт подходящие вакансии, без отправки.",
+            "✋ Подтверждать — отправит только после нажатия «Откликнуться с ИИ».",
+            "⚡ Автоотклик — отправит подходящие вакансии сам в рамках лимитов.",
+        ])
+
+    async def _save_search_setting(
+        self,
+        chat_id: int,
+        principal: dict,
+        updates: dict[str, str | int],
+        message: str,
+        *,
+        menu: str,
+    ) -> None:
+        profile_name = self._selected_profile(principal)
+        profile_mod.update_profile_env(profile_name, updates)
+        try:
+            restarted = self._reload_profile_daemon(profile_name)
+            restart_note = "\n🔁 Повтор перезапущен с новыми настройками." if restarted else ""
+        except RuntimeError as exc:
+            restart_note = f"\n⚠️ Настройка сохранена, но повтор не перезапустился: {exc}"
+        self._set_selected_menu(principal["user_id"], menu)
+        await self._send_text(
+            chat_id,
+            f"✅ {message}" + restart_note,
+            reply_markup=self._menu_reply_markup(principal, menu=menu),
+        )
+
     async def _accept_search_query_input(self, chat_id: int, principal: dict, text: str) -> bool:
         state = self._search_settings_state(principal["user_id"])
         input_kind = state.get("search_input")
-        if input_kind not in {"queries", "resume"}:
+        if input_kind not in {"queries", "resume", "salary"}:
             return False
         if _is_menu_button_text(text):
             return False
@@ -707,7 +774,29 @@ class TelegramBot(
             await self._send_text(
                 chat_id,
                 "Изменение запросов отменено.",
-                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+                reply_markup=self._menu_reply_markup(
+                    principal,
+                    menu=MENU_SEARCH_CONDITIONS if input_kind == "salary" else MENU_SEARCH,
+                ),
+            )
+            return True
+        if input_kind == "salary":
+            normalized = text.strip().replace(" ", "").replace("₽", "")
+            if not normalized.isdigit() or int(normalized) > 10_000_000:
+                await self._send_text(
+                    chat_id,
+                    "❌ Отправьте сумму цифрами от 0 до 10 000 000. Ноль отключит фильтр. Для отмены: Отмена.",
+                    reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH_CONDITIONS),
+                )
+                return True
+            salary = int(normalized)
+            self._clear_search_settings_state(principal["user_id"], "search_input")
+            await self._save_search_setting(
+                chat_id,
+                principal,
+                {"HH_SEARCH_SALARY": salary},
+                f"Минимальная зарплата: {salary:,} ₽".replace(",", " "),
+                menu=MENU_SEARCH_CONDITIONS,
             )
             return True
         if input_kind == "resume":
@@ -1709,6 +1798,101 @@ class TelegramBot(
                 chat_id,
                 self._search_settings_text(profile_name, user_id=principal["user_id"]),
                 reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+            )
+            return
+
+        if command == "/search_conditions":
+            self._set_selected_menu(principal["user_id"], MENU_SEARCH_CONDITIONS)
+            await self._send_text(
+                chat_id,
+                self._search_conditions_text(profile_name),
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH_CONDITIONS),
+            )
+            return
+
+        if command == "/search_experience":
+            self._set_selected_menu(principal["user_id"], MENU_EXPERIENCE)
+            await self._send_text(
+                chat_id,
+                "👤 Выберите требуемый опыт. Этот фильтр hh.ru применится ко всем вашим запросам.",
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_EXPERIENCE),
+            )
+            return
+
+        experience_commands = {
+            "/search_experience_any": ("", "любой"),
+            "/search_experience_none": ("noExperience", "без опыта"),
+            "/search_experience_1_3": ("between1And3", "1–3 года"),
+            "/search_experience_3_6": ("between3And6", "3–6 лет"),
+            "/search_experience_6_plus": ("moreThan6", "6+ лет"),
+        }
+        if command in experience_commands:
+            value, label = experience_commands[command]
+            await self._save_search_setting(
+                chat_id,
+                principal,
+                {"HH_SEARCH_EXPERIENCE": value},
+                f"Фильтр по опыту: {label}.",
+                menu=MENU_SEARCH_CONDITIONS,
+            )
+            return
+
+        if command == "/search_salary":
+            self._set_search_settings_state(principal["user_id"], search_input="salary")
+            await self._send_text(
+                chat_id,
+                "💰 Отправьте минимальную зарплату в рублях. Например: 150000.\n"
+                "Ноль отключит этот фильтр. Для отмены: Отмена.",
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH_CONDITIONS),
+            )
+            return
+
+        if command == "/search_salary_toggle":
+            current = self._profile(profile_name).hh.search_only_with_salary
+            await self._save_search_setting(
+                chat_id,
+                principal,
+                {"HH_SEARCH_ONLY_WITH_SALARY": 0 if current else 1},
+                "Показывать только вакансии с указанной зарплатой."
+                if not current else "Вакансии без указанной зарплаты снова включены.",
+                menu=MENU_SEARCH_CONDITIONS,
+            )
+            return
+
+        if command == "/search_remote_toggle":
+            current = self._profile(profile_name).hh.search_remote_only
+            await self._save_search_setting(
+                chat_id,
+                principal,
+                {"HH_SEARCH_REMOTE_ONLY": 0 if current else 1},
+                "Оставлены только удалённые вакансии."
+                if not current else "Снова ищем во всех настроенных форматах работы.",
+                menu=MENU_SEARCH_CONDITIONS,
+            )
+            return
+
+        if command == "/search_application_mode":
+            self._set_selected_menu(principal["user_id"], MENU_APPLICATION_MODE)
+            await self._send_text(
+                chat_id,
+                self._application_mode_text(profile_name),
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_APPLICATION_MODE),
+            )
+            return
+
+        application_modes = {
+            "/search_application_preview": ("preview", "Режим «только показать» включён."),
+            "/search_application_confirm": ("confirm", "Режим подтверждения включён."),
+            "/search_application_auto": ("auto", "Автоотклик включён."),
+        }
+        if command in application_modes:
+            value, message = application_modes[command]
+            await self._save_search_setting(
+                chat_id,
+                principal,
+                {"HH_APPLICATION_MODE": value},
+                message,
+                menu=MENU_APPLICATION_MODE,
             )
             return
 
