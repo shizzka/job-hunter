@@ -48,6 +48,10 @@ HH_ENABLED = _env_flag("HH_ENABLED", "1")
 HH_BASE_URL = "https://hh.ru"
 HH_COOKIES_FILE = os.path.join(JOB_HUNTER_HOME, "hh_cookies.json")
 HH_STATE_DIR = os.path.join(JOB_HUNTER_HOME, "state")
+# IPC для HH-входа общий для бота и временного браузерного процесса. Не
+# переопределяется при активации именованного профиля, иначе бот не увидит
+# SMS-запрос пользователя из profile/state.
+HH_AUTH_BRIDGE_DIR = os.path.join(JOB_HUNTER_HOME, "state")
 HH_RESUME_PIPELINE_FILE = os.path.join(JOB_HUNTER_HOME, "hh_resume_pipeline.json")
 
 # Поисковые запросы (каждый будет искаться отдельно)

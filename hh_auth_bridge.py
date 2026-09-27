@@ -22,7 +22,10 @@ log = logging.getLogger("hh_auth_bridge")
 
 
 def _state_dir() -> str:
-    state_dir = getattr(config, "HH_STATE_DIR", "") or os.path.expanduser("~/.job-hunter/state")
+    # The bot normally runs in the default profile while the browser process
+    # activates the client profile. This IPC directory must stay shared.
+    state_dir = getattr(config, "HH_AUTH_BRIDGE_DIR", "") or getattr(config, "HH_STATE_DIR", "")
+    state_dir = state_dir or os.path.expanduser("~/.job-hunter/state")
     os.makedirs(state_dir, exist_ok=True)
     return state_dir
 

@@ -1604,13 +1604,13 @@ class TelegramBot(
 
         text = (message.get("text") or "").strip()
 
+        if await self._maybe_accept_hh_auth_response(chat_id, principal, text):
+            return
+
         if await self._accept_form_answer(chat_id, principal, message):
             return
 
         if await self._accept_search_query_input(chat_id, principal, text):
-            return
-
-        if await self._maybe_accept_hh_auth_response(chat_id, principal, text):
             return
 
         # captcha-bridge: если есть pending captcha и юзер админ —
@@ -1650,15 +1650,16 @@ class TelegramBot(
                         log.warning("captcha response write failed: %s", exc)
 
         command, arg = _resolve_message_command(text, principal.get("role", ROLE_USER))
+        if _looks_like_standalone_hh_auth_code(text):
+            await self._send_text(
+                chat_id,
+                "🔐 Похоже на HH SMS-код, но активного запроса входа сейчас нет. "
+                "Сначала нажми восстановление HH-сессии, дождись сообщения «HH просит SMS-код», "
+                "и только потом пришли код сюда.",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
         if not command:
-            if _looks_like_standalone_hh_auth_code(text):
-                await self._send_text(
-                    chat_id,
-                    "🔐 Похоже на HH SMS-код, но активного запроса входа сейчас нет. "
-                    "Сначала нажми восстановление HH-сессии, дождись сообщения `HH просит SMS-код`, "
-                    "и только потом пришли код сюда.",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
             return
         await self._dispatch(chat_id, principal, command, arg)
 
