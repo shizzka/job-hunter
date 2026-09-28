@@ -107,6 +107,25 @@ def test_is_logged_in_true_on_empty_authenticated_resume_page():
     assert asyncio.run(client.is_logged_in()) is True
 
 
+def test_search_escalates_text_captcha_to_solver(monkeypatch):
+    client = HHClient()
+    client._page = FakePage(url="https://hh.ru/search/vacancy", html="<html></html>")
+    solver_calls = []
+
+    async def detect_anti_bot_kind():
+        return "captcha"
+
+    async def solve(kind, stage=""):
+        solver_calls.append((kind, stage))
+        return ""
+
+    monkeypatch.setattr(client, "_detect_anti_bot_kind", detect_anti_bot_kind)
+    monkeypatch.setattr(client, "_handle_anti_bot_with_solver", solve)
+
+    assert asyncio.run(client.search_vacancies("QA engineer")) == []
+    assert solver_calls == [("captcha", "search_vacancies")]
+
+
 def test_is_logged_in_passive_true_on_authenticated_non_login_page():
     client = HHClient()
     client._page = FakePage(

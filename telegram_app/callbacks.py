@@ -55,9 +55,6 @@ class TelegramCallbackRouter:
         if not principal:
             await self._answer_callback_query(callback_id, "🔒 Доступ закрыт.", show_alert=True)
             return
-        if principal.get("role") != ROLE_ADMIN:
-            await self._answer_callback_query(callback_id, "🔒 Нужны права администратора.", show_alert=True)
-            return
 
         raw_data = callback.get("data") or ""
         message = callback.get("message") or {}
@@ -65,6 +62,81 @@ class TelegramCallbackRouter:
         message_id = int(message.get("message_id") or 0)
         if chat_id <= 0:
             await self._answer_callback_query(callback_id, "Не удалось определить чат.", show_alert=True)
+            return
+
+        def can_access_profile(profile_name: str) -> bool:
+            return (
+                principal.get("role") == ROLE_ADMIN
+                or self._selected_profile(principal) == profile_name
+            )
+
+        # These two callbacks are deliberately available to a regular user,
+        # but only for that user's own profile and private bot chat.
+        if raw_data.startswith(f"{CALLBACK_HH_REAUTH}:"):
+            profile_name = _parse_hh_reauth_callback_data(raw_data)
+            if (
+                not profile_name
+                or profile_name not in self._profile_names()
+                or not can_access_profile(profile_name)
+                or (
+                    principal.get("role") != ROLE_ADMIN
+                    and (message.get("chat") or {}).get("type") != "private"
+                )
+            ):
+                await self._answer_callback_query(callback_id, "Эта captcha относится к другому профилю.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id, "Запускаю вход HH…")
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            await self._start_profile_hh_auth_capture(chat_id, principal, profile_name=profile_name)
+            return
+
+        if raw_data.startswith("captcha_retry:"):
+            payload = raw_data.split(":")
+            if len(payload) == 3:
+                _, profile_name, request_id = payload
+            elif len(payload) == 2:  # callbacks sent before profile binding
+                _, request_id = payload
+                profile_name = self._selected_profile(principal)
+            else:
+                await self._answer_callback_query(callback_id, "Не удалось определить captcha.", show_alert=True)
+                return
+            if (
+                not request_id
+                or profile_name not in self._profile_names()
+                or not can_access_profile(profile_name)
+                or (
+                    principal.get("role") != ROLE_ADMIN
+                    and (message.get("chat") or {}).get("type") != "private"
+                )
+            ):
+                await self._answer_callback_query(callback_id, "Эта captcha относится к другому профилю.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id, "🔁 Запускаю поиск заново…")
+            try:
+                import hh_guard
+                hh_guard.clear_cooldown_for_profile(profile_name)
+            except Exception as exc:
+                log.warning("clear_cooldown failed for %s: %s", profile_name, exc)
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            await self._send_text(
+                chat_id,
+                "🔁 Поиск перезапущен. Если HH снова попросит captcha, пришлю её сюда.",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            await self._start_cli_command(
+                chat_id,
+                principal,
+                profile_name,
+                "--search",
+                "search",
+                3600,
+            )
+            return
+
+        if principal.get("role") != ROLE_ADMIN:
+            await self._answer_callback_query(callback_id, "🔒 Нужны права администратора.", show_alert=True)
             return
 
         if raw_data.startswith("gf:"):
@@ -76,17 +148,6 @@ class TelegramCallbackRouter:
                 await self._form_callback(chat_id, principal, raw_data)
             except ValueError as exc:
                 await self._send_text(chat_id, str(exc))
-            return
-
-        if raw_data.startswith(f"{CALLBACK_HH_REAUTH}:"):
-            profile_name = _parse_hh_reauth_callback_data(raw_data)
-            if not profile_name or profile_name not in self._profile_names():
-                await self._answer_callback_query(callback_id, "Не удалось определить профиль.", show_alert=True)
-                return
-            await self._answer_callback_query(callback_id, "Запускаю вход HH…")
-            if message_id > 0:
-                await self._edit_reply_markup(chat_id, message_id)
-            await self._start_profile_hh_auth_capture(chat_id, principal, profile_name=profile_name)
             return
 
         if raw_data.startswith("gform_preview:"):
@@ -361,32 +422,6 @@ class TelegramCallbackRouter:
             else:
                 message = format_command_result("retry block company", result, role=principal.get("role", ROLE_USER))
                 await self._send_text(chat_id, message, reply_markup=self._menu_reply_markup(principal))
-            return
-
-        # captcha-retry: ручной перезапуск поиска из TG (после пропущенного окна captcha).
-        if raw_data.startswith("captcha_retry:"):
-            request_id = raw_data.split(":", 1)[1].strip()
-            await self._answer_callback_query(callback_id, "🔁 Запускаю поиск заново…")
-            try:
-                import hh_guard
-                hh_guard.clear_cooldown()
-            except Exception as exc:
-                log.warning("clear_cooldown failed: %s", exc)
-            if message_id > 0:
-                await self._edit_reply_markup(chat_id, message_id)
-            await self._send_text(
-                chat_id,
-                f"🔁 Поиск перезапущен (request_id <code>{request_id}</code>). Жди новую captcha — отвечу ниже.",
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            await self._start_cli_command(
-                chat_id,
-                principal,
-                self._selected_profile(principal),
-                "--search",
-                "search",
-                3600,
-            )
             return
 
         action, target_user_id = _parse_callback_data(raw_data)

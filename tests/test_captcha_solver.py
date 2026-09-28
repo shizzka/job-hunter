@@ -13,12 +13,12 @@ def test_captcha_retry_markup_uses_hh_auth_callback_for_auth_stage():
     assert button["callback_data"] == "hh_reauth:qa"
 
 
-def test_captcha_retry_markup_keeps_search_callback_for_search_stage():
-    markup = captcha_solver._captcha_retry_markup("apply_submit", "abc123")
+def test_captcha_retry_markup_binds_search_callback_to_profile():
+    markup = captcha_solver._captcha_retry_markup("apply_submit", "abc123", "client_42")
 
     button = markup["inline_keyboard"][0][0]
     assert button["text"] == "🔁 Перезапустить поиск"
-    assert button["callback_data"] == "captcha_retry:abc123"
+    assert button["callback_data"] == "captcha_retry:client_42:abc123"
 
 
 def test_captcha_solver_escalates_to_telegram_after_two_empty_vision_attempts(tmp_path, monkeypatch):
@@ -52,13 +52,13 @@ def test_captcha_solver_escalates_to_telegram_after_two_empty_vision_attempts(tm
     async def fake_send_message_with_markup(text, reply_markup=None):
         return True
 
-    def fake_create_request(screenshot_path, page_url="", timeout_s=300):
+    def fake_create_request(screenshot_path, page_url="", timeout_s=300, profile_name=""):
         return "req1"
 
-    async def fake_wait_for_response(request_id, timeout_s=300, poll_interval_s=2.0):
+    async def fake_wait_for_response(request_id, timeout_s=300, poll_interval_s=2.0, profile_name=""):
         return None
 
-    def fake_complete_request(request_id):
+    def fake_complete_request(request_id, profile_name=""):
         return None
 
     def fake_record_soft_cooldown(minutes, reason):
@@ -92,6 +92,7 @@ def test_captcha_solver_escalates_to_telegram_after_two_empty_vision_attempts(tm
     assert len(vision_calls) == 2
     assert len(photo_calls) == 1
     assert "попытка 2/3" in photo_calls[0][1]
+    assert "ИИ не смог распознать текст" in photo_calls[0][1]
     button = photo_calls[0][2]["inline_keyboard"][0][0]
     assert button["callback_data"] == "hh_reauth:qa"
     assert cooldown_calls == [(15, "captcha TG timeout")]

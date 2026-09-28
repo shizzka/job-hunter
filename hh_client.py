@@ -527,6 +527,11 @@ class HHClient:
 
         # Anti-bot check перед парсингом
         anti_bot_kind = await self._detect_anti_bot_kind()
+        if anti_bot_kind == "captcha":
+            anti_bot_kind = await self._handle_anti_bot_with_solver(
+                anti_bot_kind,
+                stage="search_vacancies",
+            )
         if anti_bot_kind:
             message = _anti_bot_message(anti_bot_kind, "на поиске")
             self._remember_antibot_signal(anti_bot_kind, "search", message)

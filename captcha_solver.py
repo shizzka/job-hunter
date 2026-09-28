@@ -35,12 +35,18 @@ def _hh_auth_profile_from_stage(stage: str) -> str:
     return ""
 
 
-def _captcha_retry_markup(stage: str, request_id: str) -> dict:
-    profile_name = _hh_auth_profile_from_stage(stage)
+def _captcha_retry_markup(stage: str, request_id: str, profile_name: str = "") -> dict:
+    auth_profile_name = _hh_auth_profile_from_stage(stage)
+    if auth_profile_name:
+        return {
+            "inline_keyboard": [[
+                {"text": "🔐 Повторить вход HH", "callback_data": f"hh_reauth:{auth_profile_name}"},
+            ]],
+        }
     if profile_name:
         return {
             "inline_keyboard": [[
-                {"text": "🔐 Повторить вход HH", "callback_data": f"hh_reauth:{profile_name}"},
+                {"text": "🔁 Перезапустить поиск", "callback_data": f"captcha_retry:{profile_name}:{request_id}"},
             ]],
         }
     return {
@@ -222,24 +228,38 @@ async def try_solve_captcha_interactively(
         # Этап 1: эскалация в TG.
         page_url = page.url if page else ""
         captcha_timeout_s = int(getattr(config, "HH_CAPTCHA_HUMAN_WINDOW_S", 300))
-        request_id = captcha_bridge.create_request(shot_path, page_url=page_url, timeout_s=captcha_timeout_s)
+        profile_name = ""
+        try:
+            import profile as profile_mod
+            profile_name = str(profile_mod.active().name or "").strip()
+        except Exception:
+            pass
+        request_id = captcha_bridge.create_request(
+            shot_path,
+            page_url=page_url,
+            timeout_s=captcha_timeout_s,
+            profile_name=profile_name,
+        )
         caption_parts = [
             f"🤖 hh.ru captcha (попытка {total_attempts}/{max_retries})",
-            f"Stage: {stage}" if stage else "",
             f"Окно: {captcha_timeout_s // 60} мин (потом токен истечёт).",
-            "Введи буквы с картинки — бот вставит в форму.",
-            f"URL: {page_url}" if page_url else "",
+            "ИИ не смог распознать текст. Пришлите буквы с картинки следующим сообщением — бот вставит их в форму.",
         ]
         caption = "\n".join(p for p in caption_parts if p)
-        retry_markup = _captcha_retry_markup(stage, request_id)
+        retry_markup = _captcha_retry_markup(stage, request_id, profile_name)
         try:
             await notifier.send_photo(shot_path, caption=caption, reply_markup=retry_markup)
         except Exception as exc:
             log.warning("captcha notify failed: %s", exc)
 
         log.info("waiting for captcha answer in TG (%d s)", captcha_timeout_s)
-        answer = await captcha_bridge.wait_for_response(request_id, timeout_s=captcha_timeout_s, poll_interval_s=3.0)
-        captcha_bridge.complete_request(request_id)
+        answer = await captcha_bridge.wait_for_response(
+            request_id,
+            timeout_s=captcha_timeout_s,
+            poll_interval_s=3.0,
+            profile_name=profile_name,
+        )
+        captcha_bridge.complete_request(request_id, profile_name=profile_name)
         if not answer:
             log.warning("captcha answer not received in time, applying soft cooldown + sending timeout notice")
             try:

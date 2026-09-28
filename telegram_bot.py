@@ -650,6 +650,23 @@ class TelegramBot(
         entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
         self._save_state(state)
 
+    def _captcha_pending_for_principal(self, principal: dict) -> tuple[dict | None, str]:
+        """Return only the pending captcha that this Telegram user may answer."""
+        profile_name = self._selected_profile(principal)
+        try:
+            import captcha_bridge
+
+            pending = captcha_bridge.peek_pending(profile_name)
+        except Exception as exc:
+            log.debug("captcha bridge peek failed for %s: %s", profile_name, exc)
+            return None, profile_name
+        if not pending:
+            return None, profile_name
+        request_profile = str(pending.get("profile_name") or profile_name).strip()
+        if principal.get("role") != ROLE_ADMIN and request_profile != profile_name:
+            return None, profile_name
+        return pending, request_profile
+
     def _reload_profile_daemon(self, profile_name: str) -> bool:
         """Restart an already enabled profile daemon so it reloads profile.env."""
         state = self._daemon_state(profile_name)
@@ -1702,25 +1719,17 @@ class TelegramBot(
         if await self._accept_search_query_input(chat_id, principal, text):
             return
 
-        # captcha-bridge: если есть pending captcha и юзер админ —
-        # принимаем короткий текст (≤ 50 символов, без слэшей и стандартных меню-команд)
-        # как ответ на captcha и передаём search-процессу через файл.
+        # Captcha привязана к профилю: её может решить владелец своей сессии
+        # либо админ в выбранном профиле.
         if (
             text
-            and len(text) <= 50
+            and len(text) <= 100
             and not text.startswith("/")
             and not text.startswith("➡")
-            and principal.get("role") == ROLE_ADMIN
         ):
-            try:
-                import captcha_bridge
-                pending = captcha_bridge.peek_pending()
-            except Exception as exc:
-                log.debug("captcha bridge peek failed: %s", exc)
-                pending = None
+            pending, captcha_profile_name = self._captcha_pending_for_principal(principal)
             if pending:
-                # Любой короткий текст-без-слэша от админа во время pending captcha — это ответ.
-                # Исключаем только конкретные menu-кнопки (с эмодзи-префиксами).
+                # Исключаем кнопки меню: их нельзя считать текстом captcha.
                 is_menu_button = (
                     text in ADMIN_BUTTON_MAP
                     or text in USER_BUTTON_MAP
@@ -1729,10 +1738,10 @@ class TelegramBot(
                 if not is_menu_button:
                     try:
                         import captcha_bridge as cb
-                        cb.write_response(pending["id"], text)
+                        cb.write_response(pending["id"], text, profile_name=captcha_profile_name)
                         await self._send_text(
                             chat_id,
-                            f"✅ Принял ответ на captcha: <code>{text[:80]}</code>\nВставляю в форму hh.ru…",
+                            "✅ Принял текст captcha. Вставляю его в форму hh.ru…",
                         )
                         return
                     except Exception as exc:

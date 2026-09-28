@@ -322,6 +322,7 @@ def _patch_config(p: Profile):
     config.HH_STATE_DIR = p.state_dir
     config.RESUME_FILE = p.resume_file
     config.MANUAL_APPLY_QUEUE_FILE = os.path.join(p.home_dir, "manual_apply_queue.json")
+    config.HH_GUARD_STATE_FILE = os.path.join(p.home_dir, "hh_guard_state.json")
 
     # Limits
     config.MAX_APPLICATIONS_PER_RUN = p.max_applications_per_run

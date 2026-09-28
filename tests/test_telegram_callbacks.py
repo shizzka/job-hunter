@@ -134,7 +134,7 @@ def test_callback_router_enforces_admin_access(
 
     asyncio.run(
         bot._handle_callback_query(
-            _callback("hh_reauth:qa", user_id=2)
+            _callback("admin_only_action", user_id=2)
         )
     )
 
@@ -540,8 +540,8 @@ def test_callback_router_retries_captcha_search(monkeypatch):
     cooldown_clears = []
     monkeypatch.setattr(
         hh_guard,
-        "clear_cooldown",
-        lambda: cooldown_clears.append(True),
+        "clear_cooldown_for_profile",
+        lambda profile_name: cooldown_clears.append(profile_name),
     )
 
     async def start_cli(
@@ -574,7 +574,7 @@ def test_callback_router_retries_captcha_search(monkeypatch):
         )
     )
 
-    assert cooldown_clears == [True]
+    assert cooldown_clears == ["qa"]
     assert starts == [
         (42, "qa", "--search", "search", 3600)
     ]

@@ -303,3 +303,31 @@ def clear_cooldown(*, now: datetime | None = None) -> dict:
     normalized = _normalize_state(state, now=now)
     _save_state(normalized)
     return get_status(now=now)
+
+
+def clear_cooldown_for_profile(profile_name: str, *, now: datetime | None = None) -> dict:
+    """Clear only the HH cooldown belonging to one named profile."""
+    import profile as profile_mod
+
+    now = now or _now()
+    profile = profile_mod.load_profile(profile_name)
+    path = os.path.join(profile.home_dir, "hh_guard_state.json")
+    state = _default_state()
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                payload = json.load(f)
+            if isinstance(payload, dict):
+                state.update(payload)
+        except Exception as exc:
+            log.warning("Failed to read HH guard state %s: %s", path, exc)
+    state["blocked_until"] = ""
+    state["last_stage"] = (state.get("last_stage") or "") + "+manual_clear"
+    normalized = _normalize_state(state, now=now)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(normalized, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.warning("Failed to save HH guard state %s: %s", path, exc)
+    return normalized
