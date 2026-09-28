@@ -23,6 +23,7 @@ BUTTON_LOG = "📜 Лог поиска"
 BUTTON_CHAT_LOG = "💬 Лог чатов"
 BUTTON_SEARCH = "🔎 Поиск"
 BUTTON_SEARCH_SETTINGS = "🎯 Мой поиск"
+BUTTON_REVIEW = "📋 На рассмотрении"
 BUTTON_SEARCH_EDIT = "✏️ Изменить запросы"
 BUTTON_SEARCH_SUGGEST = "✨ Предложить ИИ"
 BUTTON_SEARCH_USE_DRAFT = "✅ Сохранить предложенное"
@@ -86,6 +87,7 @@ MENU_SEARCH = "search_settings"
 MENU_SEARCH_CONDITIONS = "search_conditions"
 MENU_APPLICATION_MODE = "application_mode"
 MENU_EXPERIENCE = "search_experience"
+MENU_REVIEW = "review"
 PROGRESS_FRAMES = ["⏳", "⌛️", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕"]
 CLIENT_ONBOARDING_STEPS = ("full_name", "target_role", "target_location", "notes")
 CALLBACK_CLIENT_APPROVE = "ca"
@@ -101,6 +103,7 @@ CALLBACK_MANUAL_APPLY = "manual_apply"
 CALLBACK_MANUAL_FEEDBACK = "manual_fb"
 CALLBACK_MANUAL_BLOCK_COMPANY = "manual_block_company"
 CALLBACK_MANUAL_WHY = "manual_why"
+CALLBACK_MANUAL_SNOOZE = "manual_snooze"
 CALLBACK_HH_REAUTH = "hh_reauth"
 
 ADMIN_BUTTON_MAP = {
@@ -116,6 +119,7 @@ ADMIN_BUTTON_MAP = {
     BUTTON_CHAT_LOG: "/chat_log",
     BUTTON_SEARCH: "/search",
     BUTTON_SEARCH_SETTINGS: "/search_settings",
+    BUTTON_REVIEW: "/review",
     BUTTON_SEARCH_EDIT: "/search_edit",
     BUTTON_SEARCH_SUGGEST: "/search_suggest",
     BUTTON_SEARCH_USE_DRAFT: "/search_use_draft",
@@ -173,6 +177,7 @@ USER_BUTTON_MAP = {
     BUTTON_CHAT_LOG: "/chat_log",
     BUTTON_SEARCH: "/search",
     BUTTON_SEARCH_SETTINGS: "/search_settings",
+    BUTTON_REVIEW: "/review",
     BUTTON_SEARCH_EDIT: "/search_edit",
     BUTTON_SEARCH_SUGGEST: "/search_suggest",
     BUTTON_SEARCH_USE_DRAFT: "/search_use_draft",
@@ -236,6 +241,7 @@ LEGACY_BUTTON_MAP = {
     "чат лог": "/chat_log",
     "Поиск": "/search",
     "Мой поиск": "/search_settings",
+    "На рассмотрении": "/review",
     "Изменить запросы": "/search_edit",
     "Предложить ИИ": "/search_suggest",
     "Сохранить предложенное": "/search_use_draft",
@@ -455,9 +461,9 @@ def _format_runtime_block(title: str, runtime: dict) -> list[str]:
 
 def _normalize_menu(role: str, menu: str | None) -> str:
     if role == ROLE_ADMIN:
-        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_ADMIN, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE}
+        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_ADMIN, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW}
     else:
-        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE}
+        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW}
     return menu if menu in allowed else MENU_MAIN
 
 
@@ -574,6 +580,11 @@ def build_reply_markup(
                 [{"text": BUTTON_EXPERIENCE_6_PLUS}],
                 *_navigation_rows(),
             ]
+        elif menu == MENU_REVIEW:
+            rows = [
+                [{"text": BUTTON_REVIEW}, {"text": BUTTON_SEARCH_SETTINGS}],
+                *_navigation_rows(),
+            ]
         elif menu == MENU_ADMIN:
             rows = [
                 [{"text": BUTTON_PROFILES}, {"text": BUTTON_USERS}],
@@ -584,7 +595,7 @@ def build_reply_markup(
         else:
             rows = [
                 [{"text": BUTTON_CHAT_AI}, {"text": BUTTON_FORMS}],
-                [{"text": BUTTON_SEARCH_SETTINGS}],
+                [{"text": BUTTON_SEARCH_SETTINGS}, {"text": BUTTON_REVIEW}],
                 [{"text": BUTTON_MENU_MONITOR}, {"text": BUTTON_MENU_RUN}],
                 [{"text": BUTTON_MENU_REPEAT}, {"text": BUTTON_MENU_ADMIN}],
                 [{"text": BUTTON_HELP}],
@@ -641,9 +652,14 @@ def build_reply_markup(
                 [{"text": BUTTON_EXPERIENCE_6_PLUS}],
                 *_navigation_rows(),
             ]
+        elif menu == MENU_REVIEW:
+            rows = [
+                [{"text": BUTTON_REVIEW}, {"text": BUTTON_SEARCH_SETTINGS}],
+                *_navigation_rows(),
+            ]
         else:
             rows = [
-                [{"text": BUTTON_SEARCH_SETTINGS}],
+                [{"text": BUTTON_SEARCH_SETTINGS}, {"text": BUTTON_REVIEW}],
                 [{"text": BUTTON_MENU_MONITOR}, {"text": BUTTON_MENU_RUN}],
                 [{"text": BUTTON_MENU_REPEAT}, {"text": BUTTON_HELP}],
             ]
@@ -753,6 +769,16 @@ def _parse_manual_block_company_callback_data(data: str) -> tuple[str, str]:
 
 def _parse_manual_why_callback_data(data: str) -> tuple[str, str]:
     prefix = f"{CALLBACK_MANUAL_WHY}:"
+    if not (data or "").startswith(prefix):
+        return "", ""
+    profile_name, sep, token = data[len(prefix):].partition(":")
+    if not sep:
+        return "", ""
+    return profile_name.strip(), token.strip()
+
+
+def _parse_manual_snooze_callback_data(data: str) -> tuple[str, str]:
+    prefix = f"{CALLBACK_MANUAL_SNOOZE}:"
     if not (data or "").startswith(prefix):
         return "", ""
     profile_name, sep, token = data[len(prefix):].partition(":")

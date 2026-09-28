@@ -23,6 +23,7 @@ from telegram_bot_ui import (
     CALLBACK_MANUAL_BLOCK_COMPANY,
     CALLBACK_MANUAL_FEEDBACK,
     CALLBACK_MANUAL_WHY,
+    CALLBACK_MANUAL_SNOOZE,
     ROLE_ADMIN,
     ROLE_USER,
     _parse_callback_data,
@@ -37,6 +38,7 @@ from telegram_bot_ui import (
     _parse_manual_block_company_callback_data,
     _parse_manual_feedback_callback_data,
     _parse_manual_why_callback_data,
+    _parse_manual_snooze_callback_data,
     format_command_result,
 )
 
@@ -135,7 +137,20 @@ class TelegramCallbackRouter:
             )
             return
 
-        if principal.get("role") != ROLE_ADMIN:
+        manual_callback = raw_data.startswith((
+            f"{CALLBACK_MANUAL_APPLY}:",
+            f"{CALLBACK_MANUAL_FEEDBACK}:",
+            f"{CALLBACK_MANUAL_WHY}:",
+            f"{CALLBACK_MANUAL_SNOOZE}:",
+            f"{CALLBACK_MANUAL_BLOCK_COMPANY}:",
+        ))
+        if (
+            principal.get("role") != ROLE_ADMIN
+            and (
+                not manual_callback
+                or (message.get("chat") or {}).get("type") != "private"
+            )
+        ):
             await self._answer_callback_query(callback_id, "🔒 Нужны права администратора.", show_alert=True)
             return
 
@@ -339,7 +354,7 @@ class TelegramCallbackRouter:
 
         if raw_data.startswith(f"{CALLBACK_MANUAL_APPLY}:"):
             profile_name, token = _parse_manual_apply_callback_data(raw_data)
-            if not profile_name or profile_name not in self._profile_names() or not token:
+            if not profile_name or profile_name not in self._profile_names() or not token or not can_access_profile(profile_name):
                 await self._answer_callback_query(callback_id, "Не удалось определить вакансию.", show_alert=True)
                 return
             await self._answer_callback_query(callback_id, "Отправляю отклик через ИИ…")
@@ -355,10 +370,15 @@ class TelegramCallbackRouter:
 
         if raw_data.startswith(f"{CALLBACK_MANUAL_FEEDBACK}:"):
             profile_name, token, feedback = _parse_manual_feedback_callback_data(raw_data)
-            if not profile_name or profile_name not in self._profile_names() or not token:
+            if not profile_name or profile_name not in self._profile_names() or not token or not can_access_profile(profile_name):
                 await self._answer_callback_query(callback_id, "Не удалось определить вакансию.", show_alert=True)
                 return
-            item = manual_apply_queue.record_feedback(token, feedback, user_id=user_id)
+            item = manual_apply_queue.record_feedback(
+                token,
+                feedback,
+                user_id=user_id,
+                profile_name=profile_name,
+            )
             if not item:
                 await self._answer_callback_query(callback_id, "Не удалось записать оценку.", show_alert=True)
                 return
@@ -379,10 +399,10 @@ class TelegramCallbackRouter:
 
         if raw_data.startswith(f"{CALLBACK_MANUAL_WHY}:"):
             profile_name, token = _parse_manual_why_callback_data(raw_data)
-            if not profile_name or profile_name not in self._profile_names() or not token:
+            if not profile_name or profile_name not in self._profile_names() or not token or not can_access_profile(profile_name):
                 await self._answer_callback_query(callback_id, "Не удалось определить вакансию.", show_alert=True)
                 return
-            item = manual_apply_queue.get_candidate(token)
+            item = manual_apply_queue.get_candidate(token, profile_name=profile_name)
             if not item:
                 await self._answer_callback_query(callback_id, "Решение уже не найдено.", show_alert=True)
                 return
@@ -394,12 +414,26 @@ class TelegramCallbackRouter:
             )
             return
 
-        if raw_data.startswith(f"{CALLBACK_MANUAL_BLOCK_COMPANY}:"):
-            profile_name, token = _parse_manual_block_company_callback_data(raw_data)
-            if not profile_name or profile_name not in self._profile_names() or not token:
+        if raw_data.startswith(f"{CALLBACK_MANUAL_SNOOZE}:"):
+            profile_name, token = _parse_manual_snooze_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names() or not token or not can_access_profile(profile_name):
                 await self._answer_callback_query(callback_id, "Не удалось определить вакансию.", show_alert=True)
                 return
-            item = manual_apply_queue.get_candidate(token)
+            item = manual_apply_queue.snooze_candidate(token, profile_name=profile_name)
+            if not item:
+                await self._answer_callback_query(callback_id, "Вакансия уже не ждёт решения.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id, "Отложил на сутки.")
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            return
+
+        if raw_data.startswith(f"{CALLBACK_MANUAL_BLOCK_COMPANY}:"):
+            profile_name, token = _parse_manual_block_company_callback_data(raw_data)
+            if not profile_name or profile_name not in self._profile_names() or not token or not can_access_profile(profile_name):
+                await self._answer_callback_query(callback_id, "Не удалось определить вакансию.", show_alert=True)
+                return
+            item = manual_apply_queue.get_candidate(token, profile_name=profile_name)
             vacancy = (item or {}).get("vacancy") or {}
             company = str(vacancy.get("company") or "").strip()
             if not item or not company:
@@ -411,7 +445,12 @@ class TelegramCallbackRouter:
                 timeout=60,
             )
             if result.get("ok"):
-                manual_apply_queue.mark_candidate(token, "company_blocked", f"retry company blocked: {company}")
+                manual_apply_queue.mark_candidate(
+                    token,
+                    "company_blocked",
+                    f"retry company blocked: {company}",
+                    profile_name=profile_name,
+                )
                 if message_id > 0:
                     await self._edit_reply_markup(chat_id, message_id)
                 await self._send_text(

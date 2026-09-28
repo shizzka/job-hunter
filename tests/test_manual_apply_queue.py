@@ -69,3 +69,22 @@ def test_manual_apply_queue_roundtrip(tmp_path, monkeypatch):
     updated = manual_apply_queue.mark_candidate(token, "applied", "ok")
     assert updated["status"] == "applied"
     assert manual_apply_queue.get_candidate(token)["message"] == "ok"
+
+
+def test_review_queue_is_profile_scoped_and_skips_snoozed_items(tmp_path, monkeypatch):
+    queue_file = tmp_path / "manual_apply_queue.json"
+    monkeypatch.setattr(manual_apply_queue.config, "MANUAL_APPLY_QUEUE_FILE", str(queue_file), raising=False)
+    monkeypatch.setattr(manual_apply_queue, "_queue_path", lambda profile_name=None: queue_file)
+
+    first = manual_apply_queue.create_candidate(
+        {"id": "1", "title": "QA", "company": "A"}, {"score": 70}, profile_name="qa"
+    )
+    second = manual_apply_queue.create_candidate(
+        {"id": "2", "title": "QA", "company": "B"}, {"score": 75}, profile_name="client_42"
+    )
+
+    assert [item["token"] for item in manual_apply_queue.list_candidates("qa")] == [first["token"]]
+    assert [item["token"] for item in manual_apply_queue.list_candidates("client_42")] == [second["token"]]
+
+    manual_apply_queue.snooze_candidate(first["token"], profile_name="qa")
+    assert manual_apply_queue.list_candidates("qa") == []

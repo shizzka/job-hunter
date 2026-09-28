@@ -53,6 +53,11 @@ def test_search_settings_menu_is_available_to_regular_user():
     assert "🧾 Выбрать резюме" in labels
     assert "⚙️ Условия поиска" in labels
     assert "🛡 Режим откликов" in labels
+    assert "📋 На рассмотрении" in [
+        button["text"]
+        for row in build_reply_markup(ROLE_USER)["keyboard"]
+        for button in row
+    ]
 
 
 def test_search_conditions_and_application_modes_are_available_to_regular_user():

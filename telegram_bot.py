@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import html
 import json
 import logging
 import os
@@ -755,6 +756,57 @@ class TelegramBot(
             "✋ Подтверждать — отправит только после нажатия «Откликнуться с ИИ».",
             "⚡ Автоотклик — отправит подходящие вакансии сам в рамках лимитов.",
         ])
+
+    @staticmethod
+    def _review_item_text(item: dict, index: int) -> str:
+        vacancy = item.get("vacancy") or {}
+        evaluation = item.get("evaluation") or {}
+        title = html.escape(str(vacancy.get("title") or "Вакансия"))
+        company = html.escape(str(vacancy.get("company") or "Компания не указана"))
+        source = html.escape(str(vacancy.get("source_label") or vacancy.get("source") or "hh.ru"))
+        salary = html.escape(str(vacancy.get("salary") or "зарплата не указана"))
+        score = evaluation.get("score")
+        reason = " ".join(str(evaluation.get("reason") or "").split())
+        if len(reason) > 380:
+            reason = reason[:377].rstrip() + "..."
+        lines = [
+            f"<b>{index}. {title}</b>",
+            f"{company} · {source}",
+            f"💰 {salary}" + (f" · 📊 {score}/100" if score not in (None, "") else ""),
+        ]
+        if reason:
+            lines.append(html.escape(reason))
+        return "\n".join(lines)
+
+    async def _show_review_queue(self, chat_id: int, principal: dict, *, profile_name: str) -> None:
+        self._set_selected_menu(principal["user_id"], MENU_REVIEW)
+        items = manual_apply_queue.list_candidates(profile_name, limit=8)
+        if not items:
+            await self._send_text(
+                chat_id,
+                "📋 На рассмотрении пока пусто. Подходящие вакансии появятся здесь, если выбран режим просмотра или подтверждения.",
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_REVIEW),
+            )
+            return
+        total = len(manual_apply_queue.list_candidates(profile_name, limit=250))
+        await self._send_text(
+            chat_id,
+            f"📋 На рассмотрении: {total}. Показываю последние {len(items)}.",
+            reply_markup=self._menu_reply_markup(principal, menu=MENU_REVIEW),
+        )
+        for index, item in enumerate(items, start=1):
+            vacancy = item.get("vacancy") or {}
+            markup = manual_apply_queue.build_manual_apply_markup(
+                vacancy,
+                profile_name,
+                str(item.get("token") or ""),
+                allow_ai_apply=bool(item.get("allow_ai_apply", True)),
+            )
+            await self._send_text(
+                chat_id,
+                self._review_item_text(item, index),
+                reply_markup=markup,
+            )
 
     async def _save_search_setting(
         self,
@@ -1808,6 +1860,10 @@ class TelegramBot(
                 self._search_settings_text(profile_name, user_id=principal["user_id"]),
                 reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
             )
+            return
+
+        if command == "/review":
+            await self._show_review_queue(chat_id, principal, profile_name=profile_name)
             return
 
         if command == "/search_conditions":

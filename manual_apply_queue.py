@@ -16,6 +16,7 @@ CALLBACK_MANUAL_APPLY = "manual_apply"
 CALLBACK_MANUAL_FEEDBACK = "manual_fb"
 CALLBACK_MANUAL_BLOCK_COMPANY = "manual_block_company"
 CALLBACK_MANUAL_WHY = "manual_why"
+CALLBACK_MANUAL_SNOOZE = "manual_snooze"
 FEEDBACK_LABELS = {
     "good": "норм",
     "bad": "мимо",
@@ -24,13 +25,21 @@ MAX_ITEMS = 250
 MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 
-def _queue_path() -> Path:
+def _queue_path(profile_name: str | None = None) -> Path:
+    if profile_name:
+        try:
+            import profile as profile_mod
+
+            profile = profile_mod.load_profile(profile_name)
+            return Path(profile.home_dir) / "manual_apply_queue.json"
+        except Exception:
+            pass
     fallback = os.path.join(config.JOB_HUNTER_HOME, "manual_apply_queue.json")
     return Path(getattr(config, "MANUAL_APPLY_QUEUE_FILE", fallback) or fallback)
 
 
-def _read_queue() -> dict:
-    path = _queue_path()
+def _read_queue(profile_name: str | None = None) -> dict:
+    path = _queue_path(profile_name)
     if not path.exists():
         return {"items": {}}
     try:
@@ -45,8 +54,8 @@ def _read_queue() -> dict:
     return data
 
 
-def _write_queue(data: dict) -> None:
-    path = _queue_path()
+def _write_queue(data: dict, profile_name: str | None = None) -> None:
+    path = _queue_path(profile_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -104,6 +113,7 @@ def create_candidate(
     details: str = "",
     *,
     profile_name: str | None = None,
+    allow_ai_apply: bool = True,
 ) -> dict:
     now = time.time()
     seed = "|".join(
@@ -122,6 +132,7 @@ def create_candidate(
         "token": token,
         "profile_name": _safe_profile(profile_name or os.getenv("JOB_HUNTER_DEFAULT_PROFILE", "default")),
         "status": "pending",
+        "allow_ai_apply": bool(allow_ai_apply),
         "created_ts": now,
         "created_at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
         "vacancy": _compact_vacancy(vacancy),
@@ -135,16 +146,16 @@ def create_candidate(
     return item
 
 
-def get_candidate(token: str) -> dict | None:
+def get_candidate(token: str, *, profile_name: str | None = None) -> dict | None:
     token = (token or "").strip()
     if not token:
         return None
-    item = _read_queue().get("items", {}).get(token)
+    item = _read_queue(profile_name).get("items", {}).get(token)
     return item if isinstance(item, dict) else None
 
 
-def mark_candidate(token: str, status: str, message: str = "") -> dict | None:
-    data = _read_queue()
+def mark_candidate(token: str, status: str, message: str = "", *, profile_name: str | None = None) -> dict | None:
+    data = _read_queue(profile_name)
     item = data.get("items", {}).get((token or "").strip())
     if not isinstance(item, dict):
         return None
@@ -152,7 +163,7 @@ def mark_candidate(token: str, status: str, message: str = "") -> dict | None:
     item["updated_at"] = datetime.now().isoformat(timespec="seconds")
     if message:
         item["message"] = str(message)[:1000]
-    _write_queue(data)
+    _write_queue(data, profile_name)
     return item
 
 
@@ -160,11 +171,11 @@ def feedback_label(value: str) -> str:
     return FEEDBACK_LABELS.get((value or "").strip(), "")
 
 
-def record_feedback(token: str, value: str, *, user_id: int = 0) -> dict | None:
+def record_feedback(token: str, value: str, *, user_id: int = 0, profile_name: str | None = None) -> dict | None:
     value = (value or "").strip()
     if value not in FEEDBACK_LABELS:
         return None
-    data = _read_queue()
+    data = _read_queue(profile_name)
     item = data.get("items", {}).get((token or "").strip())
     if not isinstance(item, dict):
         return None
@@ -176,7 +187,40 @@ def record_feedback(token: str, value: str, *, user_id: int = 0) -> dict | None:
     if value == "bad" and item.get("status") == "pending":
         item["status"] = "dismissed"
     item["updated_at"] = item["feedback_at"]
-    _write_queue(data)
+    _write_queue(data, profile_name)
+    return item
+
+
+def list_candidates(profile_name: str, *, limit: int = 8, include_snoozed: bool = False) -> list[dict]:
+    """Pending decisions for one profile, newest first."""
+    now = time.time()
+    data = _read_queue(profile_name)
+    _prune(data, now)
+    _write_queue(data, profile_name)
+    items = []
+    for item in data.get("items", {}).values():
+        if not isinstance(item, dict) or item.get("status") != "pending":
+            continue
+        if _safe_profile(item.get("profile_name")) != _safe_profile(profile_name):
+            continue
+        snoozed_until = float(item.get("snoozed_until") or 0)
+        if not include_snoozed and snoozed_until > now:
+            continue
+        items.append(item)
+    items.sort(key=lambda item: float(item.get("created_ts") or 0), reverse=True)
+    return items[:max(1, int(limit or 1))]
+
+
+def snooze_candidate(token: str, *, profile_name: str, hours: int = 24) -> dict | None:
+    data = _read_queue(profile_name)
+    item = data.get("items", {}).get((token or "").strip())
+    if not isinstance(item, dict) or item.get("status") != "pending":
+        return None
+    until = time.time() + max(1, int(hours)) * 3600
+    item["snoozed_until"] = until
+    item["snoozed_until_at"] = datetime.fromtimestamp(until).isoformat(timespec="seconds")
+    item["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    _write_queue(data, profile_name)
     return item
 
 
@@ -194,6 +238,10 @@ def manual_block_company_callback_data(profile_name: str, token: str) -> str:
 
 def manual_why_callback_data(profile_name: str, token: str) -> str:
     return f"{CALLBACK_MANUAL_WHY}:{_safe_profile(profile_name)}:{(token or '').strip()}"
+
+
+def manual_snooze_callback_data(profile_name: str, token: str) -> str:
+    return f"{CALLBACK_MANUAL_SNOOZE}:{_safe_profile(profile_name)}:{(token or '').strip()}"
 
 
 def parse_manual_apply_callback_data(data: str) -> tuple[str, str]:
@@ -233,6 +281,17 @@ def parse_manual_block_company_callback_data(data: str) -> tuple[str, str]:
 
 def parse_manual_why_callback_data(data: str) -> tuple[str, str]:
     prefix = f"{CALLBACK_MANUAL_WHY}:"
+    if not (data or "").startswith(prefix):
+        return "", ""
+    rest = data[len(prefix):]
+    profile_name, sep, token = rest.partition(":")
+    if not sep:
+        return "", ""
+    return _safe_profile(profile_name), token.strip()
+
+
+def parse_manual_snooze_callback_data(data: str) -> tuple[str, str]:
+    prefix = f"{CALLBACK_MANUAL_SNOOZE}:"
     if not (data or "").startswith(prefix):
         return "", ""
     rest = data[len(prefix):]
@@ -347,6 +406,9 @@ def build_manual_apply_markup(
                 feedback_buttons.append({"text": text, "callback_data": feedback_data})
         if feedback_buttons:
             rows.append(feedback_buttons)
+        snooze_data = manual_snooze_callback_data(profile_name, token)
+        if len(snooze_data.encode("utf-8")) <= 64:
+            rows.append([{"text": "⏰ Через сутки", "callback_data": snooze_data}])
         block_company_data = manual_block_company_callback_data(profile_name, token)
         if is_hh and vacancy.get("company") and len(block_company_data.encode("utf-8")) <= 64:
             rows.append([{"text": "Не трогать компанию", "callback_data": block_company_data}])

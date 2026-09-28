@@ -1216,7 +1216,11 @@ async def do_search(dry_run: bool = False) -> dict:
             if source == "hh" and hh_application_mode in {"preview", "confirm"}:
                 profile_name = profile_mod.active().name
                 candidate = manual_apply_queue.create_candidate(
-                    v, evaluation, details, profile_name=profile_name,
+                    v,
+                    evaluation,
+                    details,
+                    profile_name=profile_name,
+                    allow_ai_apply=is_confirmation,
                 )
                 token = candidate.get("token", "")
                 is_confirmation = hh_application_mode == "confirm"

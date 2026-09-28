@@ -11,13 +11,14 @@ def _callback(
     user_id: int = 1,
     chat_id: int = 42,
     message_id: int = 7,
+    chat_type: str = "",
 ) -> dict:
     return {
         "id": "callback-1",
         "from": {"id": user_id},
         "data": data,
         "message": {
-            "chat": {"id": chat_id},
+            "chat": {"id": chat_id, "type": chat_type},
             "message_id": message_id,
         },
     }
@@ -413,6 +414,23 @@ def test_callback_router_starts_manual_apply(monkeypatch):
     ]
 
 
+def test_user_can_start_manual_apply_for_own_profile(monkeypatch):
+    principal = {"user_id": 42, "role": telegram_bot.ROLE_USER, "profile": "qa"}
+    bot, calls = _configured_bot(monkeypatch, principal=principal)
+    starts = []
+
+    async def start_apply(chat_id, current_principal, *, profile_name, token):
+        starts.append((chat_id, current_principal["user_id"], profile_name, token))
+
+    monkeypatch.setattr(bot, "_start_manual_ai_apply", start_apply)
+    asyncio.run(bot._handle_callback_query(
+        _callback("manual_apply:qa:token-1", user_id=42, chat_type="private")
+    ))
+
+    assert starts == [(42, 42, "qa", "token-1")]
+    assert calls["answers"] == [("callback-1", "Отправляю отклик через ИИ…", False)]
+
+
 def test_callback_router_records_manual_feedback(monkeypatch):
     bot, calls = _configured_bot(monkeypatch)
     feedback_calls = []
@@ -421,7 +439,7 @@ def test_callback_router_records_manual_feedback(monkeypatch):
     monkeypatch.setattr(
         telegram_bot.manual_apply_queue,
         "record_feedback",
-        lambda token, feedback, *, user_id: (
+        lambda token, feedback, *, user_id, profile_name=None: (
             feedback_calls.append(
                 (token, feedback, user_id)
             )
@@ -462,7 +480,7 @@ def test_callback_router_shows_manual_reason(monkeypatch):
     monkeypatch.setattr(
         telegram_bot.manual_apply_queue,
         "get_candidate",
-        lambda token: item,
+        lambda token, *, profile_name=None: item,
     )
     monkeypatch.setattr(
         telegram_bot.manual_apply_queue,
@@ -490,14 +508,14 @@ def test_callback_router_blocks_retry_company(monkeypatch):
     monkeypatch.setattr(
         telegram_bot.manual_apply_queue,
         "get_candidate",
-        lambda token: {
+        lambda token, *, profile_name=None: {
             "vacancy": {"company": "Example"}
         },
     )
     monkeypatch.setattr(
         telegram_bot.manual_apply_queue,
         "mark_candidate",
-        lambda token, status, reason: marks.append(
+        lambda token, status, reason, *, profile_name=None: marks.append(
             (token, status, reason)
         ),
     )
