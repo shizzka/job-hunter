@@ -8,9 +8,17 @@ from dataclasses import dataclass, field
 from openai import AsyncOpenAI
 
 import config
+import analytics
 import proxy_utils
 
 log = logging.getLogger("llm_client")
+
+
+def _record_usage(provider, model, **kwargs):
+    try:
+        analytics.record_llm_call(provider, model, **kwargs)
+    except Exception:
+        log.warning("Could not record LLM usage metadata")
 
 
 @dataclass(frozen=True)
@@ -518,8 +526,10 @@ class FallbackLLMClient:
                         requested_model,
                         mapped_model,
                     )
+                _record_usage(provider.name, str(provider_kwargs.get("model") or ""), response=response)
                 return response
             except Exception as exc:
+                _record_usage(provider.name, str(provider_kwargs.get("model") or ""), error_kind=type(exc).__name__)
                 last_exc = exc
                 if not _is_retryable_provider_error(exc):
                     raise

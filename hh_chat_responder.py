@@ -1104,6 +1104,8 @@ async def process_all(
             summary["read_failures"] += 1
             continue
         msgs = data.get("messages", [])
+        import hiring_research
+        hiring_research.record_screening(data.get("vacancy") or {}, msgs)
 
         form_item = _find_unseen_google_form_message(msgs, chat_state)
         if form_item:

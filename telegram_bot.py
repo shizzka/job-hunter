@@ -21,6 +21,7 @@ import client_hh_auth
 import hh_response_counter
 import manual_apply_queue
 import config
+import company_blacklist
 import profile as profile_mod
 import runtime_control
 import search_query_suggester
@@ -834,9 +835,10 @@ class TelegramBot(
     async def _accept_search_query_input(self, chat_id: int, principal: dict, text: str) -> bool:
         state = self._search_settings_state(principal["user_id"])
         input_kind = state.get("search_input")
-        if input_kind not in {"queries", "resume", "salary"}:
+        if input_kind not in {"queries", "resume", "salary", "company_block", "company_unblock"}:
             return False
-        if _is_menu_button_text(text):
+        if _is_menu_button_text(text) or text.startswith("/") and text != "/cancel":
+            self._clear_search_settings_state(principal["user_id"], "search_input")
             return False
         if text.strip().casefold() in {"отмена", "/cancel"}:
             self._clear_search_settings_state(principal["user_id"], "search_input")
@@ -848,6 +850,16 @@ class TelegramBot(
                     menu=MENU_SEARCH_CONDITIONS if input_kind == "salary" else MENU_SEARCH,
                 ),
             )
+            return True
+        if input_kind in {"company_block", "company_unblock"}:
+            profile_name = self._selected_profile(principal)
+            try:
+                company_blacklist.set_blocked(text, input_kind == "company_block", profile_name)
+            except ValueError as exc:
+                await self._send_text(chat_id, str(exc))
+                return True
+            self._clear_search_settings_state(principal["user_id"], "search_input")
+            await self._send_text(chat_id, "Список компаний обновлён.", reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH))
             return True
         if input_kind == "salary":
             normalized = text.strip().replace(" ", "").replace("₽", "")
@@ -1853,6 +1865,16 @@ class TelegramBot(
             await self._send_menu(chat_id, principal, profile_name=profile_name, menu=menu_commands[command])
             return
 
+        if command in {"/companies", "/company_block", "/company_unblock"}:
+            self._set_selected_menu(principal["user_id"], MENU_SEARCH)
+            companies = company_blacklist.list_companies(profile_name)
+            message = "🚫 Чёрный список компаний\n" + ("\n".join("• " + x for x in companies) or "Пока пуст.")
+            if command != "/companies":
+                self._set_search_settings_state(principal["user_id"], search_input=command[1:])
+                message += "\n\nПришлите точное название одной компании. Добавить её можно заранее, до поиска и первого отклика. Для отмены — Назад."
+            await self._send_text(chat_id, message, reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH))
+            return
+
         if command == "/search_settings":
             self._set_selected_menu(principal["user_id"], MENU_SEARCH)
             await self._send_text(
@@ -2389,6 +2411,14 @@ class TelegramBot(
                 ),
                 reply_markup=self._menu_reply_markup(principal),
             )
+            return
+
+        if command == "/research":
+            import hiring_research
+            profile = self._profile(profile_name)
+            report = hiring_research.summarize(profile.analytics_events_file)
+            for text in hiring_research.render(report):
+                await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal))
             return
 
         if command == "/stats":

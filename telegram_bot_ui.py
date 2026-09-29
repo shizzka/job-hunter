@@ -17,11 +17,15 @@ ROLE_USER = telegram_access.ROLE_USER
 
 BUTTON_STATUS = "📊 Статус"
 BUTTON_DIAGNOSTICS = "🩺 Диагностика"
+BUTTON_RESEARCH = "🔬 Отказы и конверсии"
 BUTTON_STATS = "📈 Статистика"
 BUTTON_RUNS = "🕓 Прогоны"
 BUTTON_LOG = "📜 Лог поиска"
 BUTTON_CHAT_LOG = "💬 Лог чатов"
 BUTTON_SEARCH = "🔎 Поиск"
+BUTTON_BLACKLIST = "🚫 Компании"
+BUTTON_BLACKLIST_ADD = "➕ В чёрный список"
+BUTTON_BLACKLIST_REMOVE = "➖ Разрешить компанию"
 BUTTON_SEARCH_SETTINGS = "🎯 Мой поиск"
 BUTTON_REVIEW = "📋 На рассмотрении"
 BUTTON_SEARCH_EDIT = "✏️ Изменить запросы"
@@ -114,11 +118,15 @@ ADMIN_BUTTON_MAP = {
     BUTTON_STATUS: "/status",
     BUTTON_DIAGNOSTICS: "/diagnostics",
     BUTTON_STATS: "/stats",
+    BUTTON_RESEARCH: "/research",
     BUTTON_RUNS: "/runs",
     BUTTON_LOG: "/log",
     BUTTON_CHAT_LOG: "/chat_log",
     BUTTON_SEARCH: "/search",
     BUTTON_SEARCH_SETTINGS: "/search_settings",
+    BUTTON_BLACKLIST: "/companies",
+    BUTTON_BLACKLIST_ADD: "/company_block",
+    BUTTON_BLACKLIST_REMOVE: "/company_unblock",
     BUTTON_REVIEW: "/review",
     BUTTON_SEARCH_EDIT: "/search_edit",
     BUTTON_SEARCH_SUGGEST: "/search_suggest",
@@ -172,11 +180,15 @@ USER_BUTTON_MAP = {
     BUTTON_MENU_REPEAT: "/menu_repeat",
     BUTTON_STATUS: "/status",
     BUTTON_STATS: "/stats",
+    BUTTON_RESEARCH: "/research",
     BUTTON_RUNS: "/runs",
     BUTTON_LOG: "/log",
     BUTTON_CHAT_LOG: "/chat_log",
     BUTTON_SEARCH: "/search",
     BUTTON_SEARCH_SETTINGS: "/search_settings",
+    BUTTON_BLACKLIST: "/companies",
+    BUTTON_BLACKLIST_ADD: "/company_block",
+    BUTTON_BLACKLIST_REMOVE: "/company_unblock",
     BUTTON_REVIEW: "/review",
     BUTTON_SEARCH_EDIT: "/search_edit",
     BUTTON_SEARCH_SUGGEST: "/search_suggest",
@@ -527,6 +539,7 @@ def build_reply_markup(
     if role == ROLE_ADMIN:
         if menu == MENU_MONITOR:
             rows = [
+                [{"text": BUTTON_RESEARCH}],
                 [{"text": BUTTON_STATUS}, {"text": BUTTON_DIAGNOSTICS}],
                 [{"text": BUTTON_STATS}, {"text": BUTTON_RUNS}],
                 [{"text": BUTTON_CHECK}, {"text": BUTTON_HH_RESPONSES}],
@@ -555,7 +568,8 @@ def build_reply_markup(
             rows = [
                 [{"text": BUTTON_SEARCH_EDIT}, {"text": BUTTON_SEARCH_SUGGEST}],
                 [{"text": BUTTON_SEARCH_USE_DRAFT}],
-                [{"text": BUTTON_SEARCH_RESUME}],
+                [{"text": BUTTON_SEARCH_RESUME}, {"text": BUTTON_BLACKLIST}],
+                [{"text": BUTTON_BLACKLIST_ADD}, {"text": BUTTON_BLACKLIST_REMOVE}],
                 [{"text": BUTTON_SEARCH_CONDITIONS}, {"text": BUTTON_SEARCH_APPLICATION_MODE}],
                 [{"text": BUTTON_DRYRUN}, {"text": BUTTON_SEARCH}],
                 [{"text": BUTTON_SCHEDULE}],
@@ -603,6 +617,7 @@ def build_reply_markup(
     else:
         if menu == MENU_MONITOR:
             rows = [
+                [{"text": BUTTON_RESEARCH}],
                 [{"text": BUTTON_STATUS}, {"text": BUTTON_STATS}],
                 [{"text": BUTTON_RUNS}, {"text": BUTTON_CHECK}],
                 [{"text": BUTTON_HH_RESPONSES}],
@@ -627,7 +642,8 @@ def build_reply_markup(
             rows = [
                 [{"text": BUTTON_SEARCH_EDIT}, {"text": BUTTON_SEARCH_SUGGEST}],
                 [{"text": BUTTON_SEARCH_USE_DRAFT}],
-                [{"text": BUTTON_SEARCH_RESUME}],
+                [{"text": BUTTON_SEARCH_RESUME}, {"text": BUTTON_BLACKLIST}],
+                [{"text": BUTTON_BLACKLIST_ADD}, {"text": BUTTON_BLACKLIST_REMOVE}],
                 [{"text": BUTTON_SEARCH_CONDITIONS}, {"text": BUTTON_SEARCH_APPLICATION_MODE}],
                 [{"text": BUTTON_DRYRUN}, {"text": BUTTON_SEARCH}],
                 [{"text": BUTTON_SCHEDULE}],

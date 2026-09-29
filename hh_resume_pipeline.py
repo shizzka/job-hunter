@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timedelta
 
 import config
+import company_blacklist
 from outcome import (
     STATUS_DETAIL_PENDING_NEW,
     STATUS_DETAIL_PENDING_VIEWED,
@@ -563,6 +564,8 @@ def _company_retry_attempts_since(state: dict, company_key: str, cutoff: datetim
 
 
 def retry_company_reject_reason(entry: dict, state: dict | None = None, now: datetime | None = None) -> str | None:
+    if company_blacklist.is_blocked(entry.get("company", "")):
+        return "company_blacklisted"
     company_key = _company_key(entry.get("company", ""))
     if not company_key:
         return None

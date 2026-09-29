@@ -130,6 +130,7 @@ HH_CHAT_RESPONDER_MODEL = os.getenv("HH_CHAT_RESPONDER_MODEL", "").strip()
 
 # Per-task LLM-модели. Если задано — переопределяет LLM_MODEL для соответствующей роли.
 # Пустая строка = fallback на LLM_MODEL. См. scripts/smoke/model_bench.py для бенчмарка.
+HH_VERIFIER_SHADOW_ENABLED = _env_flag("HH_VERIFIER_SHADOW_ENABLED", "1")
 HH_MATCHER_MODEL = os.getenv("HH_MATCHER_MODEL", "").strip()
 HH_COVER_LETTER_MODEL = os.getenv("HH_COVER_LETTER_MODEL", "").strip()
 HH_MATCHER_AUTO_APPLY_MIN_SCORE = _env_int("HH_MATCHER_AUTO_APPLY_MIN_SCORE", "58")

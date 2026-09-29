@@ -3,6 +3,7 @@ import manual_apply_queue
 
 def test_manual_apply_queue_roundtrip(tmp_path, monkeypatch):
     queue_file = tmp_path / "manual_apply_queue.json"
+    monkeypatch.setattr(manual_apply_queue, "_queue_path", lambda profile_name=None: queue_file)
     monkeypatch.setattr(manual_apply_queue.config, "MANUAL_APPLY_QUEUE_FILE", str(queue_file), raising=False)
 
     item = manual_apply_queue.create_candidate(
@@ -73,6 +74,8 @@ def test_manual_apply_queue_roundtrip(tmp_path, monkeypatch):
 
 def test_review_queue_is_profile_scoped_and_skips_snoozed_items(tmp_path, monkeypatch):
     queue_file = tmp_path / "manual_apply_queue.json"
+    monkeypatch.setattr(manual_apply_queue, "_queue_path", lambda profile_name=None: queue_file)
+    monkeypatch.setattr(manual_apply_queue.company_blacklist, "_path", lambda profile_name=None: tmp_path / str(profile_name) / "company_blacklist.json")
     monkeypatch.setattr(manual_apply_queue.config, "MANUAL_APPLY_QUEUE_FILE", str(queue_file), raising=False)
     monkeypatch.setattr(manual_apply_queue, "_queue_path", lambda profile_name=None: queue_file)
 
@@ -88,3 +91,36 @@ def test_review_queue_is_profile_scoped_and_skips_snoozed_items(tmp_path, monkey
 
     manual_apply_queue.snooze_candidate(first["token"], profile_name="qa")
     assert manual_apply_queue.list_candidates("qa") == []
+
+
+def test_unknown_profile_never_falls_back_to_active_queue(tmp_path, monkeypatch):
+    import pytest
+    import profile
+    monkeypatch.setattr(manual_apply_queue.config, 'MANUAL_APPLY_QUEUE_FILE', str(tmp_path / 'active.json'))
+    def missing(name):
+        raise FileNotFoundError(name)
+    monkeypatch.setattr(profile, 'load_profile', missing)
+    with pytest.raises(FileNotFoundError):
+        manual_apply_queue.get_candidate('token', profile_name='missing')
+    with pytest.raises(FileNotFoundError):
+        manual_apply_queue.create_candidate({}, {}, profile_name='missing')
+    assert not (tmp_path / 'active.json').exists()
+
+
+def test_listing_does_not_write_queue(tmp_path, monkeypatch):
+    path = tmp_path / 'queue.json'
+    monkeypatch.setattr(manual_apply_queue, '_queue_path', lambda profile_name=None: path)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('read must not write')
+    monkeypatch.setattr(manual_apply_queue, '_write_queue', forbidden)
+    assert manual_apply_queue.list_candidates('qa') == []
+    assert not path.exists()
+
+
+def test_concurrent_creates_are_not_lost(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    path = tmp_path / 'queue.json'
+    monkeypatch.setattr(manual_apply_queue, '_queue_path', lambda profile_name=None: path)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(lambda i: manual_apply_queue.create_candidate({'id': str(i)}, {}, profile_name='qa'), range(30)))
+    assert len(manual_apply_queue._read_queue()['items']) == 30

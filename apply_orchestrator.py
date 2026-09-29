@@ -4,8 +4,12 @@
 Извлечено из agent.py (A-002).
 """
 import logging
+import uuid
+import analytics
+import resume_versions
 
 import config
+import company_blacklist
 from hh_client import HHClient
 from superjob_client import SuperJobClient
 from habr_career_client import HabrCareerClient
@@ -46,7 +50,36 @@ async def fetch_vacancy_details(
 
 # ── Диспетчеризация отклика ──
 
-async def dispatch_apply(
+async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> dict:
+    application_id = uuid.uuid4().hex
+    vacancy["_requested_resume"] = {"id": kwargs.get("preferred_resume_id", ""),
+                                    "title": kwargs.get("preferred_resume_title", "")}
+    with analytics.event_context(
+        application_id=application_id,
+        run_id=vacancy.get("_analytics_run_id", ""),
+        vacancy_id=str(vacancy.get("id") or ""),
+        source=vacancy.get("source", "hh"),
+        stage="apply",
+        apply_mode=vacancy.get("_analytics_apply_mode", "unknown"),
+        has_cover_letter=bool(cover_letter.strip()),
+        resume_id=kwargs.get("preferred_resume_id", ""),
+        **resume_versions.payload(vacancy),
+    ):
+        analytics._append_event({"event": "application_attempt"})
+        try:
+            result = await _dispatch_apply(vacancy, cover_letter, *args, **kwargs)
+        except Exception as exc:
+            analytics._append_event({"event": "application_result", "outcome": "error", "error_kind": type(exc).__name__})
+            raise
+        outcome = ("already_applied" if result.get("already_applied") else
+                   "blocked" if result.get("reason") == "company_blacklisted" else
+                   "sent" if result.get("ok") else "failed")
+        analytics._append_event({"event": "application_result", "outcome": outcome,
+                                 "cover_letter_status": result.get("cover_letter_status", "unknown")})
+        return result
+
+
+async def _dispatch_apply(
     vacancy: dict,
     cover_letter: str,
     hh_client: HHClient | None = None,
@@ -58,6 +91,8 @@ async def dispatch_apply(
 ) -> dict:
     """Отправить отклик через соответствующий клиент источника."""
     source = vacancy.get("source", "hh")
+    if company_blacklist.is_blocked(vacancy.get("company", "")):
+        return {"ok": False, "message": "Компания в чёрном списке", "reason": "company_blacklisted"}
 
     if source == "hh" and hh_client is not None:
         title = (vacancy.get("title") or "").strip()

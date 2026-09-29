@@ -222,7 +222,7 @@ def test_manual_block_company_and_why_callback_parser_and_markup():
 
     assert any(button["text"] == "Почему?" for button in buttons)
     assert any(button.get("callback_data") == "manual_why:qa:abcdef123456" for button in buttons)
-    assert any(button["text"] == "Не трогать компанию" for button in buttons)
+    assert any(button["text"] == "🚫 В чёрный список" for button in buttons)
     assert any(button.get("callback_data") == "manual_block_company:qa:abcdef123456" for button in buttons)
 
 

@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 
 import config
+import resume_versions
 from llm_client import LLMProvidersExhaustedError, get_llm_client
 
 log = logging.getLogger("matcher")
@@ -1251,6 +1252,7 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
     }
     """
     resume = _load_resume()
+    resume_versions.record_input(vacancy, resume, "matcher")
     truth_block = _build_matcher_truth_block()
 
     allow_one_year_override = _is_one_year_experience_vacancy(vacancy, details)
@@ -1430,6 +1432,7 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
 async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     """Сгенерировать сопроводительное письмо для вакансии."""
     resume = _load_resume()
+    resume_versions.record_input(vacancy, resume, "cover_letter")
     from prompt_blocks import (
         build_profile_note_block,
         build_filtered_kb_block,

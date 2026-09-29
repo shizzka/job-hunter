@@ -391,6 +391,7 @@ class TelegramCallbackRouter:
                         profile_name,
                         token,
                         include_feedback=False,
+                        allow_ai_apply=item.get("allow_ai_apply", True),
                     )
                     await self._edit_reply_markup(chat_id, message_id, reply_markup=reply_markup)
                 else:
@@ -439,28 +440,13 @@ class TelegramCallbackRouter:
             if not item or not company:
                 await self._answer_callback_query(callback_id, "Не удалось определить компанию.", show_alert=True)
                 return
-            await self._answer_callback_query(callback_id, "Ставлю компанию в retry blocklist…")
-            result = await runtime_control.run_command_capture(
-                runtime_control.agent_command_argv(profile_name, "--hh-retry-block-company", company),
-                timeout=60,
-            )
-            if result.get("ok"):
-                manual_apply_queue.mark_candidate(
-                    token,
-                    "company_blocked",
-                    f"retry company blocked: {company}",
-                    profile_name=profile_name,
-                )
-                if message_id > 0:
-                    await self._edit_reply_markup(chat_id, message_id)
-                await self._send_text(
-                    chat_id,
-                    f"🛑 Retry-отклики в компанию {company} отключены для профиля {profile_name}.",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-            else:
-                message = format_command_result("retry block company", result, role=principal.get("role", ROLE_USER))
-                await self._send_text(chat_id, message, reply_markup=self._menu_reply_markup(principal))
+            import company_blacklist
+            company_blacklist.set_blocked(company, profile_name=profile_name)
+            manual_apply_queue.mark_candidate(token, "company_blocked", company, profile_name=profile_name)
+            await self._answer_callback_query(callback_id, "Компания в чёрном списке.")
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            await self._send_text(chat_id, f"🚫 Новые отклики в {company} запрещены для профиля {profile_name}.", reply_markup=self._menu_reply_markup(principal))
             return
 
         action, target_user_id = _parse_callback_data(raw_data)

@@ -454,7 +454,7 @@ def test_callback_router_records_manual_feedback(monkeypatch):
     monkeypatch.setattr(
         telegram_bot.manual_apply_queue,
         "build_manual_apply_markup",
-        lambda vacancy, profile_name, token, *, include_feedback: {
+        lambda vacancy, profile_name, token, *, include_feedback, allow_ai_apply: {
             "manual": token,
         },
     )
@@ -502,7 +502,9 @@ def test_callback_router_shows_manual_reason(monkeypatch):
     ]
 
 
-def test_callback_router_blocks_retry_company(monkeypatch):
+def test_callback_router_blocks_company(monkeypatch, tmp_path):
+    import company_blacklist
+    monkeypatch.setattr(company_blacklist, "_path", lambda profile_name=None: tmp_path / str(profile_name) / "company_blacklist.json")
     bot, calls = _configured_bot(monkeypatch)
     marks = []
     monkeypatch.setattr(
@@ -537,16 +539,17 @@ def test_callback_router_blocks_retry_company(monkeypatch):
         )
     )
 
+    assert company_blacklist.is_blocked("Example", "qa")
+    assert not company_blacklist.is_blocked("Example", "other")
     assert marks == [
         (
             "token-1",
             "company_blocked",
-            "retry company blocked: Example",
+            "Example",
         )
     ]
     assert calls["messages"][0][1] == (
-        "🛑 Retry-отклики в компанию Example "
-        "отключены для профиля qa."
+        "🚫 Новые отклики в Example запрещены для профиля qa."
     )
 
 

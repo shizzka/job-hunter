@@ -5,14 +5,57 @@ import json
 import logging
 import os
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from contextvars import ContextVar
+from contextlib import contextmanager
+import hashlib
+import uuid
 
 import config
+import resume_versions
 from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket
 
 log = logging.getLogger("analytics")
 
 _state: dict | None = None
+_state_file: str | None = None
+_event_context = ContextVar("analytics_context", default={})
+
+
+@contextmanager
+def event_context(**fields):
+    token = _event_context.set({**_event_context.get(), **fields})
+    try:
+        yield
+    finally:
+        _event_context.reset(token)
+
+
+async def tracked_call(stage, run_id, vacancy, function, *args, **kwargs):
+    with event_context(stage=stage, run_id=run_id,
+                       vacancy_id=str(vacancy.get("id") or ""),
+                       source=vacancy.get("source", "unknown")):
+        return await function(*args, **kwargs)
+
+
+def record_llm_call(provider, model, response=None, error_kind=None):
+    """Record usage metadata only; never prompts, answers, credentials or URLs."""
+    usage = getattr(response, "usage", None)
+    def count(name):
+        value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    _append_event({
+        "event": "llm_call", "call_id": uuid.uuid4().hex,
+        "provider": provider, "model": model,
+        "outcome": "error" if error_kind else "response",
+        "error_kind": error_kind,
+        "input_tokens": count("prompt_tokens"),
+        "output_tokens": count("completion_tokens"),
+        "total_tokens": count("total_tokens"),
+        "cost_usd": None, "pricing_version": None,
+        "cost_status": "unknown",
+    })
+
 
 
 def _now() -> datetime:
@@ -54,7 +97,10 @@ def _source_from_vacancy_id(vacancy_id: str) -> str:
 
 
 def _load_state() -> dict:
-    global _state
+    global _state, _state_file
+    if _state_file != config.ANALYTICS_STATE_FILE:
+        _state = None
+        _state_file = config.ANALYTICS_STATE_FILE
     if _state is not None:
         return _state
 
@@ -85,6 +131,14 @@ def _append_event(payload: dict) -> None:
     if not config.ANALYTICS_ENABLED:
         return
 
+    payload = {**_event_context.get(), **payload}
+    payload.setdefault("schema_version", 2)
+    payload.setdefault("event_id", uuid.uuid4().hex)
+    payload.setdefault("recorded_at_utc", datetime.now(timezone.utc).isoformat())
+    payload.setdefault("created_at", _now().isoformat(timespec="seconds"))
+    # Stable local identity; does not disclose the runtime filesystem path.
+    payload.setdefault("profile_id", hashlib.sha256(os.path.realpath(config.JOB_HUNTER_HOME).encode()).hexdigest()[:20])
+    payload.setdefault("rules_version", "matcher-v1")
     try:
         os.makedirs(os.path.dirname(config.ANALYTICS_EVENTS_FILE), exist_ok=True)
         with open(config.ANALYTICS_EVENTS_FILE, "a", encoding="utf-8") as f:
@@ -210,13 +264,16 @@ def record_decision(
         "retry_outcome": vacancy.get("_hh_retry_outcome", "") or vacancy.get("_hh_retry_reason", ""),
         "retry_after": vacancy.get("_hh_retry_after", ""),
         "apply_mode": vacancy.get("apply_mode", ""),
+        "submission_mode": vacancy.get("_analytics_apply_mode", "") or ("manual" if note.startswith("manual_ai") else "unknown"),
         "score": evaluation.get("score"),
         "match_score": evaluation.get("score"),
         "response_probability_score": evaluation.get("response_probability_score"),
         "cluster": evaluation.get("cluster", "") or vacancy.get("cluster", ""),
         "cover_style": evaluation.get("cover_style", ""),
         "cover_letter_hash": evaluation.get("cover_letter_hash", ""),
+        "cover_letter_status": evaluation.get("cover_letter_status", "unknown"),
         "cover_letter_length": evaluation.get("cover_letter_length", 0),
+        "has_cover_letter": (bool(evaluation.get("cover_letter_length")) if "cover_letter_length" in evaluation else None),
         "cover_letter_features": dict(evaluation.get("cover_letter_features", {}) or {}),
         "fallback_cover_letter": bool(evaluation.get("fallback_cover_letter", False)),
         "overclaim_guard": bool(evaluation.get("overclaim_guard", False)),
@@ -230,6 +287,7 @@ def record_decision(
         "note": note,
     }
     payload.update(_resume_variant_payload(resume_variant))
+    payload.update(resume_versions.payload(vacancy))
     _append_event(payload)
 
 
@@ -247,6 +305,17 @@ def record_negotiation_statuses(items: list[dict]) -> None:
         if not vacancy_id or not status_text:
             continue
 
+        polls = state.setdefault("last_poll_by_vacancy", {})
+        observed_at = datetime.now(timezone.utc).isoformat()
+        _append_event({
+            "event": "negotiation_observation", "vacancy_id": vacancy_id,
+            "source": "hh", "observed_at_utc": observed_at,
+            "previous_poll_at": polls.get(vacancy_id),
+            "status_bucket": _status_bucket(status_text),
+            "status_detail_bucket": _status_detail_bucket(status_text),
+        })
+        polls[vacancy_id] = observed_at
+        changed = True
         prev_status = last_status_by_vacancy.get(vacancy_id, "")
         if prev_status == status_text:
             continue

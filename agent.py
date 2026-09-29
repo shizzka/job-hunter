@@ -25,6 +25,8 @@ from pathlib import Path
 from datetime import datetime
 
 import config
+import company_blacklist
+from relevance_verifier import ShadowVerifier
 import filters
 import hh_resume_pipeline as hh_pipeline
 import hh_guard
@@ -554,7 +556,14 @@ async def do_manual_apply_token(token: str) -> dict:
         print(f"❌ Заявка не найдена или устарела: {token}")
         return {"ok": False, "message": "manual apply token not found"}
 
+    if getattr(config, "HH_APPLICATION_MODE", "auto") == "preview":
+        return {"ok": False, "message": "Включён режим просмотра без отправки"}
     vacancy = dict(item.get("vacancy") or {})
+    if company_blacklist.is_blocked(vacancy.get("company", "")):
+        manual_apply_queue.mark_candidate(token, "company_blocked", "Компания в чёрном списке")
+        return {"ok": False, "message": "Компания в чёрном списке"}
+    if item.get("status") != "pending" or not item.get("allow_ai_apply", True):
+        return {"ok": False, "message": "Отклик для этой карточки недоступен"}
     evaluation = dict(item.get("evaluation") or {})
     details = str(item.get("details") or "")
     source = vacancy.get("source", "hh")
@@ -569,6 +578,8 @@ async def do_manual_apply_token(token: str) -> dict:
         return {"ok": False, "message": message}
 
     run_id = analytics.new_run_id("manual-ai-apply")
+    vacancy["_analytics_run_id"] = run_id
+    vacancy["_analytics_apply_mode"] = "manual"
     hh_client = HHClient()
     try:
         await hh_client.start()
@@ -607,7 +618,7 @@ async def do_manual_apply_token(token: str) -> dict:
 
         vacancy["details"] = details
         cover_limit = apply_orchestrator.get_cover_letter_limit(source)
-        cover = await generate_cover_letter(vacancy, details)
+        cover = await analytics.tracked_call("cover_letter", run_id, vacancy, generate_cover_letter, vacancy, details)
         cover = cover or ""
         if len(cover) > cover_limit:
             cover = cover[:cover_limit]
@@ -642,6 +653,7 @@ async def do_manual_apply_token(token: str) -> dict:
             apply_result=apply_result,
             success=bool(apply_result.get("ok")),
         )
+        cover_evaluation["cover_letter_status"] = apply_result.get("cover_letter_status", "unknown")
         apply_notes = apply_result.get("notes") or []
         apply_note_text = "; ".join(str(item) for item in apply_notes if item)
         question_answer_note = _format_hh_question_answers_for_note(apply_result)
@@ -1005,6 +1017,7 @@ async def do_search(dry_run: bool = False) -> dict:
         applied_count = 0
         auto_applied_count_by_source = defaultdict(int)
         llm_issue_alert_sent = False
+        shadow_verifier = ShadowVerifier()
         processed_by_source = defaultdict(int)
         habr_logged_in: bool | None = None
         superjob_ready: bool | None = None
@@ -1019,6 +1032,12 @@ async def do_search(dry_run: bool = False) -> dict:
                 log.info("Reached max applications limit (%d)", config.MAX_APPLICATIONS_PER_RUN)
                 break
 
+            if company_blacklist.is_blocked(v.get("company", "")):
+                log.info("Skipped blacklisted company: %s", v.get("company"))
+                continue
+
+            v["_analytics_run_id"] = run_id
+            v["_analytics_apply_mode"] = "auto"
             vid = v["id"]
             source = v.get("source", "hh")
             bucket = search_pipeline.get_source_bucket(result["source_stats"], v)
@@ -1079,7 +1098,8 @@ async def do_search(dry_run: bool = False) -> dict:
                     "should_apply": True,
                 }
             else:
-                evaluation = await evaluate_vacancy(v, details)
+                evaluation = await analytics.tracked_call("matcher", run_id, v, evaluate_vacancy, v, details)
+            await shadow_verifier.check(run_id, v, details, evaluation)
             score = evaluation.get("score", 0)
             reason = evaluation.get("reason", "")
             red_flags = evaluation.get("red_flags", [])
@@ -1115,19 +1135,21 @@ async def do_search(dry_run: bool = False) -> dict:
 
             if not evaluation.get("should_apply", False):
                 if is_manual_review_candidate(evaluation):
+                    allow_ai_apply = getattr(config, "HH_APPLICATION_MODE", "auto") != "preview"
                     profile_name = profile_mod.active().name
                     candidate = manual_apply_queue.create_candidate(
                         v,
                         evaluation,
                         details,
                         profile_name=profile_name,
+                        allow_ai_apply=allow_ai_apply,
                     )
                     token = candidate.get("token", "")
-                    reply_markup = manual_apply_queue.build_manual_apply_markup(v, profile_name, token)
+                    reply_markup = manual_apply_queue.build_manual_apply_markup(v, profile_name, token, allow_ai_apply=allow_ai_apply)
                     if source == "hh":
                         note = (
                             "Желтая зона: вакансия не прошла автоотклик, но score достаточно высокий для ручного решения. "
-                            "Можно открыть самому или нажать 'Откликнуться с ИИ'."
+                            + ("Можно открыть самому или нажать 'Откликнуться с ИИ'." if allow_ai_apply else "Включён режим просмотра: можно открыть самому.")
                         )
                     else:
                         note = (
@@ -1214,6 +1236,7 @@ async def do_search(dry_run: bool = False) -> dict:
             # wait for an explicit Telegram confirmation before AI applies.
             hh_application_mode = getattr(config, "HH_APPLICATION_MODE", "auto")
             if source == "hh" and hh_application_mode in {"preview", "confirm"}:
+                is_confirmation = hh_application_mode == "confirm"
                 profile_name = profile_mod.active().name
                 candidate = manual_apply_queue.create_candidate(
                     v,
@@ -1223,7 +1246,6 @@ async def do_search(dry_run: bool = False) -> dict:
                     allow_ai_apply=is_confirmation,
                 )
                 token = candidate.get("token", "")
-                is_confirmation = hh_application_mode == "confirm"
                 reply_markup = manual_apply_queue.build_manual_apply_markup(
                     v,
                     profile_name,
@@ -1376,7 +1398,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 "working",
             )
             cover_limit = apply_orchestrator.get_cover_letter_limit(source)
-            cover = await generate_cover_letter(v, details)
+            cover = await analytics.tracked_call("cover_letter", run_id, v, generate_cover_letter, v, details)
             cover = cover or ""
             cover_fallback_used = False
             if not (cover or "").strip() and v.get("_hh_retry"):
@@ -1647,6 +1669,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 log.info("  %s vacancy already has a response: %s", source_label, apply_result.get("message", "already applied"))
                 continue
 
+            cover_evaluation["cover_letter_status"] = apply_result.get("cover_letter_status", "unknown")
             if apply_result.get("ok"):
                 seen.mark_seen(vid, v, "applied")
                 if source == "hh" and hh_resume_variant is not None:

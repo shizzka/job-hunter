@@ -46,6 +46,7 @@ class HHConfig(SourceConfig):
     search_remote_only: bool = False
     application_mode: str = "auto"
     search_pages: int = 3
+    verifier_shadow_enabled: bool = True
     matcher_auto_apply_min_score: int = 58
     matcher_middle_challenge_min_score: int = 60
     # Резюме
@@ -341,6 +342,7 @@ def _patch_config(p: Profile):
     config.HH_SEARCH_REMOTE_ONLY = p.hh.search_remote_only
     config.HH_APPLICATION_MODE = p.hh.application_mode
     config.SEARCH_PAGES = p.hh.search_pages
+    config.HH_VERIFIER_SHADOW_ENABLED = p.hh.verifier_shadow_enabled
     config.HH_MATCHER_AUTO_APPLY_MIN_SCORE = p.hh.matcher_auto_apply_min_score
     config.HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE = p.hh.matcher_middle_challenge_min_score
     config.HH_PRIMARY_RESUME_TITLE = p.hh.primary_resume_title
@@ -425,6 +427,7 @@ def load_default_profile() -> Profile:
             search_only_with_salary=config.SEARCH_ONLY_WITH_SALARY,
             search_remote_only=config.HH_SEARCH_REMOTE_ONLY,
             application_mode=config.HH_APPLICATION_MODE,
+            verifier_shadow_enabled=config.HH_VERIFIER_SHADOW_ENABLED,
             search_pages=config.SEARCH_PAGES,
             matcher_auto_apply_min_score=config.HH_MATCHER_AUTO_APPLY_MIN_SCORE,
             matcher_middle_challenge_min_score=config.HH_MATCHER_MIDDLE_CHALLENGE_MIN_SCORE,
@@ -735,6 +738,8 @@ def _apply_env_overrides(profile: Profile, env: dict[str, str]):
         value = env["HH_APPLICATION_MODE"].strip().lower()
         if value in {"preview", "confirm", "auto"}:
             profile.hh.application_mode = value
+    if "HH_VERIFIER_SHADOW_ENABLED" in env:
+        profile.hh.verifier_shadow_enabled = _flag("HH_VERIFIER_SHADOW_ENABLED", profile.hh.verifier_shadow_enabled)
     if "HH_MATCHER_AUTO_APPLY_MIN_SCORE" in env:
         profile.hh.matcher_auto_apply_min_score = _int(
             "HH_MATCHER_AUTO_APPLY_MIN_SCORE",

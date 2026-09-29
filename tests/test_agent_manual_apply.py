@@ -18,6 +18,7 @@ class FakeHHClient:
 
 def test_manual_ai_apply_does_not_submit_empty_cover(tmp_path, monkeypatch):
     queue_file = tmp_path / "manual_apply_queue.json"
+    monkeypatch.setattr(manual_apply_queue, "_queue_path", lambda profile_name=None: queue_file)
     monkeypatch.setattr(manual_apply_queue.config, "MANUAL_APPLY_QUEUE_FILE", str(queue_file), raising=False)
 
     item = manual_apply_queue.create_candidate(
@@ -122,3 +123,14 @@ def test_format_autoanswer_notes_for_questionnaire_escapes_html():
     assert "Опыт &lt;API&gt; &amp; SQL" in formatted
     assert "Есть &lt;да&gt; &amp; Postman" in formatted
     assert "<API>" not in formatted
+
+
+def test_preview_mode_blocks_old_confirmable_card(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(agent.config, 'HH_APPLICATION_MODE', 'preview')
+    monkeypatch.setattr(manual_apply_queue, 'get_candidate', lambda token: {'status': 'pending', 'allow_ai_apply': True})
+    dispatch = AsyncMock()
+    monkeypatch.setattr(agent.apply_orchestrator, 'dispatch_apply', dispatch)
+    result = asyncio.run(agent.do_manual_apply_token('old-token'))
+    assert result['ok'] is False
+    dispatch.assert_not_awaited()

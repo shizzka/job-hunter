@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
+from functools import wraps
 import html
 import json
 import os
@@ -11,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 import config
+import company_blacklist
 
 CALLBACK_MANUAL_APPLY = "manual_apply"
 CALLBACK_MANUAL_FEEDBACK = "manual_fb"
@@ -27,15 +30,23 @@ MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 def _queue_path(profile_name: str | None = None) -> Path:
     if profile_name:
-        try:
-            import profile as profile_mod
-
-            profile = profile_mod.load_profile(profile_name)
-            return Path(profile.home_dir) / "manual_apply_queue.json"
-        except Exception:
-            pass
+        import profile as profile_mod
+        profile = profile_mod.load_profile(profile_name)
+        return Path(profile.home_dir) / "manual_apply_queue.json"
     fallback = os.path.join(config.JOB_HUNTER_HOME, "manual_apply_queue.json")
     return Path(getattr(config, "MANUAL_APPLY_QUEUE_FILE", fallback) or fallback)
+
+
+
+def _queue_transaction(function):
+    @wraps(function)
+    def locked(*args, **kwargs):
+        path = _queue_path(kwargs.get("profile_name"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return function(*args, **kwargs)
+    return locked
 
 
 def _read_queue(profile_name: str | None = None) -> dict:
@@ -70,6 +81,7 @@ def _compact_vacancy(vacancy: dict) -> dict:
     keys = (
         "id", "source", "source_label", "title", "company", "salary", "url",
         "snippet", "response_url", "apply_mode", "_search_query", "_search_profile",
+        "_resume_input_versions",
     )
     compact = {key: vacancy.get(key) for key in keys if vacancy.get(key) not in (None, "")}
     if "source" not in compact:
@@ -107,6 +119,7 @@ def _prune(data: dict, now: float) -> None:
     data["items"] = dict(ordered[:MAX_ITEMS])
 
 
+@_queue_transaction
 def create_candidate(
     vacancy: dict,
     evaluation: dict,
@@ -139,10 +152,10 @@ def create_candidate(
         "evaluation": _compact_evaluation(evaluation),
         "details": (details or "")[:8000],
     }
-    data = _read_queue()
+    data = _read_queue(profile_name)
     _prune(data, now)
     data.setdefault("items", {})[token] = item
-    _write_queue(data)
+    _write_queue(data, profile_name)
     return item
 
 
@@ -154,6 +167,7 @@ def get_candidate(token: str, *, profile_name: str | None = None) -> dict | None
     return item if isinstance(item, dict) else None
 
 
+@_queue_transaction
 def mark_candidate(token: str, status: str, message: str = "", *, profile_name: str | None = None) -> dict | None:
     data = _read_queue(profile_name)
     item = data.get("items", {}).get((token or "").strip())
@@ -171,6 +185,7 @@ def feedback_label(value: str) -> str:
     return FEEDBACK_LABELS.get((value or "").strip(), "")
 
 
+@_queue_transaction
 def record_feedback(token: str, value: str, *, user_id: int = 0, profile_name: str | None = None) -> dict | None:
     value = (value or "").strip()
     if value not in FEEDBACK_LABELS:
@@ -196,7 +211,6 @@ def list_candidates(profile_name: str, *, limit: int = 8, include_snoozed: bool 
     now = time.time()
     data = _read_queue(profile_name)
     _prune(data, now)
-    _write_queue(data, profile_name)
     items = []
     for item in data.get("items", {}).values():
         if not isinstance(item, dict) or item.get("status") != "pending":
@@ -206,11 +220,14 @@ def list_candidates(profile_name: str, *, limit: int = 8, include_snoozed: bool 
         snoozed_until = float(item.get("snoozed_until") or 0)
         if not include_snoozed and snoozed_until > now:
             continue
+        if company_blacklist.is_blocked((item.get("vacancy") or {}).get("company", ""), profile_name):
+            continue
         items.append(item)
     items.sort(key=lambda item: float(item.get("created_ts") or 0), reverse=True)
     return items[:max(1, int(limit or 1))]
 
 
+@_queue_transaction
 def snooze_candidate(token: str, *, profile_name: str, hours: int = 24) -> dict | None:
     data = _read_queue(profile_name)
     item = data.get("items", {}).get((token or "").strip())
@@ -409,7 +426,7 @@ def build_manual_apply_markup(
         snooze_data = manual_snooze_callback_data(profile_name, token)
         if len(snooze_data.encode("utf-8")) <= 64:
             rows.append([{"text": "⏰ Через сутки", "callback_data": snooze_data}])
-        block_company_data = manual_block_company_callback_data(profile_name, token)
-        if is_hh and vacancy.get("company") and len(block_company_data.encode("utf-8")) <= 64:
-            rows.append([{"text": "Не трогать компанию", "callback_data": block_company_data}])
+    block_company_data = manual_block_company_callback_data(profile_name, token)
+    if vacancy.get("company") and len(block_company_data.encode("utf-8")) <= 64:
+        rows.append([{"text": "🚫 В чёрный список", "callback_data": block_company_data}])
     return {"inline_keyboard": rows} if rows else None
