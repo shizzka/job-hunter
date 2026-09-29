@@ -51,6 +51,10 @@ async def fetch_vacancy_details(
 # ── Диспетчеризация отклика ──
 
 async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> dict:
+    if vacancy.get("source", "hh") == "hh":
+        if not kwargs.get("preferred_resume_id") and not kwargs.get("preferred_resume_title"):
+            kwargs["preferred_resume_id"] = getattr(config, "HH_PRIMARY_RESUME_ID", "")
+            kwargs["preferred_resume_title"] = getattr(config, "HH_PRIMARY_RESUME_TITLE", "")
     application_id = uuid.uuid4().hex
     vacancy["_requested_resume"] = {"id": kwargs.get("preferred_resume_id", ""),
                                     "title": kwargs.get("preferred_resume_title", "")}
@@ -75,7 +79,9 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
                    "blocked" if result.get("reason") == "company_blacklisted" else
                    "sent" if result.get("ok") else "failed")
         analytics._append_event({"event": "application_result", "outcome": outcome,
-                                 "cover_letter_status": result.get("cover_letter_status", "unknown")})
+                                 "cover_letter_status": result.get("cover_letter_status", "unknown"),
+                                 "resume_selection_verified": result.get("resume_selection_verified", False),
+                                 "selected_resume_id": result.get("selected_resume_id", "")})
         return result
 
 

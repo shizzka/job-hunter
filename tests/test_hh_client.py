@@ -672,7 +672,7 @@ def test_apply_to_vacancy_skips_archived_page_before_click(monkeypatch):
     assert client._page.stage == "vacancy"
 
 
-def test_apply_to_vacancy_allows_missing_resume_picker_when_response_form_is_open(monkeypatch):
+def test_apply_to_vacancy_blocks_unverified_resume_when_picker_missing(monkeypatch):
     client = HHClient()
     client._page = FakeDirectResponsePage()
 
@@ -686,11 +686,12 @@ def test_apply_to_vacancy_allows_missing_resume_picker_when_response_form_is_ope
         )
     )
 
-    assert result["ok"] is True
-    assert client._page.letter.value == "hello from cover letter"
+    assert result["ok"] is False
+    assert client._page.stage != "success"
+    assert client._page.letter.value == ""
 
 
-def test_apply_to_vacancy_uses_link_based_apply_after_resume_selection(monkeypatch):
+def test_apply_to_vacancy_blocks_unverified_resume_after_selection(monkeypatch):
     client = HHClient()
     client._page = FakeResumeSelectionReturnsToVacancyPage()
 
@@ -703,8 +704,8 @@ def test_apply_to_vacancy_uses_link_based_apply_after_resume_selection(monkeypat
         )
     )
 
-    assert result["ok"] is True
-    assert result["message"] == "Отклик отправлен"
+    assert result["ok"] is False
+    assert client._page.stage != "success"
 
 
 def test_apply_to_vacancy_marks_questionnaire_as_manual(monkeypatch):
@@ -961,3 +962,34 @@ def test_stable_answer_library_skips_risky_aqa_commercial_question():
 
     assert _is_risky_question(question) is True
     assert _answer_question_from_library(question, max_chars=200) is None
+
+
+def test_explicit_resume_is_verified_before_submit(monkeypatch):
+    client = HHClient()
+    client._page = FakeDirectResponsePage()
+    original = client._page.evaluate
+    async def evaluate(script, arg=None):
+        if 'return {ids, titles}' in script:
+            return {'ids': ['qa-id'], 'titles': ['QA Resume']}
+        return await original(script, arg)
+    monkeypatch.setattr(client._page, 'evaluate', evaluate)
+    monkeypatch.setattr(client, '_is_captcha_page', lambda: asyncio.sleep(0, result=False))
+    result = asyncio.run(client.apply_to_vacancy('https://hh.ru/vacancy/1', cover_letter='letter', preferred_resume_id='qa-id'))
+    assert result['ok'] is True
+    assert result['selected_resume_id'] == 'qa-id'
+    assert result['resume_selection_verified'] is True
+
+
+def test_matching_title_cannot_override_mismatched_explicit_resume_id(monkeypatch):
+    client = HHClient()
+    client._page = FakeDirectResponsePage()
+    original = client._page.evaluate
+    async def evaluate(script, arg=None):
+        if 'return {ids, titles}' in script:
+            return {'ids': ['electrician-id'], 'titles': ['QA Resume']}
+        return await original(script, arg)
+    monkeypatch.setattr(client._page, 'evaluate', evaluate)
+    monkeypatch.setattr(client, '_is_captcha_page', lambda: asyncio.sleep(0, result=False))
+    result = asyncio.run(client.apply_to_vacancy('https://hh.ru/vacancy/1', preferred_resume_id='qa-id', preferred_resume_title='QA Resume'))
+    assert result['ok'] is False
+    assert client._page.stage != 'success'

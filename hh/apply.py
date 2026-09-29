@@ -1,6 +1,7 @@
 """Helpers for the HH vacancy application flow."""
 
 import os
+import re
 
 from hh.text import compact_text, normalize_text
 
@@ -603,6 +604,31 @@ async def fill_cover_letter_post_apply(session, cover_letter: str, *, logger):
         logger.warning("Failed to fill cover letter post-apply: %s", e)
 
 
+async def selected_resume_matches(page, resume_id: str, title: str) -> bool:
+    """Read selected controls only; a title elsewhere in the page is not evidence."""
+    try:
+        selected = await page.evaluate(r"""() => {
+            const root = document.querySelector('form[name="vacancy_response"], [role="dialog"]');
+            if (!root) return {ids: [], titles: []};
+            const ids = Array.from(root.querySelectorAll(
+                'input[name="resume_id"], input[name="resumeId"], input[name="resumeHash"], input[type="radio"]:checked'
+            )).map(el => el.value).filter(Boolean);
+            root.querySelectorAll('[data-qa="resume-title"] a[href*="/resume/"]').forEach(el => {
+                const match = el.getAttribute('href').match(/\/resume\/([a-zA-Z0-9]+)/);
+                if (match) ids.push(match[1]);
+            });
+            const titles = Array.from(root.querySelectorAll('[data-qa="resume-title"]')).map(el => el.innerText.trim());
+            return {ids, titles};
+        }""")
+    except Exception:
+        return False
+    if not isinstance(selected, dict):
+        return False
+    if resume_id:
+        return resume_id in selected.get('ids', [])
+    return bool(title) and any(normalize_text(value) == normalize_text(title) for value in selected.get('titles', []))
+
+
 async def apply_to_vacancy(
     session,
     vacancy_url: str,
@@ -643,6 +669,9 @@ async def apply_to_vacancy(
                 confirmed = await session._fill_cover_letter_post_apply(cover_letter)
                 delivery = "confirmed" if confirmed is True else "unconfirmed"
         result = {"ok": True, "message": message, "cover_letter_status": delivery}
+        if not already_applied and wants_specific_resume:
+            result["resume_selection_verified"] = resume_verified
+            result["selected_resume_id"] = preferred_resume_id if resume_verified else ""
         if delivery == "unconfirmed":
             notes = list(notes or []) + ["Отклик отправлен, но доставка сопроводительного письма не подтверждена"]
         if already_applied:
@@ -652,6 +681,11 @@ async def apply_to_vacancy(
         if auto_answer_question_answers:
             result["question_answers"] = list(auto_answer_question_answers)
         return result
+
+    async def answer_questions_with_verified_resume():
+        if wants_specific_resume and not await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
+            return {"ok": False, "message": "Резюме в анкете не подтверждено — нужна ручная проверка"}
+        return await session._try_auto_answer_questions(vacancy_context=vacancy_context)
 
     detect_response_controls = session._detect_response_controls
 
@@ -740,22 +774,8 @@ async def apply_to_vacancy(
 
         resume_items = await collect_resume_items()
 
-        if not resume_items and (title_norm or id_norm):
-            page_text = normalize_text(
-                await session._page.evaluate("() => document.body.innerText.slice(0, 4000)")
-            )
-            if (title_norm and title_norm in page_text) or (id_norm and id_norm in page_text):
-                return True
-            if not resume_select and (
-                letter_field is not None
-                or submit_btn is not None
-                or "/applicant/vacancy_response" in current_url
-            ):
-                logger.info(
-                    "Resume picker is absent in hh apply flow — assuming current resume is already selected"
-                )
-                return True
-            return False
+        if await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
+            return True
 
         if not title_norm and not id_norm:
             if resume_items:
@@ -770,28 +790,18 @@ async def apply_to_vacancy(
                     continue
                 if not text:
                     continue
-                if id_norm and id_norm in text:
-                    return item
-                if title_norm and (title_norm in text or text in title_norm):
+                if id_norm:
+                    try:
+                        identity = await item.evaluate("el => ({value: el.getAttribute('value'), id: el.getAttribute('data-resume-id'), href: el.getAttribute('href')})")
+                    except Exception:
+                        identity = {}
+                    if isinstance(identity, dict) and (id_norm in [identity.get('value'), identity.get('id')] or re.search(r'/resume/' + re.escape(id_norm) + r'(?:[/?#]|$)', identity.get('href') or '')):
+                        return item
+                if not id_norm and title_norm and title_norm == text:
                     return item
             return None
 
         best_item = await find_matching_item(resume_items)
-
-        # Single-resume shortcut: если на странице ровно одно резюме
-        # и пикер не раскрывается — считаем его выбранным
-        if best_item is None and resume_items:
-            unique_texts = set()
-            for item in resume_items:
-                try:
-                    text = normalize_text(await item.inner_text())
-                    if text and len(text) >= 6:
-                        unique_texts.add(text)
-                except Exception:
-                    continue
-            if len(unique_texts) <= 1:
-                logger.info("Single resume on page — treating as selected")
-                return True
 
         if best_item is None:
             expanded = await expand_resume_picker()
@@ -800,16 +810,11 @@ async def apply_to_vacancy(
                 best_item = await find_matching_item(resume_items)
 
         if best_item is None:
-            # Последняя попытка: проверить текст страницы
-            page_text = normalize_text(
-                await session._page.evaluate("() => document.body.innerText.slice(0, 6000)")
-            )
-            if title_norm and title_norm in page_text:
-                logger.info("Resume title found in page text — treating as selected")
-                return True
             return False
-
-        return await session._click_with_fallbacks(best_item, "resume_item_preferred")
+        if not await session._click_with_fallbacks(best_item, "resume_item_preferred"):
+            return False
+        await session._page.wait_for_timeout(500)
+        return await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title)
 
     try:
         await session._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=30000)
@@ -849,11 +854,31 @@ async def apply_to_vacancy(
         }
 
     wants_specific_resume = bool(preferred_resume_title or preferred_resume_id)
+    resume_verified = False
     if await session._has_existing_response_ui() and not wants_specific_resume:
         return await finalize_success("Уже откликались ранее", already_applied=True)
 
+    if wants_specific_resume:
+        match = re.search(r"/vacancy/(\d+)", vacancy_url)
+        target_url = f"https://hh.ru/applicant/vacancy_response?vacancyId={match.group(1)}" if match else ''
+        if not target_url:
+            return {"ok": False, "message": "Не удалось открыть форму для проверки резюме"}
+        try:
+            await session._page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            await session._page.wait_for_timeout(1000)
+            current_url, response_header, questions_required, resume_select, letter_field, submit_btn = await detect_response_controls()
+            if await session._apply_success_detected():
+                return await finalize_success("Уже откликались ранее", already_applied=True)
+            resume_verified = await select_preferred_resume()
+        except Exception as exc:
+            logger.warning("Resume preflight failed: %s", type(exc).__name__)
+        if not resume_verified:
+            await save_debug_snapshot("debug_resume_unverified")
+            return {"ok": False, "message": "Нужное резюме не подтверждено — отклик не отправлен", "resume_selection_verified": False}
+        logger.info("Requested resume verified before application")
+
     # Ищем кнопку "Откликнуться" — собираем все data-qa для дебага
-    apply_btn = await session._page.query_selector(
+    apply_btn = None if resume_verified else await session._page.query_selector(
         "[data-qa='vacancy-response-link-top-again'], "
         "[data-qa='vacancy-response-link-bottom-again'], "
         "[data-qa='vacancy-response-link-top'], "
@@ -862,7 +887,7 @@ async def apply_to_vacancy(
         "button[data-qa*='vacancy-response']"
     )
 
-    if not apply_btn:
+    if not apply_btn and not resume_verified:
         reapply_btn = await session._page.query_selector(
             "button:has-text('Отклик другим резюме'), "
             "a:has-text('Отклик другим резюме'), "
@@ -876,7 +901,7 @@ async def apply_to_vacancy(
             else:
                 return {"ok": True, "message": "Уже откликались ранее", "already_applied": True}
 
-    if not apply_btn:
+    if not apply_btn and not resume_verified:
         # Попробуем найти по тексту
         apply_btn = await session._page.query_selector(
             "button:has-text('Откликнуться'), "
@@ -907,7 +932,7 @@ async def apply_to_vacancy(
 
         if questions_required:
             logger.info("Vacancy requires employer questions — trying auto-answer")
-            auto_question_result = await session._try_auto_answer_questions(vacancy_context=vacancy_context)
+            auto_question_result = await answer_questions_with_verified_resume()
             auto_answer_notes.extend(auto_question_result.get("notes") or [])
             auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
             if auto_question_result.get("ok"):
@@ -960,7 +985,7 @@ async def apply_to_vacancy(
 
     if questions_required:
         logger.info("Vacancy requires employer questions — trying auto-answer")
-        auto_question_result = await session._try_auto_answer_questions(vacancy_context=vacancy_context)
+        auto_question_result = await answer_questions_with_verified_resume()
         auto_answer_notes.extend(auto_question_result.get("notes") or [])
         auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
         if auto_question_result.get("ok"):
@@ -979,7 +1004,7 @@ async def apply_to_vacancy(
                 "risky_question": auto_question_result.get("risky_question", ""),
         }
 
-    if resume_select or preferred_resume_title or preferred_resume_id:
+    if (resume_select or preferred_resume_title or preferred_resume_id) and not resume_verified:
         logger.info(
             "Selecting resume in hh apply flow (title=%r, id=%r)",
             preferred_resume_title,
@@ -1037,6 +1062,9 @@ async def apply_to_vacancy(
         cover_letter_filled = True
         await session._dismiss_magritte_dropdowns()
 
+    if wants_specific_resume and not await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
+        return {"ok": False, "message": "Выбранное резюме изменилось — отклик остановлен"}
+
     if submit_btn:
         (
             _,
@@ -1068,7 +1096,7 @@ async def apply_to_vacancy(
 
     if await session._response_requires_questions():
         logger.info("Vacancy requires employer questions after submit — trying auto-answer")
-        auto_question_result = await session._try_auto_answer_questions(vacancy_context=vacancy_context)
+        auto_question_result = await answer_questions_with_verified_resume()
         auto_answer_notes.extend(auto_question_result.get("notes") or [])
         auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
         if auto_question_result.get("ok"):
@@ -1113,7 +1141,7 @@ async def apply_to_vacancy(
                 return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind}
             if await session._response_requires_questions():
                 logger.info("Vacancy requires employer questions after retry — trying auto-answer")
-                auto_question_result = await session._try_auto_answer_questions(vacancy_context=vacancy_context)
+                auto_question_result = await answer_questions_with_verified_resume()
                 auto_answer_notes.extend(auto_question_result.get("notes") or [])
                 auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
                 if auto_question_result.get("ok"):
