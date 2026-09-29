@@ -3,6 +3,8 @@
 
 Извлечено из agent.py (A-001).
 """
+from query_normalization import clean_query_list
+
 import inspect
 import logging
 import re
@@ -112,7 +114,7 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
         area = profile["area"]
         schedule = profile.get("schedule", "")
         area_label = f"area={area}" + (f",schedule={schedule}" if schedule else "")
-        for query in config.SEARCH_QUERIES:
+        for query in clean_query_list(config.SEARCH_QUERIES):
             for page_num in range(config.SEARCH_PAGES):
                 log.info("HH search: %s [%s] page %d", query, area_label, page_num)
                 vacancies = await client.search_vacancies(
@@ -182,7 +184,7 @@ async def collect_superjob_vacancies(client: SuperJobClient | None, *, scan_stat
         )
     for profile in config.SUPERJOB_SEARCH_PROFILES:
         profile_label = profile.get("label", "default")
-        for query in config.SUPERJOB_SEARCH_QUERIES:
+        for query in clean_query_list(config.SUPERJOB_SEARCH_QUERIES):
             for page_num in range(config.SUPERJOB_SEARCH_PAGES):
                 log.info("SuperJob search: %s [%s] page %d", query, profile_label, page_num)
                 vacancies, more = await client.search_vacancies(query, page=page_num, profile=profile)

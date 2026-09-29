@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import config
+from query_normalization import clean_query
 from llm_client import get_llm_client
 from llm_utils import parse_llm_json
 
@@ -23,7 +24,7 @@ def normalize_queries(raw: str | list[str], *, max_queries: int = MAX_QUERIES) -
     result: list[str] = []
     seen: set[str] = set()
     for item in parts:
-        query = re.sub(r"\s+", " ", str(item or "").strip())
+        query = clean_query(str(item or ""))
         if not query:
             continue
         if len(query) < MIN_QUERY_LENGTH or len(query) > MAX_QUERY_LENGTH:
@@ -43,9 +44,9 @@ def normalize_queries(raw: str | list[str], *, max_queries: int = MAX_QUERIES) -
 
 def queries_to_env_value(queries: list[str]) -> str:
     """Render a profile.env value without allowing the separator in a query."""
-    normalized = normalize_queries(queries)
-    if any("||" in value for value in normalized):
+    if any("||" in value for value in queries):
         raise SearchQueryValidationError("В запросах нельзя использовать ||.")
+    normalized = normalize_queries(queries)
     return "||".join(normalized)
 
 
