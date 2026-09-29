@@ -427,9 +427,59 @@ async def detect_response_controls(session):
     )
 
 
+async def _cover_letter_visible(surface, cover_letter):
+    # Exclude drafts: text in textarea/contenteditable is not proof of delivery.
+    text = await surface.evaluate("""() => {
+        if (!document.body) return '';
+        const copy = document.body.cloneNode(true);
+        copy.querySelectorAll('textarea,input,[contenteditable],script,style').forEach(el => el.remove());
+        return copy.innerText || copy.textContent || '';
+    }""")
+    snippet = normalize_text(cover_letter[:120])
+    return bool(snippet) and snippet in normalize_text(text)
+
+
+async def _send_response_letter_form(session, cover_letter, *, logger):
+    """Submit the separate HH letter form; never substitute Enter for submit."""
+    form = await session._page.query_selector("form[action*='/applicant/vacancy_response/edit_ajax']")
+    if not form:
+        return None
+    field = await form.query_selector("textarea[data-qa='vacancy-response-popup-form-letter-input']")
+    button = await form.query_selector("button[data-qa='vacancy-response-letter-submit']")
+    if not field or not button:
+        logger.warning("HH post-apply letter form is incomplete")
+        return False
+    try:
+        await field.fill(cover_letter)
+        if normalize_text(await field.input_value()) != normalize_text(cover_letter):
+            logger.warning("HH post-apply letter field did not retain text")
+            return False
+        await button.click(timeout=10000)
+        for _ in range(6):
+            await session._page.wait_for_timeout(500)
+            if await _cover_letter_visible(session._page, cover_letter):
+                logger.info("HH post-apply letter delivery confirmed")
+                return True
+        logger.warning("HH post-apply letter form submitted, delivery NOT confirmed")
+    except Exception as exc:
+        logger.warning("HH post-apply letter form failed: %s", type(exc).__name__)
+    return False
+
+
 async def fill_cover_letter_post_apply(session, cover_letter: str, *, logger):
     """Заполнить сопроводительное письмо на странице после успешного отклика."""
     try:
+        try:
+            if await _cover_letter_visible(session._page, cover_letter):
+                logger.info("Cover letter already visible after apply; skipping duplicate send")
+                return True
+        except Exception:
+            pass
+        exact_result = await _send_response_letter_form(session, cover_letter, logger=logger)
+        if exact_result is not None:
+            if not exact_result:
+                await session._save_debug_snapshot("debug_cover_letter_unconfirmed")
+            return exact_result
         letter_selectors = (
             "textarea[placeholder*='Сопроводительное']",
             "textarea[placeholder*='сопроводительное']",
@@ -456,14 +506,11 @@ async def fill_cover_letter_post_apply(session, cover_letter: str, *, logger):
         await session._expand_cover_letter_input()
         for surface in surfaces:
             try:
-                surface_text = await surface.evaluate(
-                    "() => document.body ? document.body.innerText.slice(0, 12000) : ''"
-                )
+                if await _cover_letter_visible(surface, cover_letter):
+                    logger.info("Cover letter already visible after apply; skipping duplicate send")
+                    return True
             except Exception:
-                surface_text = ""
-            if snippet and snippet in normalize_text(surface_text):
-                logger.info("Cover letter already visible after apply; skipping duplicate send")
-                return
+                pass
 
             for selector in letter_selectors:
                 try:
@@ -539,17 +586,17 @@ async def fill_cover_letter_post_apply(session, cover_letter: str, *, logger):
                     except Exception:
                         continue
 
-                if not sent:
-                    try:
-                        await letter_field.press("Enter")
-                        await session._page.wait_for_timeout(2000)
-                        sent = True
-                    except Exception:
-                        pass
 
                 if sent:
-                    logger.info("Cover letter sent after apply")
-                    return
+                    try:
+                        confirmed = await _cover_letter_visible(surface, cover_letter)
+                    except Exception:
+                        confirmed = False
+                    if confirmed:
+                        logger.info("Cover letter delivery confirmed after apply")
+                    else:
+                        logger.warning("Cover letter send attempted, delivery NOT confirmed")
+                    return confirmed
 
         logger.debug("No cover letter field found after apply")
     except Exception as e:
@@ -588,9 +635,16 @@ async def apply_to_vacancy(
         already_applied: bool = False,
         notes: list[str] | None = None,
     ) -> dict:
-        if cover_letter and not cover_letter_filled and not already_applied:
-            await session._fill_cover_letter_post_apply(cover_letter)
-        result = {"ok": True, "message": message}
+        delivery = "not_requested"
+        if cover_letter and not already_applied:
+            if cover_letter_filled:
+                delivery = "submitted_with_application"
+            else:
+                confirmed = await session._fill_cover_letter_post_apply(cover_letter)
+                delivery = "confirmed" if confirmed is True else "unconfirmed"
+        result = {"ok": True, "message": message, "cover_letter_status": delivery}
+        if delivery == "unconfirmed":
+            notes = list(notes or []) + ["Отклик отправлен, но доставка сопроводительного письма не подтверждена"]
         if already_applied:
             result["already_applied"] = True
         if notes:

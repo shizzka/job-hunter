@@ -568,6 +568,16 @@ def classify_vacancy_cluster(vacancy: dict, details: str = "") -> str:
     has_support = _regex_any(SUPPORT_PATTERNS, haystack)
     support_has_qa_context = has_support and _has_qa_support_context(haystack)
 
+    hardware_focus = _regex_any([
+        r"тестиров\w*.{0,30}(?:бытов\w*\s+техник|техники|оборудован)",
+        r"(?:ремонт|диагностик|обслуживан|испытан)\w*.{0,40}(?:бытов\w*|промышленн\w*)\s+(?:техник|оборудован)",
+    ], haystack)
+    software_focus = _regex_any([
+        r"программного\s+обеспечения", r"\bsoftware\b", r"\b(?:web|api|postman|swagger)\b",
+        r"веб[-\s]?прилож", r"мобильн\w*\s+прилож",
+    ], haystack)
+    if hardware_focus and not software_focus:
+        return "reject_non_qa"
     if _regex_any(HARD_NON_QA_TITLE_PATTERNS, title):
         return "reject_non_qa"
     if _regex_any(NON_QA_TITLE_PATTERNS, title) and not has_strong_qa_context and not support_has_qa_context:

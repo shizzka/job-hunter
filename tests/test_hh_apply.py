@@ -216,7 +216,7 @@ def test_fill_cover_letter_post_apply_skips_duplicate_visible_text():
         )
     )
 
-    assert session.expanded is True
+    assert session.expanded is False
 
 
 def test_legacy_cover_letter_wrapper_forwards_patchable_dependencies(monkeypatch):
