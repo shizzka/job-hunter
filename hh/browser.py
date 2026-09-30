@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 
 from playwright.async_api import async_playwright
 
@@ -34,8 +35,22 @@ def _load_cookies() -> list[dict] | None:
 
 def _save_cookies(cookies: list[dict]):
     _ensure_dirs()
-    with open(config.HH_COOKIES_FILE, "w") as f:
-        json.dump(cookies, f, ensure_ascii=False, indent=2)
+    cookies_dir = os.path.dirname(config.HH_COOKIES_FILE)
+    fd, temporary_path = tempfile.mkstemp(
+        prefix=".hh_cookies_",
+        suffix=".json",
+        dir=cookies_dir,
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(cookies, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_path, config.HH_COOKIES_FILE)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 
 async def start_browser(
@@ -98,8 +113,9 @@ async def stop_browser(session, *, save_cookies=_save_cookies):
     try:
         if context:
             try:
-                cookies = await context.cookies()
-                save_cookies(cookies)
+                if save_cookies is not None:
+                    cookies = await context.cookies()
+                    save_cookies(cookies)
             except Exception as exc:
                 # Ctrl-C or an externally closed page may tear down the
                 # Playwright context before the owning task reaches cleanup.

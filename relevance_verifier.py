@@ -31,7 +31,7 @@ class ShadowVerifier:
         result = {'verdict': 'unknown', 'reason': '', 'mode': 'shadow', 'version': 'verifier-v1', 'model': model}
         try:
             payload = {'resume': matcher._load_resume(), 'title': vacancy.get('title', ''),
-                       'snippet': vacancy.get('snippet', ''), 'description': details[:8000]}
+                       'snippet': vacancy.get('snippet', ''), 'description': details}
             async def request():
                 return await get_llm_client().chat.completions.create(
                     model=model, temperature=0, max_tokens=400,

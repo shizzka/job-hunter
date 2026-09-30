@@ -1,5 +1,6 @@
 """Helpers for the HH vacancy application flow."""
 
+import hashlib
 import os
 import re
 
@@ -232,30 +233,100 @@ async def response_submit_button(session):
     )
 
 
+async def response_form_signature(session, current_url: str = "") -> dict:
+    """Return a stable, value-free structural fingerprint of the active HH form."""
+    page_url = (current_url or session._page.url or "").lower()
+    result = await session._page.evaluate(
+        """() => {
+            /* codex:response-form-signature */
+            const visible = (el) => {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== "none" && style.visibility !== "hidden"
+                    && rect.width > 0 && rect.height > 0;
+            };
+            const form = [...document.querySelectorAll('form[name="vacancy_response"]')]
+                .find(visible);
+            if (!form) return null;
+            const controls = [...form.querySelectorAll("input, textarea, select, button")].filter(visible);
+            const describe = (el) => [
+                (el.tagName || "").toLowerCase(),
+                (el.getAttribute("type") || "").toLowerCase(),
+                el.getAttribute("name") || "",
+                el.getAttribute("data-qa") || "",
+                el.getAttribute("role") || "",
+                el.required || el.getAttribute("aria-required") === "true" ? "required" : "optional",
+            ].join(":");
+            const isLetter = (el) => el.matches(
+                '[name="letter"], [data-qa="vacancy-response-popup-form-letter-input"], textarea[data-qa*="letter"]'
+            );
+            const isIgnored = (el) => {
+                const type = (el.getAttribute("type") || "").toLowerCase();
+                return ["hidden", "submit", "button", "image", "file"].includes(type)
+                    || el.tagName.toLowerCase() === "button"
+                    || isLetter(el)
+                    || el.closest('[data-qa="resume-select"]') !== null;
+            };
+            const letterCount = controls.filter(isLetter).length;
+            const submitCount = controls.filter((el) =>
+                (el.getAttribute("type") || "").toLowerCase() === "submit"
+                || (el.getAttribute("data-qa") || "").includes("response-submit")
+            ).length;
+            const otherFieldCount = controls.filter((el) =>
+                ["input", "textarea", "select"].includes(el.tagName.toLowerCase()) && !isIgnored(el)
+            ).length;
+            return {
+                controls: controls.map(describe).sort(),
+                letter_count: letterCount,
+                submit_count: submitCount,
+                other_field_count: otherFieldCount,
+            };
+        }"""
+    )
+    if not result:
+        return {}
+    payload = "|".join(result.get("controls") or [])
+    result["fingerprint"] = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+    result["path"] = page_url.split("?", 1)[0]
+    return result
+
+
 async def response_requires_questions(session, current_url: str = "", *, logger) -> bool:
     page_url = (current_url or session._page.url or "").lower()
     if "vacancy_response_question" in page_url:
         return True
 
-    selectors = (
-        "h1:has-text('Ответьте на вопросы')",
-        "h2:has-text('Ответьте на вопросы')",
-        "text='Ответьте на вопросы'",
-        "text='Для отклика необходимо ответить на несколько вопросов работодателя'",
-    )
     try:
-        for selector in selectors:
-            marker = await session._page.query_selector(selector)
-            if marker:
+        signature = await response_form_signature(session, current_url)
+        if signature:
+            fingerprint = signature.get("fingerprint", "")
+            if fingerprint and fingerprint != getattr(session, "_last_response_form_fingerprint", ""):
+                logger.info(
+                    "HH response form DOM: fingerprint=%s letter=%d submit=%d other=%d",
+                    fingerprint,
+                    int(signature.get("letter_count") or 0),
+                    int(signature.get("submit_count") or 0),
+                    int(signature.get("other_field_count") or 0),
+                )
+                session._last_response_form_fingerprint = fingerprint
+            return int(signature.get("other_field_count") or 0) > 0
+    except Exception as exc:
+        logger.debug("Response form fingerprint failed: %s", exc)
+
+    # HH now shows the generic copy about "несколько вопросов работодателя"
+    # even when the only required control is the cover-letter textarea. Treat
+    # actual questionnaire controls as evidence; page copy alone is not enough.
+    try:
+        inspect = getattr(session, "_inspect_employer_questions", None)
+        if inspect is not None:
+            result = await inspect()
+            if result.get("fields") or int(result.get("unsupported_fields") or 0) > 0:
                 return True
     except Exception as exc:
-        logger.debug("Question flow selector check failed: %s", exc)
+        logger.debug("Question flow structural check failed: %s", exc)
 
-    page_text = normalize_text(await session._page_text(limit=12000))
-    return (
-        "ответьте на вопросы" in page_text
-        or "для отклика необходимо ответить на несколько вопросов работодателя" in page_text
-    )
+    return False
 
 
 async def dismiss_magritte_dropdowns(session) -> None:
@@ -607,7 +678,7 @@ async def fill_cover_letter_post_apply(session, cover_letter: str, *, logger):
 async def selected_resume_matches(page, resume_id: str, title: str) -> bool:
     """Read selected controls only; a title elsewhere in the page is not evidence."""
     try:
-        selected = await page.evaluate(r"""() => {
+        script = r"""() => {
             const root = document.querySelector('form[name="vacancy_response"], [role="dialog"]');
             if (!root) return {ids: [], titles: []};
             const ids = Array.from(root.querySelectorAll(
@@ -618,8 +689,24 @@ async def selected_resume_matches(page, resume_id: str, title: str) -> bool:
                 if (match) ids.push(match[1]);
             });
             const titles = Array.from(root.querySelectorAll('[data-qa="resume-title"]')).map(el => el.innerText.trim());
+            // Magritte renders the resume listbox in a portal outside the form.
+            const options = Array.from(document.querySelectorAll('[role="listbox"] [data-magritte-select-option]'))
+                .filter(el => el.querySelector('[data-qa="resume-title"]') && el.getClientRects().length);
+            const checked = options.filter(el => el.getAttribute('aria-selected') === 'true' && el.querySelector('input[type="radio"]:checked'));
+            if (options.length) {
+                return {ids: checked.map(el => el.querySelector('input[type="radio"]:checked').value),
+                    titles: checked.map(el => el.querySelector('[data-qa="resume-title"]').innerText.trim())};
+            }
             return {ids, titles};
-        }""")
+        }"""
+        selected = await page.evaluate(script)
+        if isinstance(selected, dict) and resume_id and not selected.get('ids'):
+            # Open only the response form's resume control, never the submit button.
+            toggle = await page.query_selector('form[name="vacancy_response"] [data-qa="resume-title"]')
+            if toggle:
+                await toggle.click()
+                await page.wait_for_timeout(300)
+                selected = await page.evaluate(script)
     except Exception:
         return False
     if not isinstance(selected, dict):
@@ -683,9 +770,30 @@ async def apply_to_vacancy(
         return result
 
     async def answer_questions_with_verified_resume():
+        nonlocal cover_letter_filled
         if wants_specific_resume and not await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
             return {"ok": False, "message": "Резюме в анкете не подтверждено — нужна ручная проверка"}
-        return await session._try_auto_answer_questions(vacancy_context=vacancy_context)
+        if cover_letter:
+            await session._dismiss_magritte_dropdowns()
+            await session._expand_cover_letter_input()
+            controls = await session._detect_response_controls()
+            field = controls[4]
+            if not field:
+                await save_debug_snapshot("debug_questionnaire_letter_missing")
+                return {"ok": False, "message": "В анкете нет поля сопроводительного — нужна ручная проверка до отправки"}
+            await field.fill(cover_letter)
+            if normalize_text(await field.input_value()) != normalize_text(cover_letter):
+                return {"ok": False, "message": "Сопроводительное в анкете не сохранилось — отклик остановлен"}
+            cover_letter_filled = True
+        async def verify_before_submit():
+            if wants_specific_resume and not await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
+                return False
+            await session._dismiss_magritte_dropdowns()
+            if cover_letter:
+                current = (await session._detect_response_controls())[4]
+                return bool(current) and normalize_text(await current.input_value()) == normalize_text(cover_letter)
+            return True
+        return await session._try_auto_answer_questions(vacancy_context=vacancy_context, before_submit=verify_before_submit)
 
     detect_response_controls = session._detect_response_controls
 
@@ -792,7 +900,7 @@ async def apply_to_vacancy(
                     continue
                 if id_norm:
                     try:
-                        identity = await item.evaluate("el => ({value: el.getAttribute('value'), id: el.getAttribute('data-resume-id'), href: el.getAttribute('href')})")
+                        identity = await item.evaluate("el => ({value: el.getAttribute('value'), id: el.getAttribute('data-resume-id') || el.getAttribute('data-magritte-select-option') || el.querySelector('input[type=radio]')?.value, href: el.getAttribute('href')})")
                     except Exception:
                         identity = {}
                     if isinstance(identity, dict) and (id_norm in [identity.get('value'), identity.get('id')] or re.search(r'/resume/' + re.escape(id_norm) + r'(?:[/?#]|$)', identity.get('href') or '')):
@@ -1040,6 +1148,10 @@ async def apply_to_vacancy(
             submit_btn,
         ) = await detect_response_controls()
 
+    if cover_letter and not letter_field:
+        await save_debug_snapshot("debug_cover_letter_missing")
+        return {"ok": False, "message": "Поле сопроводительного не найдено — отклик остановлен до отправки"}
+
     if letter_field and cover_letter:
         logger.info("Filling cover letter...")
         for attempt in range(2):
@@ -1059,6 +1171,8 @@ async def apply_to_vacancy(
                 if not letter_field:
                     raise
         await session._page.wait_for_timeout(500)
+        if normalize_text(await letter_field.input_value()) != normalize_text(cover_letter):
+            return {"ok": False, "message": "Сопроводительное не сохранилось в поле — отклик остановлен"}
         cover_letter_filled = True
         await session._dismiss_magritte_dropdowns()
 
@@ -1077,6 +1191,12 @@ async def apply_to_vacancy(
         if refreshed_submit_btn is not None:
             submit_btn = refreshed_submit_btn
         await session._dismiss_magritte_dropdowns()
+        if cover_letter:
+            final_letter = (await refetch_response_controls())[4]
+            if not final_letter or normalize_text(await final_letter.input_value()) != normalize_text(cover_letter):
+                return {"ok": False, "message": "Сопроводительное изменилось перед отправкой — отклик остановлен"}
+            logger.info("Cover letter verified before submit (chars=%d)", len(cover_letter))
+            await save_debug_snapshot("debug_apply_before_submit")
         clicked = await session._click_with_fallbacks(submit_btn, "submit_button")
         if not clicked:
             clicked = await session._submit_response_form_via_dom()

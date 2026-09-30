@@ -110,7 +110,7 @@ async def _dispatch_apply(
         if company:
             context_parts.append(f"Компания: {company}")
         if details:
-            context_parts.append(f"Описание: {details[:1800]}")
+            context_parts.append(f"Описание: {details}")
         vacancy_context = "\n".join(context_parts)
         return await hh_client.apply_to_vacancy(
             vacancy["url"],

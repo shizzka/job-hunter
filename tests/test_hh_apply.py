@@ -72,6 +72,77 @@ def test_response_requires_questions_detects_question_url_without_dom_lookup():
     assert page.selectors == []
 
 
+def test_response_requires_questions_ignores_generic_copy_for_cover_letter_only():
+    page = FakePage(
+        url="https://hh.ru/applicant/vacancy_response?vacancyId=1",
+        text="Для отклика необходимо ответить на несколько вопросов работодателя",
+    )
+    session = FakeSession(page)
+
+    assert asyncio.run(
+        hh_apply.response_requires_questions(session, logger=hh_client.log)
+    ) is False
+
+
+def test_response_requires_questions_detects_structural_question_fields():
+    page = FakePage(url="https://hh.ru/applicant/vacancy_response?vacancyId=1")
+    session = FakeSession(page)
+
+    async def inspect():
+        return {"fields": [{"field_id": "salary"}], "unsupported_fields": 0}
+
+    session._inspect_employer_questions = inspect
+
+    assert asyncio.run(
+        hh_apply.response_requires_questions(session, logger=hh_client.log)
+    ) is True
+
+
+class FakeResponseFormPage:
+    def __init__(self, other_fields=0):
+        self.url = "https://hh.ru/applicant/vacancy_response?vacancyId=1"
+        self.other_fields = other_fields
+
+    async def evaluate(self, script):
+        assert "codex:response-form-signature" in script
+        return {
+            "controls": [
+                "textarea::letter:vacancy-response-popup-form-letter-input::required",
+                "button:submit::vacancy-response-submit-popup::optional",
+            ],
+            "letter_count": 1,
+            "submit_count": 1,
+            "other_field_count": self.other_fields,
+        }
+
+
+class FakeResponseFormSession:
+    def __init__(self, other_fields=0):
+        self._page = FakeResponseFormPage(other_fields)
+
+
+def test_response_form_signature_classifies_cover_letter_only_form():
+    session = FakeResponseFormSession(other_fields=0)
+
+    signature = asyncio.run(hh_apply.response_form_signature(session))
+
+    assert signature["letter_count"] == 1
+    assert signature["submit_count"] == 1
+    assert signature["other_field_count"] == 0
+    assert len(signature["fingerprint"]) == 12
+    assert asyncio.run(
+        hh_apply.response_requires_questions(session, logger=hh_client.log)
+    ) is False
+
+
+def test_response_form_signature_classifies_real_question_fields():
+    session = FakeResponseFormSession(other_fields=2)
+
+    assert asyncio.run(
+        hh_apply.response_requires_questions(session, logger=hh_client.log)
+    ) is True
+
+
 def test_legacy_response_questions_wrapper_forwards_patchable_dependencies(monkeypatch):
     client = hh_client.HHClient()
     captured = {}

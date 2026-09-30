@@ -172,9 +172,12 @@ class HHClient:
             logger=log,
         )
 
-    async def stop(self):
-        """Закрыть браузер."""
-        return await _stop_browser(self, save_cookies=_save_cookies)
+    async def stop(self, *, persist_cookies: bool = True):
+        """Закрыть браузер, optionally retaining the previously saved session."""
+        return await _stop_browser(
+            self,
+            save_cookies=_save_cookies if persist_cookies else None,
+        )
 
     def consume_antibot_signal(self) -> dict | None:
         signal = self._last_antibot_signal
@@ -280,13 +283,14 @@ class HHClient:
             repair_llm_json=_repair_llm_json,
         )
 
-    async def _try_auto_answer_questions(self, vacancy_context: str = "") -> dict:
+    async def _try_auto_answer_questions(self, vacancy_context: str = "", *, before_submit=None) -> dict:
         return await _try_auto_answer_questions(
             self,
             vacancy_context,
             settings=config,
             load_resume_text=_load_resume_text,
             anti_bot_message=_anti_bot_message,
+            before_submit=before_submit,
         )
 
     async def _dismiss_magritte_dropdowns(self) -> None:

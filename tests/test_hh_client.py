@@ -209,6 +209,9 @@ class FakeApplyElement:
 
 
 class FakeTextField:
+    async def input_value(self):
+        return self.value
+
     def __init__(self):
         self.value = ""
 
@@ -412,6 +415,17 @@ class FakeQuestionResponsePage(FakeDirectResponsePage):
         return await super().query_selector(selector)
 
     async def evaluate(self, script: str, arg=None):
+        if "codex:response-form-signature" in script:
+            return {
+                "controls": [
+                    "textarea::letter:vacancy-response-popup-form-letter-input::required",
+                    "input:text:salary:task-question::required",
+                    "button:submit::vacancy-response-submit-popup::optional",
+                ],
+                "letter_count": 1,
+                "submit_count": 1,
+                "other_field_count": 1,
+            }
         if "document.body.innerText" in script:
             return (
                 "Отклик на вакансию "
@@ -993,3 +1007,30 @@ def test_matching_title_cannot_override_mismatched_explicit_resume_id(monkeypatc
     result = asyncio.run(client.apply_to_vacancy('https://hh.ru/vacancy/1', preferred_resume_id='qa-id', preferred_resume_title='QA Resume'))
     assert result['ok'] is False
     assert client._page.stage != 'success'
+
+
+def test_apply_stops_when_letter_field_does_not_retain_text(monkeypatch):
+    client = HHClient()
+    client._page = FakeDirectResponsePage()
+    async def empty_value():
+        return ''
+    monkeypatch.setattr(client._page.letter, 'input_value', empty_value)
+    monkeypatch.setattr(client, '_is_captcha_page', lambda: asyncio.sleep(0, result=False))
+    result = asyncio.run(client.apply_to_vacancy('https://hh.ru/vacancy/1', cover_letter='required letter'))
+    assert result['ok'] is False
+    assert 'не сохранилось' in result['message']
+
+
+def test_questionnaire_stops_if_answers_clear_letter(monkeypatch):
+    client = HHClient()
+    client._page = FakeAutoAnswerQuestionPage(question_text='Ваши зарплатные ожидания?')
+    monkeypatch.setattr(client, '_is_captcha_page', lambda: asyncio.sleep(0, result=False))
+    async def answer(vacancy_context='', *, before_submit=None):
+        assert client._page.letter.value == 'required letter'
+        client._page.letter.value = ''
+        assert await before_submit() is False
+        return {'ok': False, 'message': 'stopped before submit'}
+    monkeypatch.setattr(client, '_try_auto_answer_questions', answer)
+    result = asyncio.run(client.apply_to_vacancy('https://hh.ru/vacancy/1', cover_letter='required letter'))
+    assert result['ok'] is False
+    assert result['message'] == 'stopped before submit'

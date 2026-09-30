@@ -481,6 +481,26 @@ class _FailingClient:
         self.chat = _FakeChat(_FailingCompletions())
 
 
+def test_clean_cover_letter_output_removes_provider_prefix_and_fences():
+    assert matcher._clean_cover_letter_output("НЕЙРО  \nНормальный текст письма.") == "Нормальный текст письма."
+    assert matcher._clean_cover_letter_output("```text\nНормальный текст письма.\n```") == "Нормальный текст письма."
+
+
+def test_generate_cover_letter_cleans_provider_prefix(monkeypatch):
+    client = _FakeClient("НЕЙРО\nПроверяю REST API и web-сценарии.")
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    monkeypatch.setattr(matcher, "_load_resume", lambda: "Junior Manual QA, около 1 года практического тестирования.")
+
+    cover = asyncio.run(
+        matcher.generate_cover_letter(
+            {"id": "hh-clean-cover", "title": "QA Engineer", "company": "Acme"},
+            "Ручное тестирование web-продукта.",
+        )
+    )
+
+    assert cover == "Проверяю REST API и web-сценарии."
+
+
 def test_generate_cover_letter_falls_back_on_empty_response(monkeypatch):
     client = _FakeClient("")
     monkeypatch.setattr(matcher, "_get_client", lambda: client)

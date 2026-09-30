@@ -967,6 +967,22 @@ def _apply_candidate_truth_guards(result: dict, vacancy: dict, details: str = ""
     return result
 
 
+def _clean_cover_letter_output(value: str) -> str:
+    """Remove provider artefacts and wrapper labels from generated letters."""
+    text = (value or "").strip()
+    text = re.sub(r"^```(?:text|markdown)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text).strip()
+    lines = text.splitlines()
+    while lines and re.sub(r"\s+", " ", lines[0]).strip().casefold().strip(":") in {
+        "нейро",
+        "ответ",
+        "сопроводительное письмо",
+        "текст сопроводительного письма",
+    }:
+        lines.pop(0)
+    return "\n".join(lines).strip().strip("\"")
+
+
 def _fallback_cover_letter(vacancy: dict, details: str = "", cover_style: str = "") -> str:
     style = cover_style or cover_style_for_cluster(classify_vacancy_cluster(vacancy, details))
     if style == "api_qa":
@@ -1283,7 +1299,7 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
 Краткое описание: {vacancy.get('snippet', '—')}
 
 ## Полное описание вакансии:
-{details[:2000] if details else '(нет деталей)'}
+{details if details else '(нет деталей)'}
 
 ## Задача:
 Оцени вакансию по шкале 0-100, где:
@@ -1443,7 +1459,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     vacancy_summary = (
         f"Должность: {vacancy.get('title', '')}\n"
         f"Компания: {vacancy.get('company', '')}\n"
-        f"Описание: {(details or vacancy.get('snippet', ''))[:1200]}"
+        f"Описание: {(details or vacancy.get('snippet', ''))}"
     )
     try:
         client = _get_client()
@@ -1468,7 +1484,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
 Компания: {vacancy.get('company', '—')}
 
 ## Описание вакансии:
-{details[:1500] if details else vacancy.get('snippet', '(нет описания)')}
+{details if details else vacancy.get('snippet', '(нет описания)')}
 
 ## Длина и форма:
 - 3-4 предложения, до 1500 символов
@@ -1513,7 +1529,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
             temperature=0.55,
             max_tokens=2000,
         )
-        cover = (resp.choices[0].message.content or "").strip()
+        cover = _clean_cover_letter_output(resp.choices[0].message.content or "")
         if not cover:
             log.warning("Cover letter generation returned empty response; using fallback")
             fallback_cover = _fallback_cover_letter(vacancy, details, cover_style)

@@ -102,14 +102,23 @@ def build_salary_rule_block() -> str:
 
 
 def build_facts_block() -> str:
-    """Структурированные факты из profile/<name>/facts.json (если есть)."""
+    """Структурированные и подтверждённые пользователем факты профиля."""
+    blocks = []
     try:
         import facts as facts_mod
-        data = facts_mod.load_facts()
-        return facts_mod.format_facts_for_prompt(data)
+        block = facts_mod.format_facts_for_prompt(facts_mod.load_facts())
+        if block:
+            blocks.append(block)
     except Exception as exc:
         log.debug("facts load failed: %s", exc)
-        return ""
+    try:
+        import candidate_interview
+        block = candidate_interview.prompt_block()
+        if block:
+            blocks.append(block)
+    except Exception as exc:
+        log.debug("candidate interview facts load failed: %s", exc)
+    return "".join(blocks)
 
 
 def build_profile_note_block() -> str:
@@ -152,11 +161,11 @@ def build_vacancy_context_block(vacancy_context: str, limit: int = 1500) -> str:
     return f"Контекст вакансии (на неё откликаемся):\n{_truncate(vacancy_context, limit)}\n\n"
 
 
-def _knowledge_dir() -> str:
+def _knowledge_dir(profile_dir: str | None = None) -> str:
     """Папка knowledge/ рядом с resume.md (per-profile)."""
     import os
     import config
-    home = os.path.dirname(config.RESUME_FILE) or os.path.expanduser("~/.job-hunter")
+    home = profile_dir or os.path.dirname(config.RESUME_FILE) or os.path.expanduser("~/.job-hunter")
     return os.path.join(home, "knowledge")
 
 
@@ -250,7 +259,7 @@ async def select_kb_sections(
     prompt = f"""Из списка секций базы знаний QA-кандидата выбери {max_sections} наиболее релевантных для конкретной вакансии. Релевантные — те которые помогут написать качественный ответ работодателю/cover letter.
 
 Контекст вакансии:
-{vacancy_context[:1500]}
+{vacancy_context}
 
 Секции базы знаний:
 {titles_block}
@@ -323,7 +332,7 @@ async def build_filtered_kb_block(
     return _format_kb_block(about_text, picked, limit_chars=limit_chars)
 
 
-def build_knowledge_base_block(limit_chars: int = 12000) -> str:
+def build_knowledge_base_block(limit_chars: int = 12000, *, profile_dir: str | None = None) -> str:
     """Подгрузить все .md/.txt из profile/<name>/knowledge/ и склеить как
     приоритетный блок «База знаний кандидата».
 
@@ -331,7 +340,7 @@ def build_knowledge_base_block(limit_chars: int = 12000) -> str:
     «### <filename>». Общая длина обрезается до limit_chars (по умолчанию ~12 KB).
     """
     import os
-    knowledge_dir = _knowledge_dir()
+    knowledge_dir = _knowledge_dir(profile_dir)
     if not os.path.isdir(knowledge_dir):
         return ""
     parts = []

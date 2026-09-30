@@ -161,7 +161,10 @@ async def inspect_employer_questions(page, *, logger) -> dict:
                 const unsupportedItems = [];
                 const fields = [];
                 const selectors = "textarea, select, input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='image']):not([type='file'])";
-                const nodes = Array.from(document.querySelectorAll(selectors)).filter(visible);
+                const nodes = Array.from(document.querySelectorAll(selectors)).filter(visible).filter(el =>
+                    !el.matches('[name="letter"], [data-qa="vacancy-response-popup-form-letter-input"]') &&
+                    !el.closest('[data-magritte-select-option], [data-qa="resume-select"]')
+                );
 
                 const collectPromptTexts = (el) => {
                     const parts = [];
@@ -636,7 +639,7 @@ async def answer_question_with_llm(
         return stable_answer
 
     vacancy_block = (
-        f"Контекст вакансии (на неё откликаемся):\n{truncate_text(vacancy_context, 1500)}\n\n"
+        f"Контекст вакансии (на неё откликаемся):\n{vacancy_context}\n\n"
         if vacancy_context else ""
     )
     salary_block = build_salary_rule_block()
@@ -764,7 +767,7 @@ async def answer_choice_with_llm(
     )
 
     vacancy_block = (
-        f"Контекст вакансии (на неё откликаемся):\n{truncate_text(vacancy_context, 1500)}\n\n"
+        f"Контекст вакансии (на неё откликаемся):\n{vacancy_context}\n\n"
         if vacancy_context else ""
     )
     salary_block = build_salary_rule_block()
@@ -913,6 +916,7 @@ async def try_auto_answer_questions(
     settings,
     load_resume_text,
     anti_bot_message,
+    before_submit=None,
 ) -> dict:
     if not settings.HH_AUTO_ANSWER_SIMPLE_QUESTIONS:
         return {
@@ -1096,6 +1100,11 @@ async def try_auto_answer_questions(
         }
 
     await session._page.wait_for_timeout(500)
+
+    if before_submit is not None and not await before_submit():
+        return {"handled": True, "ok": False,
+                "message": "Резюме или сопроводительное изменилось при заполнении анкеты — отправка остановлена",
+                "notes": notes, "question_answers": question_answers}
 
     if not await session._submit_employer_questions():
         return {

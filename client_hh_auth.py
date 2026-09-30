@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import html
 import json
 import os
@@ -229,8 +230,10 @@ HH_AUTH_LOGIN_INPUT_SELECTORS = (
     "input[name='username']",
     "input[type='email']",
     "input[type='tel']",
+    "input[inputmode='tel'][data-qa='magritte-phone-input-national-number-input']",
+    "input[data-qa='magritte-phone-input-national-number-input']",
     "input[autocomplete='username']",
-    "input[data-qa*='login' i]",
+    "input[data-qa*='login' i]:not([type='password'])",
     "input[placeholder*='телефон' i]",
     "input[placeholder*='почт' i]",
     "input[placeholder*='email' i]",
@@ -259,13 +262,31 @@ HH_AUTH_CONTINUE_SELECTORS = (
     "input[type='submit']",
 )
 
+HH_AUTH_ROLE_INPUT_SELECTORS = (
+    "input[name=\"account-type\"][data-qa*=\"APPLICANT\"]",
+    "input[data-qa*=\"account-type-card-APPLICANT\"]",
+)
+
+HH_AUTH_ROLE_SUBMIT_SELECTORS = (
+    "form[data-qa=\"account-login-form\"] button[data-qa=\"submit-button\"]",
+)
+
+HH_AUTH_PASSWORD_INPUT_SELECTORS = (
+    "input[type=\"password\"]",
+    "input[name=\"password\"]",
+    "input[data-qa=\"applicant-login-input-password\"]",
+)
+
+HH_AUTH_CODE_MODE_SELECTORS = (
+    "button[data-qa=\"expand-login-by-code-text\"]",
+    "button:has-text(\"Войти по коду\")",
+)
+
 HH_AUTH_PHONE_MODE_SELECTORS = (
     "button:has-text('Телефон')",
     "a:has-text('Телефон')",
     "button:has-text('по телефону')",
     "a:has-text('по телефону')",
-    "button:has-text('по коду')",
-    "a:has-text('по коду')",
 )
 
 HH_AUTH_CAPTCHA_SELECTORS = (
@@ -424,6 +445,26 @@ async def _fill_first_visible(page, selectors: tuple[str, ...], value: str) -> b
     except TypeError:
         await item.fill(value)
     return True
+
+
+async def _fill_hh_auth_login(page, value: str) -> bool:
+    phone_input = await _first_visible_locator(
+        page,
+        (
+            "input[data-qa=\"magritte-phone-input-national-number-input\"]",
+            "input[inputmode=\"tel\"]",
+        ),
+    )
+    digits = _normalize_hh_auth_code(value)
+    if phone_input and digits:
+        # HH renders +7 in a separate calling-code input.
+        national = digits[1:] if len(digits) == 11 and digits[0] in "78" else digits
+        try:
+            await phone_input.fill(national, timeout=5000)
+        except TypeError:
+            await phone_input.fill(national)
+        return True
+    return await _fill_first_visible(page, HH_AUTH_LOGIN_INPUT_SELECTORS, value)
 
 
 async def _click_first_visible(page, selectors: tuple[str, ...]) -> bool:
@@ -636,6 +677,53 @@ async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s:
     url = str(getattr(page, "url", "") or "")
     text = await _hh_auth_page_text(page)
 
+    # HH can remember the account and open its password form. Switch by
+    # the exact secondary button and leave this iteration immediately: no
+    # generic submit is allowed until a phone or one-time code was filled.
+    code_mode_button = await _first_visible_locator(page, HH_AUTH_CODE_MODE_SELECTORS)
+    if code_mode_button:
+        try:
+            await code_mode_button.click(timeout=5000)
+        except TypeError:
+            await code_mode_button.click()
+        await page.wait_for_timeout(1000)
+        return {
+            "status": HH_AUTH_STEP_PROGRESS,
+            "detail": "HH переключён с пароля на вход по одноразовому коду.",
+            "url": str(getattr(page, "url", "") or url),
+        }
+    if await _first_visible_locator(page, HH_AUTH_PASSWORD_INPUT_SELECTORS):
+        return {
+            "status": HH_AUTH_STEP_BLOCKED,
+            "detail": "HH открыл вход по паролю, но кнопка входа по коду не найдена.",
+            "url": url,
+        }
+
+    # The first HH screen only selects applicant/employer. Its submit button
+    # is safe without a text value, but only while the applicant radio exists.
+    if await _first_visible_locator(page, HH_AUTH_ROLE_INPUT_SELECTORS):
+        before_url = str(getattr(page, "url", "") or "")
+        before_text = await _hh_auth_page_text(page)
+        if not await _click_first_visible(page, HH_AUTH_ROLE_SUBMIT_SELECTORS):
+            return {
+                "status": HH_AUTH_STEP_BLOCKED,
+                "detail": "На экране выбора роли HH не найдена кнопка «Войти».",
+                "url": url,
+            }
+        progress = await _wait_for_hh_auth_progress(page, before_url, before_text)
+        if progress.get("status") == HH_AUTH_STEP_STALLED:
+            # The URL remains /account/login across role and password screens.
+            # A newly visible password/code control is sufficient progress.
+            if (
+                await _first_visible_locator(page, HH_AUTH_PASSWORD_INPUT_SELECTORS)
+                or await _first_visible_locator(page, HH_AUTH_CODE_MODE_SELECTORS)
+                or _looks_like_hh_auth_code_prompt(await _hh_auth_page_text(page), str(getattr(page, "url", "") or ""))
+            ):
+                progress = {"status": HH_AUTH_STEP_PROGRESS, "detail": "HH принял выбор профиля соискателя."}
+        if progress.get("status") == HH_AUTH_STEP_PROGRESS:
+            progress["status"] = HH_AUTH_STEP_SUBMITTED
+        return progress
+
     if _looks_like_hh_auth_code_prompt(text, url):
         wait_s = max(1, min(int(timeout_s or 1), 900))
         code = await _request_hh_auth_value(
@@ -685,7 +773,7 @@ async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s:
                 timeout_s=wait_s,
                 poll_sec=poll_sec,
             )
-        if login and await _fill_first_visible(page, HH_AUTH_LOGIN_INPUT_SELECTORS, login):
+        if login and await _fill_hh_auth_login(page, login):
             before_url = str(getattr(page, "url", "") or "")
             before_text = await _hh_auth_page_text(page)
             submit_result = await _submit_hh_auth_form(page)
@@ -697,19 +785,6 @@ async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s:
             if progress.get("status") == HH_AUTH_STEP_PROGRESS:
                 progress["status"] = HH_AUTH_STEP_SUBMITTED
             return progress
-
-        # First HH screen may only ask for account type (applicant/employer)
-        # and show a submit button. Move forward to reveal phone/email fields.
-        if "/account/login" in url.casefold():
-            before_url = str(getattr(page, "url", "") or "")
-            before_text = await _hh_auth_page_text(page)
-            if await _click_first_visible(page, HH_AUTH_CONTINUE_SELECTORS):
-                progress = await _wait_for_hh_auth_progress(page, before_url, before_text)
-                if progress.get("status") == HH_AUTH_STEP_CAPTCHA:
-                    progress = await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:initial_submit")
-                if progress.get("status") == HH_AUTH_STEP_PROGRESS:
-                    progress["status"] = HH_AUTH_STEP_SUBMITTED
-                return progress
 
     if await _first_visible_locator(page, HH_AUTH_LOGIN_INPUT_SELECTORS):
         login = _resolve_hh_auth_login()
@@ -723,7 +798,7 @@ async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s:
                 timeout_s=wait_s,
                 poll_sec=poll_sec,
             )
-        if login and await _fill_first_visible(page, HH_AUTH_LOGIN_INPUT_SELECTORS, login):
+        if login and await _fill_hh_auth_login(page, login):
             before_url = str(getattr(page, "url", "") or "")
             before_text = await _hh_auth_page_text(page)
             submit_result = await _submit_hh_auth_form(page)
@@ -796,6 +871,7 @@ async def run_hh_auth_capture(
     if activate_profile:
         profile_mod.activate_no_lock(profile_name)
     client = HHClient()
+    authenticated = False
     try:
         await client.start(headless=False)
         await _open_hh_login(  # noqa: SLF001 - auth flow owns the browser page
@@ -829,6 +905,7 @@ async def run_hh_auth_capture(
                 logged_in = await client.is_logged_in()
             if logged_in:
                 await client.save_session()
+                authenticated = True
                 result = {
                     "ok": True,
                     "authenticated": True,
@@ -846,6 +923,8 @@ async def run_hh_auth_capture(
                     result["imported_resumes"] = True
                 return result
             remaining = max(1, int(deadline - time.monotonic()))
+            with contextlib.suppress(Exception):
+                await client._save_debug_snapshot("debug_hh_auth_current")  # noqa: SLF001
             step = await _drive_hh_auth_step(
                 client,
                 profile_name,
@@ -859,6 +938,8 @@ async def run_hh_auth_capture(
                 stalled_submit_count += 1
                 if stalled_submit_count >= 3:
                     detail = str(step.get("detail") or "HH не меняет страницу после отправки формы.")
+                    with contextlib.suppress(Exception):
+                        await client._save_debug_snapshot("debug_hh_auth_stalled")  # noqa: SLF001
                     await _notify_hh_auth_warning(
                         profile_name,
                         "HH auth застрял на форме входа",
@@ -920,7 +1001,22 @@ async def run_hh_auth_capture(
             "resumes": [],
         }
     finally:
-        await client.stop()
+        # A failed login page may contain a new anonymous cookie set. Do not
+        # overwrite a previously working session with it. The TypeError fallback
+        # keeps third-party HHClient-compatible integrations working.
+        if authenticated:
+            await client.stop()
+        else:
+            try:
+                await client.stop(persist_cookies=False)
+            except TypeError as exc:
+                if "persist_cookies" not in str(exc):
+                    raise
+                await client.stop()
+        with contextlib.suppress(Exception):
+            import notifier
+
+            await notifier.close_session()
 
 
 async def main_async() -> int:
