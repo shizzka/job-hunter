@@ -213,7 +213,10 @@ def _load_kb_filterable() -> tuple[str, list[dict]]:
     ]
     names = [name for name in preferred if os.path.isfile(os.path.join(knowledge_dir, name))]
     names.extend(name for name in sorted(os.listdir(knowledge_dir)) if name not in names)
+    has_canonical_facts = "candidate_facts.md" in names
     for fname in names:
+        if has_canonical_facts and fname == "about_me.md":
+            continue
         path = os.path.join(knowledge_dir, fname)
         if not os.path.isfile(path):
             continue
@@ -233,7 +236,7 @@ def _load_kb_filterable() -> tuple[str, list[dict]]:
     return ("\n\n".join(about_parts), qa_sections)
 
 
-def _format_kb_block(about_text: str, sections: list[dict], limit_chars: int = 10000) -> str:
+def _format_kb_block(about_text: str, sections: list[dict], limit_chars: int | None = 10000) -> str:
     """Собрать финальный блок из about_text + перечня секций."""
     parts = ["📚 БАЗА ЗНАНИЙ КАНДИДАТА (приоритетный источник фактов, перекрывает резюме):"]
     if about_text:
@@ -241,7 +244,7 @@ def _format_kb_block(about_text: str, sections: list[dict], limit_chars: int = 1
     for s in sections:
         parts.append(f"### {s['num']}. {s['title']}\n{s['content']}")
     block = "\n\n".join(parts) + "\n"
-    if len(block) > limit_chars:
+    if limit_chars is not None and len(block) > limit_chars:
         block = block[:limit_chars - 1] + "…\n"
     return block
 

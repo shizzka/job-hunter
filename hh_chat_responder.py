@@ -268,11 +268,11 @@ async def generate_answer(
     vacancy_summary = f"Должность: {vacancy.get('title','')}\nКомпания: {vacancy.get('company','')}\n"
     try:
         knowledge = await build_filtered_kb_block(
-            vacancy_summary, _get_llm_client(), max_sections=5, limit_chars=8000,
+            vacancy_summary, _get_llm_client(), max_sections=6, limit_chars=30000,
         )
     except Exception as exc:
         log.warning("filtered KB selection failed, fallback to full: %s", exc)
-        knowledge = build_knowledge_base_block(limit_chars=8000)
+        knowledge = build_knowledge_base_block(limit_chars=30000)
 
     vacancy_block = ""
     if vacancy.get("title") or vacancy.get("company"):
