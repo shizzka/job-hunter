@@ -230,6 +230,7 @@ def test_build_provider_specs_includes_extra_providers(monkeypatch):
         "huggingface",
         "siliconflow",
     ]
+    assert specs[1].model_for("qwen3-coder:480b") == "gpt-oss:120b"
     assert specs[2].model_for("qwen3-coder:480b") == "zai-glm-4.7"
     assert specs[3].model_for("gpt-oss:120b") == "openai/gpt-oss-120b:free"
     assert specs[3].model_for("qwen3-coder:480b") == "openai/gpt-oss-120b:free"

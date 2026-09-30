@@ -101,6 +101,15 @@ def _openrouter_headers(provider_env: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _ollama_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
+    """Map aliases unavailable in Ollama Cloud to the supported free model."""
+    fallback = provider_env.get("OLLAMA_FALLBACK_MODEL", "gpt-oss:120b")
+    return {
+        "qwen3-coder:480b": fallback,
+        "qwen3-coder-next": fallback,
+    }
+
+
 def _openrouter_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
     fast = provider_env.get("OPENROUTER_FAST_MODEL", "openai/gpt-oss-20b:free")
     strong = provider_env.get("OPENROUTER_STRONG_MODEL", "openai/gpt-oss-120b:free")
@@ -309,14 +318,17 @@ def _build_provider_specs() -> list[ProviderSpec]:
             )
         )
 
-    add("primary", config.LLM_BASE_URL, config.LLM_API_KEY)
-
     provider_env = _load_provider_env()
+    primary_base = config.LLM_BASE_URL
+    primary_aliases = _ollama_model_aliases(provider_env) if "ollama" in primary_base.lower() else {}
+    add("primary", primary_base, config.LLM_API_KEY, model_aliases=primary_aliases)
+
     for name in ("OLLAMA", "OLLAMA2", "OLLAMA3"):
         add(
             name.lower(),
             provider_env.get(f"{name}_BASE_URL") or provider_env.get("OLLAMA_BASE_URL", ""),
             provider_env.get(f"{name}_API_KEY", ""),
+            model_aliases=_ollama_model_aliases(provider_env),
         )
 
     add(
