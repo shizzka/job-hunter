@@ -713,8 +713,16 @@ class TelegramBot(
         answer = " ".join(text.split()).strip()
         if not answer:
             return True
-        if len(answer) > 1200:
-            await self._send_text(chat_id, "Ответ слишком длинный: максимум 1200 символов.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+        # Для обычных пользователей сохраняем короткие подтверждаемые факты.
+        # Администратору разрешён расширенный ввод, чтобы перенести большую
+        # базу знаний одним фактом без искусственного дробления.
+        max_length = 12000 if principal.get("role") == ROLE_ADMIN else 1200
+        if len(answer) > max_length:
+            await self._send_text(
+                chat_id,
+                f"Ответ слишком длинный: максимум {max_length} символов.",
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE),
+            )
             return True
         topic = "общий"
         if state.get("mode") == "answer":
