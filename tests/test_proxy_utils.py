@@ -237,7 +237,7 @@ def test_build_provider_specs_includes_extra_providers(monkeypatch):
     assert specs[3].default_headers["X-Title"] == "job-hunter"
     assert specs[5].model_for("gpt-oss:120b") == "llama-3.3-70b-versatile"
     assert specs[6].model_for("deepseek-v3.1:671b") == "DeepSeek-V3.1"
-    assert specs[7].model_for("gpt-oss:120b") == "gemini-3.5-flash"
+    assert specs[7].model_for("gpt-oss:120b") == "gemini-3.1-flash-lite"
     assert specs[8].model_for("gpt-oss:120b") == "deepseek-v4-flash"
     assert specs[9].base_url == "https://api.cloudflare.com/client/v4/accounts/cf-account/ai/v1"
     assert specs[9].model_for("gpt-oss:120b") == "@cf/openai/gpt-oss-120b"

@@ -202,7 +202,7 @@ def _sambanova_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
 
 def _gemini_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
     fast = provider_env.get("GEMINI_FAST_MODEL", "gemini-3.1-flash-lite")
-    strong = provider_env.get("GEMINI_STRONG_MODEL", "gemini-3.5-flash")
+    strong = provider_env.get("GEMINI_STRONG_MODEL", "gemini-3.1-flash-lite")
     coder = provider_env.get("GEMINI_CODER_MODEL", strong)
     return {
         "gpt-oss:20b": fast,
