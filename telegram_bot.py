@@ -699,6 +699,38 @@ class TelegramBot(
         text += "\n\nОтветьте сообщением. Ничего не сохранится без подтверждения."
         await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
 
+    async def _accept_candidate_document(self, chat_id: int, principal: dict, message: dict) -> bool:
+        """Accept a UTF-8 txt/md document as one admin candidate fact."""
+        if principal.get("role") != ROLE_ADMIN:
+            return False
+        profile_name = self._selected_profile(principal)
+        state = self._candidate_state(principal["user_id"], profile_name)
+        if state.get("mode") != "add":
+            return False
+        document = message.get("document") or {}
+        file_id = str(document.get("file_id") or "").strip()
+        filename = str(document.get("file_name") or "facts.txt").strip()
+        if not file_id or not filename.lower().endswith((".txt", ".md", ".markdown")):
+            return False
+        try:
+            raw = await self._download_file(file_id)
+            answer = raw.decode("utf-8-sig", errors="replace").strip()
+        except Exception as exc:
+            log.warning("candidate facts document download failed: %s", exc)
+            await self._send_text(chat_id, "❌ Не удалось прочитать файл. Пришли UTF-8 .txt или .md.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+            return True
+        answer = " ".join(answer.split()).strip()
+        if not answer:
+            await self._send_text(chat_id, "❌ Файл пустой.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+            return True
+        if len(answer) > 12000:
+            await self._send_text(chat_id, "❌ Файл слишком большой: максимум 12 000 символов.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+            return True
+        state.update(mode="confirm", pending_text=answer, pending_topic="база знаний")
+        self._set_candidate_state(principal["user_id"], state)
+        await self._send_text(chat_id, f"Файл «{filename}» прочитан ({len(answer)} символов).\n\nСохранить как один подтверждённый факт?", reply_markup=self._candidate_confirm_markup())
+        return True
+
     async def _accept_candidate_interview_input(self, chat_id: int, principal: dict, text: str) -> bool:
         profile_name = self._selected_profile(principal)
         state = self._candidate_state(principal["user_id"], profile_name)
@@ -1872,6 +1904,9 @@ class TelegramBot(
             return
 
         text = (message.get("text") or "").strip()
+
+        if await self._accept_candidate_document(chat_id, principal, message):
+            return
 
         if await self._maybe_accept_hh_auth_response(chat_id, principal, text):
             return

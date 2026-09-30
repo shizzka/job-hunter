@@ -94,6 +94,30 @@ class TelegramAPIClient:
                 raise RuntimeError(f"{method} failed: {response.status} {data}")
             return data.get("result", {})
 
+    async def _download_file(self, file_id: str) -> bytes:
+        """Download a Telegram file referenced by file_id."""
+        meta = await self._api_request("getFile", {"file_id": file_id}, timeout=30)
+        file_path = str((meta or {}).get("file_path") or "").strip()
+        if not file_path:
+            raise RuntimeError("Telegram getFile returned no file_path")
+        use_proxy = bool(config.TELEGRAM_PROXY) and not self._force_direct
+        try:
+            return await self._download_file_once(file_path, use_proxy=use_proxy)
+        except Exception as exc:
+            if not use_proxy:
+                raise
+            self._api_log.warning("Telegram proxy failed for file download, retrying direct: %s", exc)
+            self._force_direct = True
+            return await self._download_file_once(file_path, use_proxy=False)
+
+    async def _download_file_once(self, file_path: str, *, use_proxy: bool) -> bytes:
+        session = await self._get_session(use_proxy, timeout=120)
+        url = f"https://api.telegram.org/file/bot{config.TELEGRAM_CONTROL_BOT_TOKEN}/{file_path}"
+        async with session.get(url) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Telegram file download failed: {response.status}")
+            return await response.read()
+
     async def _send_document(
         self,
         chat_id: int,
