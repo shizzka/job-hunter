@@ -723,9 +723,6 @@ class TelegramBot(
         if not answer:
             await self._send_text(chat_id, "❌ Файл пустой.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
             return True
-        if len(answer) > 12000:
-            await self._send_text(chat_id, "❌ Файл слишком большой: максимум 12 000 символов.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
-            return True
         state.update(mode="confirm", pending_text=answer, pending_topic="база знаний")
         self._set_candidate_state(principal["user_id"], state)
         await self._send_text(chat_id, f"Файл «{filename}» прочитан ({len(answer)} символов).\n\nСохранить как один подтверждённый факт?", reply_markup=self._candidate_confirm_markup())
@@ -748,8 +745,8 @@ class TelegramBot(
         # Для обычных пользователей сохраняем короткие подтверждаемые факты.
         # Администратору разрешён расширенный ввод, чтобы перенести большую
         # базу знаний одним фактом без искусственного дробления.
-        max_length = 12000 if principal.get("role") == ROLE_ADMIN else 1200
-        if len(answer) > max_length:
+        max_length = None if principal.get("role") == ROLE_ADMIN else 1200
+        if max_length is not None and len(answer) > max_length:
             await self._send_text(
                 chat_id,
                 f"Ответ слишком длинный: максимум {max_length} символов.",
@@ -2062,7 +2059,12 @@ class TelegramBot(
                 return
             if command == "/candidate_save" and state.get("mode") == "confirm":
                 try:
-                    candidate_interview.add_fact(state.get("pending_text", ""), topic=state.get("pending_topic", "общий"), profile_dir=profile_dir)
+                    candidate_interview.add_fact(
+                        state.get("pending_text", ""),
+                        topic=state.get("pending_topic", "общий"),
+                        profile_dir=profile_dir,
+                        max_chars=None if role == ROLE_ADMIN else 1200,
+                    )
                 except ValueError as exc:
                     await self._send_text(chat_id, f"❌ {exc}", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
                     return

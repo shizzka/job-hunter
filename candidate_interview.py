@@ -50,12 +50,12 @@ def facts(profile_dir: str | None = None) -> list[dict[str, str]]:
     return [item for item in value if isinstance(item, dict) and item.get("text")]
 
 
-def add_fact(text: str, *, topic: str = "общий", profile_dir: str | None = None) -> dict[str, str]:
+def add_fact(text: str, *, topic: str = "общий", profile_dir: str | None = None, max_chars: int | None = 1200) -> dict[str, str]:
     clean = " ".join(str(text or "").split()).strip()
     if not clean:
         raise ValueError("Пустой факт нельзя сохранить")
-    if len(clean) > 1200:
-        raise ValueError("Факт слишком длинный: максимум 1200 символов")
+    if max_chars is not None and len(clean) > max_chars:
+        raise ValueError(f"Факт слишком длинный: максимум {max_chars} символов")
     data = load(profile_dir)
     current = [item for item in data.get("facts") or [] if isinstance(item, dict)]
     item = {
