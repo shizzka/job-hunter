@@ -207,7 +207,13 @@ def _load_kb_filterable() -> tuple[str, list[dict]]:
     qa_sections: list[dict] = []
     if not os.path.isdir(knowledge_dir):
         return "", []
-    for fname in sorted(os.listdir(knowledge_dir)):
+    preferred = [
+        "answering_rules.md", "constraints.md", "candidate_facts.md",
+        "projects.md", "about_me.md", "qa_kb.md",
+    ]
+    names = [name for name in preferred if os.path.isfile(os.path.join(knowledge_dir, name))]
+    names.extend(name for name in sorted(os.listdir(knowledge_dir)) if name not in names)
+    for fname in names:
         path = os.path.join(knowledge_dir, fname)
         if not os.path.isfile(path):
             continue
@@ -345,7 +351,13 @@ def build_knowledge_base_block(limit_chars: int = 12000, *, profile_dir: str | N
         return ""
     parts = []
     total = 0
-    for fname in sorted(os.listdir(knowledge_dir)):
+    preferred = [
+        "answering_rules.md", "constraints.md", "candidate_facts.md",
+        "projects.md", "about_me.md", "qa_kb.md",
+    ]
+    names = [name for name in preferred if os.path.isfile(os.path.join(knowledge_dir, name))]
+    names.extend(name for name in sorted(os.listdir(knowledge_dir)) if name not in names)
+    for fname in names:
         if not (fname.endswith(".md") or fname.endswith(".txt")):
             continue
         path = os.path.join(knowledge_dir, fname)
