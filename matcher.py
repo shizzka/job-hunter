@@ -1474,7 +1474,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     style_block = _build_cover_letter_style_block(vacancy, details, cover_style)
     positioning_block = _build_cover_letter_positioning_block(vacancy, details)
 
-    prompt = f"""Ты — ассистент по поиску работы. Напиши короткое сопроводительное письмо.
+    prompt = f"""Ты — ассистент по поиску работы. Напиши содержательное, но компактное сопроводительное письмо.
 
 {profile_note}{knowledge}{style_block}{positioning_block}## Резюме кандидата:
 {resume}
@@ -1487,7 +1487,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
 {details if details else vacancy.get('snippet', '(нет описания)')}
 
 ## Длина и форма:
-- 3-4 предложения, до 1500 символов
+- 4-6 предложений, целевой объём 550-900 символов, максимум 1500 символов
 - Писать от первого лица, в разговорном профессиональном тоне (как сообщение HR-у в мессенджере, не сочинение)
 - Использовать обычное тире "-", НЕ em-dash "—" и НЕ дефис между словами как разделитель
 - Пиши обычные слова: "REST API", "тест-кейсы", не "REST‑API", не "тест‑кейсы" со спец-символом
