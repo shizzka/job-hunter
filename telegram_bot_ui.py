@@ -79,6 +79,13 @@ BUTTON_MENU_MONITOR = "📊 Мониторинг"
 BUTTON_MENU_RUN = "🚀 Запуск"
 BUTTON_MENU_REPEAT = "⏰ Повтор"
 BUTTON_MENU_ADMIN = "⚙️ Админ"
+BUTTON_CANDIDATE_PROFILE = "🧠 Обо мне"
+BUTTON_CANDIDATE_FACTS = "📋 Мои факты"
+BUTTON_CANDIDATE_INTERVIEW = "✨ Уточнить профиль"
+BUTTON_CANDIDATE_ADD_FACT = "➕ Добавить факт"
+BUTTON_CANDIDATE_SAVE = "✅ Сохранить факт"
+BUTTON_CANDIDATE_EDIT = "✏️ Изменить ответ"
+BUTTON_CANDIDATE_SKIP = "⏭ Пропустить"
 BUTTON_PROFILE_PREFIX = "📁 Профиль: "
 LEGACY_BUTTON_PROFILE_PREFIX = "Профиль: "
 
@@ -87,11 +94,16 @@ MENU_MONITOR = "monitor"
 MENU_RUN = "run"
 MENU_REPEAT = "repeat"
 MENU_ADMIN = "admin"
+MENU_LLM = "llm"
+BUTTON_LLM = "🧠 Платные LLM"
+BUTTON_LLM_BALANCE = "💰 Баланс DeepSeek"
+BUTTON_LLM_TEST = "🧪 Тест DeepSeek"
 MENU_SEARCH = "search_settings"
 MENU_SEARCH_CONDITIONS = "search_conditions"
 MENU_APPLICATION_MODE = "application_mode"
 MENU_EXPERIENCE = "search_experience"
 MENU_REVIEW = "review"
+MENU_CANDIDATE = "candidate_profile"
 PROGRESS_FRAMES = ["⏳", "⌛️", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕"]
 CLIENT_ONBOARDING_STEPS = ("full_name", "target_role", "target_location", "notes")
 CALLBACK_CLIENT_APPROVE = "ca"
@@ -111,6 +123,16 @@ CALLBACK_MANUAL_SNOOZE = "manual_snooze"
 CALLBACK_HH_REAUTH = "hh_reauth"
 
 ADMIN_BUTTON_MAP = {
+    BUTTON_CANDIDATE_PROFILE: "/candidate_profile",
+    BUTTON_CANDIDATE_FACTS: "/candidate_facts",
+    BUTTON_CANDIDATE_INTERVIEW: "/candidate_interview",
+    BUTTON_CANDIDATE_ADD_FACT: "/candidate_add_fact",
+    BUTTON_CANDIDATE_SAVE: "/candidate_save",
+    BUTTON_CANDIDATE_EDIT: "/candidate_edit",
+    BUTTON_CANDIDATE_SKIP: "/candidate_skip",
+    BUTTON_LLM: "/menu_llm",
+    BUTTON_LLM_BALANCE: "/llm_balance",
+    BUTTON_LLM_TEST: "/llm_test",
     BUTTON_MENU_MONITOR: "/menu_monitor",
     BUTTON_MENU_RUN: "/menu_run",
     BUTTON_MENU_REPEAT: "/menu_repeat",
@@ -175,6 +197,13 @@ ADMIN_BUTTON_MAP = {
     BUTTON_CANCEL_ACTIVE: "/cancel_active",
 }
 USER_BUTTON_MAP = {
+    BUTTON_CANDIDATE_PROFILE: "/candidate_profile",
+    BUTTON_CANDIDATE_FACTS: "/candidate_facts",
+    BUTTON_CANDIDATE_INTERVIEW: "/candidate_interview",
+    BUTTON_CANDIDATE_ADD_FACT: "/candidate_add_fact",
+    BUTTON_CANDIDATE_SAVE: "/candidate_save",
+    BUTTON_CANDIDATE_EDIT: "/candidate_edit",
+    BUTTON_CANDIDATE_SKIP: "/candidate_skip",
     BUTTON_MENU_MONITOR: "/menu_monitor",
     BUTTON_MENU_RUN: "/menu_run",
     BUTTON_MENU_REPEAT: "/menu_repeat",
@@ -303,6 +332,7 @@ LEGACY_BUTTON_MAP = {
     "Остановить": "/cancel_active",
 }
 ADMIN_ONLY_COMMANDS = {
+    "/menu_llm", "/llm_balance", "/llm_test",
     "/forms",
     "/profiles", "/profile", "/users", "/grant", "/revoke",
     "/digest", "/backfill", "/grabresume",
@@ -473,9 +503,9 @@ def _format_runtime_block(title: str, runtime: dict) -> list[str]:
 
 def _normalize_menu(role: str, menu: str | None) -> str:
     if role == ROLE_ADMIN:
-        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_ADMIN, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW}
+        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_ADMIN, MENU_LLM, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW, MENU_CANDIDATE}
     else:
-        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW}
+        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW, MENU_CANDIDATE}
     return menu if menu in allowed else MENU_MAIN
 
 
@@ -599,17 +629,26 @@ def build_reply_markup(
                 [{"text": BUTTON_REVIEW}, {"text": BUTTON_SEARCH_SETTINGS}],
                 *_navigation_rows(),
             ]
+        elif menu == MENU_CANDIDATE:
+            rows = [
+                [{"text": BUTTON_CANDIDATE_FACTS}, {"text": BUTTON_CANDIDATE_INTERVIEW}],
+                [{"text": BUTTON_CANDIDATE_ADD_FACT}],
+                *_navigation_rows(),
+            ]
+        elif menu == MENU_LLM:
+            rows = [[{"text": BUTTON_LLM_BALANCE}, {"text": BUTTON_LLM_TEST}], *_navigation_rows()]
         elif menu == MENU_ADMIN:
             rows = [
                 [{"text": BUTTON_PROFILES}, {"text": BUTTON_USERS}],
-                [{"text": BUTTON_CLIENTS}],
+                [{"text": BUTTON_CLIENTS}, {"text": BUTTON_LLM}],
                 [{"text": BUTTON_AI_LIMITS}, {"text": BUTTON_HELP}],
                 *_navigation_rows(),
             ]
         else:
             rows = [
                 [{"text": BUTTON_CHAT_AI}, {"text": BUTTON_FORMS}],
-                [{"text": BUTTON_SEARCH_SETTINGS}, {"text": BUTTON_REVIEW}],
+                [{"text": BUTTON_SEARCH_SETTINGS}, {"text": BUTTON_CANDIDATE_PROFILE}],
+                [{"text": BUTTON_REVIEW}],
                 [{"text": BUTTON_MENU_MONITOR}, {"text": BUTTON_MENU_RUN}],
                 [{"text": BUTTON_MENU_REPEAT}, {"text": BUTTON_MENU_ADMIN}],
                 [{"text": BUTTON_HELP}],
@@ -673,9 +712,16 @@ def build_reply_markup(
                 [{"text": BUTTON_REVIEW}, {"text": BUTTON_SEARCH_SETTINGS}],
                 *_navigation_rows(),
             ]
+        elif menu == MENU_CANDIDATE:
+            rows = [
+                [{"text": BUTTON_CANDIDATE_FACTS}, {"text": BUTTON_CANDIDATE_INTERVIEW}],
+                [{"text": BUTTON_CANDIDATE_ADD_FACT}],
+                *_navigation_rows(),
+            ]
         else:
             rows = [
-                [{"text": BUTTON_SEARCH_SETTINGS}, {"text": BUTTON_REVIEW}],
+                [{"text": BUTTON_SEARCH_SETTINGS}, {"text": BUTTON_CANDIDATE_PROFILE}],
+                [{"text": BUTTON_REVIEW}],
                 [{"text": BUTTON_MENU_MONITOR}, {"text": BUTTON_MENU_RUN}],
                 [{"text": BUTTON_MENU_REPEAT}, {"text": BUTTON_HELP}],
             ]
@@ -1006,6 +1052,14 @@ def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
             "• Настройте опыт, зарплату, удалёнку и режим откликов",
             "• Запустите тестовый или обычный поиск",
             "• Расписание управляет только этим профилем",
+        ])
+    if section == MENU_CANDIDATE:
+        return "\n".join([
+            f"🧠 Профиль кандидата · {profile_title}",
+            "",
+            "• Подтверждённые факты имеют приоритет над догадками ИИ",
+            "• Интервью строится по этому резюме и направлению поиска",
+            "• Каждый новый факт сохраняется только после вашего подтверждения",
         ])
     if section == MENU_ADMIN:
         return "\n".join([

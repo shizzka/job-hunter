@@ -17,6 +17,8 @@ import traceback
 from datetime import datetime
 
 import analytics
+import candidate_interview
+import admin_llm
 import client_hh_auth
 import hh_response_counter
 import manual_apply_queue
@@ -229,6 +231,8 @@ class TelegramBot(
         self.drop_pending = drop_pending
         self.runtime_paths = runtime_paths or _telegram_runtime_paths()
         self._stop_event = asyncio.Event()
+        self._llm_test_next_at = 0.0
+        self._llm_test_lock = asyncio.Lock()
 
     async def run(self) -> None:
         if not config.TELEGRAM_CONTROL_BOT_TOKEN:
@@ -651,6 +655,93 @@ class TelegramBot(
             entry.pop(key, None)
         entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
         self._save_state(state)
+
+    def _candidate_profile_dir(self, profile_name: str) -> str:
+        return os.path.dirname(self._profile(profile_name).resume_file)
+
+    def _candidate_state(self, user_id: int, profile_name: str) -> dict:
+        state = self._search_settings_state(user_id).get("candidate_interview") or {}
+        return dict(state) if state.get("profile_name") == profile_name else {}
+
+    def _set_candidate_state(self, user_id: int, state: dict) -> None:
+        self._set_search_settings_state(user_id, candidate_interview=state)
+
+    def _clear_candidate_state(self, user_id: int) -> None:
+        self._clear_search_settings_state(user_id, "candidate_interview")
+
+    def _candidate_confirm_markup(self) -> dict:
+        return {
+            "keyboard": [
+                [{"text": BUTTON_CANDIDATE_SAVE}, {"text": BUTTON_CANDIDATE_EDIT}],
+                [{"text": BUTTON_CANDIDATE_SKIP}, {"text": BUTTON_BACK}],
+            ],
+            "resize_keyboard": True,
+            "is_persistent": True,
+        }
+
+    async def _send_candidate_question(self, chat_id: int, principal: dict, profile_name: str) -> None:
+        state = self._candidate_state(principal["user_id"], profile_name)
+        questions = state.get("questions") or []
+        index = int(state.get("index") or 0)
+        if index >= len(questions):
+            self._clear_candidate_state(principal["user_id"])
+            await self._send_text(
+                chat_id,
+                "✅ Интервью завершено. Подтверждённые ответы уже используются в вашем профиле.",
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE),
+            )
+            return
+        question = questions[index]
+        hint = str(question.get("answer_hint") or "").strip()
+        text = "🧠 Вопрос {} из {}\n\n{}".format(index + 1, len(questions), question.get("question", ""))
+        if hint:
+            text += f"\n\nПодсказка: {hint}"
+        text += "\n\nОтветьте сообщением. Ничего не сохранится без подтверждения."
+        await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+
+    async def _accept_candidate_interview_input(self, chat_id: int, principal: dict, text: str) -> bool:
+        profile_name = self._selected_profile(principal)
+        state = self._candidate_state(principal["user_id"], profile_name)
+        if state.get("mode") not in {"answer", "add"}:
+            return False
+        if _is_menu_button_text(text) or text.startswith("/"):
+            return False
+        if text.strip().casefold() in {"отмена", "cancel"}:
+            self._clear_candidate_state(principal["user_id"])
+            await self._send_text(chat_id, "Интервью остановлено. Уже подтверждённые факты сохранены.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+            return True
+        answer = " ".join(text.split()).strip()
+        if not answer:
+            return True
+        if len(answer) > 1200:
+            await self._send_text(chat_id, "Ответ слишком длинный: максимум 1200 символов.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+            return True
+        topic = "общий"
+        if state.get("mode") == "answer":
+            questions = state.get("questions") or []
+            index = int(state.get("index") or 0)
+            if index < len(questions):
+                topic = str(questions[index].get("topic") or topic)
+        state.update(mode="confirm", pending_text=answer, pending_topic=topic)
+        self._set_candidate_state(principal["user_id"], state)
+        await self._send_text(
+            chat_id,
+            f"Вот что будет сохранено как подтверждённый факт:\n\n[{topic}] {answer}\n\nПроверьте формулировку.",
+            reply_markup=self._candidate_confirm_markup(),
+        )
+        return True
+
+    async def _candidate_advance(self, chat_id: int, principal: dict, profile_name: str) -> None:
+        state = self._candidate_state(principal["user_id"], profile_name)
+        if state.get("kind") == "add":
+            self._clear_candidate_state(principal["user_id"])
+            await self._send_text(chat_id, "✅ Факт сохранён для этого профиля.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+            return
+        state.update(mode="answer", index=int(state.get("index") or 0) + 1)
+        state.pop("pending_text", None)
+        state.pop("pending_topic", None)
+        self._set_candidate_state(principal["user_id"], state)
+        await self._send_candidate_question(chat_id, principal, profile_name)
 
     def _captcha_pending_for_principal(self, principal: dict) -> tuple[dict | None, str]:
         """Return only the pending captcha that this Telegram user may answer."""
@@ -1783,6 +1874,9 @@ class TelegramBot(
         if await self._accept_search_query_input(chat_id, principal, text):
             return
 
+        if await self._accept_candidate_interview_input(chat_id, principal, text):
+            return
+
         # Captcha привязана к профилю: её может решить владелец своей сессии
         # либо админ в выбранном профиле.
         if (
@@ -1837,7 +1931,8 @@ class TelegramBot(
             await self._cancel_active_command(chat_id, principal, profile_name=profile_name)
             return
         if command == "/back":
-            await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_MAIN)
+            parent = MENU_ADMIN if self._selected_menu(principal) == MENU_LLM else MENU_MAIN
+            await self._send_menu(chat_id, principal, profile_name=profile_name, menu=parent)
             return
         if active_command and _command_conflicts_with_active(command):
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
@@ -1849,6 +1944,95 @@ class TelegramBot(
 
         if command in ADMIN_ONLY_COMMANDS and role != ROLE_ADMIN:
             await self._send_text(chat_id, "🔒 Нужны права администратора.", reply_markup=self._menu_reply_markup(principal))
+            return
+
+        if command in {"/menu_llm", "/llm_balance", "/llm_test"}:
+            self._set_selected_menu(principal["user_id"], MENU_LLM)
+            markup = self._menu_reply_markup(principal, menu=MENU_LLM)
+            if command == "/menu_llm":
+                message = admin_llm.overview()
+            elif command == "/llm_balance":
+                message = await admin_llm.diagnostic()
+            elif self._llm_test_lock.locked() or time.monotonic() < self._llm_test_next_at:
+                message = "⏳ Тест доступен не чаще раза в минуту. Дождитесь завершения предыдущего."
+            else:
+                async with self._llm_test_lock:
+                    self._llm_test_next_at = time.monotonic() + 60
+                    await self._send_text(chat_id, "🧪 Проверяю DeepSeek…", reply_markup=markup)
+                    message = await admin_llm.diagnostic(test=True)
+            await self._send_text(chat_id, message, reply_markup=markup)
+            return
+
+        if command in {"/candidate_profile", "/candidate_facts", "/candidate_add_fact", "/candidate_interview", "/candidate_save", "/candidate_edit", "/candidate_skip"}:
+            self._set_selected_menu(principal["user_id"], MENU_CANDIDATE)
+            profile_dir = self._candidate_profile_dir(profile_name)
+            state = self._candidate_state(principal["user_id"], profile_name)
+            if command == "/candidate_profile":
+                await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_CANDIDATE)
+                return
+            if command == "/candidate_facts":
+                message = candidate_interview.render_facts(profile_dir=profile_dir)
+                # Используем тот же профильный knowledge/, что и генератор писем.
+                try:
+                    from prompt_blocks import build_knowledge_base_block
+                    knowledge = build_knowledge_base_block(limit_chars=7000, profile_dir=profile_dir)
+                except Exception as exc:
+                    log.debug("candidate knowledge display failed: %s", exc)
+                    knowledge = ""
+                if knowledge:
+                    message += "\n\n" + knowledge
+                await self._send_text(chat_id, message, reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+                return
+            if command == "/candidate_add_fact":
+                self._set_candidate_state(principal["user_id"], {"profile_name": profile_name, "kind": "add", "mode": "add"})
+                await self._send_text(chat_id, "Напишите один факт о себе. Он будет использован только после вашего подтверждения.\n\nНапример: «Работал с электрощитами до 1000 В; допуск III группы действовал до 2025 года».", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+                return
+            if command == "/candidate_interview":
+                if state.get("questions") and state.get("mode") in {"answer", "confirm"}:
+                    if state.get("mode") == "confirm":
+                        await self._send_text(chat_id, "Остался неподтверждённый ответ. Сохраните, измените или пропустите его.", reply_markup=self._candidate_confirm_markup())
+                    else:
+                        await self._send_candidate_question(chat_id, principal, profile_name)
+                    return
+                try:
+                    with open(self._profile(profile_name).resume_file, encoding="utf-8") as handle:
+                        resume_text = handle.read().strip()
+                except OSError:
+                    resume_text = ""
+                client = self._client_record(principal["user_id"]) or {}
+                plan = await candidate_interview.build_plan(resume_text, target_role=str(client.get("target_role") or ""), current_facts=candidate_interview.facts(profile_dir))
+                self._set_candidate_state(principal["user_id"], {"profile_name": profile_name, "kind": "interview", "mode": "answer", "questions": plan.get("questions") or [], "index": 0})
+                hypothesis = str(plan.get("profile_hypothesis") or "").strip()
+                if hypothesis:
+                    await self._send_text(chat_id, f"Собрал вопросы по резюме. Текущее направление: {hypothesis}.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+                await self._send_candidate_question(chat_id, principal, profile_name)
+                return
+            if command == "/candidate_edit" and state.get("mode") == "confirm":
+                state["mode"] = "add" if state.get("kind") == "add" else "answer"
+                state.pop("pending_text", None)
+                state.pop("pending_topic", None)
+                self._set_candidate_state(principal["user_id"], state)
+                if state.get("kind") == "add":
+                    await self._send_text(chat_id, "Отправьте исправленную формулировку факта.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+                else:
+                    await self._send_candidate_question(chat_id, principal, profile_name)
+                return
+            if command == "/candidate_save" and state.get("mode") == "confirm":
+                try:
+                    candidate_interview.add_fact(state.get("pending_text", ""), topic=state.get("pending_topic", "общий"), profile_dir=profile_dir)
+                except ValueError as exc:
+                    await self._send_text(chat_id, f"❌ {exc}", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+                    return
+                await self._candidate_advance(chat_id, principal, profile_name)
+                return
+            if command == "/candidate_skip" and state:
+                if state.get("kind") == "add":
+                    self._clear_candidate_state(principal["user_id"])
+                    await self._send_text(chat_id, "Факт не сохранён.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
+                else:
+                    await self._candidate_advance(chat_id, principal, profile_name)
+                return
+            await self._send_text(chat_id, "Сначала начните интервью или добавление факта.", reply_markup=self._menu_reply_markup(principal, menu=MENU_CANDIDATE))
             return
 
         if command == "/forms":
