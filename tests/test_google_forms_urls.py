@@ -1,3 +1,5 @@
+import asyncio
+
 import google_form_filler as legacy_google_forms
 from google_forms import urls
 
@@ -20,6 +22,52 @@ def test_extract_google_form_urls_deduplicates_text_and_link_targets():
         f"Заполните {form_url}).",
         [{"href": form_url, "text": "Форма"}],
     ) == [form_url]
+
+
+def test_google_form_url_validation_rejects_substring_and_private_host_bypasses():
+    rejected = (
+        "https://evil.example/login?next=docs.google.com/forms/d/e/x/viewform",
+        "https://evil.example/forms.gle/abc",
+        "http://127.0.0.1/admin?ref=docs.google.com/forms",
+        "https://docs.google.com.evil.example/forms/d/e/x/viewform",
+        "https://docs.google.com@evil.example/forms/d/e/x/viewform",
+        "http://docs.google.com/forms/d/e/x/viewform",
+        "https://docs.google.com/document/d/example",
+    )
+
+    assert all(urls.normalize_google_form_url(value) == "" for value in rejected)
+
+
+def test_google_form_url_validation_accepts_supported_https_hosts():
+    accepted = (
+        "https://docs.google.com/forms/d/e/x/viewform",
+        "https://forms.gle/abc123",
+        "https://forms.google.com/example",
+    )
+
+    assert all(urls.normalize_google_form_url(value) == value for value in accepted)
+
+
+def test_short_form_redirect_rejects_non_google_target(monkeypatch):
+    class Response:
+        is_redirect = True
+        headers = {"location": "http://127.0.0.1:8080/admin"}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url):
+            return Response()
+
+    monkeypatch.setattr(legacy_google_forms.httpx, "AsyncClient", lambda **kwargs: Client())
+
+    assert asyncio.run(
+        legacy_google_forms._resolve_google_form_redirect_url("https://forms.gle/abc123")
+    ) == ""
 
 
 def test_legacy_module_reexports_url_helpers():

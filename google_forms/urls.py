@@ -6,11 +6,29 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 
 FORM_URL_RE = re.compile(r"https?://[^\s<>'\")]+", re.I)
+_GOOGLE_FORM_HOSTS = {"docs.google.com", "forms.gle", "forms.google.com"}
+
+
+def _parsed_google_form_url(value: str):
+    try:
+        parsed = urlparse(unquote(str(value or "")).strip())
+        host = (parsed.hostname or "").rstrip(".").casefold()
+        port = parsed.port
+    except (TypeError, ValueError):
+        return None
+    if parsed.scheme.casefold() != "https" or host not in _GOOGLE_FORM_HOSTS:
+        return None
+    if parsed.username or parsed.password or port not in (None, 443):
+        return None
+    if host == "docs.google.com" and not parsed.path.casefold().startswith("/forms/"):
+        return None
+    if host in {"forms.gle", "forms.google.com"} and parsed.path in {"", "/"}:
+        return None
+    return parsed
 
 
 def _is_google_form_url(value: str) -> bool:
-    low = unquote(str(value or "")).lower()
-    return "docs.google.com/forms" in low or "forms.gle/" in low
+    return _parsed_google_form_url(value) is not None
 
 
 def _strip_url_tail(value: str) -> str:

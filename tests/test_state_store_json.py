@@ -1,4 +1,5 @@
 import json
+import stat
 
 import pytest
 
@@ -28,6 +29,7 @@ def test_save_is_atomic_and_preserves_unicode(tmp_path):
         "items": {"a": 1},
     }
     assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_invalid_or_non_object_json_returns_schema_default(tmp_path):
@@ -36,9 +38,11 @@ def test_invalid_or_non_object_json_returns_schema_default(tmp_path):
 
     path.write_text("{broken", encoding="utf-8")
     assert store.load() == {"items": {}}
+    assert [item.read_text(encoding="utf-8") for item in tmp_path.glob("state.json.corrupt-*")] == ["{broken"]
 
     path.write_text("[1, 2, 3]", encoding="utf-8")
     assert store.load() == {"items": {}}
+    assert len(list(tmp_path.glob("state.json.corrupt-*"))) == 2
 
 
 def test_failed_serialization_keeps_previous_state(tmp_path):
@@ -58,3 +62,17 @@ def test_save_rejects_non_dictionary_state(tmp_path):
 
     with pytest.raises(TypeError, match="dictionary"):
         store.save(["not", "a", "dict"])
+
+
+def test_update_reloads_state_inside_one_lock(tmp_path):
+    path = tmp_path / "state.json"
+    first = JsonStore(path)
+    second = JsonStore(path)
+    first.save({"first": 1})
+    stale = first.load()
+    second.update(lambda state: {**state, "second": 2})
+
+    first.update(lambda state: {**state, "third": 3})
+
+    assert stale == {"first": 1}
+    assert first.load() == {"first": 1, "second": 2, "third": 3}

@@ -2,12 +2,33 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 
 import aiohttp
 
 import config
+
+
+_PROXY_DIRECT_FALLBACK_SECONDS = 60.0
+_TRANSPORT_ERRORS = (aiohttp.ClientError, asyncio.TimeoutError, OSError)
+
+
+class TelegramAPIError(RuntimeError):
+    """Telegram returned a valid HTTP/API error response."""
+
+    def __init__(self, method: str, status: int, payload: dict | None = None) -> None:
+        self.method = method
+        self.status = int(status)
+        self.payload = payload or {}
+        parameters = self.payload.get("parameters") or {}
+        try:
+            self.retry_after = max(0, int(parameters.get("retry_after") or 0))
+        except (TypeError, ValueError):
+            self.retry_after = 0
+        super().__init__(f"{method} failed: {self.status} {self.payload}")
 
 
 class TelegramAPIClient:
@@ -16,7 +37,34 @@ class TelegramAPIClient:
     def __init__(self, *, logger: logging.Logger | None = None) -> None:
         self._sessions: dict[bool, aiohttp.ClientSession] = {}
         self._force_direct = False
+        self._proxy_retry_at = 0.0
         self._api_log = logger or logging.getLogger(__name__)
+
+    def _should_use_proxy(self) -> bool:
+        if not config.TELEGRAM_PROXY:
+            return False
+        if self._force_direct and time.monotonic() >= self._proxy_retry_at:
+            self._force_direct = False
+            self._proxy_retry_at = 0.0
+        return not self._force_direct
+
+    def _mark_proxy_transport_failure(self) -> None:
+        self._force_direct = True
+        self._proxy_retry_at = time.monotonic() + _PROXY_DIRECT_FALLBACK_SECONDS
+
+    async def _call_with_rate_limit_retry(self, call):
+        try:
+            return await call()
+        except TelegramAPIError as exc:
+            if exc.status != 429 or not exc.retry_after:
+                raise
+            self._api_log.warning(
+                "Telegram rate limit for %s; retrying in %ss",
+                exc.method,
+                exc.retry_after,
+            )
+            await asyncio.sleep(exc.retry_after)
+            return await call()
 
     async def _get_session(
         self,
@@ -52,27 +100,31 @@ class TelegramAPIClient:
         *,
         timeout: int = 70,
     ) -> dict | list:
-        use_proxy = bool(config.TELEGRAM_PROXY) and not self._force_direct
+        use_proxy = self._should_use_proxy()
         try:
-            return await self._api_request_once(
-                method,
-                payload,
-                use_proxy=use_proxy,
-                timeout=timeout,
+            return await self._call_with_rate_limit_retry(
+                lambda: self._api_request_once(
+                    method,
+                    payload,
+                    use_proxy=use_proxy,
+                    timeout=timeout,
+                )
             )
-        except Exception as exc:
+        except _TRANSPORT_ERRORS as exc:
             if not use_proxy:
                 raise
             self._api_log.warning(
                 "Telegram proxy failed for bot, retrying direct: %s",
                 exc,
             )
-            self._force_direct = True
-            return await self._api_request_once(
-                method,
-                payload,
-                use_proxy=False,
-                timeout=timeout,
+            self._mark_proxy_transport_failure()
+            return await self._call_with_rate_limit_retry(
+                lambda: self._api_request_once(
+                    method,
+                    payload,
+                    use_proxy=False,
+                    timeout=timeout,
+                )
             )
 
     async def _api_request_once(
@@ -91,7 +143,7 @@ class TelegramAPIClient:
         async with session.post(url, json=payload) as response:
             data = await response.json(content_type=None)
             if response.status != 200 or not data.get("ok", False):
-                raise RuntimeError(f"{method} failed: {response.status} {data}")
+                raise TelegramAPIError(method, response.status, data)
             return data.get("result", {})
 
     async def _download_file(self, file_id: str) -> bytes:
@@ -100,22 +152,26 @@ class TelegramAPIClient:
         file_path = str((meta or {}).get("file_path") or "").strip()
         if not file_path:
             raise RuntimeError("Telegram getFile returned no file_path")
-        use_proxy = bool(config.TELEGRAM_PROXY) and not self._force_direct
+        use_proxy = self._should_use_proxy()
         try:
-            return await self._download_file_once(file_path, use_proxy=use_proxy)
-        except Exception as exc:
+            return await self._call_with_rate_limit_retry(
+                lambda: self._download_file_once(file_path, use_proxy=use_proxy)
+            )
+        except _TRANSPORT_ERRORS as exc:
             if not use_proxy:
                 raise
             self._api_log.warning("Telegram proxy failed for file download, retrying direct: %s", exc)
-            self._force_direct = True
-            return await self._download_file_once(file_path, use_proxy=False)
+            self._mark_proxy_transport_failure()
+            return await self._call_with_rate_limit_retry(
+                lambda: self._download_file_once(file_path, use_proxy=False)
+            )
 
     async def _download_file_once(self, file_path: str, *, use_proxy: bool) -> bytes:
         session = await self._get_session(use_proxy, timeout=120)
         url = f"https://api.telegram.org/file/bot{config.TELEGRAM_CONTROL_BOT_TOKEN}/{file_path}"
         async with session.get(url) as response:
             if response.status != 200:
-                raise RuntimeError(f"Telegram file download failed: {response.status}")
+                raise TelegramAPIError("downloadFile", response.status)
             return await response.read()
 
     async def _send_document(
@@ -127,31 +183,35 @@ class TelegramAPIClient:
         caption: str = "",
         reply_markup: dict | None = None,
     ) -> dict:
-        use_proxy = bool(config.TELEGRAM_PROXY) and not self._force_direct
+        use_proxy = self._should_use_proxy()
         try:
-            return await self._send_document_once(
-                chat_id,
-                filename=filename,
-                content=content,
-                caption=caption,
-                reply_markup=reply_markup,
-                use_proxy=use_proxy,
+            return await self._call_with_rate_limit_retry(
+                lambda: self._send_document_once(
+                    chat_id,
+                    filename=filename,
+                    content=content,
+                    caption=caption,
+                    reply_markup=reply_markup,
+                    use_proxy=use_proxy,
+                )
             )
-        except Exception as exc:
+        except _TRANSPORT_ERRORS as exc:
             if not use_proxy:
                 raise
             self._api_log.warning(
                 "Telegram proxy failed for bot document upload, retrying direct: %s",
                 exc,
             )
-            self._force_direct = True
-            return await self._send_document_once(
-                chat_id,
-                filename=filename,
-                content=content,
-                caption=caption,
-                reply_markup=reply_markup,
-                use_proxy=False,
+            self._mark_proxy_transport_failure()
+            return await self._call_with_rate_limit_retry(
+                lambda: self._send_document_once(
+                    chat_id,
+                    filename=filename,
+                    content=content,
+                    caption=caption,
+                    reply_markup=reply_markup,
+                    use_proxy=False,
+                )
             )
 
     async def _send_document_once(
@@ -187,9 +247,7 @@ class TelegramAPIClient:
         async with session.post(url, data=form) as response:
             data = await response.json(content_type=None)
             if response.status != 200 or not data.get("ok", False):
-                raise RuntimeError(
-                    f"sendDocument failed: {response.status} {data}"
-                )
+                raise TelegramAPIError("sendDocument", response.status, data)
             return data.get("result", {})
 
     async def _close_sessions(self) -> None:

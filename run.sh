@@ -40,10 +40,10 @@ if [ "${HH_CHAT_AUTOSEND+x}" = "x" ]; then
 fi
 
 if [ -f "$ENV_FILE" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    . "$ENV_FILE"
-    set +a
+    while IFS= read -r -d '' ENV_KEY && IFS= read -r -d '' ENV_VALUE; do
+        printf -v "$ENV_KEY" '%s' "$ENV_VALUE"
+        export "$ENV_KEY"
+    done < <("$VENV" env_loader.py "$ENV_FILE")
 fi
 if [ "$HH_CHAT_AUTOSEND_OVERRIDE_SET" -eq 1 ]; then
     export HH_CHAT_AUTOSEND="$HH_CHAT_AUTOSEND_OVERRIDE"

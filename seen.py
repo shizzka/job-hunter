@@ -5,27 +5,21 @@ import logging
 from datetime import datetime
 
 import config
+from state_store.json_store import JsonStore
 
 log = logging.getLogger("seen")
 
-_seen: dict | None = None
+def _store(path: str | None = None) -> JsonStore:
+    return JsonStore(
+        path or config.SEEN_VACANCIES_FILE,
+        default_factory=dict,
+        logger=log,
+        read_error_message="seen state read failed",
+    )
 
 
 def _load() -> dict:
-    global _seen
-    if _seen is not None:
-        return _seen
-
-    if os.path.exists(config.SEEN_VACANCIES_FILE):
-        try:
-            with open(config.SEEN_VACANCIES_FILE) as f:
-                _seen = json.load(f)
-        except Exception:
-            _seen = {}
-    else:
-        _seen = {}
-
-    return _seen
+    return _store().load()
 
 
 def _load_from_file(path: str) -> dict:
@@ -38,14 +32,6 @@ def _load_from_file(path: str) -> dict:
         return {}
 
 
-def _save():
-    if _seen is None:
-        return
-    os.makedirs(os.path.dirname(config.SEEN_VACANCIES_FILE), exist_ok=True)
-    with open(config.SEEN_VACANCIES_FILE, "w") as f:
-        json.dump(_seen, f, ensure_ascii=False, indent=2)
-
-
 def is_seen(vacancy_id: str) -> bool:
     """Уже видели эту вакансию?"""
     return vacancy_id in _load()
@@ -53,14 +39,15 @@ def is_seen(vacancy_id: str) -> bool:
 
 def mark_seen(vacancy_id: str, vacancy: dict, action: str = "applied"):
     """Отметить вакансию как обработанную."""
-    data = _load()
-    data[vacancy_id] = {
-        "title": vacancy.get("title", ""),
-        "company": vacancy.get("company", ""),
-        "action": action,
-        "date": datetime.now().isoformat(),
-    }
-    _save()
+    def remember(data: dict) -> None:
+        data[vacancy_id] = {
+            "title": vacancy.get("title", ""),
+            "company": vacancy.get("company", ""),
+            "action": action,
+            "date": datetime.now().isoformat(),
+        }
+
+    _store().update(remember)
 
 
 def all_entries() -> dict:

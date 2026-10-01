@@ -176,7 +176,7 @@ def test_has_existing_response_ui_uses_selector_hit():
     client._page = FakePage(
         url="https://hh.ru/applicant/vacancy_response?vacancyId=1",
         html="<html><body>modal</body></html>",
-        selector_hits={"text='Вы откликнулись'": object()},
+        selector_hits={"[data-qa='already-responded-text']": object()},
     )
 
     assert asyncio.run(client._has_existing_response_ui()) is True
@@ -446,7 +446,7 @@ class FakeExpandableCoverLetterPage(FakeDirectResponsePage):
             return "<html><body><div>Резюме доставлено</div></body></html>"
         return (
             "<html><body>"
-            "<button data-qa='add-cover-letter'>Добавить сопроводительное</button>"
+            "<div data-qa='vacancy-response-letter-toggle'>Сопроводительное письмо — Добавить</div>"
             f"{letter}"
             "<button data-qa='vacancy-response-submit-popup'>Откликнуться</button>"
             "</body></html>"
@@ -454,6 +454,7 @@ class FakeExpandableCoverLetterPage(FakeDirectResponsePage):
 
     async def query_selector(self, selector: str):
         if self.stage != "success" and selector in {
+            "[data-qa='vacancy-response-letter-toggle']",
             "[data-qa='add-cover-letter']",
             "button[data-qa='add-cover-letter']",
             "button:has-text('Добавить сопроводительное')",
@@ -543,6 +544,69 @@ class FakeManyAutoAnswerQuestionPage(FakeAutoAnswerQuestionPage):
         if "codex:auto-question-fill" in script:
             self.filled_answers = list(arg)
             return {"filled": len(arg), "errors": []}
+        return await super().evaluate(script, arg=arg)
+
+
+class FakeTwoStepAutoAnswerQuestionPage(FakeAutoAnswerQuestionPage):
+    def __init__(self, *, question_text: str):
+        super().__init__(question_text=question_text)
+        self.stage = "response"
+        self.letter_visible = False
+
+    async def content(self) -> str:
+        if self.stage == "response":
+            letter = "<textarea></textarea>" if self.letter_visible else ""
+            return (
+                "<html><body>"
+                "<div data-qa='vacancy-response-letter-toggle'>Сопроводительное письмо — Добавить</div>"
+                f"{letter}"
+                "<button data-qa='vacancy-response-submit-popup'>Откликнуться</button>"
+                "</body></html>"
+            )
+        return await super().content()
+
+    async def query_selector(self, selector: str):
+        if self.stage == "response":
+            if selector == "[data-qa='vacancy-response-letter-toggle']":
+                return FakeApplyElement(self, kind="cover_toggle")
+            if selector == (
+                "[data-qa='vacancy-response-popup-form-letter-input'], "
+                "textarea[name='letter'], "
+                "textarea[data-qa*='letter'], "
+                ".vacancy-response-popup textarea, "
+                "textarea"
+            ) and self.letter_visible:
+                return self.letter
+            if (
+                "vacancy-response-submit-popup" in selector
+                or "vacancy-response-letter-submit" in selector
+                or "button[data-qa*='submit']" in selector
+            ):
+                return FakeApplyElement(self, kind="submit_button", next_stage="questions")
+            return None
+        if self.stage == "questions" and "letter" in selector:
+            return None
+        return await super().query_selector(selector)
+
+    async def evaluate(self, script: str, arg=None):
+        if "codex:response-form-signature" in script:
+            if self.stage == "response":
+                return {
+                    "controls": ["button:submit::vacancy-response-submit-popup::optional"],
+                    "letter_count": int(self.letter_visible),
+                    "submit_count": 1,
+                    "other_field_count": 0,
+                }
+            if self.stage == "questions":
+                return {
+                    "controls": [
+                        "input:text:salary:task-question::required",
+                        "button:submit::vacancy-response-submit-popup::optional",
+                    ],
+                    "letter_count": 0,
+                    "submit_count": 1,
+                    "other_field_count": 1,
+                }
         return await super().evaluate(script, arg=arg)
 
 
@@ -760,6 +824,31 @@ def test_apply_to_vacancy_autoanswers_salary_question(monkeypatch):
     assert client._page.filled_answer == "80 000 ₽ на руки"
     assert "notes" in result
     assert any("зарплатные ожидания" in note for note in result["notes"])
+
+
+def test_apply_to_vacancy_keeps_filled_letter_across_separate_question_step(monkeypatch):
+    client = HHClient()
+    client._page = FakeTwoStepAutoAnswerQuestionPage(
+        question_text="Ваши зарплатные ожидания?"
+    )
+
+    monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(config, "HH_AUTO_ANSWER_SIMPLE_QUESTIONS", True)
+    monkeypatch.setattr(config, "HH_AUTO_ANSWER_USE_LLM", False)
+    monkeypatch.setattr(config, "HH_AUTO_ANSWER_SALARY_TEXT", "80 000 ₽ на руки")
+    monkeypatch.setattr(config, "HH_AUTO_ANSWER_SALARY_NUMBER", "80000")
+
+    result = asyncio.run(
+        client.apply_to_vacancy(
+            "https://hh.ru/vacancy/1",
+            cover_letter="hello from cover letter",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["cover_letter_status"] == "submitted_with_application"
+    assert client._page.letter.value == "hello from cover letter"
+    assert client._page.filled_answer == "80 000 ₽ на руки"
 
 
 def test_apply_to_vacancy_autoanswers_resume_question_with_llm(monkeypatch):

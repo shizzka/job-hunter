@@ -40,17 +40,20 @@ def test_chat_responder_limits_capture_environment() -> None:
         {
             "HH_CHAT_MAX_REPLIES_PER_CHAT": "7",
             "HH_CHAT_REPLY_COOLDOWN_S": "12",
+            "HH_CHAT_MAX_SCAN": "19",
         }
     )
 
     assert limits.max_replies_per_chat == 7
     assert limits.reply_cooldown_s == 12
+    assert limits.max_scan == 19
 
 
 def test_chat_responder_limits_preserve_defaults_and_validation() -> None:
     assert ChatResponderLimits.from_env({}) == ChatResponderLimits(
         max_replies_per_chat=5,
         reply_cooldown_s=30,
+        max_scan=25,
     )
     with pytest.raises(ValueError):
         ChatResponderLimits.from_env({"HH_CHAT_MAX_REPLIES_PER_CHAT": "invalid"})

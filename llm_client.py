@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI
@@ -479,12 +481,42 @@ class _FallbackChat:
 class FallbackLLMClient:
     """Adapter exposing ``client.chat.completions.create`` with provider fallback."""
 
-    def __init__(self, providers: list[ProviderSpec] | None = None):
+    def __init__(
+        self,
+        providers: list[ProviderSpec] | None = None,
+        *,
+        fallback_ttl_seconds: float | None = None,
+        clock: Callable[[], float] | None = None,
+    ):
         self.providers = providers or _build_provider_specs()
         self.chat = _FallbackChat(self)
         self._clients: dict[int, AsyncOpenAI] = {}
         self._active_index = 0
         self._active_index_by_model: dict[str, int] = {}
+        if fallback_ttl_seconds is None:
+            raw_ttl = os.getenv("LLM_PROVIDER_FALLBACK_TTL_SECONDS", "300")
+            try:
+                fallback_ttl_seconds = float(raw_ttl)
+            except ValueError:
+                log.warning(
+                    "Invalid LLM_PROVIDER_FALLBACK_TTL_SECONDS=%r; using 300 seconds",
+                    raw_ttl,
+                )
+                fallback_ttl_seconds = 300.0
+        self._fallback_ttl_seconds = max(0.0, fallback_ttl_seconds)
+        self._clock = clock or time.monotonic
+        self._fallback_until_by_model: dict[str, float] = {}
+
+    def _start_index_for_model(self, requested_model: str, total: int) -> int:
+        index = self._active_index_by_model.get(requested_model, 0)
+        if index <= 0:
+            return 0
+        deadline = self._fallback_until_by_model.get(requested_model)
+        if deadline is None or self._clock() >= deadline:
+            self._active_index_by_model.pop(requested_model, None)
+            self._fallback_until_by_model.pop(requested_model, None)
+            return 0
+        return min(index, total - 1)
 
     def _client_for(self, index: int) -> AsyncOpenAI:
         client = self._clients.get(index)
@@ -517,8 +549,7 @@ class FallbackLLMClient:
         requested_model = str(kwargs.get("model") or "")
         attempted: list[str] = []
         total = len(self.providers)
-        default_start = self._active_index_by_model.get(requested_model, 0)
-        start = min(max(default_start, 0), total - 1)
+        start = self._start_index_for_model(requested_model, total)
 
         for offset in range(total):
             index = (start + offset) % total
@@ -529,7 +560,15 @@ class FallbackLLMClient:
                 response = await self._client_for(index).chat.completions.create(**provider_kwargs)
                 self._active_index = index
                 if requested_model:
-                    self._active_index_by_model[requested_model] = index
+                    if index == 0 or self._fallback_ttl_seconds == 0:
+                        self._active_index_by_model.pop(requested_model, None)
+                        self._fallback_until_by_model.pop(requested_model, None)
+                    else:
+                        self._active_index_by_model[requested_model] = index
+                        if start == 0 or requested_model not in self._fallback_until_by_model:
+                            self._fallback_until_by_model[requested_model] = (
+                                self._clock() + self._fallback_ttl_seconds
+                            )
                 mapped_model = str(provider_kwargs.get("model") or "")
                 if mapped_model != requested_model:
                     log.info(

@@ -92,3 +92,21 @@ def test_hh_guard_bootstraps_from_analytics(tmp_path, monkeypatch):
     assert ok is False
     assert "1/1" in note
     assert status["rolling_apply_count_24h"] == 1
+
+
+def test_hh_guard_fails_closed_and_preserves_corrupt_state(tmp_path, monkeypatch):
+    guard_file = tmp_path / "hh_guard_state.json"
+    guard_file.write_text("{truncated", encoding="utf-8")
+    monkeypatch.setattr(config, "HH_GUARD_STATE_FILE", str(guard_file))
+    monkeypatch.setattr(config, "ANALYTICS_EVENTS_FILE", str(tmp_path / "analytics_events.jsonl"))
+    monkeypatch.setattr(config, "HH_ANTI_BOT_COOLDOWN_HOURS", 6)
+
+    ok, note = hh_guard.can_auto_apply(now=_dt(8))
+    persisted = json.loads(guard_file.read_text(encoding="utf-8"))
+
+    assert ok is False
+    assert "state corruption" in note
+    assert persisted["last_kind"] == "state_corruption"
+    backups = list(tmp_path.glob("hh_guard_state.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "{truncated"

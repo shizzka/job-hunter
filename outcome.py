@@ -53,7 +53,7 @@ _POSITIVE_TOKENS = (
     "приглаш", "собесед", "оффер", "выход на работу",
     "тестовое задание", "предложение",
 )
-_REJECTED_TOKENS = ("отказ", "отклонен")
+_REJECTED_TOKENS = ("отказ", "отклонен", "не прошел", "не прошёл")
 _PENDING_TOKENS = ("не просмотрен", "просмотрен", "ожидание")
 _INTERVIEW_TOKENS = ("собесед",)
 _OFFER_TOKENS = ("оффер", "выход на работу", "приглашение на работу", "предложение")
@@ -67,10 +67,10 @@ def status_bucket(status_text: str) -> str:
     text = (status_text or "").strip().casefold()
     if not text:
         return STATUS_UNKNOWN
-    if any(token in text for token in _POSITIVE_TOKENS):
-        return STATUS_POSITIVE
     if any(token in text for token in _REJECTED_TOKENS):
         return STATUS_REJECTED
+    if any(token in text for token in _POSITIVE_TOKENS):
+        return STATUS_POSITIVE
     if any(token in text for token in _PENDING_TOKENS):
         return STATUS_PENDING
     return STATUS_UNKNOWN
@@ -81,14 +81,14 @@ def status_detail_bucket(status_text: str) -> str:
     text = (status_text or "").strip().casefold()
     if not text:
         return STATUS_DETAIL_UNKNOWN
+    if any(token in text for token in _REJECTED_TOKENS):
+        return STATUS_DETAIL_REJECTED
     if any(token in text for token in _INTERVIEW_TOKENS):
         return STATUS_DETAIL_INTERVIEW
     if any(token in text for token in _OFFER_TOKENS):
         return STATUS_DETAIL_OFFER
     if any(token in text for token in _TEST_TASK_TOKENS):
         return STATUS_DETAIL_TEST_TASK
-    if any(token in text for token in _REJECTED_TOKENS):
-        return STATUS_DETAIL_REJECTED
     if any(token in text for token in _PENDING_NEW_TOKENS):
         return STATUS_DETAIL_PENDING_NEW
     if any(token in text for token in _PENDING_VIEWED_TOKENS):

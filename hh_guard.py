@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 import config
 from outcome import DECISION_APPLIED_AUTO
+from state_store.json_store import JsonStore
 
 log = logging.getLogger("hh_guard")
 
@@ -42,6 +43,29 @@ def _default_state() -> dict:
     }
 
 
+def _corrupt_state(now: datetime | None = None) -> dict:
+    now = now or _now()
+    state = _default_state()
+    state["blocked_until"] = _format_datetime(
+        now + timedelta(hours=max(1, int(config.HH_ANTI_BOT_COOLDOWN_HOURS)))
+    )
+    state["last_kind"] = "state_corruption"
+    state["last_reason"] = "HH guard state was corrupt; auto-apply paused as a precaution"
+    state["last_stage"] = "state_load"
+    state["last_detected_at"] = _format_datetime(now)
+    return state
+
+
+def _store(path: str | None = None, *, now: datetime | None = None) -> JsonStore:
+    return JsonStore(
+        path or config.HH_GUARD_STATE_FILE,
+        default_factory=_default_state,
+        corrupt_factory=lambda: _corrupt_state(now),
+        logger=log,
+        read_error_message="HH guard state read failed",
+    )
+
+
 def _normalize_state(state: dict, now: datetime | None = None) -> dict:
     now = now or _now()
     cutoff = now - timedelta(hours=24)
@@ -70,9 +94,7 @@ def _normalize_state(state: dict, now: datetime | None = None) -> dict:
 def _save_state(state: dict) -> None:
     path = config.HH_GUARD_STATE_FILE
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        _store(path).save(state)
     except Exception as exc:
         log.warning("Failed to save HH guard state %s: %s", path, exc)
 
@@ -113,16 +135,8 @@ def _seed_apply_timestamps_from_analytics(now: datetime | None = None) -> list[s
 
 
 def _load_state(now: datetime | None = None) -> dict:
-    state = _default_state()
     path = config.HH_GUARD_STATE_FILE
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                payload = json.load(f)
-            if isinstance(payload, dict):
-                state.update(payload)
-        except Exception as exc:
-            log.warning("Failed to read HH guard state %s: %s", path, exc)
+    state = _store(path, now=now).load()
 
     normalized = _normalize_state(state, now=now)
     if not normalized["successful_apply_timestamps"]:
@@ -132,6 +146,26 @@ def _load_state(now: datetime | None = None) -> dict:
             normalized["seeded_from_analytics_at"] = _format_datetime(now or _now())
             _save_state(normalized)
     return normalized
+
+
+def _update_state(mutator, *, now: datetime) -> dict:
+    path = config.HH_GUARD_STATE_FILE
+
+    def update(raw_state: dict) -> dict:
+        state = _normalize_state(raw_state, now=now)
+        if not state["successful_apply_timestamps"]:
+            seeded = _seed_apply_timestamps_from_analytics(now=now)
+            if seeded:
+                state["successful_apply_timestamps"] = seeded
+                state["seeded_from_analytics_at"] = _format_datetime(now)
+        mutator(state)
+        return _normalize_state(state, now=now)
+
+    try:
+        return _store(path, now=now).update(update)
+    except Exception as exc:
+        log.warning("Failed to update HH guard state %s: %s", path, exc)
+        return _corrupt_state(now)
 
 
 def detect_antibot_kind(value: str) -> str:
@@ -180,6 +214,7 @@ def describe_antibot_kind(kind: str) -> str:
         "ddos_guard": "DDOS-GUARD",
         "browser_check": "проверка браузера",
         "rate_limit": "rate limit",
+        "state_corruption": "state corruption",
     }
     return mapping.get((kind or "").strip(), "anti-bot")
 
@@ -249,12 +284,13 @@ def can_auto_apply(now: datetime | None = None) -> tuple[bool, str]:
 
 def record_apply_success(now: datetime | None = None) -> dict:
     now = now or _now()
-    state = _load_state(now=now)
-    timestamps = list(state.get("successful_apply_timestamps", []) or [])
-    timestamps.append(_format_datetime(now))
-    state["successful_apply_timestamps"] = timestamps
-    normalized = _normalize_state(state, now=now)
-    _save_state(normalized)
+
+    def remember(state: dict) -> None:
+        timestamps = list(state.get("successful_apply_timestamps", []) or [])
+        timestamps.append(_format_datetime(now))
+        state["successful_apply_timestamps"] = timestamps
+
+    _update_state(remember, now=now)
     return get_status(now=now)
 
 
@@ -267,15 +303,16 @@ def record_antibot(
 ) -> dict:
     now = now or _now()
     detected_kind = kind or detect_antibot_kind(raw_message)
-    state = _load_state(now=now)
     cooldown_hours = max(1, int(config.HH_ANTI_BOT_COOLDOWN_HOURS))
-    state["blocked_until"] = _format_datetime(now + timedelta(hours=cooldown_hours))
-    state["last_kind"] = detected_kind
-    state["last_reason"] = (raw_message or describe_antibot_kind(detected_kind)).strip()
-    state["last_stage"] = (stage or "").strip()
-    state["last_detected_at"] = _format_datetime(now)
-    normalized = _normalize_state(state, now=now)
-    _save_state(normalized)
+
+    def remember(state: dict) -> None:
+        state["blocked_until"] = _format_datetime(now + timedelta(hours=cooldown_hours))
+        state["last_kind"] = detected_kind
+        state["last_reason"] = (raw_message or describe_antibot_kind(detected_kind)).strip()
+        state["last_stage"] = (stage or "").strip()
+        state["last_detected_at"] = _format_datetime(now)
+
+    _update_state(remember, now=now)
     return get_status(now=now)
 
 
@@ -283,25 +320,25 @@ def record_soft_cooldown(*, minutes: int = 15, reason: str = "captcha_human_time
     """Короткий cooldown (минуты) для случая 'captcha ждёт человека, но timeout вышел'.
     В отличие от record_antibot не использует HH_ANTI_BOT_COOLDOWN_HOURS (6h)."""
     now = now or _now()
-    state = _load_state(now=now)
-    state["blocked_until"] = _format_datetime(now + timedelta(minutes=max(1, minutes)))
-    state["last_kind"] = "captcha"
-    state["last_reason"] = reason
-    state["last_stage"] = "human_timeout"
-    state["last_detected_at"] = _format_datetime(now)
-    normalized = _normalize_state(state, now=now)
-    _save_state(normalized)
+    def remember(state: dict) -> None:
+        state["blocked_until"] = _format_datetime(now + timedelta(minutes=max(1, minutes)))
+        state["last_kind"] = "captcha"
+        state["last_reason"] = reason
+        state["last_stage"] = "human_timeout"
+        state["last_detected_at"] = _format_datetime(now)
+
+    _update_state(remember, now=now)
     return get_status(now=now)
 
 
 def clear_cooldown(*, now: datetime | None = None) -> dict:
     """Снять blocked_until (для ручного перезапуска из TG-кнопки)."""
     now = now or _now()
-    state = _load_state(now=now)
-    state["blocked_until"] = ""
-    state["last_stage"] = (state.get("last_stage") or "") + "+manual_clear"
-    normalized = _normalize_state(state, now=now)
-    _save_state(normalized)
+    def clear(state: dict) -> None:
+        state["blocked_until"] = ""
+        state["last_stage"] = (state.get("last_stage") or "") + "+manual_clear"
+
+    _update_state(clear, now=now)
     return get_status(now=now)
 
 
@@ -312,22 +349,13 @@ def clear_cooldown_for_profile(profile_name: str, *, now: datetime | None = None
     now = now or _now()
     profile = profile_mod.load_profile(profile_name)
     path = os.path.join(profile.home_dir, "hh_guard_state.json")
-    state = _default_state()
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                payload = json.load(f)
-            if isinstance(payload, dict):
-                state.update(payload)
-        except Exception as exc:
-            log.warning("Failed to read HH guard state %s: %s", path, exc)
-    state["blocked_until"] = ""
-    state["last_stage"] = (state.get("last_stage") or "") + "+manual_clear"
-    normalized = _normalize_state(state, now=now)
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(normalized, f, ensure_ascii=False, indent=2)
+        def clear(state: dict) -> dict:
+            state["blocked_until"] = ""
+            state["last_stage"] = (state.get("last_stage") or "") + "+manual_clear"
+            return _normalize_state(state, now=now)
+
+        return _store(path, now=now).update(clear)
     except Exception as exc:
         log.warning("Failed to save HH guard state %s: %s", path, exc)
-    return normalized
+        return _corrupt_state(now)

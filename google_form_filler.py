@@ -8,7 +8,7 @@ import os
 import re
 import time
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import config
 from google_forms.answering import (
@@ -104,27 +104,34 @@ def _save_state(state: dict, runtime_paths: RuntimePaths | None = None) -> None:
     _state_repository(runtime_paths).save(state)
 
 
-def _resolve_google_form_redirect_url(form_url: str) -> str:
+async def _resolve_google_form_redirect_url(form_url: str) -> str:
     """Resolve short Google Forms links before handing them to Chromium."""
-    url = str(form_url or "").strip()
+    url = normalize_google_form_url(form_url)
     if not url:
         return ""
-    host = urlparse(url).netloc.casefold()
-    if host not in {"forms.gle", "goo.gl"}:
+    host = (urlparse(url).hostname or "").casefold()
+    if host != "forms.gle":
         return url
     try:
-        with httpx.Client(follow_redirects=True, timeout=10.0, trust_env=False) as client:
-            response = client.head(url)
-            final_url = str(response.url)
-            if _is_google_form_url(final_url):
-                return final_url
-            response = client.get(url)
-            final_url = str(response.url)
-            if _is_google_form_url(final_url):
-                return final_url
+        async with httpx.AsyncClient(follow_redirects=False, timeout=10.0, trust_env=False) as client:
+            for method in ("HEAD", "GET"):
+                current_url = url
+                for _ in range(5):
+                    response = await client.request(method, current_url)
+                    if not response.is_redirect:
+                        if (urlparse(current_url).hostname or "").casefold() != "forms.gle":
+                            return current_url
+                        break
+                    target_url = normalize_google_form_url(
+                        urljoin(current_url, response.headers.get("location", ""))
+                    )
+                    if not target_url:
+                        log.warning("google form redirect rejected: %s", current_url)
+                        return ""
+                    current_url = target_url
     except Exception as exc:
         log.warning("google form redirect resolve failed for %s: %s", url, exc)
-    return url
+    return ""
 
 
 def google_form_preview_callback_data(profile_name: str, chat_id: str, message_id: str) -> str:
@@ -268,7 +275,9 @@ async def preview_form(
     from google_forms.drafts import needs_review, replay_answers
     paths = runtime_paths or _runtime_paths()
     original_form_url = form_url
-    form_url = _resolve_google_form_redirect_url(form_url)
+    form_url = await _resolve_google_form_redirect_url(form_url)
+    if not form_url:
+        raise ValueError("unsafe or unresolved Google Form URL")
     await page.goto(form_url, wait_until="commit", timeout=60000)
     await page.wait_for_timeout(2500)
     page_text = ""

@@ -93,7 +93,7 @@ def test_api_request_retries_direct_after_proxy_failure(monkeypatch):
     async def fake_request_once(method, payload, *, use_proxy, timeout):
         attempts.append((method, payload, use_proxy, timeout))
         if use_proxy:
-            raise RuntimeError("proxy unavailable")
+            raise telegram_api.aiohttp.ClientConnectionError("proxy unavailable")
         return {"message_id": 7}
 
     client._api_request_once = fake_request_once
@@ -140,7 +140,7 @@ def test_send_document_retries_direct_after_proxy_failure(monkeypatch):
             )
         )
         if use_proxy:
-            raise RuntimeError("proxy unavailable")
+            raise telegram_api.aiohttp.ClientConnectionError("proxy unavailable")
         return {"document": True}
 
     client._send_document_once = fake_send_document_once
@@ -216,7 +216,7 @@ def test_api_request_once_rejects_telegram_error(monkeypatch):
 
     client._get_session = fake_get_session
 
-    with pytest.raises(RuntimeError, match="getUpdates failed: 429"):
+    with pytest.raises(telegram_api.TelegramAPIError, match="getUpdates failed: 429"):
         asyncio.run(
             client._api_request_once(
                 "getUpdates",
@@ -225,6 +225,84 @@ def test_api_request_once_rejects_telegram_error(monkeypatch):
                 timeout=20,
             )
         )
+
+
+def test_api_error_does_not_disable_proxy_or_retry_direct(monkeypatch):
+    monkeypatch.setattr(
+        telegram_api.config,
+        "TELEGRAM_PROXY",
+        "socks5://127.0.0.1:1080",
+    )
+    client = TelegramAPIClient()
+    attempts = []
+
+    async def fake_request_once(method, payload, *, use_proxy, timeout):
+        attempts.append(use_proxy)
+        raise telegram_api.TelegramAPIError(
+            method,
+            400,
+            {"ok": False, "description": "can't parse entities"},
+        )
+
+    client._api_request_once = fake_request_once
+
+    with pytest.raises(telegram_api.TelegramAPIError, match="400"):
+        asyncio.run(client._api_request("sendMessage", {"chat_id": 42}))
+
+    assert attempts == [True]
+    assert client._force_direct is False
+
+
+def test_rate_limit_retries_same_route_after_retry_after(monkeypatch):
+    monkeypatch.setattr(
+        telegram_api.config,
+        "TELEGRAM_PROXY",
+        "socks5://127.0.0.1:1080",
+    )
+    client = TelegramAPIClient()
+    attempts = []
+    sleeps = []
+
+    async def fake_request_once(method, payload, *, use_proxy, timeout):
+        attempts.append(use_proxy)
+        if len(attempts) == 1:
+            raise telegram_api.TelegramAPIError(
+                method,
+                429,
+                {"parameters": {"retry_after": 3}},
+            )
+        return {"message_id": 7}
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    client._api_request_once = fake_request_once
+    monkeypatch.setattr(telegram_api.asyncio, "sleep", fake_sleep)
+
+    result = asyncio.run(client._api_request("sendMessage", {"chat_id": 42}))
+
+    assert result == {"message_id": 7}
+    assert attempts == [True, True]
+    assert sleeps == [3]
+    assert client._force_direct is False
+
+
+def test_proxy_fallback_expires(monkeypatch):
+    monkeypatch.setattr(
+        telegram_api.config,
+        "TELEGRAM_PROXY",
+        "socks5://127.0.0.1:1080",
+    )
+    now = [100.0]
+    monkeypatch.setattr(telegram_api.time, "monotonic", lambda: now[0])
+    client = TelegramAPIClient()
+
+    client._mark_proxy_transport_failure()
+
+    assert client._should_use_proxy() is False
+    now[0] += telegram_api._PROXY_DIRECT_FALLBACK_SECONDS
+    assert client._should_use_proxy() is True
+    assert client._force_direct is False
 
 
 def test_send_document_once_builds_multipart_payload(monkeypatch):

@@ -384,3 +384,64 @@ def test_fallback_llm_client_remembers_active_provider_per_requested_model(monke
         ("https://fallback.test/v1", "new"),
         ("https://primary.test/v1", "fresh"),
     ]
+
+
+def test_fallback_llm_client_retries_primary_after_ttl(monkeypatch):
+    calls = []
+    now = [100.0]
+    primary_calls = [0]
+
+    class FakeRateLimitError(Exception):
+        status_code = 429
+
+    class FakeMessage:
+        content = "ok"
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeCompletions:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        async def create(self, **kwargs):
+            calls.append(self.base_url)
+            if self.base_url == "https://primary.test/v1":
+                primary_calls[0] += 1
+                if primary_calls[0] == 1:
+                    raise FakeRateLimitError("temporary limit")
+            return FakeResponse()
+
+    class FakeChat:
+        def __init__(self, base_url):
+            self.completions = FakeCompletions(base_url)
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = FakeChat(kwargs["base_url"])
+
+    monkeypatch.setattr(llm_client, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    client = llm_client.FallbackLLMClient(
+        [
+            llm_client.ProviderSpec("primary", "https://primary.test/v1", "key1"),
+            llm_client.ProviderSpec("fallback", "https://fallback.test/v1", "key2"),
+        ],
+        fallback_ttl_seconds=30,
+        clock=lambda: now[0],
+    )
+
+    asyncio.run(client.chat.completions.create(model="model-a", messages=[]))
+    asyncio.run(client.chat.completions.create(model="model-a", messages=[]))
+    now[0] = 131.0
+    asyncio.run(client.chat.completions.create(model="model-a", messages=[]))
+
+    assert calls == [
+        "https://primary.test/v1",
+        "https://fallback.test/v1",
+        "https://fallback.test/v1",
+        "https://primary.test/v1",
+    ]

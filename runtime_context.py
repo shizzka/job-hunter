@@ -31,12 +31,14 @@ class ChatResponderLimits:
 
     max_replies_per_chat: int
     reply_cooldown_s: int
+    max_scan: int = 25
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> ChatResponderLimits:
         return cls(
             max_replies_per_chat=int(env.get("HH_CHAT_MAX_REPLIES_PER_CHAT", "5")),
             reply_cooldown_s=int(env.get("HH_CHAT_REPLY_COOLDOWN_S", "30")),
+            max_scan=max(1, int(env.get("HH_CHAT_MAX_SCAN", "25"))),
         )
 
 

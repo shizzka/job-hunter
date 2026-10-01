@@ -108,8 +108,8 @@ def _read_env_values(path: str, keys: tuple[str, ...]) -> dict[str, str]:
     return values
 
 
-def _load_hh_auth_env(profile_name: str) -> None:
-    """Load HH auth login hints even when the parent bot has stale env."""
+def _load_hh_auth_env(profile_name: str) -> dict[str, str]:
+    """Load HH auth login hints without mutating process-wide environment."""
     env_file = os.getenv("JOB_HUNTER_ENV_FILE", "").strip() or os.path.expanduser("~/.job-hunter/job-hunter.env")
     values = _read_env_values(env_file, HH_AUTH_LOGIN_ENV_KEYS)
     try:
@@ -117,9 +117,11 @@ def _load_hh_auth_env(profile_name: str) -> None:
         values.update(_read_env_values(os.path.join(profile.home_dir, "profile.env"), HH_AUTH_LOGIN_ENV_KEYS))
     except Exception:
         pass
-    for key, value in values.items():
-        if value and not os.getenv(key):
-            os.environ[key] = value
+    for key in HH_AUTH_LOGIN_ENV_KEYS:
+        process_value = os.getenv(key, "").strip()
+        if process_value and not values.get(key):
+            values[key] = process_value
+    return values
 
 
 def _normalize_env_value(value: str | int | None) -> str:
@@ -328,9 +330,10 @@ HH_AUTH_STEP_BLOCKED = "blocked"
 HH_AUTH_STEP_CAPTCHA = "captcha"
 
 
-def _resolve_hh_auth_login() -> str:
+def _resolve_hh_auth_login(auth_env: dict[str, str] | None = None) -> str:
+    values = auth_env if auth_env is not None else os.environ
     for key in HH_AUTH_LOGIN_ENV_KEYS:
-        value = os.getenv(key, "").strip()
+        value = str(values.get(key) or "").strip()
         if value:
             return value
     return ""
@@ -663,13 +666,25 @@ async def _request_hh_auth_value(kind: str, profile_name: str, prompt: str, *, p
     )
     await _notify_hh_auth_request(kind, profile_name, prompt, timeout_s)
     try:
-        answer = await hh_auth_bridge.wait_for_response(request_id, timeout_s=timeout_s, poll_interval_s=poll_sec)
+        answer = await hh_auth_bridge.wait_for_response(
+            request_id,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_sec,
+            profile_name=profile_name,
+        )
         return (answer or "").strip()
     finally:
-        hh_auth_bridge.complete_request(request_id)
+        hh_auth_bridge.complete_request(request_id, profile_name=profile_name)
 
 
-async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s: int, poll_sec: float) -> dict:
+async def _drive_hh_auth_step(
+    client: HHClient,
+    profile_name: str,
+    *,
+    timeout_s: int,
+    poll_sec: float,
+    auth_login: str = "",
+) -> dict:
     page = client._page  # noqa: SLF001 - auth flow owns the page lifecycle
     if page is None or page.is_closed():
         return {"status": HH_AUTH_STEP_IDLE, "detail": "Окно HH закрыто."}
@@ -762,7 +777,7 @@ async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s:
 
     if _looks_like_hh_auth_login_prompt(text, url):
         await _click_first_visible(page, HH_AUTH_PHONE_MODE_SELECTORS)
-        login = _resolve_hh_auth_login()
+        login = auth_login
         if not login:
             wait_s = max(1, min(int(timeout_s or 1), 900))
             login = await _request_hh_auth_value(
@@ -787,7 +802,7 @@ async def _drive_hh_auth_step(client: HHClient, profile_name: str, *, timeout_s:
             return progress
 
     if await _first_visible_locator(page, HH_AUTH_LOGIN_INPUT_SELECTORS):
-        login = _resolve_hh_auth_login()
+        login = auth_login
         if not login:
             wait_s = max(1, min(int(timeout_s or 1), 900))
             login = await _request_hh_auth_value(
@@ -867,7 +882,7 @@ async def run_hh_auth_capture(
     import_resumes: bool = False,
 ) -> dict:
     target_profile = _resolve_profile(profile_name)
-    _load_hh_auth_env(profile_name)
+    auth_login = _resolve_hh_auth_login(_load_hh_auth_env(profile_name))
     if activate_profile:
         profile_mod.activate_no_lock(profile_name)
     client = HHClient()
@@ -930,6 +945,7 @@ async def run_hh_auth_capture(
                 profile_name,
                 timeout_s=remaining,
                 poll_sec=max(0.5, float(poll_sec or 1)),
+                auth_login=auth_login,
             )
             status = str(step.get("status") or HH_AUTH_STEP_IDLE)
             if status in (HH_AUTH_STEP_SUBMITTED, HH_AUTH_STEP_PROGRESS):

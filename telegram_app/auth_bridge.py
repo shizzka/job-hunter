@@ -67,7 +67,10 @@ class TelegramHHAuthBridge:
             return False
         try:
             bridge = _load_bridge()
-            pending = bridge.peek_pending()
+            principal_profile = ""
+            if principal.get("role") != self._hh_auth_admin_role:
+                principal_profile = str(principal.get("profile") or "").strip()
+            pending = bridge.peek_pending(principal_profile or None)
         except Exception as exc:
             self._hh_auth_log.debug(
                 "hh auth bridge peek failed: %s",
@@ -105,7 +108,11 @@ class TelegramHHAuthBridge:
             return False
 
         try:
-            bridge.write_response(str(pending["id"]), answer)
+            bridge.write_response(
+                str(pending["id"]),
+                answer,
+                profile_name=profile_name,
+            )
             self._append_debug_log(
                 "hh_auth_response_accepted",
                 user_id=principal.get("user_id"),

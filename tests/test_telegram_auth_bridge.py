@@ -25,15 +25,15 @@ class _FakeBridge:
         self.write_error = write_error
         self.writes = []
 
-    def peek_pending(self):
+    def peek_pending(self, profile_name=None):
         if self.peek_error:
             raise self.peek_error
         return self.pending
 
-    def write_response(self, request_id: str, answer: str):
+    def write_response(self, request_id: str, answer: str, profile_name=""):
         if self.write_error:
             raise self.write_error
-        self.writes.append((request_id, answer))
+        self.writes.append((request_id, answer, profile_name))
 
 
 class _Host(TelegramHHAuthBridge):
@@ -178,7 +178,7 @@ def test_auth_bridge_accepts_and_normalizes_code(monkeypatch):
     )
 
     assert accepted is True
-    assert bridge.writes == [("request-1", "1234")]
+    assert bridge.writes == [("request-1", "1234", "client_42")]
     assert host.audit_events == [
         (
             "hh_auth_response_accepted",
@@ -236,7 +236,7 @@ def test_auth_bridge_prompts_again_for_invalid_code(monkeypatch):
     [
         (
             "candidate@example.com",
-            ("request-2", "candidate@example.com"),
+            ("request-2", "candidate@example.com", "qa"),
             "✅ Принял логин HH для профиля qa. Ввожу в браузер HH…",
         ),
         (

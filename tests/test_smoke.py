@@ -157,6 +157,27 @@ class TestFilters:
         v = {"title": "QA автоматизатор", "company": "Яндекс", "snippet": "автотесты python", "source": "hh"}
         assert check_vacancy(v) is None
 
+    def test_check_vacancy_military_filter_avoids_substring_false_positives(self):
+        from filters import check_vacancy
+
+        safe_snippets = (
+            "свой продукт и свободный график",
+            "frontend-разработка и фронт-офис",
+            "контрактная форма работы",
+            "вооружены современным стеком",
+        )
+
+        for snippet in safe_snippets:
+            vacancy = {"title": "QA Engineer", "snippet": snippet, "source": "hh"}
+            assert check_vacancy(vacancy) is None
+
+    def test_check_vacancy_military_filter_keeps_explicit_markers(self):
+        from filters import check_vacancy
+
+        for snippet in ("участие в СВО", "работа по гособоронзаказу", "служба по контракту"):
+            vacancy = {"title": "QA Engineer", "snippet": snippet, "source": "hh"}
+            assert check_vacancy(vacancy) == "military_redflag"
+
 
 class TestReporting:
     """Smoke для reporting.py."""

@@ -162,6 +162,10 @@ The runtime reads environment variables from:
 - `JOB_HUNTER_ENV_FILE`
 - or by default `~/.job-hunter/job-hunter.env`
 
+The file uses literal `KEY=value` entries. It is parsed as data, not sourced as
+a shell script, so shell expressions such as `$(...)`, backticks, `&&`, and `||`
+are never executed (`||` remains the documented list separator).
+
 Important variables:
 
 - `JOB_HUNTER_LLM_KEY`: API key for your OpenAI-compatible provider
@@ -210,6 +214,8 @@ See `scripts/smoke/model_bench.py` for the 6-models × 4-tasks benchmark.
 - `HH_CHAT_RESPONDER_ENABLED=1`: enable AI-chat auto-reply
 - `HH_CHAT_AUTOSEND=1`: actually send (0 = dry-run + preview in TG)
 - `HH_CHAT_MAX_REPLIES_PER_CHAT=5`: safety limit per chat
+- `HH_CHAT_MAX_SCAN=25`: scan at most this many newest relevant chats per run
+- `LLM_PROVIDER_FALLBACK_TTL_SECONDS=300`: retry the primary LLM after this fallback window
 
 See the full template in [job-hunter.env.example](job-hunter.env.example).
 

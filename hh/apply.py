@@ -110,9 +110,10 @@ async def has_existing_response_ui(session, *, looks_like_existing_response, log
     selectors = (
         "[data-qa*='responded']",
         "[data-qa='already-responded-text']",
+        "[data-qa='vacancy-response-link-top-again']",
+        "[data-qa='vacancy-response-link-bottom-again']",
         "button:has-text('Вы откликнулись')",
         "a:has-text('Вы откликнулись')",
-        "text='Вы откликнулись'",
         "button:has-text('Отклик другим резюме')",
         "a:has-text('Отклик другим резюме')",
         "button:has-text('Откликнуться повторно')",
@@ -123,8 +124,7 @@ async def has_existing_response_ui(session, *, looks_like_existing_response, log
             marker = await session._page.query_selector(selector)
             if marker:
                 return True
-        body_text = await session._page_text(limit=8000)
-        return looks_like_existing_response(body_text)
+        return False
     except Exception as e:
         logger.debug("Existing response UI check failed: %s", e)
         return False
@@ -158,12 +158,9 @@ async def apply_success_detected(session, *, looks_like_apply_success, logger) -
         "[data-qa='already-responded-text']",
         "[data-qa='vacancy-response-success-standard-notification']",
         "[data-qa*='success-standard-notification']",
+        "[data-qa='vacancy-response-link-view-topic']",
         "button:has-text('Вы откликнулись')",
         "a:has-text('Вы откликнулись')",
-        "text='Вы откликнулись'",
-        "text='Резюме доставлено'",
-        "text='Отклик отправлен'",
-        "text='Связаться с работодателем можно в чате'",
     )
     try:
         for selector in selectors:
@@ -177,8 +174,29 @@ async def apply_success_detected(session, *, looks_like_apply_success, logger) -
     if "/negotiations" in current_url:
         return True
 
-    page_text = await session._page_text(limit=12000)
-    return looks_like_apply_success(page_text)
+    return False
+
+
+async def response_error_detected(session, *, logger) -> bool:
+    """Detect a visible response-specific error, not words in vacancy copy."""
+    selectors = (
+        "[data-qa='vacancy-response-error']",
+        "[data-qa='vacancy-response-popup-error']",
+        "[data-qa='vacancy-response-popup-form-error']",
+        "[data-qa*='vacancy-response'][data-qa*='error']",
+        "[role='alert'][data-qa*='vacancy-response']",
+    )
+    try:
+        for selector in selectors:
+            marker = await session._page.query_selector(selector)
+            if not marker:
+                continue
+            is_visible = getattr(marker, "is_visible", None)
+            if is_visible is None or await is_visible():
+                return True
+    except Exception as exc:
+        logger.debug("Apply error selector check failed: %s", exc)
+    return False
 
 
 async def first_visible_element(page, selectors):
@@ -368,6 +386,7 @@ async def dismiss_magritte_dropdowns(session) -> None:
 
 async def expand_cover_letter_input(session) -> bool:
     selectors = (
+        "[data-qa='vacancy-response-letter-toggle']",
         "[data-qa='add-cover-letter']",
         "button[data-qa='add-cover-letter']",
         "button:has-text('Добавить сопроводительное')",
@@ -778,20 +797,23 @@ async def apply_to_vacancy(
             await session._expand_cover_letter_input()
             controls = await session._detect_response_controls()
             field = controls[4]
-            if not field:
+            if not field and not cover_letter_filled:
                 await save_debug_snapshot("debug_questionnaire_letter_missing")
                 return {"ok": False, "message": "В анкете нет поля сопроводительного — нужна ручная проверка до отправки"}
-            await field.fill(cover_letter)
-            if normalize_text(await field.input_value()) != normalize_text(cover_letter):
-                return {"ok": False, "message": "Сопроводительное в анкете не сохранилось — отклик остановлен"}
-            cover_letter_filled = True
+            if field:
+                await field.fill(cover_letter)
+                if normalize_text(await field.input_value()) != normalize_text(cover_letter):
+                    return {"ok": False, "message": "Сопроводительное в анкете не сохранилось — отклик остановлен"}
+                cover_letter_filled = True
         async def verify_before_submit():
             if wants_specific_resume and not await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
                 return False
             await session._dismiss_magritte_dropdowns()
             if cover_letter:
                 current = (await session._detect_response_controls())[4]
-                return bool(current) and normalize_text(await current.input_value()) == normalize_text(cover_letter)
+                if current:
+                    return normalize_text(await current.input_value()) == normalize_text(cover_letter)
+                return cover_letter_filled
             return True
         return await session._try_auto_answer_questions(vacancy_context=vacancy_context, before_submit=verify_before_submit)
 
@@ -1282,18 +1304,14 @@ async def apply_to_vacancy(
             if await session._apply_success_detected():
                 return await finalize_success("Отклик отправлен", notes=auto_answer_notes)
 
-    page_text = await session._page_text(limit=20000)
-    page_lower = page_text.lower()
+    anti_bot_kind = await session._detect_anti_bot_kind()
+    if anti_bot_kind:
+        message = anti_bot_message(anti_bot_kind, "после отклика")
+        logger.warning("HH anti-bot (%s) detected while verifying apply", anti_bot_kind)
+        session._remember_antibot_signal(anti_bot_kind, "apply_verify", message)
+        return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind}
 
-    # Ошибка rate limit / блокировки
-    if "слишком много" in page_lower or "too many" in page_lower:
-        logger.warning("Rate limit detected after apply")
-        message = anti_bot_message("rate_limit")
-        session._remember_antibot_signal("rate_limit", "apply_verify", message)
-        return {"ok": False, "message": message, "anti_bot_kind": "rate_limit"}
-
-    # Ошибка на стороне hh
-    if "что-то пошло не так" in page_lower or "произошла ошибка" in page_lower or "ошибка" in page_lower:
+    if await response_error_detected(session, logger=logger):
         logger.warning("hh.ru error page after apply. URL: %s", session._page.url)
         return {"ok": False, "message": "hh.ru показал ошибку после отклика"}
 

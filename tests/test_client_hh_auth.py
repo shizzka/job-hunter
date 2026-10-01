@@ -1,5 +1,7 @@
 import json
 import asyncio
+import os
+from types import SimpleNamespace
 
 import client_hh_auth
 
@@ -57,9 +59,7 @@ class TestClientHHAuth:
         assert profile is active
         assert profile.name == "client_42"
 
-    def test_load_hh_auth_env_reads_env_file_when_process_env_is_stale(self, tmp_path, monkeypatch):
-        import os
-
+    def test_load_hh_auth_env_reads_env_file_without_mutating_process_env(self, tmp_path, monkeypatch):
         class DummyProfile:
             def __init__(self, home_dir):
                 self.home_dir = str(home_dir)
@@ -75,9 +75,38 @@ class TestClientHHAuth:
         monkeypatch.setenv("JOB_HUNTER_ENV_FILE", str(env_file))
         monkeypatch.setattr(client_hh_auth, "_resolve_profile", lambda profile_name: DummyProfile(profile_dir))
 
-        client_hh_auth._load_hh_auth_env("qa")
+        values = client_hh_auth._load_hh_auth_env("qa")
 
-        assert os.environ["HH_AUTH_PHONE"] == "+70000000000"
+        assert values["HH_AUTH_PHONE"] == "+70000000000"
+        assert "HH_AUTH_PHONE" not in os.environ
+
+    def test_hh_auth_values_do_not_leak_between_profiles(self, tmp_path, monkeypatch):
+        profiles = {}
+        for name, phone in (("alice", "+70000000001"), ("bob", "+70000000002")):
+            home = tmp_path / name
+            home.mkdir()
+            (home / "profile.env").write_text(
+                f"HH_AUTH_PHONE={phone}\n",
+                encoding="utf-8",
+            )
+            profiles[name] = SimpleNamespace(home_dir=str(home))
+
+        monkeypatch.setattr(
+            client_hh_auth,
+            "_resolve_profile",
+            lambda name: profiles[name],
+        )
+        monkeypatch.setenv("JOB_HUNTER_ENV_FILE", str(tmp_path / "missing.env"))
+        for key in client_hh_auth.HH_AUTH_LOGIN_ENV_KEYS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HH_AUTH_PHONE", "+79999999999")
+
+        alice = client_hh_auth._load_hh_auth_env("alice")
+        bob = client_hh_auth._load_hh_auth_env("bob")
+
+        assert client_hh_auth._resolve_hh_auth_login(alice) == "+70000000001"
+        assert client_hh_auth._resolve_hh_auth_login(bob) == "+70000000002"
+        assert os.environ["HH_AUTH_PHONE"] == "+79999999999"
 
     def test_update_profile_resume_ids_writes_direct_profile_env(self, tmp_path, monkeypatch):
         class DummyProfile:

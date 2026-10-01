@@ -33,10 +33,85 @@ def test_apply_success_includes_existing_response_state():
     assert hh_apply.looks_like_hh_apply_success("Вы уже откликнулись") is True
 
 
+def test_existing_response_ui_ignores_marker_in_vacancy_body():
+    session = FakeSession(
+        FakePage(text="Если вы уже откликались на наши вакансии, повторно писать не нужно")
+    )
+
+    assert asyncio.run(
+        hh_apply.has_existing_response_ui(
+            session,
+            looks_like_existing_response=hh_apply.looks_like_existing_hh_response,
+            logger=hh_client.log,
+        )
+    ) is False
+
+
+def test_apply_success_ignores_marker_in_vacancy_body():
+    session = FakeSession(FakePage(text="После подачи заявки появится сообщение: отклик отправлен"))
+
+    assert asyncio.run(
+        hh_apply.apply_success_detected(
+            session,
+            looks_like_apply_success=hh_apply.looks_like_hh_apply_success,
+            logger=hh_client.log,
+        )
+    ) is False
+
+
+def test_existing_response_ui_detects_current_hh_reapply_marker():
+    session = FakeSession(
+        FakePage(selector_hits={"[data-qa='vacancy-response-link-top-again']"})
+    )
+
+    assert asyncio.run(
+        hh_apply.has_existing_response_ui(
+            session,
+            looks_like_existing_response=hh_apply.looks_like_existing_hh_response,
+            logger=hh_client.log,
+        )
+    ) is True
+
+
+def test_apply_success_detects_current_hh_topic_marker():
+    session = FakeSession(
+        FakePage(selector_hits={"[data-qa='vacancy-response-link-view-topic']"})
+    )
+
+    assert asyncio.run(
+        hh_apply.apply_success_detected(
+            session,
+            looks_like_apply_success=hh_apply.looks_like_hh_apply_success,
+            logger=hh_client.log,
+        )
+    ) is True
+
+
+def test_response_error_ignores_generic_error_words_in_vacancy_body():
+    session = FakeSession(
+        FakePage(text="Важно не делать слишком много ошибок при проверке продукта")
+    )
+
+    assert asyncio.run(
+        hh_apply.response_error_detected(session, logger=hh_client.log)
+    ) is False
+
+
+def test_response_error_detects_response_specific_marker():
+    session = FakeSession(
+        FakePage(selector_hits={"[data-qa='vacancy-response-popup-error']"})
+    )
+
+    assert asyncio.run(
+        hh_apply.response_error_detected(session, logger=hh_client.log)
+    ) is True
+
+
 class FakePage:
-    def __init__(self, *, url="https://hh.ru/vacancy/1", text=""):
+    def __init__(self, *, url="https://hh.ru/vacancy/1", text="", selector_hits=None):
         self.url = url
         self.text = text
+        self.selector_hits = set(selector_hits or ())
         self.selectors = []
 
     async def evaluate(self, script):
@@ -45,7 +120,7 @@ class FakePage:
 
     async def query_selector(self, selector):
         self.selectors.append(selector)
-        return None
+        return object() if selector in self.selector_hits else None
 
 
 class FakeSession:

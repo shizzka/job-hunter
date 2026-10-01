@@ -56,6 +56,19 @@ class TestStatusBucket:
         assert status_bucket("ПРИГЛАШЕНИЕ НА СОБЕСЕДОВАНИЕ") == "positive"
         assert status_bucket("отказ") == "rejected"
 
+    @pytest.mark.parametrize(
+        "status",
+        (
+            "Отказ после собеседования",
+            "Отказ после тестового задания",
+            "Не прошёл собеседование",
+        ),
+    )
+    def test_rejection_wins_over_positive_stage(self, status):
+        from outcome import status_bucket
+
+        assert status_bucket(status) == "rejected"
+
 
 class TestStatusDetailBucket:
     def test_interview(self):
@@ -77,6 +90,19 @@ class TestStatusDetailBucket:
     def test_pending_new(self):
         from outcome import status_detail_bucket
         assert status_detail_bucket("Не просмотрен") == "pending_new"
+
+    @pytest.mark.parametrize(
+        "status",
+        (
+            "Отказ после собеседования",
+            "Отказ после тестового задания",
+            "Не прошёл собеседование",
+        ),
+    )
+    def test_rejection_detail_wins_over_process_stage(self, status):
+        from outcome import status_detail_bucket
+
+        assert status_detail_bucket(status) == "rejected"
 
 
 class TestDecisionConstants:

@@ -23,6 +23,7 @@ ENV:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import logging
 import os
@@ -77,6 +78,39 @@ from chat_screening import (
 )
 
 log = logging.getLogger("chat_responder")
+
+
+def _escaped_html(value: Any, *, limit: int) -> str:
+    return html.escape(str(value or "")[:limit])
+
+
+def _dry_run_caption(vacancy: dict, message: dict, answer: str) -> str:
+    title = _escaped_html(vacancy.get("title") or "—", limit=300)
+    company = _escaped_html(vacancy.get("company") or "—", limit=200)
+    question = _escaped_html(message.get("text") or "", limit=400)
+    safe_answer = _escaped_html(answer, limit=800)
+    return (
+        "🤖 <b>Чат с AI-помощником (DRY-RUN)</b>\n"
+        f"📋 {title} @ {company}\n\n"
+        f"❓ <i>{question}</i>\n\n"
+        f"💬 <b>Готов ответить:</b>\n{safe_answer}\n\n"
+        "Чтобы включить авто-отправку: <code>HH_CHAT_AUTOSEND=1</code>"
+    )
+
+
+def _sent_caption(chat_id: str, vacancy: dict, message: dict, answer: str) -> str:
+    title = _escaped_html(vacancy.get("title") or "—", limit=300)
+    company = _escaped_html(vacancy.get("company") or "—", limit=200)
+    question = _escaped_html(message.get("text") or "", limit=300)
+    safe_answer = _escaped_html(answer, limit=800)
+    safe_chat_id = _escaped_html(chat_id, limit=100)
+    return (
+        "🤖 <b>Ответил в чате</b>\n"
+        f"📋 {title} @ {company}\n\n"
+        f"❓ <i>{question}</i>\n\n"
+        f"💬 {safe_answer}\n\n"
+        f"<a href='https://chatik.hh.ru/chat/{safe_chat_id}'>Открыть чат</a>"
+    )
 
 
 
@@ -1065,8 +1099,25 @@ async def process_all(
     }
 
     chats = await list_chats(page)
-    summary["chats_scanned"] = len(chats)
-    log.info("found %d chats total", len(chats))
+    eligible_chats = [
+        chat
+        for chat in chats
+        if not _is_application_only_preview(chat.get("preview") or "")
+        and not _is_blocked_company_preview(chat.get("preview") or "")
+    ]
+    scan_chats = eligible_chats[: runtime_limits.max_scan]
+    summary["chats_total"] = len(chats)
+    summary["chats_eligible"] = len(eligible_chats)
+    summary["chats_scanned"] = len(scan_chats)
+    summary["chats_read"] = 0
+    summary["max_scan"] = runtime_limits.max_scan
+    log.info(
+        "found %d chats total, %d eligible; scanning newest %d (limit=%d)",
+        len(chats),
+        len(eligible_chats),
+        len(scan_chats),
+        runtime_limits.max_scan,
+    )
 
     try:
         from hh_client import _load_resume_text  # late import
@@ -1079,21 +1130,14 @@ async def process_all(
     except Exception:
         notifier = None
 
-    for chat in chats:
+    for chat in scan_chats:
         chat_id = chat["chat_id"]
-        preview_text = chat.get("preview") or ""
-        if _is_application_only_preview(preview_text):
-            log.debug("chat %s: application-only placeholder, skip", chat_id)
-            continue
-        if _is_blocked_company_preview(preview_text):
-            log.info("chat %s: blocked company preview, skip", chat_id)
-            summary["skipped"] += 1
-            continue
         chat_state = state.setdefault(chat_id, {})
         replies_so_far = int(chat_state.get("replies_count", 0))
 
         try:
             data = await get_messages(page, chat_id)
+            summary["chats_read"] += 1
         except Exception as exc:
             log.warning(
                 "get_messages(%s) failed: %s; preview=%r",
@@ -1167,6 +1211,10 @@ async def process_all(
             log.info("chat %s: already replied to latest message %s, skip", chat_id, last_id)
             summary["skipped"] += 1
             continue
+        if dry_run and chat_state.get("last_previewed_msg_id") == last_id:
+            log.info("chat %s: latest message %s already previewed, skip", chat_id, last_id)
+            summary["skipped"] += 1
+            continue
 
         if last.get("is_ai_suspect") and not last.get("is_ai"):
             summary["suspicious"] += 1
@@ -1237,15 +1285,16 @@ async def process_all(
             preview = await fill_and_preview(page, chat_id, answer, runtime_paths=paths)
             detail["dry_run"] = True
             detail["preview"] = preview
+            if preview.get("filled"):
+                chat_state["last_previewed_msg_id"] = last_id
+                chat_state["last_preview_answer_hash"] = hashlib.sha256(
+                    answer.encode("utf-8")
+                ).hexdigest()[:16]
+                chat_state["last_previewed_at"] = time.time()
+                save_state(state, paths)
             if notifier:
                 try:
-                    caption = (
-                        f"🤖 <b>Чат с AI-помощником (DRY-RUN)</b>\n"
-                        f"📋 {vac.get('title', '—')} @ {vac.get('company', '—')}\n\n"
-                        f"❓ <i>{(last.get('text') or '')[:400]}</i>\n\n"
-                        f"💬 <b>Готов ответить:</b>\n{answer[:800]}\n\n"
-                        f"Чтобы включить авто-отправку: <code>HH_CHAT_AUTOSEND=1</code>"
-                    )
+                    caption = _dry_run_caption(vac, last, answer)
                     if preview.get("screenshot_path"):
                         await notifier.send_photo(preview["screenshot_path"], caption=caption)
                     else:
@@ -1264,13 +1313,7 @@ async def process_all(
                 save_state(state, paths)
                 if notifier:
                     try:
-                        caption = (
-                            f"🤖 <b>Ответил в чате</b>\n"
-                            f"📋 {vac.get('title', '—')} @ {vac.get('company', '—')}\n\n"
-                            f"❓ <i>{(last.get('text') or '')[:300]}</i>\n\n"
-                            f"💬 {answer[:800]}\n\n"
-                            f"<a href='https://chatik.hh.ru/chat/{chat_id}'>Открыть чат</a>"
-                        )
+                        caption = _sent_caption(chat_id, vac, last, answer)
                         await notifier.send_message_with_markup(caption)
                     except Exception as exc:
                         log.warning("notify sent failed: %s", exc)
@@ -1281,4 +1324,10 @@ async def process_all(
         # cooldown между ответами в разных чатах
         await asyncio.sleep(runtime_limits.reply_cooldown_s)
 
+    log.info(
+        "chat scan complete: read=%d/%d, failures=%d",
+        summary["chats_read"],
+        summary["chats_scanned"],
+        summary["read_failures"],
+    )
     return summary

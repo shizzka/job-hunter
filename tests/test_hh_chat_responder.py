@@ -544,6 +544,158 @@ def test_process_all_uses_injected_reply_limits(tmp_path, monkeypatch):
     assert preview_paths == [paths]
 
 
+def test_process_all_scans_only_newest_relevant_chats(tmp_path, monkeypatch):
+    import hh_client
+    import hiring_research
+
+    class FakePage:
+        async def goto(self, *args, **kwargs):
+            return None
+
+        async def wait_for_timeout(self, timeout):
+            return None
+
+    class FakeHHClient:
+        _page = FakePage()
+
+    chats = [
+        {"chat_id": "placeholder", "preview": "Отклик на вакансию"},
+        {"chat_id": "newest", "preview": "Первый вопрос"},
+        {"chat_id": "second", "preview": "Второй вопрос"},
+        {"chat_id": "old", "preview": "Старый вопрос"},
+    ]
+    read_chat_ids = []
+    paths = RuntimePaths(
+        home_dir=str(tmp_path),
+        hh_state_dir=str(tmp_path / "state"),
+        resume_file=str(tmp_path / "resume.md"),
+    )
+
+    async def fake_list_chats(page):
+        return chats
+
+    async def fake_get_messages(page, chat_id):
+        read_chat_ids.append(chat_id)
+        return {"messages": [], "vacancy": {}}
+
+    monkeypatch.setattr(hh_client, "_load_resume_text", lambda: "QA resume")
+    monkeypatch.setattr(chat_responder, "load_state", lambda runtime_paths=None: {})
+    monkeypatch.setattr(chat_responder, "list_chats", fake_list_chats)
+    monkeypatch.setattr(chat_responder, "get_messages", fake_get_messages)
+    monkeypatch.setattr(hiring_research, "record_screening", lambda *args: None)
+
+    summary = asyncio.run(
+        chat_responder.process_all(
+            FakeHHClient(),
+            dry_run=True,
+            limits=ChatResponderLimits(
+                max_replies_per_chat=5,
+                reply_cooldown_s=0,
+                max_scan=2,
+            ),
+            runtime_paths=paths,
+        )
+    )
+
+    assert read_chat_ids == ["newest", "second"]
+    assert summary["chats_total"] == 4
+    assert summary["chats_eligible"] == 3
+    assert summary["chats_scanned"] == 2
+    assert summary["chats_read"] == 2
+
+
+def test_process_all_deduplicates_dry_run_preview_before_llm(tmp_path, monkeypatch):
+    import hh_client
+    import notifier
+
+    class FakePage:
+        async def goto(self, *args, **kwargs):
+            return None
+
+        async def wait_for_timeout(self, timeout):
+            return None
+
+    class FakeHHClient:
+        _page = FakePage()
+
+    state = {}
+    llm_calls = []
+    notifications = []
+    paths = RuntimePaths(
+        home_dir=str(tmp_path),
+        hh_state_dir=str(tmp_path / "state"),
+        resume_file=str(tmp_path / "resume.md"),
+    )
+    data = {
+        "messages": [
+            {
+                "id": "message-7",
+                "text": "Нужно <3 лет опыта?",
+                "is_ai": True,
+                "is_me": False,
+            }
+        ],
+        "vacancy": {"title": "QA <Junior>", "company": "A&B"},
+    }
+
+    async def fake_list_chats(page):
+        return [{"chat_id": "42", "preview": "Question"}]
+
+    async def fake_get_messages(page, chat_id):
+        return data
+
+    async def fake_generate_answer(*args, **kwargs):
+        llm_calls.append(True)
+        return "Готов <обучаться> & развиваться"
+
+    async def fake_fill_and_preview(*args, **kwargs):
+        return {"filled": True, "screenshot_path": ""}
+
+    async def fake_notify(caption, **kwargs):
+        notifications.append(caption)
+        return True
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(hh_client, "_load_resume_text", lambda: "QA resume")
+    monkeypatch.setattr(chat_responder, "load_state", lambda runtime_paths=None: state)
+    monkeypatch.setattr(chat_responder, "save_state", lambda payload, runtime_paths=None: None)
+    monkeypatch.setattr(chat_responder, "list_chats", fake_list_chats)
+    monkeypatch.setattr(chat_responder, "get_messages", fake_get_messages)
+    monkeypatch.setattr(chat_responder, "generate_answer", fake_generate_answer)
+    monkeypatch.setattr(chat_responder, "fill_and_preview", fake_fill_and_preview)
+    monkeypatch.setattr(chat_responder.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(notifier, "send_message_with_markup", fake_notify)
+
+    first = asyncio.run(chat_responder.process_all(FakeHHClient(), dry_run=True, runtime_paths=paths))
+    second = asyncio.run(chat_responder.process_all(FakeHHClient(), dry_run=True, runtime_paths=paths))
+
+    assert first["answers_drafted"] == 1
+    assert second["answers_drafted"] == 0
+    assert second["skipped"] == 1
+    assert len(llm_calls) == 1
+    assert len(notifications) == 1
+    assert state["42"]["last_previewed_msg_id"] == "message-7"
+    assert len(state["42"]["last_preview_answer_hash"]) == 16
+
+
+def test_process_all_captions_escape_dynamic_html():
+    vacancy = {"title": "QA <Junior>", "company": "A&B"}
+    message = {"text": "Нужно <3 лет & быстро?"}
+    answer = "Готов <обучаться> & развиваться"
+
+    dry_caption = chat_responder._dry_run_caption(vacancy, message, answer)
+    sent_caption = chat_responder._sent_caption("42'bad", vacancy, message, answer)
+
+    for caption in (dry_caption, sent_caption):
+        assert "QA &lt;Junior&gt;" in caption
+        assert "A&amp;B" in caption
+        assert "Нужно &lt;3 лет &amp; быстро?" in caption
+        assert "Готов &lt;обучаться&gt; &amp; развиваться" in caption
+    assert "42&#x27;bad" in sent_caption
+
+
 def test_chat_preview_and_send_use_explicit_runtime_paths(tmp_path, monkeypatch):
     paths = RuntimePaths(
         home_dir=str(tmp_path / "profile-a"),
