@@ -254,6 +254,46 @@ def _cloudflare_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _mistral_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
+    fast = provider_env.get("MISTRAL_FAST_MODEL", "mistral-small-latest")
+    strong = provider_env.get("MISTRAL_STRONG_MODEL", "mistral-large-latest")
+    coder = provider_env.get("MISTRAL_CODER_MODEL", strong)
+    return {
+        "gpt-oss:20b": fast,
+        "gpt-oss:120b": strong,
+        "qwen3-coder:480b": coder,
+        "qwen3-coder-next": coder,
+        "cogito-2.1:671b": strong,
+        "deepseek-v3.1:671b": strong,
+        "deepseek-v3.2": strong,
+        "deepseek-v4-flash": strong,
+        "deepseek-v4-pro": strong,
+        "gemini-3-flash-preview": fast,
+        "gemini-3.5-flash": fast,
+        "gemini-3.1-flash-lite": fast,
+    }
+
+
+def _cohere_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
+    fast = provider_env.get("COHERE_FAST_MODEL", "command-a-03-2025")
+    strong = provider_env.get("COHERE_STRONG_MODEL", "command-a-plus-05-2026")
+    coder = provider_env.get("COHERE_CODER_MODEL", strong)
+    return {
+        "gpt-oss:20b": fast,
+        "gpt-oss:120b": strong,
+        "qwen3-coder:480b": coder,
+        "qwen3-coder-next": coder,
+        "cogito-2.1:671b": strong,
+        "deepseek-v3.1:671b": strong,
+        "deepseek-v3.2": strong,
+        "deepseek-v4-flash": strong,
+        "deepseek-v4-pro": strong,
+        "gemini-3-flash-preview": fast,
+        "gemini-3.5-flash": fast,
+        "gemini-3.1-flash-lite": fast,
+    }
+
+
 def _huggingface_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
     fast = provider_env.get("HF_FAST_MODEL", provider_env.get("HUGGINGFACE_FAST_MODEL", "openai/gpt-oss-20b:fastest"))
     strong = provider_env.get("HF_STRONG_MODEL", provider_env.get("HUGGINGFACE_STRONG_MODEL", "openai/gpt-oss-120b:fastest"))
@@ -394,6 +434,18 @@ def _build_provider_specs() -> list[ProviderSpec]:
         model_aliases=_cloudflare_model_aliases(provider_env),
     )
     add(
+        "mistral",
+        provider_env.get("MISTRAL_BASE_URL", "https://api.mistral.ai/v1"),
+        provider_env.get("MISTRAL_API_KEY", ""),
+        model_aliases=_mistral_model_aliases(provider_env),
+    )
+    add(
+        "cohere",
+        provider_env.get("COHERE_BASE_URL", "https://api.cohere.ai/compatibility/v1"),
+        provider_env.get("COHERE_API_KEY", ""),
+        model_aliases=_cohere_model_aliases(provider_env),
+    )
+    add(
         "huggingface",
         provider_env.get("HF_BASE_URL", provider_env.get("HUGGINGFACE_BASE_URL", "https://router.huggingface.co/v1")),
         provider_env.get("HF_TOKEN") or provider_env.get("HUGGINGFACE_API_KEY", ""),
@@ -421,7 +473,7 @@ def _build_provider_specs() -> list[ProviderSpec]:
         requested = list(dict.fromkeys(name.strip().lower() for name in order.split(",") if name.strip()))
         known = {
             "primary", "ollama", "ollama2", "ollama3", "cerebras", "openrouter", "openrouter2",
-            "groq", "groq2", "sambanova", "gemini", "deepseek", "cloudflare", "huggingface", "siliconflow",
+            "groq", "groq2", "sambanova", "gemini", "deepseek", "cloudflare", "mistral", "cohere", "huggingface", "siliconflow",
         }
         if not requested or any(name not in known for name in requested):
             raise ValueError("Invalid LLM_PROVIDER_ORDER; use configured provider names separated by commas")
