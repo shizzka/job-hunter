@@ -1,5 +1,6 @@
 import asyncio
 
+import config
 import google_form_filler as gforms
 from runtime_context import RuntimePaths
 
@@ -357,6 +358,7 @@ def test_reuse_cached_answers_for_same_form(monkeypatch):
 
 def test_contact_block_contains_candidate_contacts(monkeypatch):
     from prompt_blocks import build_contact_block
+    monkeypatch.setattr(config, "CANDIDATE_PROFILE_ISOLATED", False, raising=False)
 
     monkeypatch.setenv("CANDIDATE_EMAIL", "qa@example.com")
     monkeypatch.setenv("CANDIDATE_PHONE", "+79990000000")
@@ -380,6 +382,7 @@ def test_contact_block_contains_candidate_contacts(monkeypatch):
 
 def test_contact_overrides_replace_llm_placeholders(monkeypatch):
     from google_form_filler import _apply_contact_overrides
+    monkeypatch.setattr(config, "CANDIDATE_PROFILE_ISOLATED", False, raising=False)
 
     monkeypatch.setenv("CANDIDATE_EMAIL", "qa@example.com")
     monkeypatch.setenv("CANDIDATE_PHONE", "+79990000000")

@@ -41,33 +41,39 @@ def _first_nonempty(*values: str) -> str:
 
 def get_candidate_contacts() -> dict[str, str]:
     profile_env = _read_profile_env_values()
+
+    def inherited(key: str) -> str:
+        if getattr(config, "CANDIDATE_PROFILE_ISOLATED", False):
+            return ""
+        return os.getenv(key, "")
+
     email = _first_nonempty(
-        os.getenv("CANDIDATE_EMAIL"),
-        os.getenv("CONTACT_EMAIL"),
-        os.getenv("HH_AUTH_EMAIL"),
         profile_env.get("CANDIDATE_EMAIL"),
         profile_env.get("CONTACT_EMAIL"),
         profile_env.get("HH_AUTH_EMAIL"),
+        inherited("CANDIDATE_EMAIL"),
+        inherited("CONTACT_EMAIL"),
+        inherited("HH_AUTH_EMAIL"),
     )
     phone = _first_nonempty(
-        os.getenv("CANDIDATE_PHONE"),
-        os.getenv("CONTACT_PHONE"),
-        os.getenv("HH_AUTH_PHONE"),
         profile_env.get("CANDIDATE_PHONE"),
         profile_env.get("CONTACT_PHONE"),
         profile_env.get("HH_AUTH_PHONE"),
+        inherited("CANDIDATE_PHONE"),
+        inherited("CONTACT_PHONE"),
+        inherited("HH_AUTH_PHONE"),
     )
     telegram = _first_nonempty(
-        os.getenv("CANDIDATE_TELEGRAM"),
-        os.getenv("CONTACT_TELEGRAM"),
         profile_env.get("CANDIDATE_TELEGRAM"),
         profile_env.get("CONTACT_TELEGRAM"),
+        inherited("CANDIDATE_TELEGRAM"),
+        inherited("CONTACT_TELEGRAM"),
     )
     resume_url = _first_nonempty(
-        os.getenv("CANDIDATE_RESUME_URL"),
-        os.getenv("CONTACT_RESUME_URL"),
         profile_env.get("CANDIDATE_RESUME_URL"),
         profile_env.get("CONTACT_RESUME_URL"),
+        inherited("CANDIDATE_RESUME_URL"),
+        inherited("CONTACT_RESUME_URL"),
     )
     if not resume_url:
         resume_id = str(getattr(config, "HH_PRIMARY_RESUME_ID", "") or "").strip()
@@ -122,11 +128,23 @@ def build_facts_block() -> str:
 
 
 def build_profile_note_block() -> str:
-    """Канонический профиль кандидата — приоритет над резюме (env HH_AUTO_ANSWER_PROFILE_NOTE)."""
+    """Read candidate positioning from the current profile's knowledge directory."""
+    path = os.path.join(_knowledge_dir(), "profile_note.md")
+    try:
+        with open(path, encoding="utf-8") as stream:
+            note = stream.read().strip()
+    except FileNotFoundError:
+        note = ""
+    except OSError as exc:
+        log.warning("profile note read failed: %s", type(exc).__name__)
+        return ""
+    if note:
+        return f"⭐ КАНОНИЧЕСКИЙ ПРОФИЛЬ КАНДИДАТА (данные текущего профиля):\n{note}\n\n"
     note = (config.HH_AUTO_ANSWER_PROFILE_NOTE or "").strip()
     if not note:
         return ""
     return f"⭐ КАНОНИЧЕСКИЙ ПРОФИЛЬ КАНДИДАТА (этот блок имеет приоритет над разделом «Резюме»):\n{note}\n\n"
+
 
 def build_contact_block() -> str:
     """Контакты кандидата для форм, где HR явно просит контакты или ссылку на резюме."""
@@ -215,6 +233,8 @@ def _load_kb_filterable() -> tuple[str, list[dict]]:
     names.extend(name for name in sorted(os.listdir(knowledge_dir)) if name not in names)
     has_canonical_facts = "candidate_facts.md" in names
     for fname in names:
+        if fname == "profile_note.md":
+            continue  # included separately by build_profile_note_block()
         if has_canonical_facts and fname == "about_me.md":
             continue
         path = os.path.join(knowledge_dir, fname)
@@ -361,6 +381,8 @@ def build_knowledge_base_block(limit_chars: int = 12000, *, profile_dir: str | N
     names = [name for name in preferred if os.path.isfile(os.path.join(knowledge_dir, name))]
     names.extend(name for name in sorted(os.listdir(knowledge_dir)) if name not in names)
     for fname in names:
+        if fname == "profile_note.md":
+            continue  # included separately by build_profile_note_block()
         if not (fname.endswith(".md") or fname.endswith(".txt")):
             continue
         path = os.path.join(knowledge_dir, fname)

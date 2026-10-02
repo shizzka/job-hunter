@@ -26,6 +26,15 @@ log = logging.getLogger("profile")
 
 _profiles_root_home = os.path.expanduser(getattr(config, "JOB_HUNTER_HOME", "~/.job-hunter"))
 
+_CANDIDATE_CONFIG_KEYS = (
+    "HH_AUTO_ANSWER_PROFILE_NOTE",
+    "HH_AUTO_ANSWER_SALARY_TEXT",
+    "HH_AUTO_ANSWER_SALARY_NUMBER",
+    "HH_AUTO_ANSWER_SALARY_BASELINE",
+    "HH_AUTO_ANSWER_SALARY_RULE",
+)
+_default_candidate_settings: dict[str, str] | None = None
+
 
 @dataclass
 class SourceConfig:
@@ -124,6 +133,7 @@ class Profile:
 
     # Резюме
     resume_file: str = ""
+    candidate_settings: dict[str, str] = field(default_factory=dict)
 
     # Источники
     hh: HHConfig = field(default_factory=HHConfig)
@@ -305,6 +315,11 @@ def _release_lock() -> None:
 
 def _patch_config(p: Profile):
     """Записать значения профиля обратно в config.*, чтобы все модули их видели."""
+    global _default_candidate_settings
+    if _default_candidate_settings is None:
+        _default_candidate_settings = {
+            key: str(getattr(config, key, "") or "") for key in _CANDIDATE_CONFIG_KEYS
+        }
     # State paths
     config.JOB_HUNTER_HOME = p.home_dir
     config.SEEN_VACANCIES_FILE = p.seen_file
@@ -322,6 +337,9 @@ def _patch_config(p: Profile):
     config.TELEGRAM_BOT_DEBUG_LOG_FILE = p.telegram_bot_debug_log_file
     config.HH_STATE_DIR = p.state_dir
     config.RESUME_FILE = p.resume_file
+    for key in _CANDIDATE_CONFIG_KEYS:
+        setattr(config, key, p.candidate_settings.get(key, ""))
+    config.CANDIDATE_PROFILE_ISOLATED = p.name != "default"
     config.MANUAL_APPLY_QUEUE_FILE = os.path.join(p.home_dir, "manual_apply_queue.json")
     config.HH_GUARD_STATE_FILE = os.path.join(p.home_dir, "hh_guard_state.json")
 
@@ -412,6 +430,9 @@ def load_default_profile() -> Profile:
         search_interval_min=config.SEARCH_INTERVAL_MIN,
         invite_check_interval_min=config.INVITE_CHECK_INTERVAL_MIN,
         resume_file=config.RESUME_FILE,
+        candidate_settings=dict(_default_candidate_settings)
+        if getattr(config, "CANDIDATE_PROFILE_ISOLATED", False) and _default_candidate_settings is not None
+        else {key: str(getattr(config, key, "") or "") for key in _CANDIDATE_CONFIG_KEYS},
         log_file=config.LOG_FILE,
         error_log_file=config.ERROR_LOG_FILE,
         telegram_bot_log_file=config.TELEGRAM_BOT_LOG_FILE,
@@ -511,6 +532,18 @@ def load_profile(name: str = "default") -> Profile:
     # Строим профиль с home_dir = profiles/<name>/
     profile = load_default_profile()
     profile.name = name
+    # Candidate biography and salary expectations never inherit another profile.
+    profile.candidate_settings = {key: profile_env.get(key, "").strip() for key in _CANDIDATE_CONFIG_KEYS}
+    # Resume identities are candidate data, not shared search defaults.
+    hh_defaults = HHConfig()
+    for attr in (
+        "primary_resume_id", "primary_resume_title",
+        "secondary_resume_id", "secondary_resume_title",
+        "tertiary_resume_id", "tertiary_resume_title",
+    ):
+        setattr(profile.hh, attr, getattr(hh_defaults, attr))
+    profile.superjob.resume_id = 0
+    profile.geekjob.resume_id = ""
     profile.home_dir = profiles_dir
     # Сбрасываем state-пути, чтобы _resolve_state_paths пересчитал из нового home_dir
     profile.seen_file = ""

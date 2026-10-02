@@ -527,8 +527,8 @@ def test_generate_cover_letter_falls_back_on_empty_response(monkeypatch):
         )
     )
 
-    assert "Junior Manual QA" in cover
-    assert "около 1 года" in cover
+    assert "Направляю резюме" in cover
+    assert "бэкграунд" not in cover
     meta = matcher.analyze_cover_letter(cover)
     assert meta["fallback_cover_letter"] is True
     assert meta["cover_letter_hash"]
@@ -545,8 +545,8 @@ def test_generate_cover_letter_falls_back_on_client_error(monkeypatch):
         )
     )
 
-    assert "Junior Manual QA" in cover
-    assert "около 1 года" in cover
+    assert "Направляю резюме" in cover
+    assert "бэкграунд" not in cover
 
 
 def test_generate_cover_letter_falls_back_on_overstated_claim(monkeypatch):
@@ -561,8 +561,8 @@ def test_generate_cover_letter_falls_back_on_overstated_claim(monkeypatch):
         )
     )
 
-    assert "Junior Manual QA" in cover
-    assert "около 1 года" in cover
+    assert "Направляю резюме" in cover
+    assert "бэкграунд" not in cover
     assert "более 3" not in cover
     assert "автотестами на Python" not in cover
     meta = matcher.analyze_cover_letter(cover)

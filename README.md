@@ -210,7 +210,7 @@ See `scripts/smoke/model_bench.py` for the 6-models × 4-tasks benchmark.
 - `HH_AUTO_ANSWER_MAX_QUESTIONS=10`: max form fields
 - `HH_AUTO_ANSWER_SALARY_BASELINE=80000`: baseline salary (RUB)
 - `HH_AUTO_ANSWER_SALARY_RULE`: free-form rule for adjusting salary per vacancy
-- `HH_AUTO_ANSWER_PROFILE_NOTE`: canonical candidate profile (top priority in prompt)
+- `HH_AUTO_ANSWER_PROFILE_NOTE`: legacy candidate note; for named profiles set only in their `profile.env` (prefer `knowledge/profile_note.md`)
 - `HH_CHAT_RESPONDER_ENABLED=1`: enable AI-chat auto-reply
 - `HH_CHAT_AUTOSEND=1`: actually send (0 = dry-run + preview in TG)
 - `HH_CHAT_MAX_REPLIES_PER_CHAT=5`: safety limit per chat
@@ -393,6 +393,27 @@ When generating a cover letter / questionnaire answer / AI-chat reply, the modul
 - gives detailed, factual answers instead of generic phrasing.
 
 Files can be updated any time — the next run picks them up automatically.
+
+Candidate biography belongs to the candidate, not shared configuration:
+
+- `knowledge/profile_note.md` — canonical positioning for this candidate, always included without KB filtering. It takes precedence over the legacy `HH_AUTO_ANSWER_PROFILE_NOTE` setting.
+- `facts.json` and confirmed interview answers — structured facts, also included in cover-letter prompts.
+- Named profiles do not inherit global candidate notes, salary expectations, contacts, or resume IDs. Set their salary/contact values in their own `profile.env`; missing values stay empty.
+- Shared prompts and fallback letters contain no personal biography. Vacancy requirements and writing styles are not evidence of a candidate's experience.
+
+To preserve an old global note for its actual owner, explicitly copy it to that profile (existing different files are never overwritten):
+
+```bash
+./venv/bin/python migrate_profile_note.py \
+  --env-file ~/.job-hunter/job-hunter.env \
+  --profile-dir ~/.job-hunter/profiles/qa --include-salary
+```
+
+Изоляция кандидатского контекста: биография и позиционирование хранятся в
+`profiles/<name>/knowledge/profile_note.md`, факты — в `facts.json` и подтверждённых
+ответах интервью. Именованные профили не наследуют глобальные заметки, ожидания
+зарплаты, контакты или ID резюме. Отсутствующий факт не заменяется биографией
+администратора; резервные письма тоже не приписывают кандидату чужой опыт.
 
 ## Optional Integrations
 

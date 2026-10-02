@@ -6,6 +6,8 @@ from google_forms import answering
 
 
 def test_prepare_form_answers_applies_contacts_but_does_not_invent_consent(monkeypatch):
+    import config
+    monkeypatch.setattr(config, "CANDIDATE_PROFILE_ISOLATED", False, raising=False)
     monkeypatch.setenv("CANDIDATE_EMAIL", "qa@example.com")
     questions = [
         {"index": 1, "question": "Электронная почта", "type": "text", "required": True},
