@@ -14,6 +14,7 @@ from playwright.async_api import async_playwright, BrowserContext, Page
 
 import config
 import proxy_utils
+from state_store.json_store import atomic_write_json
 
 log = logging.getLogger("superjob_client")
 
@@ -90,8 +91,7 @@ def _load_cookies() -> list[dict] | None:
 
 def _save_cookies(payload: list[dict]):
     _ensure_dirs()
-    with open(config.SUPERJOB_COOKIES_FILE, "w") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    atomic_write_json(config.SUPERJOB_COOKIES_FILE, payload)
 
 
 def _load_auth_file() -> dict:
@@ -107,8 +107,7 @@ def _load_auth_file() -> dict:
 
 def _save_auth_file(payload: dict):
     _ensure_dirs()
-    with open(config.SUPERJOB_AUTH_FILE, "w") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    atomic_write_json(config.SUPERJOB_AUTH_FILE, payload)
 
 
 class SuperJobClient:

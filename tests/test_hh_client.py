@@ -1,6 +1,7 @@
 import asyncio
 
 import config
+from hh import apply as hh_apply
 
 from hh_client import (
     HHClient,
@@ -390,6 +391,21 @@ class FakeDirectResponsePage:
         if "[...document.querySelectorAll('[data-qa]')]" in script:
             return []
         return None
+
+
+class RecordingApplyTrace:
+    def __init__(self):
+        self.events = []
+
+    def event(self, stage, *, ok=None, **fields):
+        self.events.append({"stage": stage, "ok": ok, **fields})
+
+    async def capture(self, *args, **kwargs):
+        return {}
+
+
+def _trace_event(trace, stage):
+    return next(event for event in trace.events if event["stage"] == stage)
 
 
 class FakeQuestionResponsePage(FakeDirectResponsePage):
@@ -1108,6 +1124,74 @@ def test_apply_stops_when_letter_field_does_not_retain_text(monkeypatch):
     result = asyncio.run(client.apply_to_vacancy('https://hh.ru/vacancy/1', cover_letter='required letter'))
     assert result['ok'] is False
     assert 'не сохранилось' in result['message']
+
+
+def test_apply_trace_separates_navigation_timeout_from_ready_dom(monkeypatch):
+    class TimeoutAfterLoadPage(FakeDirectResponsePage):
+        async def goto(self, url: str, wait_until: str | None = None, timeout: int | None = None):
+            self.url = url
+            raise TimeoutError("navigation timeout after DOM load")
+
+    client = HHClient()
+    client._page = TimeoutAfterLoadPage()
+    trace = RecordingApplyTrace()
+    monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
+
+    result = asyncio.run(client.apply_to_vacancy("https://hh.ru/vacancy/1", trace=trace))
+
+    assert result["ok"] is True
+    navigation = _trace_event(trace, "VACANCY_NAVIGATION")
+    ready = _trace_event(trace, "VACANCY_READY")
+    assert navigation["ok"] is False
+    assert ready["ok"] is True
+    assert ready["url_matches"] is True
+    assert ready["dom_ready"] is True
+    assert not any(event["stage"] == "VACANCY_OPEN" for event in trace.events)
+
+
+def test_apply_trace_records_dom_submit_fallback(monkeypatch):
+    client = HHClient()
+    client._page = FakeDirectResponsePage()
+    trace = RecordingApplyTrace()
+    monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
+
+    async def failed_control_click(element, label):
+        return False
+
+    async def dom_submit():
+        client._page.stage = "success"
+        return True
+
+    monkeypatch.setattr(client, "_click_with_fallbacks", failed_control_click)
+    monkeypatch.setattr(client, "_submit_response_form_via_dom", dom_submit)
+
+    result = asyncio.run(client.apply_to_vacancy("https://hh.ru/vacancy/1", trace=trace))
+
+    assert result["ok"] is True
+    submit = _trace_event(trace, "SUBMIT_CLICK")
+    assert submit["ok"] is True
+    assert submit["method"] == "dom_fallback"
+    assert submit["selector"] == ""
+
+
+def test_apply_trace_blocks_real_unanswered_required_questions(monkeypatch):
+    client = HHClient()
+    client._page = FakeDirectResponsePage()
+    trace = RecordingApplyTrace()
+    monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
+
+    async def unanswered_required(session, *, logger):
+        return 2
+
+    monkeypatch.setattr(hh_apply, "count_unanswered_required_questions", unanswered_required)
+
+    result = asyncio.run(client.apply_to_vacancy("https://hh.ru/vacancy/1", trace=trace))
+
+    assert result == {"ok": False, "message": "Остались обязательные вопросы без ответа: 2"}
+    verify = _trace_event(trace, "PRE_SUBMIT_VERIFY")
+    assert verify["ok"] is False
+    assert verify["unanswered_required"] == 2
+    assert not any(event["stage"] == "SUBMIT_CLICK" for event in trace.events)
 
 
 def test_questionnaire_stops_if_answers_clear_letter(monkeypatch):

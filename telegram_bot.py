@@ -1344,8 +1344,9 @@ class TelegramBot(
         )
         sent = 0
         for user_id in self._profile_recipient_ids(self.profile_name):
-            principal = telegram_access.resolve_user(user_id) or {"user_id": user_id, "role": ROLE_ADMIN, "profile": self.profile_name}
-            result = await self._send_text_safely(user_id, text, reply_markup=self._menu_reply_markup(principal))
+            principal = telegram_access.resolve_user(user_id)
+            reply_markup = self._menu_reply_markup(principal) if principal else None
+            result = await self._send_text_safely(user_id, text, reply_markup=reply_markup)
             if result is not None:
                 sent += 1
         if sent:

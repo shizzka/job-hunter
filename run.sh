@@ -23,7 +23,7 @@ set -euo pipefail
 #   ./run.sh google-form-preview <chat_id> [message_id] — подготовить Google Form из HH-чата
 #   ./run.sh google-form-submit <token> — отправить подготовленную Google Form
 #   ./run.sh dry-run     — поиск без откликов
-#   ./run.sh trace-apply 123456 — один HH-отклик с изолированным debug trace
+#   ./run.sh trace-apply 123456 --confirm-real — один реальный HH-отклик с изолированным debug trace
 
 cd "$(dirname "$0")"
 VENV="${JOB_HUNTER_PYTHON:-./venv/bin/python}"
@@ -92,8 +92,12 @@ case "$MODE" in
         $VENV agent.py $PROFILE_ARG --search
         ;;
     trace-apply)
-        VACANCY_ID="${2:?Укажи HH vacancy ID: ./run.sh trace-apply 123456}"
-        $VENV agent.py $PROFILE_ARG --trace-apply "$VACANCY_ID"
+        VACANCY_ID="${2:?Укажи HH vacancy ID: ./run.sh trace-apply 123456 --confirm-real}"
+        if [ "${3:-}" != "--confirm-real" ]; then
+            echo "trace-apply отправляет реальный отклик. Подтверди: ./run.sh trace-apply $VACANCY_ID --confirm-real" >&2
+            exit 2
+        fi
+        $VENV agent.py $PROFILE_ARG --trace-apply "$VACANCY_ID" --confirm-real
         ;;
     fresh-search|fresh)
         $VENV agent.py $PROFILE_ARG --fresh-search

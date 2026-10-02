@@ -21,6 +21,18 @@ def test_captcha_retry_markup_binds_search_callback_to_profile():
     assert button["callback_data"] == "captcha_retry:client_42:abc123"
 
 
+def test_captcha_retry_markup_limits_callback_to_telegram_maximum():
+    markup = captcha_solver._captcha_retry_markup(
+        "apply_submit",
+        "request-" + "x" * 200,
+        "client_42",
+    )
+
+    callback_data = markup["inline_keyboard"][0][0]["callback_data"]
+    assert callback_data.startswith("captcha_retry:client_42:")
+    assert len(callback_data.encode("utf-8")) <= 64
+
+
 def test_captcha_solver_escalates_to_telegram_after_two_empty_vision_attempts(tmp_path, monkeypatch):
     class FakePage:
         url = "https://hh.ru/account/captcha"
@@ -96,3 +108,74 @@ def test_captcha_solver_escalates_to_telegram_after_two_empty_vision_attempts(tm
     button = photo_calls[0][2]["inline_keyboard"][0][0]
     assert button["callback_data"] == "hh_reauth:qa"
     assert cooldown_calls == [(15, "captcha TG timeout")]
+
+
+def test_captcha_solver_reserves_human_escalation_after_rejected_vision_attempts(tmp_path, monkeypatch):
+    class FakePage:
+        url = "https://hh.ru/account/captcha"
+
+    class FakeClient:
+        def __init__(self):
+            self._page = FakePage()
+
+        async def _detect_anti_bot_kind(self):
+            return "captcha"
+
+    vision_calls = []
+    photo_calls = []
+
+    async def fake_refresh_screenshot(page):
+        shot = tmp_path / f"captcha_{len(vision_calls)}.png"
+        shot.write_bytes(b"png")
+        return str(shot)
+
+    async def fake_solve_with_vision(screenshot_path, llm_client_factory):
+        vision_calls.append(screenshot_path)
+        return "неверный ответ"
+
+    async def fake_submit_answer(client, answer):
+        return True
+
+    async def fake_send_photo(path, caption="", reply_markup=None):
+        photo_calls.append((path, caption, reply_markup))
+        return True
+
+    async def fake_send_message_with_markup(text, reply_markup=None):
+        return True
+
+    monkeypatch.setattr(captcha_solver.config, "HH_CAPTCHA_VISION_RETRIES", 10)
+    monkeypatch.setattr(captcha_solver.config, "HH_CAPTCHA_HUMAN_WINDOW_S", 60)
+    monkeypatch.setattr(captcha_solver, "_refresh_screenshot", fake_refresh_screenshot)
+    monkeypatch.setattr(captcha_solver, "solve_captcha_with_vision_llm", fake_solve_with_vision)
+    monkeypatch.setattr(captcha_solver, "_submit_answer", fake_submit_answer)
+    monkeypatch.setitem(sys.modules, "notifier", SimpleNamespace(
+        send_photo=fake_send_photo,
+        send_message_with_markup=fake_send_message_with_markup,
+    ))
+    monkeypatch.setitem(sys.modules, "captcha_bridge", SimpleNamespace(
+        create_request=lambda *args, **kwargs: "req1",
+        wait_for_response=lambda *args, **kwargs: None,
+        complete_request=lambda *args, **kwargs: None,
+    ))
+    monkeypatch.setitem(sys.modules, "hh_guard", SimpleNamespace(
+        record_soft_cooldown=lambda *args, **kwargs: None,
+    ))
+
+    async def fake_wait_for_response(*args, **kwargs):
+        return None
+
+    sys.modules["captcha_bridge"].wait_for_response = fake_wait_for_response
+
+    import asyncio
+
+    solved = asyncio.run(captcha_solver.try_solve_captcha_interactively(
+        FakeClient(),
+        lambda: object(),
+        stage="apply_submit",
+        max_retries=3,
+    ))
+
+    assert solved is False
+    assert len(vision_calls) == 3
+    assert len(photo_calls) == 1
+    assert "попытка 3/3" in photo_calls[0][1]

@@ -3,7 +3,7 @@ import stat
 
 import pytest
 
-from state_store.json_store import JsonStore
+from state_store.json_store import JsonStore, atomic_write_json
 
 
 def test_missing_store_returns_fresh_default(tmp_path):
@@ -30,6 +30,18 @@ def test_save_is_atomic_and_preserves_unicode(tmp_path):
     }
     assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_atomic_write_json_supports_secret_lists(tmp_path):
+    path = tmp_path / "nested" / "cookies.json"
+
+    atomic_write_json(path, [{"name": "session", "value": "секрет"}])
+
+    assert json.loads(path.read_text(encoding="utf-8")) == [
+        {"name": "session", "value": "секрет"},
+    ]
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
 
 
 def test_invalid_or_non_object_json_returns_schema_default(tmp_path):

@@ -50,7 +50,7 @@ def test_trace_apply_fails_before_llm_when_hh_session_is_not_authenticated(monke
         AsyncMock(side_effect=AssertionError("LLM must not run before auth passes")),
     )
 
-    result = asyncio.run(agent.do_trace_apply("123"))
+    result = asyncio.run(agent.do_trace_apply("123", confirm_real=True))
 
     assert result == {"ok": False, "message": "HH-сессия не авторизована"}
     assert trace.events[0][0] == "HH_SESSION_CHECK"
@@ -74,7 +74,7 @@ def test_trace_apply_passes_one_trace_through_cover_generation_and_dispatch(monk
     monkeypatch.setattr(agent.apply_orchestrator, "dispatch_apply", dispatch)
     monkeypatch.setattr(agent, "generate_cover_letter", AsyncMock(return_value="Cover letter"))
 
-    result = asyncio.run(agent.do_trace_apply("https://hh.ru/vacancy/123"))
+    result = asyncio.run(agent.do_trace_apply("https://hh.ru/vacancy/123", confirm_real=True))
 
     assert result["ok"] is True
     assert [event[0] for event in trace.events] == [
@@ -85,3 +85,14 @@ def test_trace_apply_passes_one_trace_through_cover_generation_and_dispatch(monk
     assert dispatch.await_args.kwargs["trace"] is trace
     assert dispatch.await_args.args[0]["id"] == "123"
     client.stop.assert_awaited_once()
+
+
+def test_trace_apply_requires_explicit_real_submission_confirmation(monkeypatch):
+    create_trace = AsyncMock()
+    monkeypatch.setattr(agent.apply_orchestrator, "create_hh_apply_trace", create_trace)
+
+    result = asyncio.run(agent.do_trace_apply("123"))
+
+    assert result["ok"] is False
+    assert "--confirm-real" in result["message"]
+    create_trace.assert_not_called()

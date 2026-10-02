@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 import os
 import re
@@ -35,23 +36,34 @@ def _hh_auth_profile_from_stage(stage: str) -> str:
     return ""
 
 
-def _captcha_retry_markup(stage: str, request_id: str, profile_name: str = "") -> dict:
+def _limited_callback_data(prefix: str, request_id: str) -> str:
+    callback_data = f"{prefix}{request_id}"
+    if len(callback_data.encode("utf-8")) <= 64:
+        return callback_data
+    digest = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:12]
+    callback_data = f"{prefix}{digest}"
+    return callback_data if len(callback_data.encode("utf-8")) <= 64 else ""
+
+
+def _captcha_retry_markup(stage: str, request_id: str, profile_name: str = "") -> dict | None:
     auth_profile_name = _hh_auth_profile_from_stage(stage)
     if auth_profile_name:
-        return {
-            "inline_keyboard": [[
-                {"text": "🔐 Повторить вход HH", "callback_data": f"hh_reauth:{auth_profile_name}"},
-            ]],
-        }
-    if profile_name:
-        return {
-            "inline_keyboard": [[
-                {"text": "🔁 Перезапустить поиск", "callback_data": f"captcha_retry:{profile_name}:{request_id}"},
-            ]],
-        }
+        callback_data = f"hh_reauth:{auth_profile_name}"
+        if len(callback_data.encode("utf-8")) > 64:
+            callback_data = ""
+        button_text = "🔐 Повторить вход HH"
+    elif profile_name:
+        callback_data = _limited_callback_data(f"captcha_retry:{profile_name}:", request_id)
+        button_text = "🔁 Перезапустить поиск"
+    else:
+        callback_data = _limited_callback_data("captcha_retry:", request_id)
+        button_text = "🔁 Перезапустить поиск"
+    if not callback_data:
+        log.warning("captcha retry callback exceeds Telegram's 64-byte limit")
+        return None
     return {
         "inline_keyboard": [[
-            {"text": "🔁 Перезапустить поиск", "callback_data": f"captcha_retry:{request_id}"},
+            {"text": button_text, "callback_data": callback_data},
         ]],
     }
 
@@ -217,10 +229,12 @@ async def try_solve_captcha_interactively(
                         return kind_after == ""
                     log.info("vision-LLM answer rejected, retry")
                     vision_retries -= 1
-                    continue
+                    if vision_retries > 0 and total_attempts < max_retries:
+                        continue
+                    log.info("vision-LLM attempts exhausted, escalate to TG")
             else:
                 vision_retries -= 1
-                if vision_retries > 0:
+                if vision_retries > 0 and total_attempts < max_retries:
                     log.info("vision-LLM gave no answer, retry")
                     continue
                 log.info("vision-LLM gave no answer, escalate to TG")

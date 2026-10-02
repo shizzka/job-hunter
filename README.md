@@ -294,7 +294,7 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 # Search and apply
 ./run.sh dry-run
 ./run.sh search
-./run.sh --profile qa trace-apply 123456  # one real HH application with an isolated trace
+./run.sh --profile qa trace-apply 123456 --confirm-real  # one real HH application with an isolated trace
 ./run.sh fresh-search          # lightweight HH-only fresh search
 ./run.sh check
 ./run.sh daemon
@@ -325,6 +325,11 @@ HH application traces are stored under
 append-only `trace.jsonl`, a human-readable `summary.txt`, and selected HTML or
 screenshot artifacts. Secrets and cookie contents are not written; artifacts
 are created with mode `0600` and bounded by the retention settings above.
+Screenshots can still contain personal information visible in the browser
+(name, contacts, or application text). Do not attach an entire trace directory
+to a public issue without reviewing and redacting its contents. Tracing also
+adds synchronous artifact and event writes; use `HH_APPLY_TRACE_ENABLED=0` for
+an A/B performance check if HH applications become unexpectedly slower.
 
 ### Cron (recommended schedule)
 

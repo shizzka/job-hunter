@@ -173,6 +173,26 @@ def test_response_requires_questions_detects_structural_question_fields():
     ) is True
 
 
+def test_count_unanswered_required_questions_uses_live_answer_state():
+    session = FakeSession(FakePage())
+
+    async def inspect():
+        return {
+            "fields": [
+                {"field_id": "required-empty", "required": True, "answered": False},
+                {"field_id": "required-filled", "required": True, "answered": True},
+                {"field_id": "starred-empty", "starred": True, "answered": False},
+                {"field_id": "optional-empty", "required": False, "answered": False},
+            ],
+        }
+
+    session._inspect_employer_questions = inspect
+
+    assert asyncio.run(
+        hh_apply.count_unanswered_required_questions(session, logger=hh_client.log)
+    ) == 2
+
+
 class FakeResponseFormPage:
     def __init__(self, other_fields=0):
         self.url = "https://hh.ru/applicant/vacancy_response?vacancyId=1"

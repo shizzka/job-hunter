@@ -347,6 +347,28 @@ async def response_requires_questions(session, current_url: str = "", *, logger)
     return False
 
 
+async def count_unanswered_required_questions(session, *, logger) -> int | None:
+    """Count visible required employer fields that do not currently have an answer."""
+    inspect = getattr(session, "_inspect_employer_questions", None)
+    if inspect is None:
+        return None
+    try:
+        result = await inspect()
+        if not isinstance(result, dict):
+            return None
+        fields = result.get("fields") or []
+        return sum(
+            1
+            for field in fields
+            if isinstance(field, dict)
+            and bool(field.get("required") or field.get("starred"))
+            and not bool(field.get("answered"))
+        )
+    except Exception as exc:
+        logger.debug("Required question verification failed: %s", exc)
+        return None
+
+
 async def dismiss_magritte_dropdowns(session) -> None:
     popup_selectors = (
         "[data-magritte-drop-base-direction]",
@@ -873,6 +895,28 @@ async def apply_to_vacancy(
             await session._page.wait_for_timeout(400)
         return None, None
 
+    async def describe_submit_control(element) -> str:
+        try:
+            descriptor = await element.evaluate(
+                """el => ({
+                    tag: (el.tagName || '').toLowerCase(),
+                    type: (el.getAttribute('type') || '').toLowerCase(),
+                    dataQa: el.getAttribute('data-qa') || '',
+                })"""
+            )
+        except Exception:
+            return ""
+        if not isinstance(descriptor, dict):
+            return ""
+        data_qa = str(descriptor.get("dataQa") or "").strip()
+        if data_qa:
+            return f'[data-qa="{data_qa}"]'
+        tag = str(descriptor.get("tag") or "").strip()
+        control_type = str(descriptor.get("type") or "").strip()
+        if tag and control_type:
+            return f'{tag}[type="{control_type}"]'
+        return tag
+
     async def select_preferred_resume() -> bool:
         title_norm = normalize_text(preferred_resume_title)
         id_norm = (preferred_resume_id or "").strip()
@@ -984,18 +1028,24 @@ async def apply_to_vacancy(
 
     try:
         await session._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=30000)
+        trace_event(
+            "VACANCY_NAVIGATION",
+            ok=True,
+            requested_url=vacancy_url,
+            url=getattr(session._page, "url", vacancy_url),
+        )
     except Exception as e:
         logger.warning("Vacancy page nav issue: %s", e)
-        trace_event("VACANCY_OPEN", ok=False, url=vacancy_url, error=type(e).__name__)
+        trace_event(
+            "VACANCY_NAVIGATION",
+            ok=False,
+            requested_url=vacancy_url,
+            url=getattr(session._page, "url", ""),
+            error=type(e).__name__,
+        )
 
     await session._page.wait_for_timeout(3000)
     await save_debug_snapshot("debug_apply_page")
-    trace_event(
-        "VACANCY_OPEN",
-        ok=True,
-        url=getattr(session._page, "url", vacancy_url),
-        vacancy_id=(re.search(r"/vacancy/(\d+)", vacancy_url) or [None, ""])[1],
-    )
 
     anti_bot_kind = await session._detect_anti_bot_kind()
     if anti_bot_kind:
@@ -1020,13 +1070,50 @@ async def apply_to_vacancy(
         trace_event("HH_ANTIBOT", ok=False, kind=anti_bot_kind, antibot_stage="vacancy_page")
         return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind}
 
+    vacancy_id_match = re.search(r"/vacancy/(\d+)", vacancy_url)
+    expected_vacancy_id = vacancy_id_match.group(1) if vacancy_id_match else ""
+    current_url = str(getattr(session._page, "url", "") or "")
+    url_matches = bool(
+        expected_vacancy_id
+        and (
+            re.search(rf"/vacancy/{re.escape(expected_vacancy_id)}(?:[/?#]|$)", current_url)
+            or re.search(rf"[?&]vacancyId={re.escape(expected_vacancy_id)}(?:[&#]|$)", current_url)
+        )
+    )
+    try:
+        page_html = await session._page.content()
+        dom_ready = bool(re.search(r"<body\b", page_html or "", flags=re.I))
+    except Exception:
+        dom_ready = False
+
     if await session._page_closed_or_archived():
-        trace_event("VACANCY_OPEN", ok=False, closed_or_archived=True)
+        trace_event(
+            "VACANCY_READY",
+            ok=False,
+            url=current_url,
+            vacancy_id=expected_vacancy_id,
+            url_matches=url_matches,
+            dom_ready=dom_ready,
+            reason="closed_or_archived",
+        )
         return {
             "ok": False,
             "message": "Вакансия закрыта или находится в архиве",
             "closed_or_archived": True,
         }
+
+    vacancy_ready = bool(url_matches and dom_ready)
+    trace_event(
+        "VACANCY_READY",
+        ok=vacancy_ready,
+        url=current_url,
+        vacancy_id=expected_vacancy_id,
+        url_matches=url_matches,
+        dom_ready=dom_ready,
+    )
+    if not vacancy_ready:
+        await save_debug_snapshot("debug_vacancy_not_ready")
+        return {"ok": False, "message": "Страница вакансии не готова или открыта не та вакансия"}
 
     wants_specific_resume = bool(preferred_resume_title or preferred_resume_id)
     resume_verified = False
@@ -1313,11 +1400,18 @@ async def apply_to_vacancy(
     elif not cover_letter:
         trace_event("COVER_LETTER", ok=True, expected=False, field_found=bool(letter_field), filled=False, chars=0)
 
+    unanswered_required = await count_unanswered_required_questions(session, logger=logger)
     resume_match = not wants_specific_resume or await selected_resume_matches(
         session._page, preferred_resume_id, preferred_resume_title
     )
     if not resume_match:
-        trace_event("PRE_SUBMIT_VERIFY", ok=False, resume_match=False, letter_match=cover_letter_filled)
+        trace_event(
+            "PRE_SUBMIT_VERIFY",
+            ok=False,
+            resume_match=False,
+            letter_match=cover_letter_filled,
+            unanswered_required=unanswered_required,
+        )
         return {"ok": False, "message": "Выбранное резюме изменилось — отклик остановлен"}
 
     if submit_btn:
@@ -1337,21 +1431,41 @@ async def apply_to_vacancy(
             final_letter = (await refetch_response_controls())[4]
             letter_match = bool(final_letter) and normalize_text(await final_letter.input_value()) == normalize_text(cover_letter)
             if not letter_match:
-                trace_event("PRE_SUBMIT_VERIFY", ok=False, resume_match=resume_match, letter_match=False)
+                trace_event(
+                    "PRE_SUBMIT_VERIFY",
+                    ok=False,
+                    resume_match=resume_match,
+                    letter_match=False,
+                    unanswered_required=unanswered_required,
+                )
                 return {"ok": False, "message": "Сопроводительное изменилось перед отправкой — отклик остановлен"}
             logger.info("Cover letter verified before submit (chars=%d)", len(cover_letter))
             await save_debug_snapshot("debug_apply_before_submit")
         trace_event(
             "PRE_SUBMIT_VERIFY",
-            ok=bool(resume_match and letter_match),
+            ok=bool(resume_match and letter_match and unanswered_required in (0, None)),
             resume_match=resume_match,
             letter_match=letter_match,
-            unanswered_required=0,
+            unanswered_required=unanswered_required,
         )
+        if unanswered_required:
+            await save_debug_snapshot("debug_required_questions_unanswered")
+            return {
+                "ok": False,
+                "message": f"Остались обязательные вопросы без ответа: {unanswered_required}",
+            }
+        submit_selector = await describe_submit_control(submit_btn)
         clicked = await session._click_with_fallbacks(submit_btn, "submit_button")
+        submit_method = "selector"
         if not clicked:
             clicked = await session._submit_response_form_via_dom()
-        trace_event("SUBMIT_CLICK", ok=clicked, selector="vacancy-response-submit-popup")
+            submit_method = "dom_fallback"
+        trace_event(
+            "SUBMIT_CLICK",
+            ok=clicked,
+            method=submit_method,
+            selector=submit_selector if submit_method == "selector" else "",
+        )
         if not clicked:
             return {"ok": False, "message": "Не удалось нажать кнопку подтверждения"}
         await session._page.wait_for_timeout(4000)
@@ -1403,6 +1517,7 @@ async def apply_to_vacancy(
     if not questions_required and submit_btn_retry is not None:
         await session._dismiss_magritte_dropdowns()
         retried = await session._submit_response_form_via_dom()
+        trace_event("SUBMIT_CLICK", ok=retried, method="dom_retry", selector="", retry=True)
         if retried:
             logger.info("Retrying hh submit via active DOM form after inconclusive response state")
             await session._page.wait_for_timeout(4000)

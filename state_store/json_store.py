@@ -14,6 +14,45 @@ from pathlib import Path
 from typing import Any
 
 
+def atomic_write_json(path: str | os.PathLike[str], value: Any) -> None:
+    """Atomically write JSON with permissions suitable for runtime secrets."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    fd = -1
+    tmp_path = ""
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+        )
+        os.fchmod(fd, 0o600)
+        stream = os.fdopen(fd, "w", encoding="utf-8")
+        fd = -1
+        with stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp_path, target)
+        tmp_path = ""
+        os.chmod(target, 0o600)
+
+        directory_fd = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except Exception:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        if tmp_path:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+        raise
+
+
 class JsonStore:
     def __init__(
         self,
@@ -103,32 +142,7 @@ class JsonStore:
     def _save_unlocked(self, value: dict[str, Any]) -> None:
         if not isinstance(value, dict):
             raise TypeError("JsonStore only accepts dictionary state")
-
-        fd = -1
-        tmp_path = ""
-        try:
-            fd, tmp_path = tempfile.mkstemp(
-                dir=self.path.parent,
-                prefix=f".{self.path.name}.",
-                suffix=".tmp",
-            )
-            stream = os.fdopen(fd, "w", encoding="utf-8")
-            fd = -1
-            with stream:
-                json.dump(value, stream, ensure_ascii=False, indent=2)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(tmp_path, self.path)
-            os.chmod(self.path, 0o600)
-            self._fsync_parent()
-        except Exception:
-            if fd >= 0:
-                with contextlib.suppress(OSError):
-                    os.close(fd)
-            if tmp_path:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_path)
-            raise
+        atomic_write_json(self.path, value)
 
     def save(self, value: dict[str, Any]) -> None:
         with self._locked():

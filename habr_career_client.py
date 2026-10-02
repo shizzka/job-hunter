@@ -11,6 +11,7 @@ from playwright.async_api import async_playwright, BrowserContext, Page
 
 import config
 import proxy_utils
+from state_store.json_store import atomic_write_json
 
 log = logging.getLogger("habr_career_client")
 
@@ -64,8 +65,7 @@ def _load_cookies() -> list[dict] | None:
 
 def _save_cookies(cookies: list[dict]):
     _ensure_dirs()
-    with open(config.HABR_COOKIES_FILE, "w") as f:
-        json.dump(cookies, f, ensure_ascii=False, indent=2)
+    atomic_write_json(config.HABR_COOKIES_FILE, cookies)
 
 
 class HabrCareerClient:

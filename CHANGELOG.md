@@ -6,10 +6,11 @@
 
 ### Structured HH apply traces
 - Каждый HH-отклик получает отдельный `trace_id`, append-only `trace.jsonl` и человекочитаемый `summary.txt`.
-- Добавлена команда `./run.sh --profile <name> trace-apply <vacancy_id>` для одного реального отклика без шума полного поиска.
+- Добавлена команда `./run.sh --profile <name> trace-apply <vacancy_id> --confirm-real` для одного явно подтверждённого реального отклика без шума полного поиска.
 - Trace фиксирует профиль/runtime paths, HH-сессию, генерацию письма, DOM-стадии, резюме, вопросы, pre-submit, submit и проверку результата.
 - На важных точках и при ошибке сохраняются HTML/screenshot-артефакты; HTML очищается от scripts, введённых значений и token-like данных.
 - Каталоги и файлы закрыты правами `0700`/`0600`; добавлены retention 14 дней и лимит 100 traces на профиль.
+- Разделены навигация и готовность вакансии, trace фиксирует реальный способ submit и фактическое число незаполненных обязательных вопросов.
 
 ### Runtime correctness and safety
 - Исправлены структурные селекторы HH success/reapply и подтверждение сопроводительного письма в многошаговых формах.
@@ -17,6 +18,8 @@
 - Изолированы HH auth bridge и runtime paths профилей; env-файлы больше не исполняются как shell-код.
 - Исправлены dry-run dedupe и HTML escaping HH-чатов, временный LLM fallback TTL и Telegram proxy fallback.
 - LLM score корректно разбирает дробные/текстовые значения; `parse_llm_json` гарантирует объект; `HH_CHAT_AUTOSEND` использует единый boolean config.
+- Cookies/auth внешних источников записываются атомарно с правами `0600`; health-alert не выдаёт admin controls неизвестному получателю.
+- Captcha всегда оставляет попытку для ручной эскалации после vision-LLM и ограничивает callback Telegram 64 байтами.
 
 ## v0.6.0 — 2026-06-29
 

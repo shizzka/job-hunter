@@ -339,6 +339,7 @@ async def inspect_employer_questions(page, *, logger) -> dict:
                             max_length: 0,
                             required: isRequired(el, members),
                             starred: isStarred(radioGroupQuestionText(el)),
+                            answered: members.some((node) => node.checked),
                         });
                         continue;
                     }
@@ -374,6 +375,7 @@ async def inspect_employer_questions(page, *, logger) -> dict:
                             max_length: 0,
                             required: isRequired(el),
                             starred: isStarred(described.question_text),
+                            answered: Boolean(el.value),
                         });
                         continue;
                     }
@@ -391,6 +393,7 @@ async def inspect_employer_questions(page, *, logger) -> dict:
                         max_length: Number(el.getAttribute("maxlength") || 0) || 0,
                         required: isRequired(el),
                         starred: isStarred(described.question_text),
+                        answered: Boolean(clean(el.value)),
                     });
                 }
 

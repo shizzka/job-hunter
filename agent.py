@@ -2204,8 +2204,16 @@ async def do_analytics_backfill():
     print()
 
 
-async def do_trace_apply(vacancy_value: str) -> dict:
+async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> dict:
     """Run one real HH application with an isolated structured trace."""
+    if not confirm_real:
+        result = {
+            "ok": False,
+            "message": "trace-apply отправляет реальный отклик; повтори команду с --confirm-real",
+        }
+        print(f"❌ {result['message']}")
+        return result
+
     match = re.search(r"(?:vacancy/)?(\d+)", str(vacancy_value or "").strip())
     if not match:
         result = {"ok": False, "message": "Укажи числовой HH vacancy ID или URL вакансии"}
@@ -2363,6 +2371,7 @@ async def main():
     group.add_argument("--google-form-recheck-submit", metavar="TOKEN", help="Проверить и отправить подтверждённые ответы Google Form")
     group.add_argument("--manual-apply-token", metavar="TOKEN", help="Отправить yellow-zone отклик по Telegram token")
     group.add_argument("--trace-apply", metavar="VACANCY_ID", help="Один реальный HH-отклик с изолированным debug trace")
+    parser.add_argument("--confirm-real", action="store_true", help="Подтвердить реальную отправку для --trace-apply")
     parser.add_argument("--chat-message-id", default="", help="ID сообщения в hh-чате для --chat-respond-one")
     parser.add_argument("--chat-allow-suspicious", action="store_true", help="Разрешить ответ на подозрительное HR-сообщение без явного AI-маркера")
     parser.add_argument("--chat-allow-any", action="store_true", help="Для ручного запуска разрешить AI-preview по любому последнему входящему сообщению")
@@ -2494,7 +2503,7 @@ async def main():
             if not result.get("ok"):
                 sys.exit(1)
         elif args.trace_apply:
-            result = await do_trace_apply(args.trace_apply)
+            result = await do_trace_apply(args.trace_apply, confirm_real=args.confirm_real)
             if not result.get("ok"):
                 sys.exit(1)
         elif args.chat_respond_one:
