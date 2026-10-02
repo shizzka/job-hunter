@@ -62,8 +62,8 @@ def _now() -> datetime:
     return datetime.now()
 
 
-def _parse_dt(value: str | None) -> datetime | None:
-    if not value:
+def _parse_dt(value: object | None) -> datetime | None:
+    if not isinstance(value, str) or not value:
         return None
     try:
         return datetime.fromisoformat(value)

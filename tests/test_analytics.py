@@ -37,6 +37,16 @@ def _read_events(tmp_path) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
+@pytest.mark.parametrize("value", [None, "", 123, True, {}, []])
+def test_parse_dt_rejects_missing_or_non_string_values(value):
+    assert analytics._parse_dt(value) is None
+
+
+def test_parse_dt_rejects_invalid_string_and_accepts_iso_timestamp():
+    assert analytics._parse_dt("not-a-date") is None
+    assert analytics._parse_dt("2026-10-02T12:34:56") == datetime(2026, 10, 2, 12, 34, 56)
+
+
 class TestRecordDecision:
 
     def test_basic_decision(self, isolated_analytics):

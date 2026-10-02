@@ -565,6 +565,7 @@ class HHClient:
             log.info("Found %d vacancy links on page", len(vacancy_links))
             seen_ids = set()
             for link in vacancy_links:
+                parent = None
                 try:
                     href = await link.get_attribute("href") or ""
                     if "/vacancy/" not in href:
@@ -600,6 +601,12 @@ class HHClient:
                     })
                 except Exception as e:
                     log.debug("Link parse failed: %s", e)
+                finally:
+                    if parent is not None:
+                        try:
+                            await parent.dispose()
+                        except Exception:
+                            pass
 
             log.info("Found %d vacancies via link parsing for '%s'", len(vacancies), query)
             return vacancies

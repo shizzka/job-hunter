@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -71,7 +72,7 @@ def _run_agent(args: list[str], home: Path, timeout: int = 30) -> subprocess.Com
                 env[key] = val
 
     return subprocess.run(
-        [str(PROJECT_ROOT / "venv" / "bin" / "python"), "agent.py"] + args,
+        [sys.executable, "agent.py"] + args,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -84,7 +85,7 @@ def _run_python(script: str, args: list[str], home: Path, timeout: int = 30) -> 
     env = os.environ.copy()
     env["JOB_HUNTER_HOME"] = str(home)
     return subprocess.run(
-        [str(PROJECT_ROOT / "venv" / "bin" / "python"), script] + args,
+        [sys.executable, script] + args,
         capture_output=True,
         text=True,
         timeout=timeout,

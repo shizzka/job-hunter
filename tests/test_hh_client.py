@@ -127,6 +127,63 @@ def test_search_escalates_text_captcha_to_solver(monkeypatch):
     assert solver_calls == [("captcha", "search_vacancies")]
 
 
+def test_search_link_fallback_disposes_parent_handle(monkeypatch):
+    class ParentHandle:
+        def __init__(self):
+            self.disposed = False
+
+        async def evaluate(self, script):
+            return "QA Engineer\nAcme\nот 100 000 руб"
+
+        async def dispose(self):
+            self.disposed = True
+
+    class VacancyLink:
+        def __init__(self, parent):
+            self.parent = parent
+
+        async def get_attribute(self, name):
+            return "/vacancy/123"
+
+        async def inner_text(self):
+            return "QA Engineer"
+
+        async def evaluate_handle(self, script):
+            return self.parent
+
+    class SearchPage:
+        url = "https://hh.ru/search/vacancy"
+
+        def __init__(self, link):
+            self.link = link
+
+        async def goto(self, *args, **kwargs):
+            return None
+
+        async def wait_for_timeout(self, timeout_ms):
+            return None
+
+        async def query_selector_all(self, selector):
+            if selector == "a[href*='/vacancy/']":
+                return [self.link]
+            return []
+
+    parent = ParentHandle()
+    client = HHClient()
+    client._page = SearchPage(VacancyLink(parent))
+
+    async def no_anti_bot():
+        return ""
+
+    monkeypatch.setattr(client, "_detect_anti_bot_kind", no_anti_bot)
+
+    vacancies = asyncio.run(client.search_vacancies("QA engineer", page=1))
+
+    assert vacancies[0]["id"] == "123"
+    assert vacancies[0]["company"] == "Acme"
+    assert parent.disposed is True
+
+
 def test_is_logged_in_passive_true_on_authenticated_non_login_page():
     client = HHClient()
     client._page = FakePage(
