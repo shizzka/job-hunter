@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import config
+from state_store.json_store import atomic_write_text
 
 log = logging.getLogger("profile")
 
@@ -34,6 +35,15 @@ _CANDIDATE_CONFIG_KEYS = (
     "HH_AUTO_ANSWER_SALARY_RULE",
 )
 _default_candidate_settings: dict[str, str] | None = None
+
+
+def validate_profile_name(name: str, *, allow_default: bool = True) -> str:
+    """Validate a profile name before using it as a path component."""
+    if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_-]+", name) is None:
+        raise ValueError("Недопустимое имя профиля: только латинские буквы, цифры, дефис и подчёркивание.")
+    if name == "default" and not allow_default:
+        raise ValueError("Имя профиля 'default' зарезервировано.")
+    return name
 
 
 @dataclass
@@ -134,6 +144,9 @@ class Profile:
     # Резюме
     resume_file: str = ""
     candidate_settings: dict[str, str] = field(default_factory=dict)
+    filter_policy: str = "qa"
+    filter_relevant_keywords: list[str] = field(default_factory=list)
+    filter_exclude_keywords: list[str] = field(default_factory=list)
 
     # Источники
     hh: HHConfig = field(default_factory=HHConfig)
@@ -284,11 +297,32 @@ def _acquire_lock(p: Profile) -> None:
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
+        try:
+            owner = os.pread(fd, 64, 0).decode("ascii").strip()
+            owner_pid = int(owner)
+            if owner_pid <= 0:
+                owner_pid = None
+        except (OSError, UnicodeDecodeError, ValueError):
+            owner_pid = None
         os.close(fd)
+        owner_status = "статус неизвестен"
+        if owner_pid:
+            try:
+                os.kill(owner_pid, 0)
+            except ProcessLookupError:
+                owner_status = "процесс не найден"
+            except PermissionError:
+                owner_status = "процесс существует, проверка недоступна"
+            except (OSError, OverflowError):
+                pass
+            else:
+                owner_status = "процесс существует"
         raise ProfileLockedError(
             f"Профиль '{p.name}' уже используется другим процессом.\n"
             f"Lock: {lock_file}\n"
-            f"Если процесс завис — удали файл вручную: rm {lock_file}"
+            f"PID из lock-файла: {owner_pid if owner_pid else 'неизвестен'} ({owner_status}).\n"
+            "Проверь процесс-владелец и останови его штатно; блокировка освободится автоматически.\n"
+            "Не удаляй lock-файл: это может разрешить параллельный запуск профиля."
         )
 
     # Записываем PID для диагностики
@@ -340,6 +374,9 @@ def _patch_config(p: Profile):
     for key in _CANDIDATE_CONFIG_KEYS:
         setattr(config, key, p.candidate_settings.get(key, ""))
     config.CANDIDATE_PROFILE_ISOLATED = p.name != "default"
+    config.VACANCY_FILTER_POLICY = p.filter_policy
+    config.VACANCY_RELEVANT_KEYWORDS = list(p.filter_relevant_keywords)
+    config.VACANCY_EXCLUDE_KEYWORDS = list(p.filter_exclude_keywords)
     config.MANUAL_APPLY_QUEUE_FILE = os.path.join(p.home_dir, "manual_apply_queue.json")
     config.HH_GUARD_STATE_FILE = os.path.join(p.home_dir, "hh_guard_state.json")
 
@@ -430,6 +467,9 @@ def load_default_profile() -> Profile:
         search_interval_min=config.SEARCH_INTERVAL_MIN,
         invite_check_interval_min=config.INVITE_CHECK_INTERVAL_MIN,
         resume_file=config.RESUME_FILE,
+        filter_policy=config.VACANCY_FILTER_POLICY,
+        filter_relevant_keywords=list(config.VACANCY_RELEVANT_KEYWORDS),
+        filter_exclude_keywords=list(config.VACANCY_EXCLUDE_KEYWORDS),
         candidate_settings=dict(_default_candidate_settings)
         if getattr(config, "CANDIDATE_PROFILE_ISOLATED", False) and _default_candidate_settings is not None
         else {key: str(getattr(config, key, "") or "") for key in _CANDIDATE_CONFIG_KEYS},
@@ -515,6 +555,7 @@ def load_profile(name: str = "default") -> Profile:
 
     В будущем: поддержка YAML, загрузка из базы данных (multi-tenant).
     """
+    validate_profile_name(name)
     if name == "default":
         return load_default_profile()
 
@@ -534,6 +575,9 @@ def load_profile(name: str = "default") -> Profile:
     profile.name = name
     # Candidate biography and salary expectations never inherit another profile.
     profile.candidate_settings = {key: profile_env.get(key, "").strip() for key in _CANDIDATE_CONFIG_KEYS}
+    profile.filter_policy = "qa"
+    profile.filter_relevant_keywords = []
+    profile.filter_exclude_keywords = []
     # Resume identities are candidate data, not shared search defaults.
     hh_defaults = HHConfig()
     for attr in (
@@ -579,8 +623,7 @@ def load_profile(name: str = "default") -> Profile:
 
 def profile_env_path(name: str) -> str:
     """Абсолютный путь к env-файлу именованного профиля."""
-    if not name or name == "default":
-        raise ValueError("Для default нет отдельного profile.env")
+    validate_profile_name(name, allow_default=False)
     return os.path.join(_profiles_root(), "profiles", name, "profile.env")
 
 
@@ -591,16 +634,7 @@ def create_profile(name: str, search_queries: list[str] | None = None) -> Profil
     Создаёт директорию ~/.job-hunter/profiles/<name>/ с шаблонным profile.env.
     Возвращает загруженный Profile.
     """
-    if not name or name == "default":
-        raise ValueError("Имя профиля не может быть пустым или 'default'")
-
-    # Валидация имени: только буквы, цифры, дефис, подчёркивание
-    import re
-    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
-        raise ValueError(
-            f"Недопустимое имя профиля '{name}'. "
-            "Допустимы: латинские буквы, цифры, дефис, подчёркивание."
-        )
+    validate_profile_name(name, allow_default=False)
 
     profiles_dir = os.path.join(_profiles_root(), "profiles", name)
     env_file = os.path.join(profiles_dir, "profile.env")
@@ -641,8 +675,7 @@ def create_profile(name: str, search_queries: list[str] | None = None) -> Profil
         f"INVITE_CHECK_INTERVAL_MIN=480\n"
     )
 
-    with open(env_file, "w") as f:
-        f.write(template)
+    atomic_write_text(env_file, template)
 
     log.info("Created profile '%s' at %s", name, profiles_dir)
     return load_profile(name)
@@ -654,6 +687,10 @@ def list_profiles() -> list[str]:
     profiles_dir = os.path.join(_profiles_root(), "profiles")
     if os.path.isdir(profiles_dir):
         for entry in sorted(os.listdir(profiles_dir)):
+            try:
+                validate_profile_name(entry, allow_default=False)
+            except ValueError:
+                continue
             env_file = os.path.join(profiles_dir, entry, "profile.env")
             if os.path.isfile(env_file):
                 profiles.append(entry)
@@ -690,8 +727,7 @@ def update_profile_env(name: str, updates: dict[str, str | int]) -> str:
                 lines.append("")
             lines.append(rendered)
 
-    with open(env_file, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines).rstrip() + "\n")
+    atomic_write_text(env_file, "\n".join(lines).rstrip() + "\n")
 
     return env_file
 
@@ -746,6 +782,14 @@ def _apply_env_overrides(profile: Profile, env: dict[str, str]):
                 if item:
                     values.append(item)
         return values or default
+
+    if "VACANCY_FILTER_POLICY" in env:
+        policy = env["VACANCY_FILTER_POLICY"].strip().lower()
+        if policy not in {"qa", "generic"}:
+            raise ValueError("VACANCY_FILTER_POLICY must be qa or generic")
+        profile.filter_policy = policy
+    profile.filter_relevant_keywords = _list("VACANCY_RELEVANT_KEYWORDS", profile.filter_relevant_keywords)
+    profile.filter_exclude_keywords = _list("VACANCY_EXCLUDE_KEYWORDS", profile.filter_exclude_keywords)
 
     # HH
     if "HH_ENABLED" in env:

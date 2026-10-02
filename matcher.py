@@ -8,19 +8,14 @@ import re
 from datetime import datetime
 
 import config
+import filters
 import resume_versions
 from llm_client import LLMProvidersExhaustedError, get_llm_client
 
 log = logging.getLogger("matcher")
 
-_client = None
-
-
 def _get_client():
-    global _client
-    if _client is None:
-        _client = get_llm_client()
-    return _client
+    return get_llm_client()
 
 
 def _load_resume() -> str:
@@ -562,6 +557,8 @@ def _regex_any(patterns: list[str] | tuple[str, ...], value: str) -> bool:
 
 
 def _cluster_policy(cluster: str) -> dict:
+    if cluster == "generic":
+        return {"cover_style": "generic", "preferred_resume_variant": "normal"}
     return dict(CLUSTER_POLICIES.get(cluster) or CLUSTER_POLICIES["manual_web_qa"])
 
 
@@ -575,6 +572,8 @@ def _has_qa_support_context(haystack: str) -> bool:
 
 def classify_vacancy_cluster(vacancy: dict, details: str = "") -> str:
     """Детерминированный кластер вакансии для аналитики и выбора стратегии."""
+    if not filters.uses_qa_policy():
+        return "generic"
     title = str(vacancy.get("title") or "").casefold()
     haystack = _vacancy_role_haystack(vacancy, details)
     has_qa_context = _regex_any(QA_CONTEXT_PATTERNS, haystack)
@@ -703,9 +702,9 @@ def estimate_response_probability_score(
         score += 14
     elif _is_around_one_year_experience_vacancy(vacancy, details):
         score += 8
-    if _is_senior_experience_vacancy(vacancy, details):
+    if filters.uses_qa_policy() and _is_senior_experience_vacancy(vacancy, details):
         score -= 30
-    elif _is_middle_experience_vacancy(vacancy, details) and not _is_around_one_year_experience_vacancy(vacancy, details):
+    elif filters.uses_qa_policy() and _is_middle_experience_vacancy(vacancy, details) and not _is_around_one_year_experience_vacancy(vacancy, details):
         score -= 10
 
     applicants = _extract_applicant_count(vacancy, details)
@@ -920,7 +919,7 @@ def _build_matcher_truth_block() -> str:
         "## Контрольные факты кандидата для оценки:",
         "- Роль, стаж, образование, инструменты и предыдущая работа определяются ТОЛЬКО резюме, фактами и базой знаний текущего кандидата.",
         "- Не добавляй кандидату опыт или технический бэкграунд по требованиям вакансии либо по примерам стиля.",
-        "- Не засчитывай стаж в другой профессии как QA-стаж; не завышай уровень самостоятельности.",
+        "- Не засчитывай стаж в другой профессии как стаж в целевой роли; не завышай уровень самостоятельности.",
     ]
     try:
         from prompt_blocks import build_facts_block, build_profile_note_block, build_knowledge_base_block
@@ -961,6 +960,8 @@ def _block_result(result: dict, note: str, guard_flag: str) -> dict:
 
 
 def _apply_candidate_truth_guards(result: dict, vacancy: dict, details: str = "") -> dict:
+    if not filters.uses_qa_policy():
+        return result
     if _is_automation_heavy_vacancy(vacancy, details) and not _is_junior_or_training_vacancy(vacancy, details):
         return _block_result(
             result,
@@ -1180,6 +1181,8 @@ def _cover_letter_variant_index(vacancy: dict, details: str = "") -> int:
 
 
 def _build_cover_letter_positioning_block(vacancy: dict, details: str = "") -> str:
+    if not filters.uses_qa_policy():
+        return ""
     is_middle = _is_middle_experience_vacancy(vacancy, details)
     is_around_year = _is_around_one_year_experience_vacancy(vacancy, details)
     is_junior = _is_junior_or_training_vacancy(vacancy, details) or _is_one_year_experience_vacancy(vacancy, details)
@@ -1209,6 +1212,13 @@ def _build_cover_letter_positioning_block(vacancy: dict, details: str = "") -> s
 
 
 def _build_cover_letter_style_block(vacancy: dict, details: str = "", cover_style: str = "") -> str:
+    if not filters.uses_qa_policy():
+        return (
+            "## Стиль сопроводительного:\n"
+            "- Пиши под профессию и задачи этой вакансии, а не под QA-шаблон.\n"
+            "- Используй только подтверждённые факты текущего кандидата.\n"
+            "- Кратко покажи совпадение задач и навыков, без выдуманного опыта.\n\n"
+        )
     style = cover_style or cover_style_for_cluster(classify_vacancy_cluster(vacancy, details))
     rules = COVER_STYLE_RULES.get(style) or COVER_STYLE_RULES["direct_manual_qa"]
     variant = COVER_LETTER_STYLE_VARIANTS[_cover_letter_variant_index(vacancy, details)]
@@ -1249,18 +1259,20 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
     resume_versions.record_input(vacancy, resume, "matcher")
     truth_block = _build_matcher_truth_block()
 
-    allow_one_year_override = _is_one_year_experience_vacancy(vacancy, details)
+    allow_one_year_override = filters.uses_qa_policy() and _is_one_year_experience_vacancy(vacancy, details)
     around_one_year_experience = _is_around_one_year_experience_vacancy(vacancy, details)
-    force_senior_reject = _is_senior_experience_vacancy(vacancy, details)
+    force_senior_reject = filters.uses_qa_policy() and _is_senior_experience_vacancy(vacancy, details)
     is_middle_experience = _is_middle_experience_vacancy(vacancy, details)
     is_junior_or_training = _is_junior_or_training_vacancy(vacancy, details)
     middle_one_year_challenge = (
-        is_middle_experience
+        filters.uses_qa_policy()
+        and is_middle_experience
         and around_one_year_experience
         and not force_senior_reject
     )
     force_middle_reject = (
-        is_middle_experience
+        filters.uses_qa_policy()
+        and is_middle_experience
         and not is_junior_or_training
         and not middle_one_year_challenge
     )

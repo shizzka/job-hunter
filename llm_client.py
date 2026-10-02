@@ -131,9 +131,11 @@ def _openrouter_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
 
 
 def _groq_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
-    fast = provider_env.get("GROQ_FAST_MODEL", "llama-3.1-8b-instant")
-    strong = provider_env.get("GROQ_STRONG_MODEL", "llama-3.3-70b-versatile")
+    fast = provider_env.get("GROQ_FAST_MODEL", "openai/gpt-oss-20b")
+    strong = provider_env.get("GROQ_STRONG_MODEL", "openai/gpt-oss-120b")
+    vision = provider_env.get("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
     return {
+        "qwen3-vl:235b-instruct": vision,
         "gpt-oss:20b": fast,
         "gpt-oss:120b": strong,
         "qwen3-coder:480b": strong,
@@ -308,8 +310,6 @@ def _build_provider_specs() -> list[ProviderSpec]:
         key = (api_key or "").strip()
         if not base or not key:
             return
-        if any(item.base_url == base and item.api_key == key for item in specs):
-            return
         specs.append(
             ProviderSpec(
                 name=name,
@@ -364,6 +364,12 @@ def _build_provider_specs() -> list[ProviderSpec]:
         model_aliases=_groq_model_aliases(provider_env),
     )
     add(
+        "groq2",
+        provider_env.get("GROQ2_BASE_URL") or provider_env.get("GROQ_BASE_URL", ""),
+        provider_env.get("GROQ2_API_KEY", ""),
+        model_aliases=_groq_model_aliases(provider_env),
+    )
+    add(
         "sambanova",
         provider_env.get("SAMBANOVA_BASE_URL", "https://api.sambanova.ai/v1"),
         provider_env.get("SAMBANOVA_API_KEY", ""),
@@ -400,9 +406,34 @@ def _build_provider_specs() -> list[ProviderSpec]:
         model_aliases=_siliconflow_model_aliases(provider_env),
     )
 
+    def unique(providers):
+        result = []
+        credentials = set()
+        for provider in providers:
+            identity = (provider.base_url, provider.api_key)
+            if identity not in credentials:
+                credentials.add(identity)
+                result.append(provider)
+        return result
+
+    order = os.getenv("LLM_PROVIDER_ORDER", provider_env.get("LLM_PROVIDER_ORDER", "")).strip()
+    if order:
+        requested = list(dict.fromkeys(name.strip().lower() for name in order.split(",") if name.strip()))
+        known = {
+            "primary", "ollama", "ollama2", "ollama3", "cerebras", "openrouter", "openrouter2",
+            "groq", "groq2", "sambanova", "gemini", "deepseek", "cloudflare", "huggingface", "siliconflow",
+        }
+        if not requested or any(name not in known for name in requested):
+            raise ValueError("Invalid LLM_PROVIDER_ORDER; use configured provider names separated by commas")
+        available = {provider.name: provider for provider in specs}
+        selected = [available[name] for name in requested if name in available]
+        if not selected:
+            raise RuntimeError("No configured LLM providers match LLM_PROVIDER_ORDER")
+        return unique(selected)
+
     if not specs:
         add("primary", config.LLM_BASE_URL, "no-key")
-    return specs
+    return unique(specs)
 
 
 def _status_code(exc: Exception) -> int | None:
@@ -526,6 +557,7 @@ class FallbackLLMClient:
                 "base_url": provider.base_url,
                 "api_key": provider.api_key or "no-key",
                 "http_client": proxy_utils.llm_http_client(),
+                "max_retries": 0,
             }
             if provider.default_headers:
                 kwargs["default_headers"] = dict(provider.default_headers)
@@ -603,6 +635,17 @@ class FallbackLLMClient:
             raise last_exc
         raise RuntimeError("No LLM providers configured")
 
+    async def aclose(self) -> None:
+        """Release every lazily created SDK/HTTP client, even if one close fails."""
+        clients, self._clients = self._clients, {}
+        self._active_index_by_model.clear()
+        self._fallback_until_by_model.clear()
+        for client in clients.values():
+            try:
+                await client.close()
+            except Exception as exc:
+                log.warning("LLM client close failed: %s", type(exc).__name__)
+
 
 _client_singleton: FallbackLLMClient | None = None
 
@@ -617,3 +660,11 @@ def get_llm_client() -> FallbackLLMClient:
 def reset_llm_client() -> None:
     global _client_singleton
     _client_singleton = None
+
+
+async def close_llm_client() -> None:
+    """Close the shared client at process shutdown without creating a new one."""
+    global _client_singleton
+    client, _client_singleton = _client_singleton, None
+    if client is not None:
+        await client.aclose()

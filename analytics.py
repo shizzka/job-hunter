@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import logging
 import os
 from collections import Counter, defaultdict
@@ -13,12 +14,11 @@ import uuid
 
 import config
 import resume_versions
+from state_store.json_store import JsonStore
 from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket
 
 log = logging.getLogger("analytics")
 
-_state: dict | None = None
-_state_file: str | None = None
 _event_context = ContextVar("analytics_context", default={})
 
 
@@ -96,40 +96,145 @@ def _source_from_vacancy_id(vacancy_id: str) -> str:
     return "unknown"
 
 
+def _default_state() -> dict:
+    return {
+        "negotiation_status_by_vacancy": {},
+        "last_poll_by_vacancy": {},
+        "invitation_keys": [],
+        "historical_decision_keys": [],
+    }
+
+
+def _valid_state(state: dict) -> bool:
+    for key in ("negotiation_status_by_vacancy", "last_poll_by_vacancy"):
+        value = state.get(key, {})
+        if not isinstance(value, dict) or any(not isinstance(item, str) for item in value.values()):
+            return False
+    for key in ("invitation_keys", "historical_decision_keys"):
+        value = state.get(key, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            return False
+    return True
+
+
+def _reconcile_event_tail(state: dict) -> dict:
+    """Replay only events after the last durable state checkpoint."""
+    invitation_keys = set(state.get("invitation_keys", []))
+    historical_keys = set(state.get("historical_decision_keys", []))
+    try:
+        with open(config.ANALYTICS_EVENTS_FILE, encoding="utf-8") as stream:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+            stat = os.fstat(stream.fileno())
+            identity = [os.path.realpath(config.ANALYTICS_EVENTS_FILE), stat.st_dev, stat.st_ino]
+            checkpoint = state.get("_journal_checkpoint") or {}
+            offset = checkpoint.get("offset", 0) if isinstance(checkpoint, dict) else 0
+            if (
+                not isinstance(checkpoint, dict) or checkpoint.get("identity") != identity
+                or not isinstance(offset, int) or isinstance(offset, bool)
+                or offset < 0 or offset > stat.st_size
+            ):
+                offset = 0
+            stream.seek(offset)
+            while True:
+                start = stream.tell()
+                line = stream.readline()
+                if not line:
+                    break
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    if not line.endswith("\n"):
+                        # Retry an unfinished legacy record after more data arrives.
+                        stream.seek(start)
+                        break
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                kind = event.get("event")
+                vacancy_id = str(event.get("vacancy_id") or "").strip()
+                if kind == "negotiation_status" and vacancy_id:
+                    status = event.get("status")
+                    if isinstance(status, str) and status.strip():
+                        state["negotiation_status_by_vacancy"][vacancy_id] = status.strip()
+                elif kind == "negotiation_observation" and vacancy_id:
+                    observed_at = event.get("observed_at_utc")
+                    if isinstance(observed_at, str) and observed_at:
+                        state["last_poll_by_vacancy"][vacancy_id] = observed_at
+                elif kind == "invitation":
+                    try:
+                        invitation_keys.add(_vacancy_key(event))
+                    except (AttributeError, TypeError):
+                        continue
+                elif kind == "decision" and (event.get("historical") or event.get("mode") == "historical"):
+                    decision = event.get("decision")
+                    if vacancy_id and isinstance(decision, str) and decision:
+                        source = event.get("source") or _source_from_vacancy_id(vacancy_id)
+                        historical_keys.add(f"{source}:{vacancy_id}:{decision}")
+            state["_journal_checkpoint"] = {"identity": identity, "offset": stream.tell()}
+    except FileNotFoundError:
+        pass
+    # Other read errors deliberately propagate: an unreadable journal is not
+    # evidence that no invitation/backfill has already been recorded.
+    state["invitation_keys"] = sorted(invitation_keys)
+    state["historical_decision_keys"] = sorted(historical_keys)
+    return state
+
+
+def _recover_state_from_events() -> dict:
+    return _reconcile_event_tail(_default_state())
+
+
+def _recover_corrupt_state() -> dict:
+    state = _recover_state_from_events()
+    if not state.get("_journal_checkpoint", {}).get("offset"):
+        state["_recovery_required"] = "corrupt_state_without_event_history"
+    return state
+
+
+def _state_store() -> JsonStore:
+    return JsonStore(
+        config.ANALYTICS_STATE_FILE,
+        default_factory=_recover_state_from_events,
+        corrupt_factory=_recover_corrupt_state,
+        validator=_valid_state,
+        logger=log,
+        read_error_message="Analytics state read failed",
+    )
+
+
 def _load_state() -> dict:
-    global _state, _state_file
-    if _state_file != config.ANALYTICS_STATE_FILE:
-        _state = None
-        _state_file = config.ANALYTICS_STATE_FILE
-    if _state is not None:
-        return _state
-
-    if os.path.exists(config.ANALYTICS_STATE_FILE):
-        try:
-            with open(config.ANALYTICS_STATE_FILE, encoding="utf-8") as f:
-                _state = json.load(f)
-        except Exception:
-            _state = {}
-    else:
-        _state = {}
-
-    _state.setdefault("negotiation_status_by_vacancy", {})
-    _state.setdefault("invitation_keys", [])
-    _state.setdefault("historical_decision_keys", [])
-    return _state
+    state = _state_store().load()
+    for key, value in _default_state().items():
+        state.setdefault(key, value)
+    return _reconcile_event_tail(state)
 
 
-def _save_state() -> None:
-    if _state is None:
-        return
-    os.makedirs(os.path.dirname(config.ANALYTICS_STATE_FILE), exist_ok=True)
-    with open(config.ANALYTICS_STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(_state, f, ensure_ascii=False, indent=2)
+def _update_state(mutator, default=None):
+    result = default
+
+    def update(state: dict) -> dict:
+        nonlocal result
+        for key, value in _default_state().items():
+            state.setdefault(key, value)
+        if state.get("_recovery_required"):
+            raise RuntimeError("Corrupt analytics state needs manual event history recovery")
+        _reconcile_event_tail(state)
+        result = mutator(state)
+        # Events are appended before the state checkpoint. If this save fails,
+        # the next update replays that tail and does not emit duplicates.
+        return _reconcile_event_tail(state)
+
+    try:
+        _state_store().update(update)
+    except Exception as exc:
+        log.warning("Analytics state update failed: %s", exc)
+        return default
+    return result
 
 
-def _append_event(payload: dict) -> None:
+def _append_event(payload: dict, *, durable: bool = False) -> bool:
     if not config.ANALYTICS_ENABLED:
-        return
+        return False
 
     payload = {**_event_context.get(), **payload}
     payload.setdefault("schema_version", 2)
@@ -141,10 +246,22 @@ def _append_event(payload: dict) -> None:
     payload.setdefault("rules_version", "matcher-v1")
     try:
         os.makedirs(os.path.dirname(config.ANALYTICS_EVENTS_FILE), exist_ok=True)
-        with open(config.ANALYTICS_EVENTS_FILE, "a", encoding="utf-8") as f:
+        fd = os.open(config.ANALYTICS_EVENTS_FILE, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a+", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            os.fchmod(f.fileno(), 0o600)
+            size = os.fstat(f.fileno()).st_size
+            if size and os.pread(f.fileno(), 1, size - 1) != b"\n":
+                # Do not concatenate a fresh JSON record with a truncated old one.
+                f.write("\n")
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            f.flush()
+            if durable:
+                os.fsync(f.fileno())
+        return True
     except Exception as exc:
         log.warning("Failed to append analytics event: %s", exc)
+        return False
 
 
 def new_run_id(mode: str) -> str:
@@ -295,9 +412,11 @@ def record_negotiation_statuses(items: list[dict]) -> None:
     if not config.ANALYTICS_ENABLED or not items:
         return
 
-    state = _load_state()
+    _update_state(lambda state: _record_negotiation_statuses(state, items))
+
+
+def _record_negotiation_statuses(state: dict, items: list[dict]) -> None:
     last_status_by_vacancy = state.setdefault("negotiation_status_by_vacancy", {})
-    changed = False
 
     for item in items:
         vacancy_id = str(item.get("id") or "").strip()
@@ -307,15 +426,15 @@ def record_negotiation_statuses(items: list[dict]) -> None:
 
         polls = state.setdefault("last_poll_by_vacancy", {})
         observed_at = datetime.now(timezone.utc).isoformat()
-        _append_event({
+        if not _append_event({
             "event": "negotiation_observation", "vacancy_id": vacancy_id,
             "source": "hh", "observed_at_utc": observed_at,
             "previous_poll_at": polls.get(vacancy_id),
             "status_bucket": _status_bucket(status_text),
             "status_detail_bucket": _status_detail_bucket(status_text),
-        })
+        }, durable=True):
+            continue
         polls[vacancy_id] = observed_at
-        changed = True
         prev_status = last_status_by_vacancy.get(vacancy_id, "")
         if prev_status == status_text:
             continue
@@ -334,12 +453,9 @@ def record_negotiation_statuses(items: list[dict]) -> None:
             "status_detail_bucket": _status_detail_bucket(status_text),
             "prev_status": prev_status,
         }
-        _append_event(payload)
+        if not _append_event(payload, durable=True):
+            continue
         last_status_by_vacancy[vacancy_id] = status_text
-        changed = True
-
-    if changed:
-        _save_state()
 
 
 def _questionnaire_items_payload(items: list[dict]) -> list[dict]:
@@ -407,9 +523,11 @@ def record_invitations(items: list[dict]) -> None:
     if not config.ANALYTICS_ENABLED or not items:
         return
 
-    state = _load_state()
+    _update_state(lambda state: _record_invitations(state, items))
+
+
+def _record_invitations(state: dict, items: list[dict]) -> None:
     invitation_keys = set(state.setdefault("invitation_keys", []))
-    changed = False
 
     for item in items:
         payload = {
@@ -423,19 +541,17 @@ def record_invitations(items: list[dict]) -> None:
         if key in invitation_keys:
             continue
 
-        _append_event(
+        if not _append_event(
             {
                 "event": "invitation",
                 "created_at": _now().isoformat(timespec="seconds"),
                 **payload,
-            }
-        )
+            },
+            durable=True,
+        ):
+            continue
         invitation_keys.add(key)
-        changed = True
-
-    if changed:
-        state["invitation_keys"] = sorted(invitation_keys)
-        _save_state()
+    state["invitation_keys"] = sorted(invitation_keys)
 
 
 def _map_historical_action(action: str) -> tuple[str, str]:
@@ -459,11 +575,16 @@ def backfill_seen_decisions(entries: dict, run_id: str = "") -> dict:
     if not config.ANALYTICS_ENABLED or not entries:
         return {"added": 0, "by_decision": {}}
 
-    state = _load_state()
+    return _update_state(
+        lambda state: _backfill_seen_decisions(state, entries, run_id),
+        default={"added": 0, "by_decision": {}},
+    )
+
+
+def _backfill_seen_decisions(state: dict, entries: dict, run_id: str) -> dict:
     historical_keys = set(state.setdefault("historical_decision_keys", []))
     decision_counter = Counter()
     added = 0
-    changed = False
     backfill_run_id = run_id or new_run_id("analytics-backfill")
 
     for vacancy_id, payload in entries.items():
@@ -477,7 +598,7 @@ def backfill_seen_decisions(entries: dict, run_id: str = "") -> dict:
             continue
 
         created_at = _parse_dt(payload.get("date")) or _now()
-        _append_event(
+        if not _append_event(
             {
                 "event": "decision",
                 "created_at": created_at.isoformat(timespec="seconds"),
@@ -511,16 +632,14 @@ def backfill_seen_decisions(entries: dict, run_id: str = "") -> dict:
                 "resume_variant": "",
                 "resume_title": "",
                 "resume_id": "",
-            }
-        )
+            },
+            durable=True,
+        ):
+            continue
         historical_keys.add(historical_key)
         decision_counter[decision] += 1
         added += 1
-        changed = True
-
-    if changed:
-        state["historical_decision_keys"] = sorted(historical_keys)
-        _save_state()
+    state["historical_decision_keys"] = sorted(historical_keys)
 
     return {
         "added": added,

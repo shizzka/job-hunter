@@ -21,6 +21,7 @@ import uuid
 from typing import Optional
 
 import config
+from state_store.json_store import atomic_write_json
 
 log = logging.getLogger("captcha_bridge")
 
@@ -29,12 +30,11 @@ def _state_dir(profile_name: str | None = None) -> str:
     """Папка состояния активного или явно указанного профиля."""
     state_dir = ""
     if profile_name:
-        try:
-            import profile as profile_mod
+        import profile as profile_mod
 
-            state_dir = str(profile_mod.load_profile(profile_name).state_dir or "")
-        except Exception as exc:
-            log.warning("unable to resolve captcha state for profile %s: %s", profile_name, exc)
+        state_dir = str(profile_mod.load_profile(profile_name).state_dir or "")
+        if not state_dir:
+            raise ValueError("Explicit captcha profile has no state directory")
     state_dir = state_dir or getattr(config, "HH_STATE_DIR", "") or os.path.expanduser("~/.job-hunter/state")
     os.makedirs(state_dir, exist_ok=True)
     return state_dir
@@ -49,10 +49,7 @@ def _response_path(profile_name: str | None = None) -> str:
 
 
 def _atomic_write(path: str, data: dict) -> None:
-    tmp = f"{path}.tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    atomic_write_json(path, data)
 
 
 def _safe_read(path: str) -> Optional[dict]:

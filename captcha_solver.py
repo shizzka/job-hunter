@@ -19,7 +19,7 @@ import hashlib
 import logging
 import os
 import re
-import time
+import tempfile
 from typing import Any
 
 import config
@@ -87,7 +87,7 @@ async def solve_captcha_with_vision_llm(screenshot_path: str, llm_client_factory
     (нужно чтобы вызывающий слой контролировал base_url/api_key/proxy).
     """
     model = (config.HH_CAPTCHA_VISION_MODEL or "").strip()
-    if not model or not config.LLM_API_KEY:
+    if not model:
         return None
     if not os.path.exists(screenshot_path):
         return None
@@ -179,12 +179,21 @@ async def _submit_answer(client: Any, answer: str) -> bool:
 
 
 async def _refresh_screenshot(page) -> str | None:
+    path = ""
     try:
-        path = os.path.join(config.HH_STATE_DIR, f"captcha_{int(time.time())}.png")
+        os.makedirs(config.HH_STATE_DIR, exist_ok=True)
+        fd, path = tempfile.mkstemp(prefix="captcha_", suffix=".png", dir=config.HH_STATE_DIR)
+        os.close(fd)
         await page.screenshot(path=path)
+        os.chmod(path, 0o600)
         return path
     except Exception as exc:
         log.warning("captcha screenshot failed: %s", exc)
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
         return None
 
 
@@ -195,6 +204,29 @@ async def try_solve_captcha_interactively(
     max_retries: int = 3,
 ) -> bool:
     """Решение текстовой captcha: vision-LLM → если не помогает, эскалация в TG."""
+    shots: list[str] = []
+    requests: list[tuple[str, str]] = []
+    try:
+        return await _try_solve_captcha_interactively(client, llm_client_factory, stage, max_retries, shots, requests)
+    finally:
+        if requests:
+            import captcha_bridge
+            for request_id, profile_name in requests:
+                try:
+                    captcha_bridge.complete_request(request_id, profile_name=profile_name)
+                except Exception as exc:
+                    log.warning("captcha request cleanup failed: %s", type(exc).__name__)
+        # Only remove the exact temporary files created by this invocation.
+        for path in shots:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                log.warning("captcha screenshot cleanup failed: %s", type(exc).__name__)
+
+
+async def _try_solve_captcha_interactively(client, llm_client_factory, stage, max_retries, shots, requests) -> bool:
     try:
         import notifier
         import captcha_bridge
@@ -215,6 +247,7 @@ async def try_solve_captcha_interactively(
         shot_path = await _refresh_screenshot(page)
         if not shot_path:
             return False
+        shots.append(shot_path)
 
         # Этап 0: vision-LLM
         if vision_retries > 0:
@@ -254,6 +287,7 @@ async def try_solve_captcha_interactively(
             timeout_s=captcha_timeout_s,
             profile_name=profile_name,
         )
+        requests.append((request_id, profile_name))
         caption_parts = [
             f"🤖 hh.ru captcha (попытка {total_attempts}/{max_retries})",
             f"Окно: {captcha_timeout_s // 60} мин (потом токен истечёт).",
@@ -267,13 +301,16 @@ async def try_solve_captcha_interactively(
             log.warning("captcha notify failed: %s", exc)
 
         log.info("waiting for captcha answer in TG (%d s)", captcha_timeout_s)
-        answer = await captcha_bridge.wait_for_response(
-            request_id,
-            timeout_s=captcha_timeout_s,
-            poll_interval_s=3.0,
-            profile_name=profile_name,
-        )
-        captcha_bridge.complete_request(request_id, profile_name=profile_name)
+        try:
+            answer = await captcha_bridge.wait_for_response(
+                request_id,
+                timeout_s=captcha_timeout_s,
+                poll_interval_s=3.0,
+                profile_name=profile_name,
+            )
+        finally:
+            captcha_bridge.complete_request(request_id, profile_name=profile_name)
+            requests.remove((request_id, profile_name))
         if not answer:
             log.warning("captcha answer not received in time, applying soft cooldown + sending timeout notice")
             try:

@@ -15,10 +15,12 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any
 
 import config
 from llm_client import get_llm_client
+from state_store.json_store import JsonStore, atomic_write_json
 
 log = logging.getLogger("facts")
 
@@ -215,6 +217,24 @@ async def extract_facts_from_resume(resume_text: str) -> dict[str, Any]:
     return parsed
 
 
+def save_facts(value: dict[str, Any]) -> str | None:
+    """Replace candidate facts atomically, retaining the previous valid version."""
+    if not isinstance(value, dict):
+        raise TypeError("Candidate facts must be a JSON object")
+    path = facts_file_path()
+    backup = None
+
+    def replace(previous):
+        nonlocal backup
+        if os.path.exists(path):
+            backup = f"{path}.bak.{time.time_ns()}"
+            atomic_write_json(backup, previous)
+        return value
+
+    JsonStore(path, logger=log).update(replace)
+    return backup
+
+
 # ---------- CLI entry-point ----------
 
 async def do_extract_facts() -> None:
@@ -232,15 +252,9 @@ async def do_extract_facts() -> None:
         return
 
     path = facts_file_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    # бэкап существующего
-    if os.path.exists(path):
-        backup = f"{path}.bak.{int(os.path.getmtime(path))}"
-        os.rename(path, backup)
+    backup = save_facts(facts)
+    if backup:
         print(f"💾 Прежний facts.json → {os.path.basename(backup)}")
-
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(facts, f, ensure_ascii=False, indent=2)
     print(f"✅ Сохранено в {path}")
     print(f"📋 Полей: {len(facts)}")
     for k, v in facts.items():

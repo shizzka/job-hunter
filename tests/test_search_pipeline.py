@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 
 import search_pipeline
 
@@ -102,7 +103,8 @@ def test_collect_all_passes_source_stats_to_collectors(monkeypatch):
     assert source_stats["hh"]["already_seen"] == 5
 
 
-def test_collect_hh_vacancies_checks_next_page_even_if_current_page_is_fully_seen(monkeypatch):
+@pytest.mark.parametrize("seen_count", [1, 20])
+def test_collect_hh_vacancies_checks_next_page_even_if_current_page_is_fully_seen(monkeypatch, seen_count):
     class FakeHHClient:
         def __init__(self):
             self.calls = []
@@ -120,7 +122,7 @@ def test_collect_hh_vacancies_checks_next_page_even_if_current_page_is_fully_see
                         "company": "A",
                         "url": f"https://hh.ru/vacancy/{index}",
                     }
-                    for index in range(20)
+                    for index in range(seen_count)
                 ]
             if page == 1:
                 return [{"id": "new-2", "title": "New", "company": "B", "url": "https://hh.ru/vacancy/2"}]
@@ -148,4 +150,4 @@ def test_collect_hh_vacancies_checks_next_page_even_if_current_page_is_fully_see
     vacancies = asyncio.run(search_pipeline.collect_hh_vacancies(client))
 
     assert [item["id"] for item in vacancies] == ["new-2"]
-    assert client.calls == [("qa", 0, 113, ""), ("qa", 1, 113, "")]
+    assert client.calls == [("qa", 0, 113, ""), ("qa", 1, 113, ""), ("qa", 2, 113, "")]

@@ -134,7 +134,6 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
                 if bucket is not None:
                     bucket["fetched"] += len(vacancies)
 
-                new_on_page = 0
                 for vacancy in vacancies:
                     vid = vacancy.get("id")
                     if not vid:
@@ -149,9 +148,8 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
                     vacancy["_search_query"] = query
                     vacancy["_search_profile"] = area_label
                     all_vacancies.append(vacancy)
-                    new_on_page += 1
 
-                if len(vacancies) < 10:
+                if not vacancies:
                     break
 
     return all_vacancies
@@ -191,7 +189,6 @@ async def collect_superjob_vacancies(client: SuperJobClient | None, *, scan_stat
                 if bucket is not None:
                     bucket["fetched"] += len(vacancies)
 
-                new_on_page = 0
                 for vacancy in vacancies:
                     vid = vacancy.get("id")
                     if not vid:
@@ -203,9 +200,8 @@ async def collect_superjob_vacancies(client: SuperJobClient | None, *, scan_stat
                     vacancy["_search_query"] = query
                     vacancy["_search_profile"] = profile_label
                     all_vacancies.append(vacancy)
-                    new_on_page += 1
 
-                if not vacancies or not more or new_on_page == 0:
+                if not more:
                     break
 
     return all_vacancies
@@ -244,7 +240,6 @@ async def collect_habr_vacancies(client: HabrCareerClient | None, *, scan_stats:
             if bucket is not None:
                 bucket["fetched"] += len(vacancies)
 
-            new_on_page = 0
             for vacancy in vacancies:
                 vid = vacancy.get("id")
                 if not vid:
@@ -256,10 +251,6 @@ async def collect_habr_vacancies(client: HabrCareerClient | None, *, scan_stats:
                 vacancy["_search_path"] = path
                 vacancy["_search_profile"] = path
                 all_vacancies.append(vacancy)
-                new_on_page += 1
-
-            if not vacancies or new_on_page == 0:
-                break
 
     return all_vacancies
 
@@ -296,7 +287,6 @@ async def collect_geekjob_vacancies(client: GeekJobClient | None, *, scan_stats:
         if bucket is not None:
             bucket["fetched"] += len(vacancies)
 
-        new_on_page = 0
         for vacancy in vacancies:
             vid = vacancy.get("id")
             if not vid:
@@ -307,10 +297,6 @@ async def collect_geekjob_vacancies(client: GeekJobClient | None, *, scan_stats:
                 continue
             vacancy["_search_profile"] = f"page={page_num}"
             all_vacancies.append(vacancy)
-            new_on_page += 1
-
-        if not vacancies or new_on_page == 0:
-            break
 
     return all_vacancies
 

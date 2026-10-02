@@ -76,6 +76,20 @@ def test_save_rejects_non_dictionary_state(tmp_path):
         store.save(["not", "a", "dict"])
 
 
+def test_optional_validator_preserves_invalid_schema_and_recovers(tmp_path):
+    path = tmp_path / "state.json"
+    original = '{"items": []}'
+    path.write_text(original)
+    store = JsonStore(
+        path,
+        validator=lambda state: isinstance(state.get("items"), dict),
+        corrupt_factory=lambda: {"items": {"restored": 1}},
+    )
+    assert store.load() == {"items": {"restored": 1}}
+    backups = list(tmp_path.glob("state.json.corrupt-*"))
+    assert len(backups) == 1 and backups[0].read_text() == original
+
+
 def test_update_reloads_state_inside_one_lock(tmp_path):
     path = tmp_path / "state.json"
     first = JsonStore(path)

@@ -14,8 +14,7 @@ from pathlib import Path
 from typing import Any
 
 
-def atomic_write_json(path: str | os.PathLike[str], value: Any) -> None:
-    """Atomically write JSON with permissions suitable for runtime secrets."""
+def _atomic_write(path: str | os.PathLike[str], write) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -31,7 +30,7 @@ def atomic_write_json(path: str | os.PathLike[str], value: Any) -> None:
         stream = os.fdopen(fd, "w", encoding="utf-8")
         fd = -1
         with stream:
-            json.dump(value, stream, ensure_ascii=False, indent=2)
+            write(stream)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(tmp_path, target)
@@ -53,6 +52,16 @@ def atomic_write_json(path: str | os.PathLike[str], value: Any) -> None:
         raise
 
 
+def atomic_write_json(path: str | os.PathLike[str], value: Any) -> None:
+    """Atomically write JSON with permissions suitable for runtime secrets."""
+    _atomic_write(path, lambda stream: json.dump(value, stream, ensure_ascii=False, indent=2))
+
+
+def atomic_write_text(path: str | os.PathLike[str], value: str) -> None:
+    """Atomically write private text, keeping the old file if replacement fails."""
+    _atomic_write(path, lambda stream: stream.write(value))
+
+
 class JsonStore:
     def __init__(
         self,
@@ -60,12 +69,14 @@ class JsonStore:
         *,
         default_factory: Callable[[], dict[str, Any]] = dict,
         corrupt_factory: Callable[[], dict[str, Any]] | None = None,
+        validator: Callable[[dict[str, Any]], bool] | None = None,
         logger: logging.Logger | None = None,
         read_error_message: str = "json state read failed",
     ) -> None:
         self.path = Path(path)
         self._default_factory = default_factory
         self._corrupt_factory = corrupt_factory
+        self._validator = validator
         self._logger = logger
         self._read_error_message = read_error_message
 
@@ -116,13 +127,22 @@ class JsonStore:
                 value = json.load(stream)
         except FileNotFoundError:
             return self._default()
-        except Exception as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             if self._logger is not None:
                 self._logger.warning("%s: %s", self._read_error_message, exc)
             return self._recover_corrupt_unlocked()
+        except OSError as exc:
+            if self._logger is not None:
+                self._logger.warning("%s: %s", self._read_error_message, type(exc).__name__)
+            # A permission/I/O failure is not evidence that valid state is corrupt.
+            raise
         if not isinstance(value, dict):
             if self._logger is not None:
                 self._logger.warning("%s: expected a JSON object", self._read_error_message)
+            return self._recover_corrupt_unlocked()
+        if self._validator is not None and not self._validator(value):
+            if self._logger is not None:
+                self._logger.warning("%s: invalid state schema", self._read_error_message)
             return self._recover_corrupt_unlocked()
         return value
 

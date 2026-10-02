@@ -75,7 +75,7 @@ class TestClientHHAuth:
         monkeypatch.setenv("JOB_HUNTER_ENV_FILE", str(env_file))
         monkeypatch.setattr(client_hh_auth, "_resolve_profile", lambda profile_name: DummyProfile(profile_dir))
 
-        values = client_hh_auth._load_hh_auth_env("qa")
+        values = client_hh_auth._load_hh_auth_env("default")
 
         assert values["HH_AUTH_PHONE"] == "+70000000000"
         assert "HH_AUTH_PHONE" not in os.environ
@@ -100,6 +100,7 @@ class TestClientHHAuth:
         for key in client_hh_auth.HH_AUTH_LOGIN_ENV_KEYS:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("HH_AUTH_PHONE", "+79999999999")
+        monkeypatch.setenv("HH_AUTH_LOGIN", "+78888888888")
 
         alice = client_hh_auth._load_hh_auth_env("alice")
         bob = client_hh_auth._load_hh_auth_env("bob")

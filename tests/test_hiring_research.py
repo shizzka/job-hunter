@@ -59,13 +59,13 @@ def test_repeated_poll_is_saved_and_profile_state_isolated(tmp_path, monkeypatch
     first_file = tmp_path / 'a.jsonl'
     monkeypatch.setattr(config, 'ANALYTICS_EVENTS_FILE', str(first_file))
     monkeypatch.setattr(config, 'ANALYTICS_STATE_FILE', str(tmp_path / 'a.json'))
-    analytics._state = None
     analytics.record_negotiation_statuses([{'id': '1', 'status': 'Не просмотрен'}])
     analytics.record_negotiation_statuses([{'id': '1', 'status': 'Не просмотрен'}])
     rows = [json.loads(line) for line in first_file.read_text().splitlines()]
     polls = [row for row in rows if row['event'] == 'negotiation_observation']
     assert len(polls) == 2 and polls[1]['previous_poll_at'] == polls[0]['observed_at_utc']
     monkeypatch.setattr(config, 'ANALYTICS_STATE_FILE', str(tmp_path / 'b.json'))
+    monkeypatch.setattr(config, 'ANALYTICS_EVENTS_FILE', str(tmp_path / 'b.jsonl'))
     assert analytics._load_state().get('last_poll_by_vacancy', {}) == {}
 
 

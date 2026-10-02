@@ -1,8 +1,50 @@
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
 
 import captcha_solver
+
+
+def test_vision_uses_factory_even_without_primary_env_key(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(captcha_solver.config, "LLM_API_KEY", "")
+    monkeypatch.setattr(captcha_solver.config, "HH_CAPTCHA_VISION_MODEL", "vision-test")
+    shot = tmp_path / "captcha.png"
+    shot.write_bytes(b"png")
+    calls = []
+
+    async def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='"правильный ответ"'))])
+
+    factory = lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    assert asyncio.run(captcha_solver.solve_captcha_with_vision_llm(str(shot), factory)) == "правильный ответ"
+    assert calls[0]["model"] == "vision-test"
+    assert calls[0]["messages"][0]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_captcha_screenshots_are_unique_private_and_failed_capture_is_cleaned(tmp_path, monkeypatch):
+    import asyncio
+
+    class Page:
+        async def screenshot(self, *, path):
+            Path(path).write_bytes(b"png")
+
+    monkeypatch.setattr(captcha_solver.config, "HH_STATE_DIR", str(tmp_path))
+    first = asyncio.run(captcha_solver._refresh_screenshot(Page()))
+    second = asyncio.run(captcha_solver._refresh_screenshot(Page()))
+    assert first != second
+    assert Path(first).stat().st_mode & 0o777 == 0o600
+    assert Path(second).stat().st_mode & 0o777 == 0o600
+
+    class FailedPage:
+        async def screenshot(self, *, path):
+            raise OSError("capture failed")
+
+    assert asyncio.run(captcha_solver._refresh_screenshot(FailedPage())) is None
+    assert len(list(tmp_path.glob("captcha_*.png"))) == 2
 
 
 def test_captcha_retry_markup_uses_hh_auth_callback_for_auth_stage():
@@ -108,6 +150,7 @@ def test_captcha_solver_escalates_to_telegram_after_two_empty_vision_attempts(tm
     button = photo_calls[0][2]["inline_keyboard"][0][0]
     assert button["callback_data"] == "hh_reauth:qa"
     assert cooldown_calls == [(15, "captcha TG timeout")]
+    assert not list(tmp_path.glob("captcha_*.png"))
 
 
 def test_captcha_solver_reserves_human_escalation_after_rejected_vision_attempts(tmp_path, monkeypatch):
@@ -179,3 +222,43 @@ def test_captcha_solver_reserves_human_escalation_after_rejected_vision_attempts
     assert len(vision_calls) == 3
     assert len(photo_calls) == 1
     assert "попытка 3/3" in photo_calls[0][1]
+    assert not list(tmp_path.glob("captcha_*.png"))
+
+
+@pytest.mark.parametrize("phase", ["notify", "wait"])
+def test_captcha_cancellation_cleans_pending_request_and_screenshot(tmp_path, monkeypatch, phase):
+    import asyncio
+
+    class Client:
+        _page = SimpleNamespace(url="https://hh.ru/captcha")
+
+        async def _detect_anti_bot_kind(self):
+            return "captcha"
+
+    shot = tmp_path / "captcha_cancel.png"
+
+    async def screenshot(page):
+        shot.write_bytes(b"png")
+        return str(shot)
+
+    async def send(*args, **kwargs):
+        if phase == "notify":
+            raise asyncio.CancelledError
+        return True
+
+    async def wait(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    completed = []
+    monkeypatch.setattr(captcha_solver.config, "HH_CAPTCHA_VISION_RETRIES", 0)
+    monkeypatch.setattr(captcha_solver, "_refresh_screenshot", screenshot)
+    monkeypatch.setitem(sys.modules, "notifier", SimpleNamespace(send_photo=send))
+    monkeypatch.setitem(sys.modules, "captcha_bridge", SimpleNamespace(
+        create_request=lambda *args, **kwargs: "req",
+        wait_for_response=wait,
+        complete_request=lambda *args, **kwargs: completed.append(args[0]),
+    ))
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(captcha_solver.try_solve_captcha_interactively(Client(), lambda: None))
+    assert completed == ["req"]
+    assert not shot.exists()

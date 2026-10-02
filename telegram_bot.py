@@ -3742,7 +3742,11 @@ async def main() -> None:
         drop_pending=not args.keep_pending,
         runtime_paths=runtime_paths,
     )
-    await bot.run()
+    try:
+        await bot.run()
+    finally:
+        from llm_client import close_llm_client
+        await close_llm_client()
 
 
 if __name__ == "__main__":

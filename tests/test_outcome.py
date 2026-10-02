@@ -147,10 +147,7 @@ class TestResumePipeline:
              mock.patch.object(config, "HH_RESUME_RETRY_ON_SILENCE", False), \
              mock.patch.object(config, "HH_RESUME_SILENCE_RETRY_DELAY_HOURS", 72), \
              mock.patch.object(config, "HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN", 0):
-            import hh_resume_pipeline
-            hh_resume_pipeline._state = None
             yield tmp_path
-            hh_resume_pipeline._state = None
 
     def test_get_variants(self):
         from hh_resume_pipeline import get_variants

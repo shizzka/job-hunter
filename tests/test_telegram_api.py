@@ -305,7 +305,15 @@ def test_proxy_fallback_expires(monkeypatch):
     assert client._force_direct is False
 
 
-def test_send_document_once_builds_multipart_payload(monkeypatch):
+@pytest.mark.parametrize(
+    "caption,expected_caption",
+    [
+        ("caption", "caption"),
+        ("😀" * 700, "😀" * 512),
+        ("<b>&amp;" + "x" * 2000, "<b>&amp;" + "x" * 1016),
+    ],
+)
+def test_send_document_once_builds_multipart_payload(monkeypatch, caption, expected_caption):
     monkeypatch.setattr(
         telegram_api.config,
         "TELEGRAM_CONTROL_BOT_TOKEN",
@@ -330,7 +338,7 @@ def test_send_document_once_builds_multipart_payload(monkeypatch):
             42,
             filename="resume.md",
             content=b"resume",
-            caption="caption",
+            caption=caption,
             reply_markup=markup,
             use_proxy=True,
         )
@@ -344,7 +352,7 @@ def test_send_document_once_builds_multipart_payload(monkeypatch):
     form = session.calls[0][1]["data"]
     fields = {name: (value, kwargs) for name, value, kwargs in form.fields}
     assert fields["chat_id"][0] == "42"
-    assert fields["caption"][0] == "caption"
+    assert fields["caption"][0] == expected_caption
     assert json.loads(fields["reply_markup"][0]) == markup
     assert fields["document"] == (
         b"resume",

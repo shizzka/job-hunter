@@ -222,7 +222,35 @@ See `scripts/smoke/model_bench.py` for the 6-models × 4-tasks benchmark.
 
 See the full template in [job-hunter.env.example](job-hunter.env.example).
 
+For a second Groq fallback account, set `GROQ2_API_KEY` in the private
+`~/.job-hunter/llm-providers.env`. It follows `groq` and shares its model aliases
+and `GROQ_BASE_URL`, unless `GROQ2_BASE_URL` overrides the endpoint. A duplicate
+key at the same endpoint is skipped. Keep keys out of Git and chat messages.
+
+Set `LLM_PROVIDER_ORDER=groq,groq2` in the runtime environment or providers file
+to use **only** those accounts, in that order. Unlisted providers are never called;
+an invalid or unmatched chain fails closed. Without this setting, the existing
+fallback order is retained. Groq aliases default to `openai/gpt-oss-20b` (fast),
+`openai/gpt-oss-120b` (strong) and `qwen/qwen3.8-27b` (vision); override with
+`GROQ_FAST_MODEL`, `GROQ_STRONG_MODEL`, `GROQ_VISION_MODEL` in the providers file.
+Verify model access against your account when changing these values.
+
+`LLM_PROXY` explicitly routes LLM HTTP calls through an HTTP/SOCKS proxy; no
+inherited system proxy is used. The shared SDK clients close at CLI/bot shutdown,
+and hidden SDK retries are disabled because the adapter controls provider fallback.
+
 ## Customizing Search Targets
+
+Set `VACANCY_FILTER_POLICY=generic` in a named profile's `profile.env` for non-QA
+professions. This disables QA-only prefilters, clusters, level guards and letter
+templates while retaining military exclusions and LLM matching against the current
+candidate. Optional `VACANCY_RELEVANT_KEYWORDS` / `VACANCY_EXCLUDE_KEYWORDS` use
+`||` separators and stay profile-local. The default `qa` policy is unchanged.
+
+HH login hints (`HH_AUTH_LOGIN`, phone/email aliases) for named profiles must be
+set in that profile's `profile.env`, or entered through the interactive auth flow.
+Missing hints never fall back to another candidate's global login. Shared hints
+apply only to `default`; existing session cookies are unaffected.
 
 The default configuration is QA-focused because that is the original use case, but the project is not limited to QA jobs.
 
@@ -359,6 +387,21 @@ Use `--profile <name>` with any command to run under a specific profile:
 ```
 
 Profiles are protected by OS-level file locks — two daemons cannot run the same profile concurrently.
+
+HH staged-resume history (`hh_resume_pipeline.json`) is read fresh for the current
+profile; updates use an interprocess lock and atomic writes with mode `0600`.
+Invalid JSON is preserved as `.corrupt-*`. Automatic retries then stay suspended
+via `_recovery_required` until the history is reviewed and recovered. Do not delete
+the history or simply remove that marker to resume: this can repeat old applications.
+
+Analytics checkpoints (`analytics_state.json`) are also profile-local, schema-checked,
+locked and atomic. Invitation/backfill dedupe and negotiation statuses can be rebuilt
+from that profile's `analytics_events.jsonl`; broken state is kept as `.corrupt-*`.
+Updates replay only the journal tail after the saved checkpoint, so an event written
+before a failed checkpoint save is not counted again on retry. Relevant events are
+flushed to disk before the checkpoint; the journal uses locked appends and mode `0600`.
+If corrupt state has no event history to recover from, dedup-dependent recording
+is paused with `_recovery_required` rather than silently treating old events as new.
 
 ## State and Privacy
 

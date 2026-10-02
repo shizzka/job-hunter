@@ -516,8 +516,8 @@ class TestProfileLock:
                 "try:\n"
                 "    _acquire_lock(p)\n"
                 "    print('ACQUIRED')\n"
-                "except ProfileLockedError:\n"
-                "    print('BLOCKED')\n"
+                "except ProfileLockedError as exc:\n"
+                "    print('BLOCKED', exc)\n"
             )
             result = subprocess.run(
                 [sys.executable, str(script)],
@@ -526,6 +526,10 @@ class TestProfileLock:
                 timeout=5,
             )
             assert "BLOCKED" in result.stdout, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            assert f"PID из lock-файла: {os.getpid()}" in result.stdout
+            assert "процесс существует" in result.stdout
+            assert "Не удаляй lock-файл" in result.stdout
+            assert "rm " not in result.stdout
         finally:
             _release_lock()
             profile_mod._lock_fd = old_fd

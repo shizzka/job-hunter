@@ -20,6 +20,7 @@ import uuid
 from typing import Optional
 
 import config
+from state_store.json_store import atomic_write_json
 
 log = logging.getLogger("hh_auth_bridge")
 
@@ -59,14 +60,7 @@ def _pending_paths() -> list[str]:
 
 
 def _atomic_write(path: str, data: dict) -> None:
-    tmp = f"{path}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-    os.chmod(path, 0o600)
+    atomic_write_json(path, data)
 
 
 def _safe_read(path: str) -> Optional[dict]:

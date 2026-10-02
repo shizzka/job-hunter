@@ -7,7 +7,7 @@
     ./run.sh setup
 """
 import os
-import re
+import subprocess
 import sys
 
 import config
@@ -141,11 +141,10 @@ def run_wizard():
         if not name:
             print("  Имя не может быть пустым.")
             continue
-        if not re.match(r"^[a-zA-Z0-9_-]+$", name):
-            print("  Допустимы: буквы, цифры, дефис, подчёркивание.")
-            continue
-        if name == "default":
-            print("  'default' зарезервировано.")
+        try:
+            profile_mod.validate_profile_name(name, allow_default=False)
+        except ValueError as exc:
+            print(f"  {exc}")
             continue
         profiles_dir = os.path.join(config.JOB_HUNTER_HOME, "profiles", name)
         if os.path.exists(os.path.join(profiles_dir, "profile.env")):
@@ -288,7 +287,7 @@ def run_wizard():
         for label, cmd in sources_to_login:
             if _ask_yn(f"  Залогиниться на {label} сейчас?", default=True):
                 print(f"  Открываю {label}...")
-                ret = os.system(f'./run.sh --profile {name} {cmd}')
+                ret = subprocess.run(["./run.sh", "--profile", name, cmd], shell=False, check=False).returncode
                 if ret == 0:
                     print(f"  ✅ {label} — готово!")
                 else:

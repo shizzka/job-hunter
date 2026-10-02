@@ -1,6 +1,14 @@
 """Быстрый keyword-фильтр вакансий (до LLM-оценки)."""
 
 import re
+import config
+
+
+def uses_qa_policy() -> bool:
+    policy = getattr(config, "VACANCY_FILTER_POLICY", "qa")
+    if policy not in {"qa", "generic"}:
+        raise ValueError("VACANCY_FILTER_POLICY must be qa or generic")
+    return policy == "qa"
 
 RELEVANT_KEYWORDS = {
     "тестиров", "qa", "quality", "тест ", "test",
@@ -82,15 +90,23 @@ def check_vacancy(vacancy: dict) -> str | None:
         None — вакансия прошла фильтр (релевантна)
         str  — причина отсева (note для analytics)
     """
-    title_lower = vacancy.get("title", "").lower()
-    snippet_lower = vacancy.get("snippet", "").lower()
+    qa_policy = uses_qa_policy()
+    title_lower = str(vacancy.get("title") or "").casefold()
+    snippet_lower = str(vacancy.get("snippet") or "").casefold()
     combined = title_lower + " " + snippet_lower
 
-    if any(ex in combined for ex in EXCLUDE_KEYWORDS):
+    excludes = config.VACANCY_EXCLUDE_KEYWORDS or (EXCLUDE_KEYWORDS if qa_policy else ())
+    if any(ex.casefold() in combined for ex in excludes):
         return "exclude_keywords"
 
     if any(pattern.search(combined) for pattern in MILITARY_PATTERNS):
         return "military_redflag"
+
+    keywords = config.VACANCY_RELEVANT_KEYWORDS
+    if keywords:
+        return None if any(kw.casefold() in combined for kw in keywords) else "relevant_keywords"
+    if not qa_policy:
+        return None
 
     source = vacancy.get("source", "")
 

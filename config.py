@@ -44,6 +44,10 @@ ERROR_LOG_FILE = (
 
 
 # ── hh.ru ────────────────────────────────────────────────────────────────
+# Profession-specific prefilter; generic delegates role matching to candidate data + LLM.
+VACANCY_FILTER_POLICY = os.getenv("VACANCY_FILTER_POLICY", "qa").strip().lower()
+VACANCY_RELEVANT_KEYWORDS = _env_list("VACANCY_RELEVANT_KEYWORDS", [])
+VACANCY_EXCLUDE_KEYWORDS = _env_list("VACANCY_EXCLUDE_KEYWORDS", [])
 HH_ENABLED = _env_flag("HH_ENABLED", "1")
 HH_BASE_URL = "https://hh.ru"
 HH_COOKIES_FILE = os.path.join(JOB_HUNTER_HOME, "hh_cookies.json")
@@ -210,6 +214,7 @@ ANALYTICS_MAX_DETAILS_CHARS = _env_int("ANALYTICS_MAX_DETAILS_CHARS", "12000")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 LLM_API_KEY = os.getenv("JOB_HUNTER_LLM_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4.1-mini")
+LLM_PROXY = os.getenv("LLM_PROXY", "").strip()
 
 # ── SuperJob ───────────────────────────────────────────────────────────────
 SUPERJOB_ENABLED = _env_flag("SUPERJOB_ENABLED", "1")

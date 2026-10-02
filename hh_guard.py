@@ -91,21 +91,10 @@ def _normalize_state(state: dict, now: datetime | None = None) -> dict:
     return normalized
 
 
-def _save_state(state: dict) -> None:
-    path = config.HH_GUARD_STATE_FILE
-    try:
-        _store(path).save(state)
-    except Exception as exc:
-        log.warning("Failed to save HH guard state %s: %s", path, exc)
-
-
 def _seed_apply_timestamps_from_analytics(now: datetime | None = None) -> list[str]:
     now = now or _now()
     cutoff = now - timedelta(hours=24)
     path = config.ANALYTICS_EVENTS_FILE
-    if not os.path.exists(path):
-        return []
-
     timestamps = []
     try:
         with open(path, encoding="utf-8") as f:
@@ -117,6 +106,8 @@ def _seed_apply_timestamps_from_analytics(now: datetime | None = None) -> list[s
                     payload = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(payload, dict):
+                    continue
                 if payload.get("event") != "decision":
                     continue
                 if payload.get("source") != "hh":
@@ -126,25 +117,25 @@ def _seed_apply_timestamps_from_analytics(now: datetime | None = None) -> list[s
                 created_at = _parse_datetime(str(payload.get("created_at", "") or ""))
                 if created_at and created_at >= cutoff:
                     timestamps.append(_format_datetime(created_at))
+    except FileNotFoundError:
+        return []
     except Exception as exc:
         log.warning("Failed to seed HH guard from analytics %s: %s", path, exc)
-        return []
+        raise
 
     timestamps.sort()
     return timestamps
 
 
 def _load_state(now: datetime | None = None) -> dict:
+    now = now or _now()
     path = config.HH_GUARD_STATE_FILE
     state = _store(path, now=now).load()
 
     normalized = _normalize_state(state, now=now)
-    if not normalized["successful_apply_timestamps"]:
-        seeded = _seed_apply_timestamps_from_analytics(now=now)
-        if seeded:
-            normalized["successful_apply_timestamps"] = seeded
-            normalized["seeded_from_analytics_at"] = _format_datetime(now or _now())
-            _save_state(normalized)
+    if not normalized["successful_apply_timestamps"] and not normalized["seeded_from_analytics_at"]:
+        # Re-read and seed under one lock, preserving any concurrent cooldown/apply.
+        return _update_state(lambda state: None, now=now)
     return normalized
 
 
@@ -153,11 +144,12 @@ def _update_state(mutator, *, now: datetime) -> dict:
 
     def update(raw_state: dict) -> dict:
         state = _normalize_state(raw_state, now=now)
-        if not state["successful_apply_timestamps"]:
+        if not state["successful_apply_timestamps"] and not state["seeded_from_analytics_at"]:
             seeded = _seed_apply_timestamps_from_analytics(now=now)
-            if seeded:
-                state["successful_apply_timestamps"] = seeded
-                state["seeded_from_analytics_at"] = _format_datetime(now)
+            state["successful_apply_timestamps"] = seeded
+            # A successful empty scan (including a missing log) is still complete.
+            # Failed reads raise instead: never cache an unverified zero count.
+            state["seeded_from_analytics_at"] = _format_datetime(now)
         mutator(state)
         return _normalize_state(state, now=now)
 

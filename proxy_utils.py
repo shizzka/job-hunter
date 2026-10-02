@@ -5,6 +5,7 @@ import os
 
 import aiohttp
 import httpx
+import config
 
 _PROXY_ENV_VARS = (
     "HTTP_PROXY",
@@ -43,8 +44,9 @@ def is_proxy_error(exc: BaseException) -> bool:
 
 
 def llm_http_client() -> httpx.AsyncClient:
-    """Return an HTTP client for LLM calls that ignores inherited env proxies."""
+    """Use only the explicit LLM proxy, never inherited system proxies."""
     return httpx.AsyncClient(
         timeout=httpx.Timeout(60.0, connect=10.0),
         trust_env=False,
+        proxy=config.LLM_PROXY or None,
     )

@@ -16,6 +16,7 @@ from pathlib import Path
 import config
 import profile as profile_mod
 from hh_client import HHClient
+from state_store.json_store import atomic_write_json, atomic_write_text
 
 _TRANSIENT_HH_NAVIGATION_ERRORS = (
     "net::ERR_CONNECTION_CLOSED",
@@ -82,9 +83,7 @@ def _slugify(value: str) -> str:
 
 
 def _write_text(path: str, text: str) -> str:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text.rstrip() + "\n")
+    atomic_write_text(path, text.rstrip() + "\n")
     return path
 
 
@@ -109,14 +108,13 @@ def _read_env_values(path: str, keys: tuple[str, ...]) -> dict[str, str]:
 
 
 def _load_hh_auth_env(profile_name: str) -> dict[str, str]:
-    """Load HH auth login hints without mutating process-wide environment."""
+    """Named profiles use only their own login hints, never shared credentials."""
+    profile_mod.validate_profile_name(profile_name)
+    if profile_name != "default":
+        profile = _resolve_profile(profile_name)
+        return _read_env_values(os.path.join(profile.home_dir, "profile.env"), HH_AUTH_LOGIN_ENV_KEYS)
     env_file = os.getenv("JOB_HUNTER_ENV_FILE", "").strip() or os.path.expanduser("~/.job-hunter/job-hunter.env")
     values = _read_env_values(env_file, HH_AUTH_LOGIN_ENV_KEYS)
-    try:
-        profile = _resolve_profile(profile_name)
-        values.update(_read_env_values(os.path.join(profile.home_dir, "profile.env"), HH_AUTH_LOGIN_ENV_KEYS))
-    except Exception:
-        pass
     for key in HH_AUTH_LOGIN_ENV_KEYS:
         process_value = os.getenv(key, "").strip()
         if process_value and not values.get(key):
@@ -131,9 +129,7 @@ def _normalize_env_value(value: str | int | None) -> str:
 
 def _save_resume_catalog(profile_name: str, items: list[dict]) -> str:
     path = hh_resume_catalog_path(profile_name)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
+    atomic_write_json(path, items)
     return path
 
 
@@ -211,8 +207,7 @@ def _update_profile_resume_ids(profile_name: str, resumes: list[dict]) -> str:
                 lines.append("")
             lines.append(rendered)
 
-    with open(env_file, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines).rstrip() + "\n")
+    atomic_write_text(env_file, "\n".join(lines).rstrip() + "\n")
 
     return env_file
 

@@ -39,6 +39,8 @@ import search_pipeline
 import apply_orchestrator
 import invitation_sync
 import manual_apply_queue
+from state_store.json_store import atomic_write_json
+from llm_client import close_llm_client
 from outcome import (
     DECISION_APPLIED_AUTO,
     DECISION_ALREADY_APPLIED,
@@ -223,9 +225,7 @@ def _write_runtime_status(
         payload.update(extra)
 
     try:
-        os.makedirs(os.path.dirname(config.RUNTIME_STATUS_FILE), exist_ok=True)
-        with open(config.RUNTIME_STATUS_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        atomic_write_json(config.RUNTIME_STATUS_FILE, payload)
     except Exception as exc:
         log.warning("Failed to write runtime status: %s", exc)
 
@@ -2543,6 +2543,7 @@ async def main():
     finally:
         await close_office_session()
         await close_notify_session()
+        await close_llm_client()
 
 
 if __name__ == "__main__":

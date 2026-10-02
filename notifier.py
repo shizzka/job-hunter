@@ -10,6 +10,8 @@ import aiohttp
 import config
 import profile as profile_mod
 import telegram_access
+from telegram_app.formatting import limit_telegram_text
+from state_store.json_store import JsonStore
 
 log = logging.getLogger("notifier")
 
@@ -159,10 +161,12 @@ async def _send_to_chats(method: str, build_request, *, multipart: bool = False)
 
 def _build_text_payload(text: str, parse_mode: str, reply_markup: dict | None):
     """Фабрика payload-словаря для sendMessage."""
+    limited_text = limit_telegram_text(text, 4096, parse_mode)
+
     def build(chat_id):
         payload = {
             "chat_id": chat_id,
-            "text": text[:4096],
+            "text": limited_text,
             "parse_mode": parse_mode,
             "disable_web_page_preview": True,
         }
@@ -174,11 +178,13 @@ def _build_text_payload(text: str, parse_mode: str, reply_markup: dict | None):
 
 def _build_photo_form(photo_path: str, caption: str, parse_mode: str, reply_markup: dict | None):
     """Фабрика FormData для sendPhoto. Открывает файл заново на каждый вызов."""
+    limited_caption = limit_telegram_text(caption, 1024, parse_mode)
+
     def build(chat_id):
         form = aiohttp.FormData()
         form.add_field("chat_id", str(chat_id))
         if caption:
-            form.add_field("caption", caption[:1024])
+            form.add_field("caption", limited_caption)
             form.add_field("parse_mode", parse_mode)
         if reply_markup:
             form.add_field("reply_markup", json.dumps(reply_markup, ensure_ascii=False))
@@ -633,7 +639,6 @@ async def notify_digest(analytics_summary: dict):
     await send_message(text)
 
 
-_COOKIE_WARN_FILE = os.path.join(os.path.expanduser("~"), ".job-hunter", "cookie_warn_sent.json")
 _COOKIE_WARN_INTERVAL = 24 * 3600  # раз в сутки
 _COOKIE_STALE_DAYS = 7
 
@@ -659,12 +664,15 @@ async def notify_stale_cookies():
     if not stale:
         return
 
-    # Не спамить чаще раза в сутки
+    # Отдельная атомарная отметка для каждого профиля.
+    store = JsonStore(os.path.join(config.JOB_HUNTER_HOME, "cookie_warn_sent.json"), logger=log)
     try:
-        state = json.loads(open(_COOKIE_WARN_FILE).read()) if os.path.exists(_COOKIE_WARN_FILE) else {}
-    except Exception:
-        state = {}
-    if now - state.get("sent_at", 0) < _COOKIE_WARN_INTERVAL:
+        state = store.load()
+        last_sent = float(state.get("sent_at") or 0)
+    except Exception as exc:
+        log.warning("Cookie warning state read failed: %s", type(exc).__name__)
+        return
+    if now - last_sent < _COOKIE_WARN_INTERVAL:
         return
 
     text = (
@@ -676,13 +684,13 @@ async def notify_stale_cookies():
         "<code>./run.sh superjob-login</code>\n"
         "<code>./run.sh geekjob-login</code>"
     )
-    await send_message(text)
+    if not await send_message(text):
+        return
 
     try:
-        with open(_COOKIE_WARN_FILE, "w") as f:
-            json.dump({"sent_at": now, "stale": stale}, f)
-    except Exception:
-        pass
+        store.update(lambda state: {**state, "sent_at": now, "stale": stale})
+    except Exception as exc:
+        log.warning("Cookie warning state save failed: %s", type(exc).__name__)
 
 
 async def close_session():

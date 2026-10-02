@@ -24,9 +24,7 @@ def isolated_analytics(tmp_path):
     with mock.patch.object(config, "ANALYTICS_EVENTS_FILE", events_file), \
          mock.patch.object(config, "ANALYTICS_STATE_FILE", state_file), \
          mock.patch.object(config, "ANALYTICS_ENABLED", True):
-        analytics._state = None  # сбросить кэш
         yield tmp_path
-        analytics._state = None
 
 
 def _read_events(tmp_path) -> list[dict]:

@@ -1,12 +1,12 @@
 """Стадированный pipeline резюме для hh.ru: normal -> fun -> ats-heavy."""
 from __future__ import annotations
 
-import json
-import os
+import logging
 from datetime import datetime, timedelta
 
 import config
 import company_blacklist
+from state_store.json_store import JsonStore
 from outcome import (
     STATUS_DETAIL_PENDING_NEW,
     STATUS_DETAIL_PENDING_VIEWED,
@@ -16,6 +16,8 @@ from outcome import (
     status_bucket as _status_bucket,
     status_detail_bucket as _status_detail_bucket,
 )
+
+log = logging.getLogger("hh_resume_pipeline")
 
 
 def _now() -> datetime:
@@ -135,7 +137,31 @@ def resume_variant_reject_reason(variant: dict) -> str | None:
     return None
 
 
-_state: dict | None = None
+def _corrupt_state() -> dict:
+    # Lost attempts must not enable another automatic response to the employer.
+    return {"_recovery_required": {"reason": "state_corruption", "detected_at": _to_iso(_now())}}
+
+
+def _store() -> JsonStore:
+    return JsonStore(
+        config.HH_RESUME_PIPELINE_FILE,
+        corrupt_factory=_corrupt_state,
+        logger=log,
+        read_error_message="HH resume pipeline state read failed",
+    )
+
+
+def _update(mutator):
+    """Mutate the current profile's latest state under one interprocess lock."""
+    result = None
+
+    def update(state: dict) -> dict:
+        nonlocal result
+        result = mutator(state)
+        return state
+
+    _store().update(update)
+    return result
 
 
 def _merge_variant_lists(primary: list[dict] | None, fallback: list[dict] | None) -> list[dict]:
@@ -170,27 +196,8 @@ def _merge_variant_lists(primary: list[dict] | None, fallback: list[dict] | None
 
 
 def _load() -> dict:
-    global _state
-    if _state is not None:
-        return _state
-
-    if os.path.exists(config.HH_RESUME_PIPELINE_FILE):
-        try:
-            with open(config.HH_RESUME_PIPELINE_FILE) as f:
-                _state = json.load(f)
-        except Exception:
-            _state = {}
-    else:
-        _state = {}
-    return _state
-
-
-def _save() -> None:
-    if _state is None:
-        return
-    os.makedirs(os.path.dirname(config.HH_RESUME_PIPELINE_FILE), exist_ok=True)
-    with open(config.HH_RESUME_PIPELINE_FILE, "w") as f:
-        json.dump(_state, f, ensure_ascii=False, indent=2)
+    # No process-global cache: another profile or process may have changed state.
+    return _store().load()
 
 
 def enabled() -> bool:
@@ -253,17 +260,21 @@ def resolve_variants(resumes: list[dict]) -> list[dict]:
 
 
 def remember_resolved_variants(resolved_variants: list[dict]) -> None:
-    state = _load()
-    state["_resolved_variants"] = _merge_variant_lists(
-        resolved_variants,
-        get_resolved_variants(),
-    )
-    state["_resolved_at"] = _to_iso(_now())
-    _save()
+    def remember(state: dict) -> None:
+        state["_resolved_variants"] = _merge_variant_lists(
+            resolved_variants,
+            _resolved_variants(state),
+        )
+        state["_resolved_at"] = _to_iso(_now())
+
+    _update(remember)
 
 
 def get_resolved_variants() -> list[dict]:
-    state = _load()
+    return _resolved_variants(_load())
+
+
+def _resolved_variants(state: dict) -> list[dict]:
     resolved = state.get("_resolved_variants")
     if isinstance(resolved, list) and resolved:
         return _merge_variant_lists(resolved, get_variants())
@@ -289,17 +300,18 @@ def block_company_retry(company: str, reason: str = "manual") -> bool:
     key = _company_key(company)
     if not key:
         return False
-    state = _load()
-    blocked = state.setdefault("_blocked_companies", {})
-    if not isinstance(blocked, dict):
-        blocked = {}
-        state["_blocked_companies"] = blocked
-    blocked[key] = {
-        "company": str(company or "").strip(),
-        "reason": str(reason or "manual").strip() or "manual",
-        "created_at": _to_iso(_now()),
-    }
-    _save()
+    def block(state: dict) -> None:
+        blocked = state.setdefault("_blocked_companies", {})
+        if not isinstance(blocked, dict):
+            blocked = {}
+            state["_blocked_companies"] = blocked
+        blocked[key] = {
+            "company": str(company or "").strip(),
+            "reason": str(reason or "manual").strip() or "manual",
+            "created_at": _to_iso(_now()),
+        }
+
+    _update(block)
     return True
 
 
@@ -307,12 +319,14 @@ def unblock_company_retry(company: str) -> bool:
     key = _company_key(company)
     if not key:
         return False
-    blocked = _blocked_company_state()
-    if key not in blocked:
-        return False
-    blocked.pop(key, None)
-    _save()
-    return True
+    def unblock(state: dict) -> bool:
+        blocked = _blocked_company_state(state)
+        if key not in blocked:
+            return False
+        blocked.pop(key, None)
+        return True
+
+    return _update(unblock)
 
 
 def list_blocked_companies() -> list[dict]:
@@ -331,8 +345,9 @@ def _entry(vacancy_id: str) -> dict | None:
     return _load().get(vacancy_id)
 
 
-def _ensure_entry(vacancy: dict) -> dict:
-    state = _load()
+def _ensure_entry(vacancy: dict, state: dict | None = None) -> dict:
+    if state is None:
+        return _update(lambda current: _ensure_entry(vacancy, current))
     vacancy_id = vacancy["id"]
     entry = state.setdefault(
         vacancy_id,
@@ -377,15 +392,19 @@ def _variant_by_name(variants: list[dict], name: str) -> dict | None:
 
 
 def get_next_variant(vacancy_id: str, cluster: str | None = None) -> dict | None:
+    return _next_variant(_load(), vacancy_id, cluster)
+
+
+def _next_variant(state: dict, vacancy_id: str, cluster: str | None = None) -> dict | None:
     variants = [
         variant
-        for variant in get_resolved_variants()
+        for variant in _resolved_variants(state)
         if resume_variant_reject_reason(variant) is None
     ]
     if not variants:
         return None
 
-    entry = _entry(vacancy_id) or {}
+    entry = state.get(vacancy_id) or {}
     attempts = entry.get("attempts") or []
     attempted_names = {
         str(attempt.get("variant") or "").strip()
@@ -418,7 +437,11 @@ def _retry_attempt_payload(vacancy: dict) -> dict:
 
 
 def record_successful_apply(vacancy: dict, variant: dict) -> None:
-    entry = _ensure_entry(vacancy)
+    _update(lambda state: _record_successful_apply(state, vacancy, variant))
+
+
+def _record_successful_apply(state: dict, vacancy: dict, variant: dict) -> None:
+    entry = _ensure_entry(vacancy, state)
     attempts = entry.setdefault("attempts", [])
     retry_payload = _retry_attempt_payload(vacancy)
     if attempts and attempts[-1].get("variant") == variant["name"]:
@@ -438,17 +461,18 @@ def record_successful_apply(vacancy: dict, variant: dict) -> None:
     entry["next_retry_at"] = ""
     entry["retry_reason"] = ""
     entry["completed_reason"] = ""
-    _save()
 
 
 def mark_terminal(vacancy_id: str, reason: str) -> None:
-    entry = _entry(vacancy_id)
-    if not entry:
-        return
-    entry["completed_reason"] = reason
-    entry["next_retry_at"] = ""
-    entry["retry_reason"] = ""
-    _save()
+    def mark(state: dict) -> None:
+        entry = state.get(vacancy_id)
+        if not entry:
+            return
+        entry["completed_reason"] = reason
+        entry["next_retry_at"] = ""
+        entry["retry_reason"] = ""
+
+    _update(mark)
 
 
 def _retry_eta_from_last_attempt(entry: dict, delay_hours: int | None = None) -> datetime | None:
@@ -513,14 +537,14 @@ def _retry_reason_for_bucket(bucket: str) -> str:
     return ""
 
 
-def _set_retry_state(entry: dict, vacancy_id: str, status_text: str) -> None:
+def _set_retry_state(state: dict, entry: dict, vacancy_id: str, status_text: str) -> None:
     delay_hours = _retry_delay_for_status(status_text)
     if delay_hours is None:
         entry["next_retry_at"] = ""
         entry["retry_reason"] = ""
         return
 
-    if get_next_variant(vacancy_id) is None:
+    if _next_variant(state, vacancy_id) is None:
         entry["completed_reason"] = "pipeline_exhausted"
         entry["next_retry_at"] = ""
         entry["retry_reason"] = ""
@@ -596,7 +620,10 @@ def sync_negotiation_statuses(items: list[dict]) -> None:
     if not enabled():
         return
 
-    state = _load()
+    _update(lambda state: _sync_negotiation_statuses(state, items))
+
+
+def _sync_negotiation_statuses(state: dict, items: list[dict]) -> None:
     now = _now()
     for item in items:
         vacancy_id = str(item.get("id") or "").strip()
@@ -619,24 +646,29 @@ def sync_negotiation_statuses(items: list[dict]) -> None:
             continue
 
         if bucket in {STATUS_REJECTED, STATUS_PENDING}:
-            _set_retry_state(entry, vacancy_id, status_text)
+            _set_retry_state(state, entry, vacancy_id, status_text)
             continue
 
         entry["next_retry_at"] = ""
         entry["retry_reason"] = ""
         continue
 
-    _save()
 
 
 def get_retry_candidates() -> list[dict]:
     if not enabled():
         return []
 
-    state = _load()
+    return _update(_retry_candidates)
+
+
+def _retry_candidates(state: dict) -> list[dict]:
+    if state.get("_recovery_required"):
+        log.warning("HH resume retries suspended: state recovery is required")
+        return []
     variants = [
         variant
-        for variant in get_resolved_variants()
+        for variant in _resolved_variants(state)
         if resume_variant_reject_reason(variant) is None
     ]
     now = _now()
@@ -670,7 +702,7 @@ def get_retry_candidates() -> list[dict]:
         if retry_eta is None or retry_eta > now:
             continue
 
-        next_variant = get_next_variant(vacancy_id)
+        next_variant = _next_variant(state, vacancy_id)
         if not next_variant:
             entry["completed_reason"] = "pipeline_exhausted"
             entry["next_retry_at"] = ""
@@ -722,7 +754,6 @@ def get_retry_candidates() -> list[dict]:
             }
         )
 
-    _save()
     # Сначала пробуем свежих молчунов: старые pending чаще уже закрыты/архивны.
     reason_priority = {
         "viewed_no_response": 0,

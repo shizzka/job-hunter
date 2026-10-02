@@ -10,6 +10,7 @@ import time
 import aiohttp
 
 import config
+from telegram_app.formatting import limit_telegram_text
 
 
 _PROXY_DIRECT_FALLBACK_SECONDS = 60.0
@@ -232,7 +233,7 @@ class TelegramAPIClient:
         form = aiohttp.FormData()
         form.add_field("chat_id", str(chat_id))
         if caption:
-            form.add_field("caption", caption[:1024])
+            form.add_field("caption", limit_telegram_text(caption, 1024))
         if reply_markup:
             form.add_field(
                 "reply_markup",
