@@ -1397,6 +1397,19 @@ async def do_search(dry_run: bool = False) -> dict:
                 _format_source_progress("Отклик", source, source_index, source_total),
                 "working",
             )
+            apply_trace = None
+            if source == "hh":
+                apply_trace = apply_orchestrator.create_hh_apply_trace(
+                    v,
+                    mode=str(v.get("_analytics_apply_mode") or "auto"),
+                )
+                if apply_trace is not None:
+                    apply_trace.event(
+                        "HH_SESSION_CHECK",
+                        ok=bool(hh_logged_in),
+                        authenticated=bool(hh_logged_in),
+                        url=getattr(getattr(hh_client, "_page", None), "url", ""),
+                    )
             cover_limit = apply_orchestrator.get_cover_letter_limit(source)
             cover = await analytics.tracked_call("cover_letter", run_id, v, generate_cover_letter, v, details)
             cover = cover or ""
@@ -1407,12 +1420,25 @@ async def do_search(dry_run: bool = False) -> dict:
                 log.info("  hh retry fallback cover letter used for %s", vid)
             if len(cover) > cover_limit:
                 cover = cover[:cover_limit]
+            if apply_trace is not None:
+                apply_trace.event(
+                    "COVER_LETTER_GENERATED",
+                    ok=bool(cover.strip()),
+                    expected=True,
+                    generated=bool(cover.strip()),
+                    chars=len(cover),
+                )
             cover_evaluation = _evaluation_with_cover_letter(
                 evaluation,
                 cover,
                 fallback=cover_fallback_used or None,
             )
             if not (cover or "").strip():
+                if apply_trace is not None:
+                    apply_trace.finish(
+                        ok=False,
+                        message="LLM не сгенерировал сопроводительное письмо",
+                    )
                 manual_note = (
                     "LLM не сгенерировал сопроводительное письмо; "
                     "автоотклик без текста не отправляю. Проверь вручную."
@@ -1451,6 +1477,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     hh_client, superjob_client, habr_client, geekjob_client,
                     preferred_resume_title=(hh_resume_variant or {}).get("title", ""),
                     preferred_resume_id=(hh_resume_variant or {}).get("id", ""),
+                    trace=apply_trace,
                 )
             except Exception as e:
                 snapshot = await _save_autoapply_failure_snapshot(
@@ -2177,6 +2204,115 @@ async def do_analytics_backfill():
     print()
 
 
+async def do_trace_apply(vacancy_value: str) -> dict:
+    """Run one real HH application with an isolated structured trace."""
+    match = re.search(r"(?:vacancy/)?(\d+)", str(vacancy_value or "").strip())
+    if not match:
+        result = {"ok": False, "message": "Укажи числовой HH vacancy ID или URL вакансии"}
+        print(f"❌ {result['message']}")
+        return result
+
+    vacancy_id = match.group(1)
+    vacancy = {
+        "id": vacancy_id,
+        "source": "hh",
+        "url": f"https://hh.ru/vacancy/{vacancy_id}",
+        "_analytics_apply_mode": "trace-apply",
+    }
+    trace = apply_orchestrator.create_hh_apply_trace(vacancy, mode="trace-apply", force=True)
+    if trace is None:
+        result = {"ok": False, "message": "Не удалось создать каталог trace"}
+        print(f"❌ {result['message']}")
+        return result
+
+    client = HHClient()
+    result: dict = {"ok": False, "message": "Trace apply did not complete"}
+    try:
+        await client.start()
+        authenticated = await client.is_logged_in()
+        trace.event(
+            "HH_SESSION_CHECK",
+            ok=authenticated,
+            authenticated=authenticated,
+            url=getattr(client._page, "url", ""),
+        )
+        if not authenticated:
+            failure_stage = trace.last_stage
+            await trace.capture(client._page, "failure", screenshot=True, html=True)
+            result = {"ok": False, "message": "HH-сессия не авторизована"}
+            trace.finish(ok=False, message=result["message"], failure_stage=failure_stage)
+            return result
+
+        details = await client.get_vacancy_details(vacancy["url"])
+
+        async def page_text(selector: str) -> str:
+            try:
+                element = await client._page.query_selector(selector)
+                return (await element.inner_text()).strip() if element else ""
+            except Exception:
+                return ""
+
+        vacancy["title"] = await page_text("[data-qa='vacancy-title'], h1")
+        vacancy["company"] = await page_text(
+            "[data-qa='vacancy-company-name'], [data-qa='vacancy-company-name-text']"
+        )
+        vacancy["details"] = details
+        trace.event(
+            "VACANCY_PREFLIGHT",
+            ok=bool(details),
+            vacancy_id=vacancy_id,
+            url=vacancy["url"],
+            title=vacancy.get("title", ""),
+            company=vacancy.get("company", ""),
+            details_chars=len(details or ""),
+        )
+
+        cover = await generate_cover_letter(vacancy, details)
+        cover = (cover or "")[: apply_orchestrator.get_cover_letter_limit("hh")]
+        trace.event(
+            "COVER_LETTER_GENERATED",
+            ok=bool(cover.strip()),
+            expected=True,
+            generated=bool(cover.strip()),
+            chars=len(cover),
+        )
+        if not cover.strip():
+            failure_stage = trace.last_stage
+            await trace.capture(client._page, "failure", screenshot=True, html=True)
+            result = {"ok": False, "message": "LLM не сгенерировал сопроводительное письмо"}
+            trace.finish(ok=False, message=result["message"], failure_stage=failure_stage)
+            return result
+
+        result = await apply_orchestrator.dispatch_apply(
+            vacancy,
+            cover,
+            hh_client=client,
+            preferred_resume_title=getattr(config, "HH_PRIMARY_RESUME_TITLE", ""),
+            preferred_resume_id=getattr(config, "HH_PRIMARY_RESUME_ID", ""),
+            trace=trace,
+        )
+        return result
+    except Exception as exc:
+        failure_stage = trace.last_stage
+        if client._page is not None:
+            await trace.capture(client._page, "failure", screenshot=True, html=True)
+        result = {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
+        trace.finish(ok=False, message=result["message"], failure_stage=failure_stage)
+        return result
+    finally:
+        try:
+            await client.stop()
+        except Exception as exc:
+            log.warning("Trace apply HH client shutdown failed: %s", type(exc).__name__)
+        print("\nTRACE RESULT")
+        print(f"  Trace ID: {trace.trace_id}")
+        print(f"  Result:   {'OK' if result.get('ok') else 'FAIL'}")
+        if not result.get("ok"):
+            print(f"  Failure:  {trace.failure_stage or trace.last_stage}")
+        print(f"  Message:  {result.get('message', '')}")
+        print(f"  Artifacts: {trace.trace_dir}")
+
+
 async def main():
     parser = argparse.ArgumentParser(
         description="Job Hunter Agent — автопоиск работы на hh.ru, SuperJob, Хабр Карьере и GeekJob"
@@ -2226,6 +2362,7 @@ async def main():
     group.add_argument("--google-form-recheck", metavar="TOKEN", help="Проверить черновик Google Form после ручных правок")
     group.add_argument("--google-form-recheck-submit", metavar="TOKEN", help="Проверить и отправить подтверждённые ответы Google Form")
     group.add_argument("--manual-apply-token", metavar="TOKEN", help="Отправить yellow-zone отклик по Telegram token")
+    group.add_argument("--trace-apply", metavar="VACANCY_ID", help="Один реальный HH-отклик с изолированным debug trace")
     parser.add_argument("--chat-message-id", default="", help="ID сообщения в hh-чате для --chat-respond-one")
     parser.add_argument("--chat-allow-suspicious", action="store_true", help="Разрешить ответ на подозрительное HR-сообщение без явного AI-маркера")
     parser.add_argument("--chat-allow-any", action="store_true", help="Для ручного запуска разрешить AI-preview по любому последнему входящему сообщению")
@@ -2354,6 +2491,10 @@ async def main():
             await google_form_commands.recheck(args.google_form_recheck_submit, profile_name=args.profile, submit_after=True)
         elif args.manual_apply_token:
             result = await do_manual_apply_token(args.manual_apply_token)
+            if not result.get("ok"):
+                sys.exit(1)
+        elif args.trace_apply:
+            result = await do_trace_apply(args.trace_apply)
             if not result.get("ok"):
                 sys.exit(1)
         elif args.chat_respond_one:

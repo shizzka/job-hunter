@@ -740,6 +740,7 @@ class HHClient:
         preferred_resume_title: str = "",
         preferred_resume_id: str = "",
         vacancy_context: str = "",
+        trace=None,
     ) -> dict:
         return await _apply_to_vacancy(
             self,
@@ -749,6 +750,7 @@ class HHClient:
             preferred_resume_title,
             preferred_resume_id,
             vacancy_context,
+            trace=trace,
             absolute_hh_url=_absolute_hh_url,
             anti_bot_message=_anti_bot_message,
             logger=log,

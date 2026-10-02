@@ -23,6 +23,7 @@ set -euo pipefail
 #   ./run.sh google-form-preview <chat_id> [message_id] — подготовить Google Form из HH-чата
 #   ./run.sh google-form-submit <token> — отправить подготовленную Google Form
 #   ./run.sh dry-run     — поиск без откликов
+#   ./run.sh trace-apply 123456 — один HH-отклик с изолированным debug trace
 
 cd "$(dirname "$0")"
 VENV="${JOB_HUNTER_PYTHON:-./venv/bin/python}"
@@ -89,6 +90,10 @@ case "$MODE" in
         ;;
     search)
         $VENV agent.py $PROFILE_ARG --search
+        ;;
+    trace-apply)
+        VACANCY_ID="${2:?Укажи HH vacancy ID: ./run.sh trace-apply 123456}"
+        $VENV agent.py $PROFILE_ARG --trace-apply "$VACANCY_ID"
         ;;
     fresh-search|fresh)
         $VENV agent.py $PROFILE_ARG --fresh-search
@@ -237,7 +242,7 @@ case "$MODE" in
         $VENV job_hunter_ctl.py $PROFILE_ARG daemon-stop
         ;;
     *)
-        echo "Usage: $0 [--profile <name>] {login|google-login|search|fresh-search|check|daemon|bot|bot-daemon|status|bot-status|stats|analytics|filter-audit|digest|dry-run|grab-resume|resume-status|resume-boost|google-form-preview|google-form-submit|chat-respond|chat-respond-one|retry-preview|retry-block-company|retry-unblock-company|retry-blocked-companies|create-profile|profiles|bot-stop|stop}"
+        echo "Usage: $0 [--profile <name>] {login|google-login|search|trace-apply|fresh-search|check|daemon|bot|bot-daemon|status|bot-status|stats|analytics|filter-audit|digest|dry-run|grab-resume|resume-status|resume-boost|google-form-preview|google-form-submit|chat-respond|chat-respond-one|retry-preview|retry-block-company|retry-unblock-company|retry-blocked-companies|create-profile|profiles|bot-stop|stop}"
         exit 1
         ;;
 esac

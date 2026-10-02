@@ -80,6 +80,10 @@ from chat_screening import (
 log = logging.getLogger("chat_responder")
 
 
+def _default_chat_dry_run() -> bool:
+    return not bool(config.HH_CHAT_AUTOSEND)
+
+
 def _escaped_html(value: Any, *, limit: int) -> str:
     return html.escape(str(value or "")[:limit])
 
@@ -962,7 +966,7 @@ async def process_one(
     """Generate/send one reply for a specific chat message after human approval."""
     paths = runtime_paths or _runtime_paths()
     if dry_run is None:
-        dry_run = not bool(int(os.getenv("HH_CHAT_AUTOSEND", "0") or 0))
+        dry_run = _default_chat_dry_run()
 
     if not hh_client._page:
         await hh_client.start(headless=True)
@@ -1069,7 +1073,7 @@ async def process_all(
     dry_run: если None — берётся из env HH_CHAT_AUTOSEND (0 = dry-run).
     """
     if dry_run is None:
-        dry_run = not bool(int(os.getenv("HH_CHAT_AUTOSEND", "0") or 0))
+        dry_run = _default_chat_dry_run()
     paths = runtime_paths or _runtime_paths()
     runtime_limits = limits or ChatResponderLimits.from_env(os.environ)
     max_replies = max_replies_per_chat or runtime_limits.max_replies_per_chat

@@ -53,16 +53,20 @@ def strip_markdown_fence(text: str) -> str:
 def parse_llm_json(text: str) -> dict:
     """Робастный JSON-парсер: чинит markdown-fence, thinking-префикс, постфикс.
 
-    Бросает json.JSONDecodeError если ни прямой parse, ни extract не сработали.
+    Возвращает только JSON-объект. Бросает json.JSONDecodeError, если parse/extract
+    не сработал или верхнеуровневое значение имеет другой JSON-тип.
     """
     raw = strip_markdown_fence(text)
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
     except json.JSONDecodeError:
         extracted = extract_first_json_object(raw) or extract_first_json_object(text or "")
         if not extracted:
             raise
-        return json.loads(extracted)
+        parsed = json.loads(extracted)
+    if not isinstance(parsed, dict):
+        raise json.JSONDecodeError("Expected a JSON object", raw, 0)
+    return parsed
 
 async def repair_llm_json(
     client,

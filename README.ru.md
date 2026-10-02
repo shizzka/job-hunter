@@ -1,10 +1,10 @@
-# Job Hunter v0.6.0
+# Job Hunter v0.7.0
 
 English version: [README.md](README.md)
 
 `Job Hunter` — Python-инструмент для автоматизации поиска QA/testing вакансий на нескольких job board-платформах, их оценки через LLM и автоотклика там, где площадка это позволяет.
 
-Поддерживает изолированные профили пользователей, LLM-анализ резюме, воронку откликов со staged retry / A/B тестированием резюме, интерактивный мастер настройки, авто-ответ на анкеты работодателя (radio/checkbox/select), решение captcha hh.ru (vision-LLM + TG-bridge), Telegram-подтверждение AI-ответов в HH-чатах, ручной AI-отклик на yellow-zone вакансии и заполнение Google Forms из ссылок рекрутеров.
+Поддерживает изолированные профили пользователей, LLM-анализ резюме, воронку откликов со staged retry / A/B тестированием резюме, интерактивный мастер настройки, авто-ответ на анкеты работодателя (radio/checkbox/select), решение captcha hh.ru (vision-LLM + TG-bridge), Telegram-подтверждение AI-ответов в HH-чатах, ручной AI-отклик на yellow-zone вакансии, заполнение Google Forms из ссылок рекрутеров и структурированные debug traces для каждого HH-отклика.
 
 Текущий публичный статус: `OBT` (open beta testing) → freeware. Ожидай дрейф селекторов, captcha-ограничения и платформенные edge case'ы.
 
@@ -204,6 +204,11 @@ cp job-hunter.env.example ~/.job-hunter/job-hunter.env
 - `HH_CHAT_RESPONDER_ENABLED=1`: включить авто-ответ в чатах с AI-помощниками
 - `HH_CHAT_AUTOSEND=1`: реальная отправка (0 = dry-run + preview в TG)
 - `HH_CHAT_MAX_REPLIES_PER_CHAT=5`: safety-лимит ответов на один чат
+- `HH_CHAT_MAX_SCAN=25`: максимум свежих релевантных чатов за запуск
+- `LLM_PROVIDER_FALLBACK_TTL_SECONDS=300`: повторная проверка основного LLM-провайдера
+- `HH_APPLY_TRACE_ENABLED=1`: структурированный trace каждого HH-отклика
+- `HH_APPLY_TRACE_RETENTION_DAYS=14`: срок хранения trace-каталогов
+- `HH_APPLY_TRACE_MAX_RUNS=100`: максимум сохранённых traces на профиль
 
 Полный шаблон: [job-hunter.env.example](job-hunter.env.example)
 
@@ -293,6 +298,7 @@ LLM_MODEL=qwen2.5:14b
 # Поиск и отклик
 ./run.sh dry-run
 ./run.sh search
+./run.sh --profile qa trace-apply 123456  # один реальный HH-отклик с изолированным trace
 ./run.sh fresh-search          # лёгкий HH-only поиск свежих вакансий
 ./run.sh check
 ./run.sh daemon
@@ -317,6 +323,12 @@ LLM_MODEL=qwen2.5:14b
 ./run.sh bot                    # foreground (для отладки)
 ./run.sh bot-daemon             # фоном
 ```
+
+HH traces сохраняются в
+`~/.job-hunter/profiles/<profile>/traces/YYYY-MM-DD/`. В каждом запуске есть
+машиночитаемый `trace.jsonl`, человекочитаемый `summary.txt` и только ключевые
+HTML/screenshot-артефакты. Секреты и содержимое cookies не записываются,
+файлы создаются с правами `0600`, а история ограничена retention-настройками.
 
 ### Cron (рекомендуемое расписание)
 

@@ -1,10 +1,10 @@
-# Job Hunter v0.6.0
+# Job Hunter v0.7.0
 
 Russian version: [README.ru.md](README.ru.md)
 
 `Job Hunter` is a Python automation tool for searching QA/testing vacancies across multiple job boards, scoring them with an LLM, and sending auto-applications where the platform allows it.
 
-It supports isolated user profiles, LLM-powered resume analysis, application funnels with staged resume retries / A/B testing, an interactive setup wizard, **auto-answer for employer questionnaires (radio/checkbox/select)**, **hh.ru captcha solver (vision-LLM + Telegram-bridge)**, **Telegram-confirmed AI replies in hh.ru chats**, **manual AI applications for yellow-zone matches**, and **Google Forms filling from recruiter chat links**.
+It supports isolated user profiles, LLM-powered resume analysis, application funnels with staged resume retries / A/B testing, an interactive setup wizard, **auto-answer for employer questionnaires (radio/checkbox/select)**, **hh.ru captcha solver (vision-LLM + Telegram-bridge)**, **Telegram-confirmed AI replies in hh.ru chats**, **manual AI applications for yellow-zone matches**, **Google Forms filling from recruiter chat links**, and **structured per-application debug traces**.
 
 Current public status: `OBT` (open beta testing) → freeware. Expect selector drift, captcha limits, and platform-specific edge cases.
 
@@ -216,6 +216,9 @@ See `scripts/smoke/model_bench.py` for the 6-models × 4-tasks benchmark.
 - `HH_CHAT_MAX_REPLIES_PER_CHAT=5`: safety limit per chat
 - `HH_CHAT_MAX_SCAN=25`: scan at most this many newest relevant chats per run
 - `LLM_PROVIDER_FALLBACK_TTL_SECONDS=300`: retry the primary LLM after this fallback window
+- `HH_APPLY_TRACE_ENABLED=1`: write a structured trace for every HH application attempt
+- `HH_APPLY_TRACE_RETENTION_DAYS=14`: remove expired trace directories
+- `HH_APPLY_TRACE_MAX_RUNS=100`: keep at most this many recent traces per profile
 
 See the full template in [job-hunter.env.example](job-hunter.env.example).
 
@@ -291,6 +294,7 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 # Search and apply
 ./run.sh dry-run
 ./run.sh search
+./run.sh --profile qa trace-apply 123456  # one real HH application with an isolated trace
 ./run.sh fresh-search          # lightweight HH-only fresh search
 ./run.sh check
 ./run.sh daemon
@@ -315,6 +319,12 @@ For local Ollama the API key can be any non-empty placeholder string, because th
 ./run.sh bot                    # foreground (debug)
 ./run.sh bot-daemon             # background
 ```
+
+HH application traces are stored under
+`~/.job-hunter/profiles/<profile>/traces/YYYY-MM-DD/`. Each run contains an
+append-only `trace.jsonl`, a human-readable `summary.txt`, and selected HTML or
+screenshot artifacts. Secrets and cookie contents are not written; artifacts
+are created with mode `0600` and bounded by the retention settings above.
 
 ### Cron (recommended schedule)
 

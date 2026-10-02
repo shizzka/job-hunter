@@ -4,6 +4,14 @@ import hh_chat_responder as chat_responder
 from runtime_context import ChatResponderLimits, RuntimePaths
 
 
+def test_default_chat_dry_run_uses_parsed_config_flag(monkeypatch):
+    monkeypatch.setattr(chat_responder.config, "HH_CHAT_AUTOSEND", True)
+    assert chat_responder._default_chat_dry_run() is False
+
+    monkeypatch.setattr(chat_responder.config, "HH_CHAT_AUTOSEND", False)
+    assert chat_responder._default_chat_dry_run() is True
+
+
 def test_ai_recruiter_self_intro_text_marks_named_assistant_message():
     message = {
         "id": "14320587410",

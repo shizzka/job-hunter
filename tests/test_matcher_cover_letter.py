@@ -5,6 +5,20 @@ from datetime import datetime, timedelta
 import matcher
 
 
+def test_coerce_score_handles_common_llm_formats_without_distortion():
+    assert matcher._coerce_score("85.5") == 85
+    assert matcher._coerce_score("85/100") == 85
+    assert matcher._coerce_score("score: 72,5") == 72
+    assert matcher._coerce_score(101.9) == 100
+    assert matcher._coerce_score(-3) == 0
+
+
+def test_coerce_score_rejects_bool_and_non_finite_values():
+    assert matcher._coerce_score(True, default=50) == 50
+    assert matcher._coerce_score(float("inf"), default=51) == 51
+    assert matcher._coerce_score("not scored", default=52) == 52
+
+
 def test_cover_letter_style_block_is_stable_for_same_vacancy():
     vacancy = {
         "id": "hh-1",

@@ -4,18 +4,67 @@
 Извлечено из agent.py (A-002).
 """
 import logging
+import os
 import uuid
 import analytics
 import resume_versions
 
 import config
 import company_blacklist
+import profile as profile_mod
+from debug_trace import ApplyTrace
 from hh_client import HHClient
 from superjob_client import SuperJobClient
 from habr_career_client import HabrCareerClient
 from geekjob_client import GeekJobClient
 
 log = logging.getLogger("agent")
+
+
+def _knowledge_file_names(home_dir: str) -> list[str]:
+    knowledge_dir = os.path.join(home_dir, "knowledge")
+    try:
+        return sorted(
+            name
+            for name in os.listdir(knowledge_dir)
+            if name.endswith((".md", ".txt")) and os.path.isfile(os.path.join(knowledge_dir, name))
+        )
+    except OSError:
+        return []
+
+
+def create_hh_apply_trace(vacancy: dict, *, mode: str = "auto", force: bool = False) -> ApplyTrace | None:
+    if not force and not getattr(config, "HH_APPLY_TRACE_ENABLED", True):
+        return None
+    try:
+        active_profile = profile_mod.active()
+        profile_name = str(active_profile.name or "default")
+        home_dir = str(config.JOB_HUNTER_HOME or active_profile.home_dir)
+        trace = ApplyTrace.create(
+            home_dir=home_dir,
+            source="hh",
+            vacancy_id=str(vacancy.get("id") or "unknown"),
+            profile=profile_name,
+            mode=mode,
+            retention_days=getattr(config, "HH_APPLY_TRACE_RETENTION_DAYS", 14),
+            max_runs=getattr(config, "HH_APPLY_TRACE_MAX_RUNS", 100),
+        )
+        trace.event(
+            "PROFILE_CONTEXT",
+            ok=True,
+            profile=profile_name,
+            home_dir=home_dir,
+            hh_state_dir=config.HH_STATE_DIR,
+            cookies_file=config.HH_COOKIES_FILE,
+            resume_file=config.RESUME_FILE,
+            resume_id=getattr(config, "HH_PRIMARY_RESUME_ID", ""),
+            resume_title=getattr(config, "HH_PRIMARY_RESUME_TITLE", ""),
+            kb_files=_knowledge_file_names(home_dir),
+        )
+        return trace
+    except Exception as exc:
+        log.warning("Could not initialize HH apply trace: %s", type(exc).__name__)
+        return None
 
 
 # ── Получение деталей вакансии ──
@@ -55,6 +104,22 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
         if not kwargs.get("preferred_resume_id") and not kwargs.get("preferred_resume_title"):
             kwargs["preferred_resume_id"] = getattr(config, "HH_PRIMARY_RESUME_ID", "")
             kwargs["preferred_resume_title"] = getattr(config, "HH_PRIMARY_RESUME_TITLE", "")
+        trace = kwargs.get("trace")
+        if trace is None:
+            trace = create_hh_apply_trace(
+                vacancy,
+                mode=str(vacancy.get("_analytics_apply_mode") or "auto"),
+            )
+            kwargs["trace"] = trace
+        if trace is not None:
+            trace.event(
+                "DISPATCH_APPLY",
+                ok=True,
+                has_cover_letter=bool((cover_letter or "").strip()),
+                cover_letter_chars=len(cover_letter or ""),
+                requested_resume_id=kwargs.get("preferred_resume_id", ""),
+                requested_resume_title=kwargs.get("preferred_resume_title", ""),
+            )
     application_id = uuid.uuid4().hex
     vacancy["_requested_resume"] = {"id": kwargs.get("preferred_resume_id", ""),
                                     "title": kwargs.get("preferred_resume_title", "")}
@@ -74,6 +139,17 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
             result = await _dispatch_apply(vacancy, cover_letter, *args, **kwargs)
         except Exception as exc:
             analytics._append_event({"event": "application_result", "outcome": "error", "error_kind": type(exc).__name__})
+            trace = kwargs.get("trace")
+            if trace is not None:
+                failure_stage = trace.last_stage
+                hh_client = kwargs.get("hh_client") or (args[0] if args else None)
+                if getattr(hh_client, "_page", None) is not None:
+                    await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
+                trace.finish(
+                    ok=False,
+                    message=f"{type(exc).__name__}: {exc}",
+                    failure_stage=failure_stage,
+                )
             raise
         outcome = ("already_applied" if result.get("already_applied") else
                    "blocked" if result.get("reason") == "company_blacklisted" else
@@ -82,6 +158,22 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
                                  "cover_letter_status": result.get("cover_letter_status", "unknown"),
                                  "resume_selection_verified": result.get("resume_selection_verified", False),
                                  "selected_resume_id": result.get("selected_resume_id", "")})
+        trace = kwargs.get("trace")
+        if trace is not None:
+            result_ok = bool(result.get("ok"))
+            failure_stage = trace.last_stage
+            if not result_ok:
+                hh_client = kwargs.get("hh_client") or (args[0] if args else None)
+                if getattr(hh_client, "_page", None) is not None:
+                    await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
+            trace.finish(
+                ok=result_ok,
+                message=str(result.get("message") or outcome),
+                failure_stage=failure_stage,
+            )
+            result = dict(result)
+            result["trace_id"] = trace.trace_id
+            result["trace_dir"] = os.fspath(trace.trace_dir)
         return result
 
 
@@ -94,6 +186,7 @@ async def _dispatch_apply(
     geekjob_client: GeekJobClient | None = None,
     preferred_resume_title: str = "",
     preferred_resume_id: str = "",
+    trace: ApplyTrace | None = None,
 ) -> dict:
     """Отправить отклик через соответствующий клиент источника."""
     source = vacancy.get("source", "hh")
@@ -119,6 +212,7 @@ async def _dispatch_apply(
             preferred_resume_title=preferred_resume_title,
             preferred_resume_id=preferred_resume_id,
             vacancy_context=vacancy_context,
+            trace=trace,
         )
     elif source == "superjob" and superjob_client is not None:
         return await superjob_client.apply_to_vacancy(vacancy, cover_letter)

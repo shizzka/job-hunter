@@ -128,6 +128,11 @@ HH_CHAT_MAX_REPLIES_PER_CHAT = _env_int("HH_CHAT_MAX_REPLIES_PER_CHAT", "5")
 HH_CHAT_REPLY_COOLDOWN_S = _env_int("HH_CHAT_REPLY_COOLDOWN_S", "30")
 HH_CHAT_RESPONDER_MODEL = os.getenv("HH_CHAT_RESPONDER_MODEL", "").strip()
 
+# Per-application structured diagnostic traces.
+HH_APPLY_TRACE_ENABLED = _env_flag("HH_APPLY_TRACE_ENABLED", "1")
+HH_APPLY_TRACE_RETENTION_DAYS = _env_int("HH_APPLY_TRACE_RETENTION_DAYS", "14")
+HH_APPLY_TRACE_MAX_RUNS = _env_int("HH_APPLY_TRACE_MAX_RUNS", "100")
+
 # Per-task LLM-модели. Если задано — переопределяет LLM_MODEL для соответствующей роли.
 # Пустая строка = fallback на LLM_MODEL. См. scripts/smoke/model_bench.py для бенчмарка.
 HH_VERIFIER_SHADOW_ENABLED = _env_flag("HH_VERIFIER_SHADOW_ENABLED", "1")

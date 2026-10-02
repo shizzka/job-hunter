@@ -743,6 +743,7 @@ async def apply_to_vacancy(
     preferred_resume_title: str = "",
     preferred_resume_id: str = "",
     vacancy_context: str = "",
+    trace=None,
     *,
     absolute_hh_url,
     anti_bot_message,
@@ -755,7 +756,22 @@ async def apply_to_vacancy(
     vacancy_url = absolute_hh_url(vacancy_url)
     response_url = absolute_hh_url(response_url)
 
-    save_debug_snapshot = session._save_debug_snapshot
+    legacy_save_debug_snapshot = session._save_debug_snapshot
+
+    def trace_event(stage: str, *, ok: bool | None = None, **fields) -> None:
+        if trace is not None:
+            trace.event(stage, ok=ok, **fields)
+
+    async def save_debug_snapshot(prefix: str) -> None:
+        if trace is None:
+            await legacy_save_debug_snapshot(prefix)
+            return
+        if prefix == "debug_apply_page":
+            await trace.capture(session._page, "vacancy_open", screenshot=False, html=True)
+        elif prefix == "debug_apply_before_submit":
+            await trace.capture(session._page, "before_submit", screenshot=True, html=False)
+        elif any(marker in prefix for marker in ("missing", "unverified", "failed", "unconfirmed")):
+            await trace.capture(session._page, "failure", screenshot=True, html=True)
 
     cover_letter_filled = False
     auto_answer_notes: list[str] = []
@@ -786,7 +802,27 @@ async def apply_to_vacancy(
             result["notes"] = notes
         if auto_answer_question_answers:
             result["question_answers"] = list(auto_answer_question_answers)
+        trace_event(
+            "RESULT_CHECK",
+            ok=True,
+            message=message,
+            already_applied=already_applied,
+            cover_letter_status=delivery,
+            resume_selection_verified=result.get("resume_selection_verified"),
+        )
         return result
+
+    def record_question_result(result: dict) -> None:
+        answers = list(result.get("question_answers") or [])
+        trace_event(
+            "QUESTIONS_FILLED",
+            ok=bool(result.get("ok")),
+            count=len(answers),
+            answered=len(answers),
+            notes_count=len(result.get("notes") or []),
+            risky_question=bool(result.get("risky_question")),
+            message=str(result.get("message") or ""),
+        )
 
     async def answer_questions_with_verified_resume():
         nonlocal cover_letter_filled
@@ -950,9 +986,16 @@ async def apply_to_vacancy(
         await session._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=30000)
     except Exception as e:
         logger.warning("Vacancy page nav issue: %s", e)
+        trace_event("VACANCY_OPEN", ok=False, url=vacancy_url, error=type(e).__name__)
 
     await session._page.wait_for_timeout(3000)
     await save_debug_snapshot("debug_apply_page")
+    trace_event(
+        "VACANCY_OPEN",
+        ok=True,
+        url=getattr(session._page, "url", vacancy_url),
+        vacancy_id=(re.search(r"/vacancy/(\d+)", vacancy_url) or [None, ""])[1],
+    )
 
     anti_bot_kind = await session._detect_anti_bot_kind()
     if anti_bot_kind:
@@ -974,9 +1017,11 @@ async def apply_to_vacancy(
     if anti_bot_kind:
         message = anti_bot_message(anti_bot_kind, "на странице вакансии")
         session._remember_antibot_signal(anti_bot_kind, "vacancy_page", message)
+        trace_event("HH_ANTIBOT", ok=False, kind=anti_bot_kind, antibot_stage="vacancy_page")
         return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind}
 
     if await session._page_closed_or_archived():
+        trace_event("VACANCY_OPEN", ok=False, closed_or_archived=True)
         return {
             "ok": False,
             "message": "Вакансия закрыта или находится в архиве",
@@ -985,13 +1030,21 @@ async def apply_to_vacancy(
 
     wants_specific_resume = bool(preferred_resume_title or preferred_resume_id)
     resume_verified = False
-    if await session._has_existing_response_ui() and not wants_specific_resume:
+    existing_response = await session._has_existing_response_ui()
+    trace_event(
+        "EXISTING_RESPONSE_CHECK",
+        ok=True,
+        result=existing_response,
+        wants_specific_resume=wants_specific_resume,
+    )
+    if existing_response and not wants_specific_resume:
         return await finalize_success("Уже откликались ранее", already_applied=True)
 
     if wants_specific_resume:
         match = re.search(r"/vacancy/(\d+)", vacancy_url)
         target_url = f"https://hh.ru/applicant/vacancy_response?vacancyId={match.group(1)}" if match else ''
         if not target_url:
+            trace_event("RESUME_SELECTED", ok=False, expected=True, reason="vacancy_id_missing")
             return {"ok": False, "message": "Не удалось открыть форму для проверки резюме"}
         try:
             await session._page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
@@ -1002,6 +1055,13 @@ async def apply_to_vacancy(
             resume_verified = await select_preferred_resume()
         except Exception as exc:
             logger.warning("Resume preflight failed: %s", type(exc).__name__)
+        trace_event(
+            "RESUME_SELECTED",
+            ok=resume_verified,
+            expected=True,
+            resume_id=preferred_resume_id,
+            resume_title=preferred_resume_title,
+        )
         if not resume_verified:
             await save_debug_snapshot("debug_resume_unverified")
             return {"ok": False, "message": "Нужное резюме не подтверждено — отклик не отправлен", "resume_selection_verified": False}
@@ -1083,15 +1143,25 @@ async def apply_to_vacancy(
 
         if direct_response_flow:
             logger.info("Direct response flow detected without initial vacancy button")
+            trace_event("APPLY_CONTROL_SCAN", ok=True, found=False, direct_response_flow=True)
         else:
             # Дебаг: какие data-qa есть на странице
             qa_attrs = await session._page.evaluate(
                 "() => [...document.querySelectorAll('[data-qa]')].map(el => el.getAttribute('data-qa')).filter(a => a.includes('response') || a.includes('vacanc')).slice(0, 20)"
             )
             logger.warning("Apply button not found. Relevant data-qa: %s", qa_attrs)
+            trace_event(
+                "APPLY_CONTROL_SCAN",
+                ok=False,
+                found=False,
+                direct_response_flow=False,
+                selectors_found=qa_attrs,
+            )
+            await save_debug_snapshot("debug_apply_control_missing")
             return {"ok": False, "message": f"Кнопка не найдена. qa={qa_attrs[:5]}"}
     else:
         direct_response_flow = False
+        trace_event("APPLY_CONTROL_SCAN", ok=True, found=True, direct_response_flow=False)
 
     if not direct_response_flow:
         logger.info("Found apply button, clicking...")
@@ -1099,6 +1169,7 @@ async def apply_to_vacancy(
         await session._page.wait_for_timeout(300)
         await apply_btn.click()
         await session._page.wait_for_timeout(3000)
+        trace_event("APPLY_CLICK", ok=True)
         await save_debug_snapshot("debug_apply_after_click")
 
     if await session._apply_success_detected():
@@ -1112,10 +1183,21 @@ async def apply_to_vacancy(
         letter_field,
         submit_btn,
     ) = await detect_response_controls()
+    trace_event(
+        "FORM_DETECTED",
+        ok=bool(response_header or resume_select or letter_field or submit_btn or questions_required),
+        response_header=bool(response_header),
+        questions_required=bool(questions_required),
+        resume_found=bool(resume_select),
+        letter_found=bool(letter_field),
+        submit_found=bool(submit_btn),
+        url=current_url,
+    )
 
     if questions_required:
         logger.info("Vacancy requires employer questions — trying auto-answer")
         auto_question_result = await answer_questions_with_verified_resume()
+        record_question_result(auto_question_result)
         auto_answer_notes.extend(auto_question_result.get("notes") or [])
         auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
         if auto_question_result.get("ok"):
@@ -1141,6 +1223,13 @@ async def apply_to_vacancy(
             preferred_resume_id,
         )
         selected = await select_preferred_resume()
+        trace_event(
+            "RESUME_SELECTED",
+            ok=selected,
+            expected=True,
+            resume_id=preferred_resume_id,
+            resume_title=preferred_resume_title,
+        )
         if not selected:
             return {"ok": False, "message": "Не удалось выбрать нужное резюме"}
         await session._page.wait_for_timeout(1000)
@@ -1171,6 +1260,14 @@ async def apply_to_vacancy(
         ) = await detect_response_controls()
 
     if cover_letter and not letter_field:
+        trace_event(
+            "COVER_LETTER",
+            ok=False,
+            expected=True,
+            field_found=False,
+            filled=False,
+            chars=len(cover_letter),
+        )
         await save_debug_snapshot("debug_cover_letter_missing")
         return {"ok": False, "message": "Поле сопроводительного не найдено — отклик остановлен до отправки"}
 
@@ -1194,11 +1291,33 @@ async def apply_to_vacancy(
                     raise
         await session._page.wait_for_timeout(500)
         if normalize_text(await letter_field.input_value()) != normalize_text(cover_letter):
+            trace_event(
+                "COVER_LETTER",
+                ok=False,
+                expected=True,
+                field_found=True,
+                filled=False,
+                chars=len(cover_letter),
+            )
             return {"ok": False, "message": "Сопроводительное не сохранилось в поле — отклик остановлен"}
         cover_letter_filled = True
+        trace_event(
+            "COVER_LETTER",
+            ok=True,
+            expected=True,
+            field_found=True,
+            filled=True,
+            chars=len(cover_letter),
+        )
         await session._dismiss_magritte_dropdowns()
+    elif not cover_letter:
+        trace_event("COVER_LETTER", ok=True, expected=False, field_found=bool(letter_field), filled=False, chars=0)
 
-    if wants_specific_resume and not await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
+    resume_match = not wants_specific_resume or await selected_resume_matches(
+        session._page, preferred_resume_id, preferred_resume_title
+    )
+    if not resume_match:
+        trace_event("PRE_SUBMIT_VERIFY", ok=False, resume_match=False, letter_match=cover_letter_filled)
         return {"ok": False, "message": "Выбранное резюме изменилось — отклик остановлен"}
 
     if submit_btn:
@@ -1213,15 +1332,26 @@ async def apply_to_vacancy(
         if refreshed_submit_btn is not None:
             submit_btn = refreshed_submit_btn
         await session._dismiss_magritte_dropdowns()
+        letter_match = not cover_letter
         if cover_letter:
             final_letter = (await refetch_response_controls())[4]
-            if not final_letter or normalize_text(await final_letter.input_value()) != normalize_text(cover_letter):
+            letter_match = bool(final_letter) and normalize_text(await final_letter.input_value()) == normalize_text(cover_letter)
+            if not letter_match:
+                trace_event("PRE_SUBMIT_VERIFY", ok=False, resume_match=resume_match, letter_match=False)
                 return {"ok": False, "message": "Сопроводительное изменилось перед отправкой — отклик остановлен"}
             logger.info("Cover letter verified before submit (chars=%d)", len(cover_letter))
             await save_debug_snapshot("debug_apply_before_submit")
+        trace_event(
+            "PRE_SUBMIT_VERIFY",
+            ok=bool(resume_match and letter_match),
+            resume_match=resume_match,
+            letter_match=letter_match,
+            unanswered_required=0,
+        )
         clicked = await session._click_with_fallbacks(submit_btn, "submit_button")
         if not clicked:
             clicked = await session._submit_response_form_via_dom()
+        trace_event("SUBMIT_CLICK", ok=clicked, selector="vacancy-response-submit-popup")
         if not clicked:
             return {"ok": False, "message": "Не удалось нажать кнопку подтверждения"}
         await session._page.wait_for_timeout(4000)
@@ -1234,11 +1364,13 @@ async def apply_to_vacancy(
         message = anti_bot_message(anti_bot_kind, "после отклика")
         logger.warning("HH anti-bot (%s) appeared after apply submit", anti_bot_kind)
         session._remember_antibot_signal(anti_bot_kind, "apply_submit", message)
+        trace_event("RESULT_CHECK", ok=False, reason="anti_bot", anti_bot_kind=anti_bot_kind)
         return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind}
 
     if await session._response_requires_questions():
         logger.info("Vacancy requires employer questions after submit — trying auto-answer")
         auto_question_result = await answer_questions_with_verified_resume()
+        record_question_result(auto_question_result)
         auto_answer_notes.extend(auto_question_result.get("notes") or [])
         auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
         if auto_question_result.get("ok"):
@@ -1284,6 +1416,7 @@ async def apply_to_vacancy(
             if await session._response_requires_questions():
                 logger.info("Vacancy requires employer questions after retry — trying auto-answer")
                 auto_question_result = await answer_questions_with_verified_resume()
+                record_question_result(auto_question_result)
                 auto_answer_notes.extend(auto_question_result.get("notes") or [])
                 auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
                 if auto_question_result.get("ok"):
@@ -1309,12 +1442,34 @@ async def apply_to_vacancy(
         message = anti_bot_message(anti_bot_kind, "после отклика")
         logger.warning("HH anti-bot (%s) detected while verifying apply", anti_bot_kind)
         session._remember_antibot_signal(anti_bot_kind, "apply_verify", message)
+        trace_event("RESULT_CHECK", ok=False, reason="anti_bot", anti_bot_kind=anti_bot_kind)
         return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind}
 
     if await response_error_detected(session, logger=logger):
         logger.warning("hh.ru error page after apply. URL: %s", session._page.url)
+        trace_event(
+            "RESULT_CHECK",
+            ok=False,
+            reason="hh_response_error",
+            url=session._page.url,
+            negotiations_url=False,
+            success_selector=False,
+            error_selector=True,
+        )
+        await save_debug_snapshot("debug_apply_result_failed")
         return {"ok": False, "message": "hh.ru показал ошибку после отклика"}
 
     logger.warning("Apply verification failed. URL: %s", session._page.url)
+    trace_event(
+        "RESULT_CHECK",
+        ok=False,
+        reason="submit_result_unknown",
+        url=session._page.url,
+        negotiations_url="/negotiations" in (session._page.url or ""),
+        success_selector=False,
+        error_selector=False,
+        questions_required=bool(questions_required),
+        submit_retry_found=bool(submit_btn_retry),
+    )
     await save_debug_snapshot("debug_apply_verification_failed")
     return {"ok": False, "message": "Не удалось подтвердить отклик"}

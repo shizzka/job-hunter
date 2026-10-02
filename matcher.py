@@ -2,6 +2,7 @@
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 from datetime import datetime
@@ -304,11 +305,23 @@ def _is_junior_or_training_vacancy(vacancy: dict, details: str = "") -> bool:
 
 
 def _coerce_score(value, default: int = 50) -> int:
+    if isinstance(value, bool):
+        return max(0, min(100, int(default)))
+
+    candidate = value
+    if isinstance(value, str):
+        match = re.search(r"[-+]?(?:\d+(?:[.,]\d*)?|[.,]\d+)", value)
+        if not match:
+            return max(0, min(100, int(default)))
+        candidate = match.group(0).replace(",", ".")
+
     try:
-        score = int(value)
+        score = float(candidate)
     except (TypeError, ValueError):
-        score = default
-    return max(0, min(100, score))
+        score = float(default)
+    if not math.isfinite(score):
+        score = float(default)
+    return max(0, min(100, int(score)))
 
 VACANCY_CLUSTERS = (
     "manual_web_qa",
