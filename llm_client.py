@@ -1,13 +1,17 @@
 """OpenAI-compatible LLM client with provider/account fallback."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI, APIConnectionError
+import httpx
 from httpx import TransportError
 
 import config
@@ -31,12 +35,36 @@ class ProviderSpec:
     api_key: str
     model_aliases: dict[str, str] = field(default_factory=dict)
     default_headers: dict[str, str] = field(default_factory=dict)
+    # Emergency temporary compatibility path; remove after AI Gateway migration.
+    text_fallback_model: str = ""
+    timeout_seconds: float | None = None
 
     def model_for(self, requested_model: str) -> str:
         model = (requested_model or "").strip()
         if not model:
             return requested_model
+        if self.text_fallback_model and not _is_vision_model(model):
+            return self.text_fallback_model
         return self.model_aliases.get(model, model)
+
+
+def _is_vision_model(model: str) -> bool:
+    normalized = model.strip().casefold()
+    configured = str(getattr(config, "HH_CAPTCHA_VISION_MODEL", "") or "").strip().casefold()
+    return bool(normalized and (normalized == configured or re.search(
+        r"vision|llava|omni|(?:^|[-_/])vl(?:$|[:\-_/])", normalized)))
+
+
+def _has_multimodal_input(kwargs: dict) -> bool:
+    for message in kwargs.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, list) and any(isinstance(part, dict) and part.get("type") in {
+                "image_url", "input_image", "image", "input_audio", "video_url", "file", "input_file"}
+                for part in content):
+            return True
+    return False
 
 
 class LLMProvidersExhaustedError(RuntimeError):
@@ -104,13 +132,25 @@ def _openrouter_headers(provider_env: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _ollama_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
+def _ollama_model_aliases(provider_env: dict[str, str], prefix: str = "OLLAMA") -> dict[str, str]:
     """Map aliases unavailable in Ollama Cloud to the supported free model."""
-    fallback = provider_env.get("OLLAMA_FALLBACK_MODEL", "gpt-oss:120b")
+    fallback = (provider_env.get(f"{prefix}_FALLBACK_MODEL")
+                or provider_env.get("OLLAMA_FALLBACK_MODEL") or "gpt-oss:120b").strip()
     return {
         "qwen3-coder:480b": fallback,
         "qwen3-coder-next": fallback,
     }
+
+
+def _ollama_timeout(provider_env: dict[str, str], prefix: str) -> float:
+    try:
+        value = float(provider_env.get(f"{prefix}_TIMEOUT_SECONDS", "60"))
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError
+        return value
+    except (TypeError, ValueError, OverflowError):
+        log.warning("Invalid %s_TIMEOUT_SECONDS; using 60 seconds", prefix)
+        return 60.0
 
 
 def _openrouter_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
@@ -314,6 +354,8 @@ def _build_provider_specs() -> list[ProviderSpec]:
         *,
         model_aliases: dict[str, str] | None = None,
         default_headers: dict[str, str] | None = None,
+        text_fallback_model: str = "",
+        timeout_seconds: float | None = None,
     ) -> None:
         base = (base_url or "").strip().rstrip("/")
         key = (api_key or "").strip()
@@ -326,20 +368,30 @@ def _build_provider_specs() -> list[ProviderSpec]:
                 api_key=key,
                 model_aliases=model_aliases or {},
                 default_headers=default_headers or {},
+                text_fallback_model=text_fallback_model,
+                timeout_seconds=timeout_seconds,
             )
         )
 
     provider_env = _load_provider_env()
     primary_base = config.LLM_BASE_URL
-    primary_aliases = _ollama_model_aliases(provider_env) if "ollama" in primary_base.lower() else {}
+    # A separately configured LAN slot must not rename an Ollama Cloud primary.
+    primary_env = provider_env
+    if (provider_env.get("OLLAMA_BASE_URL", primary_base).rstrip("/") != primary_base.rstrip("/")
+            and provider_env.get("OLLAMA_FALLBACK_MODEL")):
+        primary_env = {**provider_env, "OLLAMA_FALLBACK_MODEL": "gpt-oss:120b"}
+    primary_aliases = _ollama_model_aliases(primary_env) if "ollama" in primary_base.lower() else {}
     add("primary", primary_base, config.LLM_API_KEY, model_aliases=primary_aliases)
 
     for name in ("OLLAMA", "OLLAMA2", "OLLAMA3"):
+        local_model = provider_env.get(f"{name}_FALLBACK_MODEL", "").strip()
         add(
             name.lower(),
             provider_env.get(f"{name}_BASE_URL") or provider_env.get("OLLAMA_BASE_URL", ""),
             provider_env.get(f"{name}_API_KEY", ""),
-            model_aliases=_ollama_model_aliases(provider_env),
+            model_aliases=_ollama_model_aliases(provider_env, name),
+            text_fallback_model=local_model,
+            timeout_seconds=_ollama_timeout(provider_env, name) if local_model else None,
         )
 
     add(
@@ -419,7 +471,7 @@ def _build_provider_specs() -> list[ProviderSpec]:
         result = []
         credentials = set()
         for provider in providers:
-            identity = (provider.base_url, provider.api_key)
+            identity = (provider.base_url, provider.api_key, provider.text_fallback_model)
             if identity not in credentials:
                 credentials.add(identity)
                 result.append(provider)
@@ -497,6 +549,8 @@ def _is_model_unavailable(exc: Exception) -> bool:
             "retired",
             "gone",
             "unsupported model",
+            "model unavailable",
+            "model is unavailable",
         )
     )
 
@@ -570,9 +624,14 @@ class FallbackLLMClient:
             kwargs = {
                 "base_url": provider.base_url,
                 "api_key": provider.api_key or "no-key",
-                "http_client": proxy_utils.llm_http_client(),
+                "http_client": (httpx.AsyncClient(
+                    timeout=httpx.Timeout(provider.timeout_seconds or 60, connect=min(3, provider.timeout_seconds or 60)),
+                    trust_env=False,
+                ) if provider.text_fallback_model else proxy_utils.llm_http_client()),
                 "max_retries": 0,
             }
+            if provider.timeout_seconds is not None:
+                kwargs["timeout"] = httpx.Timeout(provider.timeout_seconds, connect=min(3, provider.timeout_seconds))
             if provider.default_headers:
                 kwargs["default_headers"] = dict(provider.default_headers)
             client = AsyncOpenAI(**kwargs)
@@ -585,6 +644,10 @@ class FallbackLLMClient:
         mapped_model = provider.model_for(requested_model)
         if mapped_model:
             provider_kwargs["model"] = mapped_model
+        if provider.text_fallback_model:
+            # Qwen thinking can consume a small task's entire output budget.
+            # Ollama /v1 uses reasoning_effort, not the native /api/chat think flag.
+            provider_kwargs.setdefault("reasoning_effort", "none")
         return provider_kwargs
 
     async def create_chat_completion(self, **kwargs):
@@ -593,26 +656,38 @@ class FallbackLLMClient:
 
         last_exc: Exception | None = None
         requested_model = str(kwargs.get("model") or "")
+        vision = _is_vision_model(requested_model) or _has_multimodal_input(kwargs)
+        cache_key = ("vision:" + requested_model) if vision and any(
+            provider.text_fallback_model for provider in self.providers) else requested_model
         attempted: list[str] = []
         total = len(self.providers)
-        start = self._start_index_for_model(requested_model, total)
+        start = self._start_index_for_model(cache_key, total)
 
         for offset in range(total):
             index = (start + offset) % total
             provider = self.providers[index]
+            if provider.text_fallback_model and vision:
+                continue  # Never send CAPTCHA/images to emergency text-only models.
             provider_kwargs = self._kwargs_for_provider(provider, kwargs)
             attempted.append(provider.name)
             try:
-                response = await self._client_for(index).chat.completions.create(**provider_kwargs)
+                call = self._client_for(index).chat.completions.create(**provider_kwargs)
+                response = (await asyncio.wait_for(call, timeout=provider.timeout_seconds)
+                            if provider.timeout_seconds is not None else await call)
+                if provider.text_fallback_model and not kwargs.get("stream"):
+                    choices = getattr(response, "choices", None)
+                    content = getattr(getattr(choices[0], "message", None), "content", None) if choices else None
+                    if not isinstance(content, str) or not content.strip():
+                        raise ValueError("Invalid emergency Ollama response envelope")
                 self._active_index = index
                 if requested_model:
                     if index == 0 or self._fallback_ttl_seconds == 0:
-                        self._active_index_by_model.pop(requested_model, None)
-                        self._fallback_until_by_model.pop(requested_model, None)
+                        self._active_index_by_model.pop(cache_key, None)
+                        self._fallback_until_by_model.pop(cache_key, None)
                     else:
-                        self._active_index_by_model[requested_model] = index
-                        if start == 0 or requested_model not in self._fallback_until_by_model:
-                            self._fallback_until_by_model[requested_model] = (
+                        self._active_index_by_model[cache_key] = index
+                        if start == 0 or cache_key not in self._fallback_until_by_model:
+                            self._fallback_until_by_model[cache_key] = (
                                 self._clock() + self._fallback_ttl_seconds
                             )
                 mapped_model = str(provider_kwargs.get("model") or "")
@@ -630,24 +705,17 @@ class FallbackLLMClient:
                 last_exc = exc
                 if not _is_retryable_provider_error(exc):
                     raise
-                if offset == total - 1:
-                    raise LLMProvidersExhaustedError(
-                        attempted,
-                        requested_model,
-                        exc,
-                    ) from exc
-                next_provider = self.providers[(index + 1) % total]
                 log.warning(
-                    "LLM provider %s rejected model %s (%s), trying %s",
+                    "LLM provider %s rejected model %s (%s); continuing allowed fallback chain",
                     provider.name,
                     str(provider_kwargs.get("model") or requested_model),
                     type(exc).__name__,
-                    next_provider.name,
                 )
 
         if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("No LLM providers configured")
+            raise LLMProvidersExhaustedError(attempted, requested_model, last_exc) from last_exc
+        raise LLMProvidersExhaustedError(attempted, requested_model,
+                                       RuntimeError("No eligible providers for request capability"))
 
     async def aclose(self) -> None:
         """Release every lazily created SDK/HTTP client, even if one close fails."""
