@@ -889,6 +889,7 @@ async def do_search(dry_run: bool = False) -> dict:
     last_apply_attempt_started_at_by_source = defaultdict(float)
     hh_retry_vacancies: list[dict] = []
     hh_auto_apply_guard_note = ""
+    hh_logged_in = False
 
     async def set_hunter_status(action: str, message: str, status: str) -> None:
         nonlocal last_office_status
@@ -929,7 +930,8 @@ async def do_search(dry_run: bool = False) -> dict:
         if hh_client is not None:
             await hh_client.start()
             try:
-                if await hh_client.is_logged_in():
+                hh_logged_in = bool(await hh_client.is_logged_in())
+                if hh_logged_in:
                     negotiation_statuses = await hh_client.get_negotiation_statuses()
                     analytics.record_negotiation_statuses(negotiation_statuses)
                     if hh_pipeline.enabled():

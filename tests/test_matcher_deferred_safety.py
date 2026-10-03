@@ -203,3 +203,31 @@ def test_already_processed_deferred_record_is_acknowledged_without_reevaluation(
     asyncio.run(agent.do_search(dry_run=True))
     evaluate.assert_not_awaited()
     assert queue.store.load()['items'] == {}
+
+
+@pytest.mark.parametrize('authenticated', [True, False])
+def test_real_search_trace_uses_captured_session_state_before_cover(search_harness, monkeypatch, authenticated):
+    class Trace:
+        def __init__(self): self.events = []
+        def event(self, stage, **fields): self.events.append((stage, fields))
+        def finish(self, **fields): pass
+    trace = Trace()
+    client = SimpleNamespace(_page=SimpleNamespace(url='https://hh.ru/synthetic'),
+        start=AsyncMock(), stop=AsyncMock(), is_logged_in=AsyncMock(return_value=authenticated),
+        get_negotiation_statuses=AsyncMock(return_value={}))
+    monkeypatch.setattr(agent, 'HHClient', lambda: client)
+    monkeypatch.setattr(agent, 'notify_search_started', AsyncMock())
+    monkeypatch.setattr(agent, 'evaluate_vacancy', AsyncMock(return_value={
+        'score': 95, 'reason': 'Synthetic match', 'red_flags': [], 'should_apply': True}))
+    monkeypatch.setattr(agent.apply_orchestrator, 'create_hh_apply_trace', lambda *a, **k: trace)
+    # Stop before any external apply. Reaching generation proves the old NameError
+    # no longer aborts the real-search branch; all prior I/O is mocked.
+    cover = AsyncMock(side_effect=RuntimeError('Synthetic stop before submission'))
+    monkeypatch.setattr(agent, 'generate_cover_letter', cover)
+    dispatch = AsyncMock(side_effect=AssertionError('No submission in offline regression'))
+    monkeypatch.setattr(agent.apply_orchestrator, 'dispatch_apply', dispatch)
+    asyncio.run(agent.do_search())
+    cover.assert_awaited_once()
+    dispatch.assert_not_awaited()
+    assert trace.events[0] == ('HH_SESSION_CHECK', {
+        'ok': authenticated, 'authenticated': authenticated, 'url': 'https://hh.ru/synthetic'})
