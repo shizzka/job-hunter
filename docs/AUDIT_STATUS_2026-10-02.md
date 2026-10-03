@@ -522,3 +522,13 @@ Bash syntax and diff checks passed; staged scan covered 26 files with zero
 credential-pattern hits. Local-only tests remain outside that export. Read-only
 QA configuration check confirmed primary ID/title are present; values were not
 printed. No live resume catalog or application was queried in this group.
+
+Final identity review also excludes ordinary employer-question radios from
+resume evidence: they must neither override a known selected resume nor prove
+an ID merely because their answer value coincides with it. Two additional
+synthetic DOM regressions cover this distinction. This follow-up is prepared
+against the already published critical-guard checkpoint before deployment.
+
+Follow-up verification: **39 HH target tests passed** (17.23 seconds);
+**1317 clean-export tests passed** (57.76 seconds). Total new tests: 78.
+Follow-up staged scan: 3 files / zero credential-pattern hits; diff check passed.

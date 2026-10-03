@@ -733,7 +733,7 @@ async def selected_resume_matches(page, resume_id: str, title: str) -> bool:
             const root = forms[0] || (dialogs.length === 1 ? dialogs[0] : null);
             if (!root) return {ids: [], titles: []};
             const ids = Array.from(root.querySelectorAll(
-                'input[name="resume_id"], input[name="resumeId"], input[name="resumeHash"], input[type="radio"]:checked'
+                'input[name="resume_id"], input[name="resumeId"], input[name="resumeHash"], input[type="radio"][name="resume"]:checked'
             )).filter(el => !el.disabled && (!(el.type === 'radio' || el.type === 'checkbox') || el.checked))
                 .map(el => el.value).filter(Boolean);
             root.querySelectorAll('[data-qa="resume-title"] a[href*="/resume/"]').forEach(el => {

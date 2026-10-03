@@ -17,6 +17,9 @@ from hh import apply as hh_apply
     ('<input type="radio" name="resume_id" value="wrong" checked>'
      '<input type="radio" name="resume_id" value="target">', 'target', False),
     ('<input type="hidden" name="resume_id" value="target">', 'target', True),
+    ('<input type="hidden" name="resume_id" value="target">'
+     '<input type="radio" name="employer-question" value="yes" checked>', 'target', True),
+    ('<input type="radio" name="employer-question" value="target" checked>', 'target', False),
     ('<input type="hidden" name="resume_id" value="wrong">'
      '<div data-qa="resume-title"><a href="/resume/target">QA</a></div>', 'target', False),
     ('<input type="hidden" name="resume_id" value="wrong" disabled>'
