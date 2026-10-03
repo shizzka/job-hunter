@@ -338,7 +338,7 @@ async def build_filtered_kb_block(
 ) -> str:
     """2-pass: парсим KB → выбираем релевантные секции через LLM → формируем блок.
     Если LLM-фильтр не сработал или vacancy_context пуст — fallback на полный
-    (обрезанный) блок через build_knowledge_base_block."""
+    (обрезанный) блок из снимка, прочитанного до ожидания LLM."""
     about_text, sections = _load_kb_filterable()
     if not about_text and not sections:
         return ""
@@ -351,12 +351,11 @@ async def build_filtered_kb_block(
         vacancy_context, sections, llm_client, max_sections=max_sections, model=selector_model
     )
     if not selected_nums:
-        # fallback на старое поведение
-        return build_knowledge_base_block(limit_chars=limit_chars)
+        return _format_kb_block(about_text, sections, limit_chars=limit_chars)
     by_num = {s["num"]: s for s in sections}
     picked = [by_num[n] for n in selected_nums if n in by_num]
     if not picked:
-        return build_knowledge_base_block(limit_chars=limit_chars)
+        return _format_kb_block(about_text, sections, limit_chars=limit_chars)
     log.info("KB filter picked sections: %s", [f"{s['num']}.{s['title'][:30]}" for s in picked])
     return _format_kb_block(about_text, picked, limit_chars=limit_chars)
 

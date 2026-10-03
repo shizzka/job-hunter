@@ -1086,6 +1086,7 @@ def analyze_cover_letter(
     cover_style: str = "",
     fallback: bool | None = None,
     overclaim_guard: bool | None = None,
+    grounding_status: str | None = None,
 ) -> dict:
     """Compact analytics payload for a generated cover letter."""
     text = (cover_letter or "").strip()
@@ -1103,6 +1104,7 @@ def analyze_cover_letter(
         "cover_letter_features": _cover_letter_features(text),
         "fallback_cover_letter": bool(fallback),
         "overclaim_guard": bool(overclaim_guard),
+        "grounding_status": grounding_status or cached.get("grounding_status", "not_checked"),
     }
 
 
@@ -1112,6 +1114,7 @@ def _remember_cover_letter_meta(
     cover_style: str,
     fallback: bool = False,
     overclaim_guard: bool = False,
+    grounding_status: str = "not_checked",
 ) -> str:
     digest = _cover_letter_hash(cover_letter)
     if digest:
@@ -1120,6 +1123,7 @@ def _remember_cover_letter_meta(
             cover_style=cover_style,
             fallback=fallback,
             overclaim_guard=overclaim_guard,
+            grounding_status=grounding_status,
         )
     return cover_letter
 
@@ -1127,39 +1131,39 @@ def _remember_cover_letter_meta(
 COVER_LETTER_STYLE_VARIANTS = (
     {
         "name": "product_hook",
-        "opening": "Начни с конкретного продукта/домена из вакансии: что там тестировать или сопровождать.",
-        "shape": "1) домен вакансии -> 2) похожий кусок текущего опыта -> 3) один способ проверки -> 4) короткий следующий шаг.",
-        "ending": "Финал без 'готов': 'можно обсудить детали', 'расскажу подробнее на созвоне', 'напишите, если такой профиль подходит'.",
+        "opening": "Начни с подтвержденного навыка кандидата, релевантного вакансии.",
+        "shape": "1) факт из резюме -> 2) еще один подтвержденный навык. Не придумывай похожий продукт или проект.",
+        "ending": "Финал: 'Обсудим детали?'.",
     },
     {
         "name": "qa_risk",
-        "opening": "Начни с QA-риска или пользовательского сценария из вакансии, не с рассказа о себе.",
-        "shape": "1) где может ломаться качество -> 2) как кандидат это проверяет руками/API -> 3) один релевантный инструмент -> 4) спокойный next step.",
-        "ending": "Финал короткий, без обещаний 'принести пользу'.",
+        "opening": "Начни с подтвержденных проверок из опыта кандидата, не гипотетической истории найденного бага.",
+        "shape": "1) подтвержденная область проверок -> 2) реальный инструмент из данных кандидата.",
+        "ending": "Финал: 'Обсудим детали?'.",
     },
     {
         "name": "current_work_mirror",
-        "opening": "Начни с 'Сейчас у меня...' или близкой живой фразы про похожую задачу, но не используй 'в текущем проекте'.",
-        "shape": "1) похожая задача сейчас -> 2) чем она пересекается с вакансией -> 3) один факт из инженерного/QA опыта -> 4) короткий next step.",
-        "ending": "Финал в стиле обычного сообщения HR-у, без торжественности.",
+        "opening": "Начни с текущей работы ТОЛЬКО если она явно описана в данных кандидата, иначе с реального навыка.",
+        "shape": "1) подтвержденная задача -> 2) подтвержденный навык. Не делай вывод о текущем проекте по названию вакансии.",
+        "ending": "Финал: 'Обсудим детали?'.",
     },
     {
         "name": "tooling_detail",
-        "opening": "Начни с конкретной проверки или рабочего процесса: API, запросы, баги, тест-кейсы, регресс.",
-        "shape": "1) практическая проверка -> 2) где это нужно в вакансии -> 3) 1-2 инструмента максимум -> 4) короткая фраза про обсуждение.",
-        "ending": "Не заканчивай словом 'готов'; лучше живой короткий финал.",
+        "opening": "Начни с проверки или рабочего процесса, явно указанного в данных кандидата.",
+        "shape": "1) подтвержденный процесс -> 2) 1-2 реальных инструмента. Не добавляй сценарии и результаты.",
+        "ending": "Финал: 'Обсудим детали?'.",
     },
     {
         "name": "engineering_background",
-        "opening": "Начни с релевантного прошлого опыта, ТОЛЬКО если он подтвержден данными кандидата; иначе начни с задач вакансии.",
-        "shape": "1) диагностика/поиск причины -> 2) как это помогает в тестировании -> 3) связь с вакансией -> 4) короткий next step.",
-        "ending": "Финал без клише про вклад в команду.",
+        "opening": "Начни с релевантного подтвержденного навыка; если прошлого инженерного опыта нет, не упоминай его.",
+        "shape": "1) подтвержденный навык -> 2) область его применения из резюме -> 3) короткий next step. Не сочиняй историю проекта или результат.",
+        "ending": "Финал: 'Обсудим детали?'.",
     },
     {
         "name": "direct_fit",
-        "opening": "Начни прямо: 'По вакансии вижу...' или аналогично, с одного конкретного совпадения.",
-        "shape": "1) одно совпадение с вакансией -> 2) один факт из опыта -> 3) одно ограничение/честная рамка если нужно -> 4) короткий next step.",
-        "ending": "Финал должен звучать как короткое сообщение, не как мотивационное письмо.",
+        "opening": "Начни прямо с одного подтвержденного навыка, совпадающего с задачами вакансии.",
+        "shape": "1) реальный навык -> 2) факт из опыта, если он есть. Не придумывай факт ради структуры.",
+        "ending": "Финал: 'Обсудим детали?'.",
     },
 )
 
@@ -1225,7 +1229,7 @@ def _build_cover_letter_style_block(vacancy: dict, details: str = "", cover_styl
     return f"""## Управляемый стиль сопроводительного:
 - cover_style: {style}
 - Максимальная длина: до {rules['max_chars']} символов.
-- Обязательно зацепить: {rules['must_mention']}.
+- Возможные акценты, ТОЛЬКО если прямо подтверждены данными кандидата: {rules['must_mention']}. Неподтвержденные акценты пропускай.
 - Нельзя: {rules['avoid']}.
 - Тон: {rules['tone']}.
 - Автотесты/AQA: {rules['automation']}.
@@ -1238,7 +1242,7 @@ def _build_cover_letter_style_block(vacancy: dict, details: str = "", cover_styl
 - Как закончить: {variant['ending']}
 - Не копируй пример ниже.
 - НЕ начинай письмо с дежурных заходов: "Заметил", "Увидел", "Вижу", "Привет", "В вашей вакансии", "В вашей команде", "С большим интересом", "Я QA".
-- Первое предложение должно сразу называться по сути выбранной стратегии: домен, риск, процесс, текущая похожая задача или инженерная диагностика.
+- Первое предложение должно содержать только подтвержденный навык или факт кандидата. Название стратегии не разрешает придумывать домен, текущий проект или инженерную диагностику.
 - Варьируй ритм: одно предложение может быть совсем коротким; не делай все письма одинаковой длины и структуры.
 """
 
@@ -1447,6 +1451,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     )
     profile_note = build_profile_note_block()
     facts = build_facts_block()
+    knowledge_fallback = build_knowledge_base_block(limit_chars=12000)
     # 2-pass: фильтруем KB-секции под конкретную вакансию через LLM
     vacancy_summary = (
         f"Должность: {vacancy.get('title', '')}\n"
@@ -1460,11 +1465,18 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
         )
     except Exception as exc:
         log.warning("filtered KB selection failed, fallback to full: %s", exc)
-        knowledge = build_knowledge_base_block(limit_chars=12000)
+        knowledge = knowledge_fallback
 
     cover_style = cover_style_for_cluster(classify_vacancy_cluster(vacancy, details))
     style_block = _build_cover_letter_style_block(vacancy, details, cover_style)
     positioning_block = _build_cover_letter_positioning_block(vacancy, details)
+    # Snapshot once: verification never reloads profile data after an await.
+    sources = {
+        "resume": "" if resume.startswith("(Резюме не найдено") else resume,
+        "profile_note": profile_note,
+        "facts": facts,
+        "knowledge": knowledge,
+    }
 
     prompt = f"""Ты — ассистент по поиску работы. Напиши содержательное, но компактное сопроводительное письмо.
 
@@ -1479,7 +1491,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
 {details if details else vacancy.get('snippet', '(нет описания)')}
 
 ## Длина и форма:
-- 4-6 предложений, целевой объём 550-900 символов, максимум 1500 символов
+- 2-4 предложения, максимум 1500 символов. Выбери один-два факта из данных кандидата и кратко перефразируй их от первого лица; затем закончи "Обсудим детали?". Если фактов мало, пиши короче.
 - Писать от первого лица, в разговорном профессиональном тоне (как сообщение HR-у в мессенджере, не сочинение)
 - Использовать обычное тире "-", НЕ em-dash "—" и НЕ дефис между словами как разделитель
 - Пиши обычные слова: "REST API", "тест-кейсы", не "REST‑API", не "тест‑кейсы" со спец-символом
@@ -1489,6 +1501,12 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
 - ЗАПРЕЩЕНО упоминать технологии, языки, фреймворки, инструменты, которых нет в данных кандидата, даже если они в вакансии.
 - ЗАПРЕЩЕНО завышать стаж. Бери срок строго из данных кандидата.
 - ЗАПРЕЩЕНО приписывать достижения, цифры, проекты и технический бэкграунд, которых нет в данных кандидата.
+- Знание Postman НЕ означает, что кандидат находил ошибки регистрации, биллинга или кодов статуса. Не добавляй такой сценарий без прямого подтверждения.
+- Не добавляй составление тест-кейсов, документации или баг-репортов только потому, что это обычные задачи QA. Название инструмента или знакомство с тест-кейсами не подтверждает их составление; нужна явно указанная личная задача кандидата.
+- Не придумывай эффект работы: ускорение проверки, уменьшение ошибок, улучшение воспроизводимости или принятия баг-репортов без явного факта.
+- Не добавляй цели, планы, мотивацию, предпочтения по команде или обещания улучшить продукт/покрытие, если они не указаны в данных кандидата. Не расширяй подтвержденную задачу дополнительными привычными действиями вроде фиксации несоответствий.
+- Если нет конкретного подтвержденного примера, просто назови реальный навык. Не превращай общий навык в историю проекта.
+- Для приветствия используй только "Здравствуйте!", для окончания только "Обсудим детали?". Остальные предложения должны содержать только подтвержденные факты кандидата.
 
 ## АНТИ-AI ПРАВИЛА (НЕ писать как LLM):
 НЕЛЬЗЯ начинать письмо с самопредставления "Я - QA Engineer", "Я QA с опытом", "Меня зовут". Начни с дела: что зацепило в вакансии, или с конкретного факта про себя, релевантного позиции.
@@ -1500,22 +1518,24 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
 
 ## Как пишет живой кандидат:
 - Короткие предложения. Иногда совсем короткие.
-- Конкретика вместо обобщений: один реальный пример задачи из данных кандидата, без выдуманных проектов.
+- Конкретика вместо обобщений: навык или задача прямо из данных кандидата. Пример проекта допустим ТОЛЬКО если он явно описан в источнике.
 - Цифры и конкретные имена инструментов из резюме - но 1-2 за всё письмо, не списком.
 - Допустимы лёгкие неформальные обороты: "поковырял", "сижу на", "проверяю руками".
-- Можно начать с реакции на вакансию: "Увидел у вас X - у меня было похожее на Y."
+- Не начинай с истории "у меня было похожее", если такая история явно не описана в источниках.
 
-Структура хорошего стиля: конкретная задача вакансии, релевантный подтвержденный факт кандидата, короткое предложение обсудить детали. Если подходящего факта нет, не выдумывай его ради структуры.
+Структура хорошего стиля: 1-2 релевантных подтвержденных факта кандидата, затем "Обсудим детали?". Если подходящего факта нет, не выдумывай его ради структуры.
 Плохой стиль: торжественное самопредставление, длинный список технологий, неподтвержденные цифры и обещания.
 
-Напиши ТОЛЬКО текст письма, без заголовков и пояснений."""
+Перед ответом убери каждую деталь, которой нет в данных кандидата. Достаточно
+одного-двух подтвержденных фактов и разрешенного окончания; дополнительный смысл
+ради убедительности не нужен. Напиши ТОЛЬКО текст письма, без заголовков и пояснений."""
 
     try:
         client = _get_client()
         resp = await client.chat.completions.create(
             model=config.HH_COVER_LETTER_MODEL or config.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.55,
+            temperature=0.2,
             max_tokens=2000,
         )
         cover = _clean_cover_letter_output(resp.choices[0].message.content or "")
@@ -1526,6 +1546,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
                 fallback_cover,
                 cover_style=cover_style,
                 fallback=True,
+                grounding_status="empty_response",
             )
         overstatements = _detect_candidate_claim_overstatements(cover)
         if overstatements:
@@ -1536,8 +1557,22 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
                 cover_style=cover_style,
                 fallback=True,
                 overclaim_guard=True,
+                grounding_status="overstatement_rejected",
             )
-        return _remember_cover_letter_meta(cover, cover_style=cover_style)
+        from cover_grounding import verify_cover_letter
+        grounding = await verify_cover_letter(
+            cover, sources, client, config.HH_COVER_LETTER_MODEL or config.LLM_MODEL,
+        )
+        if not grounding.ok:
+            log.warning("Cover letter grounding rejected draft: %s", grounding.reason)
+            return _remember_cover_letter_meta(
+                _fallback_cover_letter(vacancy, details, cover_style),
+                cover_style=cover_style, fallback=True, overclaim_guard=True,
+                grounding_status=grounding.reason,
+            )
+        return _remember_cover_letter_meta(
+            cover, cover_style=cover_style, grounding_status=grounding.reason,
+        )
 
     except Exception as e:
         log.error("Cover letter generation failed, using fallback: %s", e)
@@ -1546,4 +1581,5 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
             fallback_cover,
             cover_style=cover_style,
             fallback=True,
+            grounding_status="generation_error",
         )

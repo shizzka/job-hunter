@@ -129,6 +129,47 @@ def test_actual_cover_and_matcher_prompts_use_only_active_candidate(candidate_pr
         assert f"RESUME_{name.upper()}_ONLY" in calls[-1]
 
 
+@pytest.mark.parametrize("selected", [[], [999]])
+def test_kb_selector_fallback_keeps_profile_before_await(candidate_profiles, monkeypatch, selected):
+    (candidate_profiles["admin"] / "knowledge" / "qa_kb.md").write_text(
+        "## 1. Проверки\nSECTION_ADMIN_ONLY\n"
+    )
+    profile.activate_no_lock("admin")
+
+    async def select(*args, **kwargs):
+        await asyncio.sleep(0)
+        profile.activate_no_lock("client")
+        return selected
+
+    monkeypatch.setattr(prompt_blocks, "select_kb_sections", select)
+    result = asyncio.run(prompt_blocks.build_filtered_kb_block("Manual QA", object()))
+    assert "EXPERIENCE_ADMIN_ONLY" in result
+    assert "SECTION_ADMIN_ONLY" in result
+    assert "_CLIENT_ONLY" not in result
+
+
+def test_cover_selector_error_keeps_candidate_snapshot(candidate_profiles, monkeypatch):
+    profile.activate_no_lock("admin")
+    calls = []
+
+    async def filtered(*args, **kwargs):
+        await asyncio.sleep(0)
+        profile.activate_no_lock("client")
+        raise TimeoutError("synthetic selector timeout")
+
+    async def create(**kwargs):
+        calls.append(kwargs["messages"][0]["content"])
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Направляю резюме."))])
+
+    monkeypatch.setattr(prompt_blocks, "build_filtered_kb_block", filtered)
+    monkeypatch.setattr(matcher, "_get_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    asyncio.run(matcher.generate_cover_letter({"title": "Manual QA", "id": "test-only"}))
+    assert len(calls) == 1
+    for expected in ("RESUME_ADMIN_ONLY", "NOTE_ADMIN_ONLY", "FACT_ADMIN_ONLY", "EXPERIENCE_ADMIN_ONLY"):
+        assert expected in calls[0]
+    assert "_CLIENT_ONLY" not in calls[0]
+
+
 @pytest.mark.parametrize("style", list(matcher.COVER_STYLE_RULES))
 def test_shared_fallback_contains_no_candidate_biography(style):
     text = matcher._fallback_cover_letter({"title": "QA"}, cover_style=style)

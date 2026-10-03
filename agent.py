@@ -785,8 +785,8 @@ def _build_hh_retry_cover_letter(v: dict, resume_variant: dict | None = None) ->
     resume_title = str((resume_variant or {}).get("title") or "другой вариант резюме").strip()
     return (
         f"Здравствуйте! Направляю {resume_title} на вакансию «{title}»{company_part}. "
-        "Готов обсудить опыт ручного тестирования, проверки web/API, работы с DevTools/Postman "
-        "и участия в подготовке автотестов. Спасибо."
+        "Подробности моего опыта и навыков указаны в резюме. "
+        "Если профиль подходит, можно обсудить задачи и формат работы."
     )
 
 
@@ -796,12 +796,14 @@ def _evaluation_with_cover_letter(
     *,
     fallback: bool | None = None,
     overclaim_guard: bool | None = None,
+    grounding_status: str | None = None,
 ) -> dict:
     cover_meta = analyze_cover_letter(
         cover_letter,
         cover_style=str(evaluation.get("cover_style") or ""),
         fallback=fallback,
         overclaim_guard=overclaim_guard,
+        grounding_status=grounding_status,
     )
     return {**evaluation, **cover_meta}
 
@@ -1418,6 +1420,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 cover = _build_hh_retry_cover_letter(v, hh_resume_variant)
                 cover_fallback_used = True
                 log.info("  hh retry fallback cover letter used for %s", vid)
+            cover_meta = analyze_cover_letter(cover)
             if len(cover) > cover_limit:
                 cover = cover[:cover_limit]
             if apply_trace is not None:
@@ -1427,11 +1430,14 @@ async def do_search(dry_run: bool = False) -> dict:
                     expected=True,
                     generated=bool(cover.strip()),
                     chars=len(cover),
+                    grounding_status=cover_meta["grounding_status"],
+                    fallback=cover_meta["fallback_cover_letter"] or cover_fallback_used,
                 )
             cover_evaluation = _evaluation_with_cover_letter(
                 evaluation,
                 cover,
                 fallback=cover_fallback_used or None,
+                grounding_status=cover_meta["grounding_status"],
             )
             if not (cover or "").strip():
                 if apply_trace is not None:
@@ -2276,6 +2282,7 @@ async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> d
         )
 
         cover = await generate_cover_letter(vacancy, details)
+        cover_meta = analyze_cover_letter(cover or "")
         cover = (cover or "")[: apply_orchestrator.get_cover_letter_limit("hh")]
         trace.event(
             "COVER_LETTER_GENERATED",
@@ -2283,6 +2290,8 @@ async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> d
             expected=True,
             generated=bool(cover.strip()),
             chars=len(cover),
+            grounding_status=cover_meta["grounding_status"],
+            fallback=cover_meta["fallback_cover_letter"],
         )
         if not cover.strip():
             failure_stage = trace.last_stage

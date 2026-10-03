@@ -113,10 +113,18 @@ def _ollama_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
 
 
 def _openrouter_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
-    fast = provider_env.get("OPENROUTER_FAST_MODEL", "openai/gpt-oss-20b:free")
-    strong = provider_env.get("OPENROUTER_STRONG_MODEL", "openai/gpt-oss-120b:free")
+    # Free variants are retired independently of their paid counterparts.
+    # The free router selects an available zero-cost model by request capability.
+    fast = provider_env.get("OPENROUTER_FAST_MODEL", "openrouter/free")
+    strong = provider_env.get("OPENROUTER_STRONG_MODEL", "openrouter/free")
     coder = provider_env.get("OPENROUTER_CODER_MODEL", strong)
+    # The general free router can also select a moderation model for images.
+    vision = provider_env.get(
+        "OPENROUTER_VISION_MODEL",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    )
     return {
+        "qwen3-vl:235b-instruct": vision,
         "gpt-oss:20b": fast,
         "gpt-oss:120b": strong,
         "qwen3-coder:480b": coder,

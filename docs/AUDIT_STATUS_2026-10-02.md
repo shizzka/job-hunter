@@ -128,3 +128,53 @@ impact on bug-report acceptance/review speed. This happened with real candidate
 context entirely replaced by synthetic inputs, so it is model hallucination,
 not evidence of cross-profile contamination. Prompt constraints alone do not
 guarantee that every generated claim is grounded in the candidate's facts.
+
+### Follow-up: OpenRouter alias repair
+
+Text aliases now default to `openrouter/free` rather than vanished GPT-OSS free
+variants. A synthetic text probe succeeded on both configured accounts, selecting
+Ling 3.0 Flash Sante and LFM 2.5 2.6B respectively. Explicit role-model overrides
+remain authoritative; the production Groq-only allowlist is unchanged.
+
+The missing vision alias is mapped to the free Nemotron 3 Nano Omni model. A
+synthetic red-square probe succeeded on one account; the other timed out during
+that model's check. Qwen free vision also succeeded once but had failures/timeouts;
+Gemma free vision returned 429. These are not guarantees of CAPTCHA accuracy or
+free-provider availability. The general free router was unsuitable for the vision
+default: one request selected a moderation model instead of describing the image.
+
+Reference: [OpenRouter free routing](https://openrouter.ai/docs/guides/routing/routers/free-router).
+### Follow-up: cover-letter grounding and profile snapshots (2026-10-03)
+
+The user authorized the additional candidate-data verification request. Factual
+drafts now require a separate evidence-backed JSON check using the same configured
+provider chain, without vacancy text or style examples. Local validation requires
+every sentence index exactly once, strict boolean support, literal quotes from
+known sources and evidence for numeric claims. Rejected or unavailable checks
+produce a neutral fallback. The verifier has a 40-second timeout; its transport
+errors, rejected drafts and evidence are not logged. Semantic entailment remains
+model-assisted, so this is not a guarantee that all hallucinations are eliminated.
+
+Generation now uses conditional style accents and lower temperature, and avoids
+inferring usual QA duties from tool names. Evidence quotes must be continuous;
+separate fragments require separate evidence items. HH retry fallback letters
+also omit assumed QA tools and experience. Trace metadata records grounding and
+fallback status before letter truncation.
+
+Regression tests reproduced three profile-mixing cases on the previous code:
+empty/unknown section selections and a selector exception after an active-profile
+switch. Fallbacks now use the original snapshot; all three regressions pass.
+
+Verification after the final prompt refinement: **1102 local tests passed**
+(26.01 seconds); the isolated publication-tree export passed **1030 tests**
+(26.60 seconds). The earlier targeted group passed 110 tests. The difference
+between local/export counts is the pre-existing local-only test set. Bash syntax
+and diff checks passed. An offline transport interception of
+the synthetic Groq2 diagnostic confirmed two requests, only the hardcoded
+synthetic resume in verifier sources, and no network traffic. After explicit
+payload/destination consent, a live Groq2 probe rejected invented mismatch-recording
+and motivation claims and returned the neutral fallback. The generation prompt
+was tightened; a second synthetic probe produced a 148-character factual letter
+with continuous source quotes, `grounding_status=verified` and no fallback.
+No candidate data or real HH submission participated in these probes. Provider
+availability and factual quality remain subject to the limits described above.

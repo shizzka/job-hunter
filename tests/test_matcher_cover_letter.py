@@ -35,7 +35,7 @@ def test_cover_letter_style_block_is_stable_for_same_vacancy():
     assert "## Вариант стиля" in first
     assert "Стратегия:" in first
     assert "НЕ начинай письмо" in first
-    assert "Заметил" in first
+    assert "Не придумывай" in first
     assert "В вашей вакансии" in first
 
 
@@ -501,9 +501,12 @@ def test_clean_cover_letter_output_removes_provider_prefix_and_fences():
 
 
 def test_generate_cover_letter_cleans_provider_prefix(monkeypatch):
-    client = _FakeClient("НЕЙРО\nПроверяю REST API и web-сценарии.")
+    client = _FakeClient(["НЕЙРО\nПроверяю REST API и web-сценарии.", json.dumps({
+        "verdict": "supported", "sentences": [{"index": 0, "supported": True,
+        "evidence": [{"source": "resume", "quote": "Проверяю REST API и web-сценарии."}]}],
+    })])
     monkeypatch.setattr(matcher, "_get_client", lambda: client)
-    monkeypatch.setattr(matcher, "_load_resume", lambda: "Junior Manual QA, около 1 года практического тестирования.")
+    monkeypatch.setattr(matcher, "_load_resume", lambda: "Проверяю REST API и web-сценарии.")
 
     cover = asyncio.run(
         matcher.generate_cover_letter(

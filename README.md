@@ -235,6 +235,16 @@ fallback order is retained. Groq aliases default to `openai/gpt-oss-20b` (fast),
 `GROQ_FAST_MODEL`, `GROQ_STRONG_MODEL`, `GROQ_VISION_MODEL` in the providers file.
 Verify model access against your account when changing these values.
 
+OpenRouter's legacy text aliases default to `openrouter/free`, its
+[free models router](https://openrouter.ai/docs/guides/routing/routers/free-router).
+It selects an available free model matching request capabilities; the actual model
+can change between calls. Override with `OPENROUTER_FAST_MODEL`,
+`OPENROUTER_STRONG_MODEL`, `OPENROUTER_CODER_MODEL`, `OPENROUTER_VISION_MODEL` in
+the private providers file. Explicit model IDs are retained, and no paid model
+is substituted automatically. An explicit Groq-only order still excludes OpenRouter.
+The vision alias defaults to `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`
+because the general free router may select a moderation model for image requests.
+
 `LLM_PROXY` explicitly routes LLM HTTP calls through an HTTP/SOCKS proxy; no
 inherited system proxy is used. The shared SDK clients close at CLI/bot shutdown,
 and hidden SDK retries are disabled because the adapter controls provider fallback.
@@ -436,6 +446,17 @@ When generating a cover letter / questionnaire answer / AI-chat reply, the modul
 - gives detailed, factual answers instead of generic phrasing.
 
 Files can be updated any time — the next run picks them up automatically.
+
+Cover-letter drafts undergo an additional factual check through the configured
+LLM provider chain. The check uses the current candidate's resume, confirmed
+facts and knowledge snapshot, without vacancy requirements or writing-style
+examples. It requires evidence for each factual sentence and validates quoted
+passages locally. Unsupported claims, invalid output or a verification timeout
+(40 seconds) produce a neutral fallback letter. This adds one model request for
+a factual draft; neutral-only letters are checked locally. Model-based semantic
+checking reduces invented claims but cannot guarantee factual correctness.
+Knowledge-selection fallbacks retain the snapshot loaded before awaiting the
+model, even if the active profile changes while the request is pending.
 
 Candidate biography belongs to the candidate, not shared configuration:
 

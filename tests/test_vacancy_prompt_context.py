@@ -24,7 +24,7 @@ def test_matcher_receives_complete_description(monkeypatch):
     monkeypatch.setattr(matcher, '_load_resume', lambda: 'Junior Manual QA')
     monkeypatch.setattr(matcher, '_build_matcher_truth_block', lambda: '')
     asyncio.run(matcher.evaluate_vacancy({'title':'QA Engineer'}, DETAILS))
-    assert DETAILS in client.create.call_args.kwargs['messages'][0]['content']
+    assert DETAILS in client.create.call_args_list[0].kwargs['messages'][0]['content']
 
 
 def test_letter_and_knowledge_selector_receive_complete_description(monkeypatch):
@@ -35,7 +35,7 @@ def test_letter_and_knowledge_selector_receive_complete_description(monkeypatch)
     monkeypatch.setattr(prompt_blocks, 'build_filtered_kb_block', selector)
     asyncio.run(matcher.generate_cover_letter({'title':'QA Engineer'}, DETAILS))
     assert DETAILS in selector.call_args.args[0]
-    assert DETAILS in client.create.call_args.kwargs['messages'][0]['content']
+    assert DETAILS in client.create.call_args_list[0].kwargs['messages'][0]['content']
 
 
 def test_kb_selection_does_not_truncate_internally():
