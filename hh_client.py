@@ -541,17 +541,8 @@ class HHClient:
 
         # Дебаг: скриншот поисковой выдачи (первый запрос)
         if page == 0:
-            try:
-                safe_query = "".join(c if c.isalnum() else "_" for c in query[:20])
-                debug_path = os.path.join(config.HH_STATE_DIR, f"debug_search_{safe_query}.png")
-                await self._page.screenshot(path=debug_path, full_page=True)
-                debug_html = os.path.join(config.HH_STATE_DIR, f"debug_search_{safe_query}.html")
-                html = await self._page.content()
-                with open(debug_html, "w") as f:
-                    f.write(html)
-                log.info("Search debug saved: %s", debug_path)
-            except Exception:
-                pass
+            safe_query = "".join(c if c.isalnum() else "_" for c in query[:20])
+            await self._save_debug_snapshot(f"debug_search_{safe_query}")
 
         # Anti-bot check перед парсингом
         anti_bot_kind = await self._detect_anti_bot_kind()
@@ -759,7 +750,7 @@ class HHClient:
         return await _save_debug_snapshot(
             self,
             prefix,
-            state_dir=config.HH_STATE_DIR,
+            state_dir=self._cookie_paths.state_dir,
         )
 
     async def _detect_response_controls(self):
@@ -1032,16 +1023,7 @@ class HHClient:
         await self._page.wait_for_timeout(1000)
 
         # Дебаг скриншот страницы резюме
-        try:
-            debug_path = os.path.join(config.HH_STATE_DIR, "debug_resume_page.png")
-            await self._page.screenshot(path=debug_path, full_page=True)
-            debug_html = os.path.join(config.HH_STATE_DIR, "debug_resume_page.html")
-            html = await self._page.content()
-            with open(debug_html, "w") as f:
-                f.write(html)
-            log.info("Resume page debug saved: %s", debug_path)
-        except Exception:
-            pass
+        await self._save_debug_snapshot("debug_resume_page")
 
         sections = {}
 

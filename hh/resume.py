@@ -66,6 +66,8 @@ async def get_resume_ids(
     logger=log,
 ) -> list[dict]:
     """Получить ID резюме пользователя."""
+    from private_artifacts import state_dir_for
+    diagnostic_root = state_dir_for(session, settings.HH_STATE_DIR)
     await ensure_session_ui(session, "catalog_before_navigation", allowed=("captcha",))
     try:
         await session._page.goto(
@@ -82,14 +84,9 @@ async def get_resume_ids(
     # Дебаг: скриншот и URL
     current_url = session._page.url
     logger.info("Resume page URL: %s", current_url)
-    debug_screenshot = os.path.join(settings.HH_STATE_DIR, "debug_resumes.png")
-    debug_html = os.path.join(settings.HH_STATE_DIR, "debug_resumes.html")
     try:
-        await session._page.screenshot(path=debug_screenshot)
-        html = await session._page.content()
-        with open(debug_html, "w") as f:
-            f.write(html)
-        logger.info("Debug saved: %s, %s", debug_screenshot, debug_html)
+        from private_artifacts import capture_artifacts, state_dir_for
+        await capture_artifacts(session._page, diagnostic_root, "debug_resumes")
     except Exception as e:
         logger.debug("Debug save failed: %s", e)
 
@@ -174,21 +171,12 @@ async def _save_resume_boost_debug(
     settings=config,
     logger=log,
 ) -> dict:
-    paths = {
-        "debug_screenshot": os.path.join(
-            settings.HH_STATE_DIR,
-            f"debug_resume_boost_{stage}.png",
-        ),
-        "debug_html": os.path.join(
-            settings.HH_STATE_DIR,
-            f"debug_resume_boost_{stage}.html",
-        ),
-    }
+    paths = {"debug_screenshot": "", "debug_html": ""}
     try:
-        await session._page.screenshot(path=paths["debug_screenshot"], full_page=True)
-        html = await session._page.content()
-        with open(paths["debug_html"], "w", encoding="utf-8") as f:
-            f.write(html)
+        from private_artifacts import capture_artifacts, state_dir_for
+        saved = await capture_artifacts(session._page, state_dir_for(session, settings.HH_STATE_DIR),
+                                        f"debug_resume_boost_{stage}", full_page=True)
+        paths.update(debug_screenshot=saved.get("screenshot", ""), debug_html=saved.get("html", ""))
     except Exception as e:
         logger.debug("Resume boost debug save failed: %s", e)
     return paths

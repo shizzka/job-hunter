@@ -68,6 +68,11 @@ def atomic_write_text(path: str | os.PathLike[str], value: str) -> None:
     _atomic_write(path, lambda stream: stream.write(value))
 
 
+def atomic_write_bytes(path: str | os.PathLike[str], value: bytes) -> None:
+    """Publish a complete private binary artifact, without truncating the old one."""
+    _atomic_write(path, lambda stream: stream.buffer.write(value))
+
+
 def atomic_create_text(path: str | os.PathLike[str], value: str) -> None:
     """Publish private text atomically; raise FileExistsError without clobbering."""
     _atomic_write(path, lambda stream: stream.write(value), overwrite=False)

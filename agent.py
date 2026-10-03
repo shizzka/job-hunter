@@ -40,6 +40,8 @@ import apply_orchestrator
 import invitation_sync
 import manual_apply_queue
 from state_store.json_store import JsonStore, atomic_write_text
+from state_store.private_journal import append_json
+from private_logging import PrivateFileHandler
 from state_store.protected import ProtectedJsonStore
 from state_store.matcher_deferred import MatcherDeferredQueue
 from llm_client import close_llm_client
@@ -125,13 +127,13 @@ def _build_logging_handlers() -> list[logging.Handler]:
         log_dir = os.path.dirname(config.LOG_FILE)
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
-        handlers.append(logging.FileHandler(config.LOG_FILE))
+        handlers.append(PrivateFileHandler(config.LOG_FILE))
 
     if config.ERROR_LOG_FILE:
         error_dir = os.path.dirname(config.ERROR_LOG_FILE)
         if error_dir:
             os.makedirs(error_dir, exist_ok=True)
-        error_handler = logging.FileHandler(config.ERROR_LOG_FILE)
+        error_handler = PrivateFileHandler(config.ERROR_LOG_FILE)
         error_handler.setLevel(logging.WARNING)
         handlers.append(error_handler)
 
@@ -236,11 +238,9 @@ def _write_runtime_status(
 
 def _append_run_history(entry: dict) -> None:
     try:
-        os.makedirs(os.path.dirname(config.RUN_HISTORY_FILE), exist_ok=True)
-        with open(config.RUN_HISTORY_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        append_json(config.RUN_HISTORY_FILE, entry)
     except Exception as exc:
-        log.warning("Failed to append run history: %s", exc)
+        log.warning("Failed to append run history: %s", type(exc).__name__)
 
 
 def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -> None:
@@ -303,35 +303,14 @@ async def _save_autoapply_failure_snapshot(
     source: str,
     vacancy_id: str,
     page,
+    *, state_dir: str | None = None,
 ) -> dict[str, str]:
     if page is None:
         return {}
 
-    state_dir = Path(config.HH_STATE_DIR)
-    state_dir.mkdir(parents=True, exist_ok=True)
-
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_name = (
-        f"autoapply_failed_{stamp}_"
-        f"{_snapshot_slug(source, max_length=24)}_"
-        f"{_snapshot_slug(vacancy_id, max_length=64)}"
-    )
-    screenshot_path = state_dir / f"{base_name}.png"
-    html_path = state_dir / f"{base_name}.html"
-    saved: dict[str, str] = {}
-
-    try:
-        await page.screenshot(path=str(screenshot_path), full_page=True)
-        saved["screenshot"] = str(screenshot_path)
-    except Exception as exc:
-        log.warning("Failed to save auto-apply screenshot for %s/%s: %s", source, vacancy_id, exc)
-
-    try:
-        html = await page.content()
-        html_path.write_text(html, encoding="utf-8")
-        saved["html"] = str(html_path)
-    except Exception as exc:
-        log.warning("Failed to save auto-apply HTML for %s/%s: %s", source, vacancy_id, exc)
+    from private_artifacts import capture_artifacts
+    saved = await capture_artifacts(page, state_dir or config.HH_STATE_DIR,
+                                   f"autoapply_failed_{source}_{vacancy_id}", full_page=True)
 
     if saved:
         log.warning(
@@ -899,6 +878,10 @@ async def do_search(dry_run: bool = False) -> dict:
     superjob_client: SuperJobClient | None = SuperJobClient() if config.SUPERJOB_ENABLED else None
     habr_client: HabrCareerClient | None = HabrCareerClient() if config.HABR_ENABLED else None
     geekjob_client: GeekJobClient | None = GeekJobClient() if config.GEEKJOB_ENABLED else None
+    from private_artifacts import state_dir_for
+    diagnostic_roots = {source: state_dir_for(client, config.HH_STATE_DIR)
+                        for source, client in (("hh", hh_client), ("superjob", superjob_client),
+                                               ("habr", habr_client), ("geekjob", geekjob_client))}
     last_office_status: tuple[str, str, str] | None = None
     runtime_mode = "dry-run" if dry_run else "search"
     run_id = analytics.new_run_id(runtime_mode)
@@ -1545,6 +1528,7 @@ async def do_search(dry_run: bool = False) -> dict:
                         habr_client,
                         geekjob_client,
                     ),
+                    state_dir=diagnostic_roots[source],
                 )
                 snapshot_hint = (
                     f"\nСнимок: {snapshot['screenshot']}"
@@ -1700,6 +1684,7 @@ async def do_search(dry_run: bool = False) -> dict:
                         habr_client,
                         geekjob_client,
                     ),
+                    state_dir=diagnostic_roots[source],
                 )
                 await set_hunter_status("search_manual", "Ручной hh: вопросы", "busy")
                 seen.mark_seen(vid, v, "skipped_questions")
@@ -1816,6 +1801,7 @@ async def do_search(dry_run: bool = False) -> dict:
                         habr_client,
                         geekjob_client,
                     ),
+                    state_dir=diagnostic_roots[source],
                 )
                 snapshot_hint = (
                     f"\nСнимок: {snapshot['screenshot']}"

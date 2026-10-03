@@ -113,7 +113,8 @@ def test_json_read_permission_error_does_not_reset_valid_state(tmp_path, monkeyp
 
 def test_captcha_responses_are_private(tmp_path, monkeypatch):
     monkeypatch.setattr(captcha_bridge, "_state_dir", lambda profile_name=None: str(tmp_path))
-    captcha_bridge.write_response("request", "answer", profile_name="qa")
+    request_id = captcha_bridge.create_request("synthetic.png", profile_name="qa")
+    captcha_bridge.write_response(request_id, "answer", profile_name="qa")
     assert (tmp_path / "captcha_response.json").stat().st_mode & 0o777 == 0o600
 
 

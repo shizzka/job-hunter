@@ -316,7 +316,8 @@ def test_response_submit_button_prefers_active_modal_over_background_control():
     ]
 
 
-def test_legacy_debug_snapshot_wrapper_forwards_active_state_dir(monkeypatch):
+def test_legacy_debug_snapshot_wrapper_keeps_constructed_state_dir(monkeypatch):
+    monkeypatch.setattr(hh_client.config, "HH_STATE_DIR", "/tmp/hh-state")
     client = hh_client.HHClient()
     captured = {}
 
@@ -324,7 +325,7 @@ def test_legacy_debug_snapshot_wrapper_forwards_active_state_dir(monkeypatch):
         captured.update(session=session, prefix=prefix, state_dir=state_dir)
 
     monkeypatch.setattr(hh_client, "_save_debug_snapshot", fake_snapshot)
-    monkeypatch.setattr(hh_client.config, "HH_STATE_DIR", "/tmp/hh-state")
+    monkeypatch.setattr(hh_client.config, "HH_STATE_DIR", "/tmp/other-profile-state")
 
     asyncio.run(client._save_debug_snapshot("apply"))
 

@@ -14,9 +14,9 @@ from playwright.async_api import async_playwright, BrowserContext, Page
 
 import config
 import proxy_utils
-from state_store.json_store import atomic_write_json
 from browser_cookie_session import BrowserCookieSession
 from state_store.browser_cookies import CookieRepository
+from state_store.superjob_auth import SuperJobAuthRepository, SuperJobAuthSession, SuperJobAuthError
 
 log = logging.getLogger("superjob_client")
 
@@ -90,19 +90,11 @@ def _save_cookies(payload: list[dict]):
 
 
 def _load_auth_file() -> dict:
-    if not os.path.exists(config.SUPERJOB_AUTH_FILE):
-        return {}
-    try:
-        with open(config.SUPERJOB_AUTH_FILE) as f:
-            return json.load(f)
-    except Exception as exc:
-        log.warning("Failed to load SuperJob auth file: %s", exc)
-        return {}
+    return SuperJobAuthRepository(config.SUPERJOB_AUTH_FILE).snapshot()[0] or {}
 
 
 def _save_auth_file(payload: dict):
-    _ensure_dirs()
-    atomic_write_json(config.SUPERJOB_AUTH_FILE, payload)
+    SuperJobAuthRepository(config.SUPERJOB_AUTH_FILE).save(payload)
 
 
 class SuperJobClient:
@@ -110,6 +102,11 @@ class SuperJobClient:
 
     def __init__(self):
         self._cookie_session = BrowserCookieSession(config.SUPERJOB_COOKIES_FILE, config.HH_STATE_DIR)
+        self._auth_session = SuperJobAuthSession(config.SUPERJOB_AUTH_FILE)
+        self._api_key = config.SUPERJOB_API_KEY
+        self._client_id = config.SUPERJOB_CLIENT_ID
+        self._api_base_url = config.SUPERJOB_API_BASE_URL
+        self._configured_resume_id = config.SUPERJOB_RESUME_ID
         self._session: aiohttp.ClientSession | None = None
         self._session_uses_env_proxy = True
         self._auth: dict | None = None
@@ -127,7 +124,7 @@ class SuperJobClient:
 
         self._session = aiohttp.ClientSession(
             headers={
-                "X-Api-App-Id": config.SUPERJOB_API_KEY,
+                "X-Api-App-Id": self._api_key,
                 "Accept": "application/json",
             },
             timeout=aiohttp.ClientTimeout(total=20),
@@ -168,30 +165,28 @@ class SuperJobClient:
         await self._cookie_session.save(self, logger=log)
 
     def _get_auth(self) -> dict:
-        if self._auth is None:
-            self._auth = _load_auth_file()
+        self._auth = self._auth_session.get()
         return self._auth
 
     def _save_auth(self):
-        _save_auth_file(self._get_auth())
+        if self._auth is None:
+            self._get_auth()
+        self._auth_session.publish(self._auth)
 
-    def _update_tokens(self, payload: dict):
-        auth = self._get_auth()
-        expires_at = int(payload.get("ttl") or 0)
-        if not expires_at:
-            expires_at = int(time.time()) + int(payload.get("expires_in") or 0)
-        auth.update(
-            {
-                "access_token": payload.get("access_token", ""),
-                "refresh_token": payload.get("refresh_token", auth.get("refresh_token", "")),
-                "token_type": payload.get("token_type", "bearer"),
-                "expires_at": expires_at,
-            }
-        )
-        self._save_auth()
+    def _update_tokens(self, payload: dict, *, owner: str):
+        self._auth_session.finish(owner, payload)
+        self._auth = self._auth_session.get()
+
+    def _mark_auth_uncertain(self, owner):
+        try:
+            self._auth_session.uncertain(owner)
+        except Exception as exc:
+            log.warning("SuperJob auth completion needs manual review: %s", type(exc).__name__)
 
     def _auth_header(self) -> str:
         token = self._get_auth().get("access_token", "")
+        if self._auth.get("_token_attempt"):
+            raise SuperJobAuthError("SuperJob token attempt needs manual review")
         token_type = self._get_auth().get("token_type", "bearer")
         if not token:
             return ""
@@ -202,11 +197,11 @@ class SuperJobClient:
             return path
         if path.startswith("/1.0/") or path.startswith("/2.0/"):
             return f"https://api.superjob.ru{path}"
-        return f"{config.SUPERJOB_API_BASE_URL}{path}"
+        return f"{self._api_base_url}{path}"
 
     def _resume_id(self) -> int:
-        if config.SUPERJOB_RESUME_ID > 0:
-            return int(config.SUPERJOB_RESUME_ID)
+        if self._configured_resume_id > 0:
+            return int(self._configured_resume_id)
         auth = self._get_auth()
         try:
             return int(auth.get("resume_id") or auth.get("user", {}).get("id_cv") or 0)
@@ -217,7 +212,7 @@ class SuperJobClient:
         auth = self._get_auth()
         access_token = auth.get("access_token", "")
         expires_at = int(auth.get("expires_at") or 0)
-        return bool(access_token and expires_at > int(time.time()) + 300)
+        return bool(not auth.get("_token_attempt") and access_token and expires_at > int(time.time()) + 300)
 
     async def _decode_response(self, resp: aiohttp.ClientResponse) -> tuple[dict | list | None, str]:
         text = await resp.text()
@@ -250,7 +245,7 @@ class SuperJobClient:
         auth: bool = False,
         retry_on_auth_error: bool = True,
     ) -> dict | list | None:
-        if not config.SUPERJOB_API_KEY:
+        if not self._api_key:
             raise RuntimeError("SUPERJOB_API_KEY is not configured")
 
         headers = {}
@@ -286,10 +281,8 @@ class SuperJobClient:
                     )
 
             if resp.status >= 400:
-                fallback = f"SuperJob API error {resp.status}"
-                if text:
-                    fallback = f"{fallback}: {text[:300]}"
-                raise RuntimeError(self._extract_error_message(payload, fallback))
+                # OAuth errors may echo tokens/credentials; never expose body/URL.
+                raise RuntimeError(f"SuperJob API error {resp.status}")
 
             return payload
 
@@ -314,8 +307,9 @@ class SuperJobClient:
                 retry_on_auth_error=retry_on_auth_error,
             )
         except Exception as exc:
-            if self._session_uses_env_proxy and proxy_utils.is_proxy_error(exc):
-                log.warning("SuperJob proxy failed, retrying direct: %s", exc)
+            token_request = path in {"/oauth2/refresh_token/", "/oauth2/password/"}
+            if not token_request and self._session_uses_env_proxy and proxy_utils.is_proxy_error(exc):
+                log.warning("SuperJob proxy failed, retrying direct: %s", type(exc).__name__)
                 await self.start(trust_env=False)
                 return await self._request_once(
                     method,
@@ -328,49 +322,56 @@ class SuperJobClient:
             raise
 
     async def password_login(self, login: str, password: str):
-        if not config.SUPERJOB_CLIENT_ID:
+        if not self._client_id:
             raise RuntimeError("SUPERJOB_CLIENT_ID is not configured")
-
-        payload = await self._request(
-            "POST",
-            "/oauth2/password/",
-            data={
-                "login": login,
-                "password": password,
-                "client_id": config.SUPERJOB_CLIENT_ID,
-                "client_secret": config.SUPERJOB_API_KEY,
-                "hr": 0,
-            },
-            auth=False,
-            retry_on_auth_error=False,
-        )
-        if not isinstance(payload, dict) or not payload.get("access_token"):
-            raise RuntimeError("SuperJob did not return access_token")
-        self._update_tokens(payload)
+        if not self._api_key:
+            raise RuntimeError("SUPERJOB_API_KEY is not configured")
+        owner = self._auth_session.begin("login")
+        try:
+            payload = await self._request(
+                "POST",
+                "/oauth2/password/",
+                data={
+                    "login": login,
+                    "password": password,
+                    "client_id": self._client_id,
+                    "client_secret": self._api_key,
+                    "hr": 0,
+                },
+                auth=False,
+                retry_on_auth_error=False,
+            )
+            self._update_tokens(payload, owner=owner)
+        except BaseException:
+            self._mark_auth_uncertain(owner)
+            raise
 
     async def refresh_access_token(self) -> bool:
-        refresh_token = self._get_auth().get("refresh_token", "")
-        if not refresh_token or not config.SUPERJOB_CLIENT_ID:
-            return False
+        owner = None
         try:
+            refresh_token = self._get_auth().get("refresh_token", "")
+            if not refresh_token or not self._client_id or not self._api_key:
+                return False
+            owner = self._auth_session.begin("refresh")
             payload = await self._request(
                 "GET",
                 "/oauth2/refresh_token/",
                 params={
                     "refresh_token": refresh_token,
-                    "client_id": config.SUPERJOB_CLIENT_ID,
-                    "client_secret": config.SUPERJOB_API_KEY,
+                    "client_id": self._client_id,
+                    "client_secret": self._api_key,
                 },
                 auth=False,
                 retry_on_auth_error=False,
             )
-        except Exception as exc:
-            log.warning("SuperJob token refresh failed: %s", exc)
+            self._update_tokens(payload, owner=owner)
+        except BaseException as exc:
+            if owner is not None:
+                self._mark_auth_uncertain(owner)
+            if not isinstance(exc, Exception):
+                raise
+            log.warning("SuperJob token refresh failed: %s", type(exc).__name__)
             return False
-
-        if not isinstance(payload, dict) or not payload.get("access_token"):
-            return False
-        self._update_tokens(payload)
         return True
 
     async def ensure_auth(self) -> bool:
@@ -567,9 +568,8 @@ class SuperJobClient:
             return {"ok": False, "message": "Не залогинен на SuperJob"}
 
         try:
-            await self._page.screenshot(
-                path=os.path.join(config.HH_STATE_DIR, "debug_superjob_apply_page.png")
-            )
+            from private_artifacts import capture_artifacts
+            await capture_artifacts(self._page, self._cookie_session.state_dir, "debug_superjob_apply_page", html=False)
         except Exception:
             pass
 
@@ -619,15 +619,8 @@ class SuperJobClient:
             return {"ok": True, "message": "Отклик уже существует"}
 
         try:
-            await self._page.screenshot(
-                path=os.path.join(config.HH_STATE_DIR, "debug_superjob_apply_after_click.png")
-            )
-            with open(
-                os.path.join(config.HH_STATE_DIR, "debug_superjob_apply_after_click.html"),
-                "w",
-                encoding="utf-8",
-            ) as f:
-                f.write(await self._page.content())
+            from private_artifacts import capture_artifacts
+            await capture_artifacts(self._page, self._cookie_session.state_dir, "debug_superjob_apply_after_click")
         except Exception:
             pass
 

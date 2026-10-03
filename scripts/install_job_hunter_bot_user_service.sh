@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -51,7 +52,9 @@ tmp_unit="$(mktemp)"
 trap 'rm -f "$tmp_unit"' EXIT
 
 sed "s|__PROJECT_ROOT__|${escaped_root}|g" "$TEMPLATE_PATH" > "$tmp_unit"
-install -m 0644 "$tmp_unit" "$TARGET_PATH"
+task_python="${JOB_HUNTER_PYTHON:-${PROJECT_ROOT}/venv/bin/python}"
+if [ ! -x "$task_python" ]; then task_python=python3; fi
+PYTHONPATH="$PROJECT_ROOT" "$task_python" -c 'import sys; from pathlib import Path; from state_store.json_store import atomic_write_text; atomic_write_text(sys.argv[2], Path(sys.argv[1]).read_text())' "$tmp_unit" "$TARGET_PATH"
 
 systemctl --user daemon-reload
 

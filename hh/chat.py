@@ -395,12 +395,10 @@ async def fill_and_preview(
     quick_reply = choose_quick_reply(text)
     quick_button = await find_quick_reply(page, quick_reply)
     if quick_button:
-        shot_path = path_join(
-            state_dir,
-            f"chat_preview_{chat_id}_{int(now())}.png",
-        )
         try:
-            await page.screenshot(path=shot_path)
+            from private_artifacts import capture_artifacts
+            saved = await capture_artifacts(page, state_dir, f"chat_preview_{chat_id}", html=False)
+            shot_path = saved.get("screenshot", "")
         except Exception:
             shot_path = ""
         return {
@@ -420,12 +418,10 @@ async def fill_and_preview(
     await ensure_page_ui(page, "chat_fill")
     await inp.fill(text)
     await page.wait_for_timeout(500)
-    shot_path = path_join(
-        state_dir,
-        f"chat_preview_{chat_id}_{int(now())}.png",
-    )
     try:
-        await page.screenshot(path=shot_path)
+        from private_artifacts import capture_artifacts
+        saved = await capture_artifacts(page, state_dir, f"chat_preview_{chat_id}", html=False)
+        shot_path = saved.get("screenshot", "")
     except Exception:
         shot_path = ""
     return {"filled": True, "screenshot_path": shot_path}

@@ -28,6 +28,8 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 sys.path.insert(0, _ROOT)
 
 import config
+from state_store.json_store import atomic_write_json
+import tempfile
 from openai import AsyncOpenAI
 from llm_utils import parse_llm_json
 
@@ -237,15 +239,15 @@ async def main():
             print(f"  {model:<22} {status:<10} {r['elapsed_s']}s  len={r['len']}")
 
     # JSON-sample dump для дальнейшей ручной оценки
-    out_path = "/tmp/model_bench_results.json"
+    out_dir = tempfile.mkdtemp(prefix="jh-model-bench-")
+    out_path = os.path.join(out_dir, "results.json")
     serializable_grid = {}
     for (model, task), row in grid.items():
         key = f"{task}__{model}"
         # уберём json_parsed из дампа (нечитабельно в большом объёме)
         slim = {k: v for k, v in row.items() if k != "json_parsed"}
         serializable_grid[key] = slim
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(serializable_grid, f, ensure_ascii=False, indent=2)
+    atomic_write_json(out_path, serializable_grid)
     print(f"\n📁 Детальный результат: {out_path}")
 
 

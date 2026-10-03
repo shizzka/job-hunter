@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import html
 import json
+import logging
 import os
 import re
 import sys
@@ -16,7 +17,10 @@ from pathlib import Path
 import config
 import profile as profile_mod
 from hh_client import HHClient
-from state_store.json_store import atomic_write_json, atomic_write_text
+from state_store.json_store import atomic_write_json, atomic_write_text, file_lock
+from state_store.hh_resume_import import HHResumeImport, ResumeCatalogRepository
+
+log = logging.getLogger(__name__)
 
 _TRANSIENT_HH_NAVIGATION_ERRORS = (
     "net::ERR_CONNECTION_CLOSED",
@@ -67,14 +71,7 @@ def hh_resume_exports_dir(profile_name: str) -> str:
 
 def load_hh_resume_catalog(profile_name: str) -> list[dict]:
     path = hh_resume_catalog_path(profile_name)
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, encoding="utf-8") as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return []
-    return payload if isinstance(payload, list) else []
+    return ResumeCatalogRepository(path).snapshot()[0] or []
 
 
 def _slugify(value: str) -> str:
@@ -129,7 +126,7 @@ def _normalize_env_value(value: str | int | None) -> str:
 
 def _save_resume_catalog(profile_name: str, items: list[dict]) -> str:
     path = hh_resume_catalog_path(profile_name)
-    atomic_write_json(path, items)
+    ResumeCatalogRepository(path).save(items)
     return path
 
 
@@ -170,9 +167,10 @@ def _select_profile_resumes(profile_name: str, resumes: list[dict]) -> list[dict
     return selected
 
 
-def _update_profile_resume_ids(profile_name: str, resumes: list[dict]) -> str:
-    profile = _resolve_profile(profile_name)
-    env_file = os.path.join(profile.home_dir, "profile.env")
+def _update_profile_resume_ids(profile_name: str, resumes: list[dict], *, env_file=None, expected_content=...) -> str:
+    if env_file is None:
+        profile = _resolve_profile(profile_name)
+        env_file = os.path.join(profile.home_dir, "profile.env")
     if not os.path.isfile(env_file):
         raise FileNotFoundError(f"Профиль '{profile_name}' не найден: {env_file}")
 
@@ -187,7 +185,7 @@ def _update_profile_resume_ids(profile_name: str, resumes: list[dict]) -> str:
         updates[id_key] = _normalize_env_value(item.get("id") or "")
         updates[title_key] = _normalize_env_value(item.get("title") or "")
 
-    return profile_mod.update_env_file(env_file, updates)
+    return profile_mod.update_env_file(env_file, updates, expected_content=expected_content)
 
 
 
@@ -637,8 +635,8 @@ async def _request_hh_auth_value(kind: str, profile_name: str, prompt: str, *, p
         page_url=page_url,
         timeout_s=timeout_s,
     )
-    await _notify_hh_auth_request(kind, profile_name, prompt, timeout_s)
     try:
+        await _notify_hh_auth_request(kind, profile_name, prompt, timeout_s)
         answer = await hh_auth_bridge.wait_for_response(
             request_id,
             timeout_s=timeout_s,
@@ -804,44 +802,68 @@ async def _drive_hh_auth_step(
 
 async def import_current_hh_resumes(client: HHClient, profile_name: str) -> dict:
     profile = _resolve_profile(profile_name)
-    resumes = await client.get_resume_ids()
-    exports: list[dict] = []
-    exports_dir = hh_resume_exports_dir(profile_name)
-    os.makedirs(exports_dir, exist_ok=True)
-
-    for item in resumes:
-        downloaded = await client.download_resume_by_id(item)
-        resume_id = str(item.get("id") or "")
-        title = str(downloaded.get("title") or item.get("title") or resume_id or "resume")
-        filename = f"{resume_id or _slugify(title)}.md"
-        path = os.path.join(exports_dir, filename)
-        _write_text(path, downloaded.get("raw", ""))
-        exports.append(
-            {
-                "id": resume_id,
-                "title": title,
-                "url": str(item.get("url") or ""),
-                "path": path,
-                "sections": downloaded.get("sections", []),
-            }
-        )
-
-    selected_exports = _select_profile_resumes(profile_name, exports)
-    catalog_path = _save_resume_catalog(profile_name, selected_exports)
-    profile_env_path = _update_profile_resume_ids(profile_name, selected_exports) if selected_exports else ""
-
-    selected = selected_exports[0] if selected_exports else None
-    resume_file = ""
-    if selected and selected.get("path"):
-        raw = Path(selected["path"]).read_text(encoding="utf-8")
-        resume_file = _write_text(profile.resume_file, raw)
-
+    cookie_paths = getattr(client, "_cookie_paths", None)
+    binding = getattr(client, "_cookie_binding", None)
+    cookie_revision = getattr(binding, "revision", None)
+    context = getattr(client, "_context", None)
+    def verify_cookie_owner(*, locked=False):
+        if cookie_paths is None:
+            return  # Compatibility injected clients are not native account proof.
+        configured = getattr(getattr(profile, "hh", None), "cookies_file", "")
+        if not configured or os.path.abspath(configured) != cookie_paths.cookies_file:
+            raise RuntimeError("HH import client belongs to another profile")
+        if (binding is None or binding is not getattr(client, "_cookie_binding", None)
+                or binding.context is not context or context is not getattr(client, "_context", None)
+                or binding.revoked or binding.closing or binding.revision != cookie_revision):
+            raise RuntimeError("HH import cookie ownership changed")
+        snapshot = binding.repository._snapshot_unlocked if locked else binding.repository.snapshot
+        if snapshot()[1] != cookie_revision:
+            raise RuntimeError("HH import account/session changed")
+    verify_cookie_owner()
+    workflow = HHResumeImport(profile.home_dir, profile.resume_file)
+    try:
+        workflow.begin()
+        resumes = await client.get_resume_ids()
+        exports: list[dict] = []
+        seen_ids = set()
+        for item in resumes:
+            resume_id = str(item.get("id") or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", resume_id):
+                raise ValueError("Invalid HH resume export identity")
+            if resume_id in seen_ids:
+                raise ValueError("Ambiguous duplicate HH resume export identity")
+            seen_ids.add(resume_id)
+            downloaded = await client.download_resume_by_id(item)
+            title = str(downloaded.get("title") or item.get("title") or resume_id)
+            path = workflow.exports / f"{resume_id}.md"
+            _write_text(str(path), downloaded.get("raw", ""))
+            exports.append({"id": resume_id, "title": title, "url": str(item.get("url") or ""),
+                            "path": str(path), "sections": downloaded.get("sections", [])})
+        selected_exports = _select_profile_resumes(profile_name, exports)
+        selected = selected_exports[0] if selected_exports else None
+        raw = Path(selected["path"]).read_text(encoding="utf-8") if selected else ""
+        def publish():
+            workflow.publish(selected_exports, raw, lambda env, expected: _update_profile_resume_ids(
+                profile_name, selected_exports, env_file=env, expected_content=expected))
+        if binding is not None:
+            # Lock only around synchronous publication, never browser downloads.
+            with file_lock(binding.repository.path):
+                verify_cookie_owner(locked=True)
+                publish()
+        else:
+            publish()
+    except BaseException:
+        try:
+            workflow.fail()
+        except Exception as exc:
+            log.warning("HH resume import completion needs manual review: %s", type(exc).__name__)
+        raise
     return {
         "ok": bool(exports),
         "count": len(exports),
-        "catalog_path": catalog_path,
-        "profile_env_path": profile_env_path,
-        "resume_file": resume_file,
+        "catalog_path": str(workflow.catalog.path),
+        "profile_env_path": str(workflow.env) if selected_exports else "",
+        "resume_file": str(workflow.resume) if selected_exports else "",
         "resumes": exports,
     }
 

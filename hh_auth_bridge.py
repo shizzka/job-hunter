@@ -18,11 +18,14 @@ import re
 import time
 import uuid
 from typing import Optional
+from pathlib import Path
 
 import config
 from state_store.json_store import atomic_write_json
+from state_store.prompt_mailbox import PromptMailbox, read_prompt
 
 log = logging.getLogger("hh_auth_bridge")
+_request_channels = {}
 
 
 def _state_dir() -> str:
@@ -64,16 +67,26 @@ def _atomic_write(path: str, data: dict) -> None:
 
 
 def _safe_read(path: str) -> Optional[dict]:
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return data
-    except Exception as exc:
-        log.warning("read %s failed: %s", path, exc)
-    return None
+    return read_prompt(path)
+
+
+def _mailbox(profile_name):
+    pending = Path(_pending_path(profile_name)).absolute()
+    return PromptMailbox(pending, pending.with_name(f"hh_auth_response.{_profile_file_key(profile_name)}.json"),
+                         profile_name=_normalized_profile_name(profile_name))
+
+
+def _request_mailbox(request_id, profile_name=""):
+    cached = _request_channels.get(request_id)
+    if cached:
+        name, mailbox = cached
+        if profile_name and _normalized_profile_name(profile_name) != name:
+            raise ValueError("Auth request belongs to another profile")
+        return mailbox
+    if profile_name:
+        return _mailbox(profile_name)
+    pending = _find_pending_request(request_id)
+    return _mailbox(pending["profile_name"]) if pending else None
 
 
 def create_request(
@@ -84,7 +97,7 @@ def create_request(
     page_url: str = "",
     timeout_s: int = 900,
 ) -> str:
-    request_id = uuid.uuid4().hex[:8]
+    request_id = uuid.uuid4().hex
     started_at = time.time()
     request_profile = _normalized_profile_name(profile_name)
     data = {
@@ -96,11 +109,9 @@ def create_request(
         "started_at": started_at,
         "timeout_at": started_at + max(1, int(timeout_s or 1)),
     }
-    _atomic_write(_pending_path(request_profile), data)
-    with contextlib.suppress(Exception):
-        response_path = _response_path(request_profile)
-        if os.path.exists(response_path):
-            os.remove(response_path)
+    mailbox = _mailbox(request_profile)
+    mailbox.create(data, writer=_atomic_write)
+    _request_channels[request_id] = (request_profile, mailbox)
     log.info("hh auth request created: id=%s kind=%s profile=%s", request_id, data["kind"], data["profile_name"])
     return request_id
 
@@ -109,6 +120,8 @@ def _find_pending_request(request_id: str) -> Optional[dict]:
     for path in _pending_paths():
         data = _safe_read(path)
         if data and data.get("id") == request_id:
+            if Path(path).name != f"hh_auth_pending.{_profile_file_key(data.get('profile_name'))}.json":
+                raise ValueError("Auth prompt profile/path mismatch")
             return data
     return None
 
@@ -121,38 +134,25 @@ async def wait_for_response(
 ) -> Optional[str]:
     import asyncio
 
-    deadline = time.time() + max(1, int(timeout_s or 1))
-    request_profile = _normalized_profile_name(profile_name) if profile_name else ""
-    while time.time() < deadline:
-        if not request_profile:
-            pending = _find_pending_request(request_id)
-            request_profile = str((pending or {}).get("profile_name") or "")
-        data = _safe_read(_response_path(request_profile)) if request_profile else None
-        if data and data.get("id") == request_id:
-            answer = str(data.get("answer") or "").strip()
-            if answer:
-                log.info("hh auth response received: id=%s kind=%s", request_id, data.get("kind"))
-                return answer
+    deadline = time.monotonic() + max(1, int(timeout_s or 1))
+    mailbox = _request_mailbox(request_id, profile_name)
+    while mailbox is not None and time.monotonic() < deadline:
+        active, answer = mailbox.answer(request_id)
+        if not active:
+            return None
+        if answer:
+            log.info("hh auth response received: id=%s", request_id)
+            return answer
         await asyncio.sleep(max(0.2, float(poll_interval_s or 2.0)))
     log.warning("hh auth response wait timed out: id=%s", request_id)
     return None
 
 
 def complete_request(request_id: str, profile_name: str = "") -> None:
-    request_profile = _normalized_profile_name(profile_name) if profile_name else ""
-    if not request_profile:
-        pending = _find_pending_request(request_id)
-        request_profile = str((pending or {}).get("profile_name") or "")
-    if not request_profile:
-        return
-    for path in (_pending_path(request_profile), _response_path(request_profile)):
-        with contextlib.suppress(Exception):
-            if not os.path.exists(path):
-                continue
-            data = _safe_read(path)
-            if data and data.get("id") and data.get("id") != request_id:
-                continue
-            os.remove(path)
+    mailbox = _request_mailbox(request_id, profile_name)
+    if mailbox is not None:
+        mailbox.complete(request_id)
+    _request_channels.pop(request_id, None)
     log.info("hh auth request completed: id=%s", request_id)
 
 
@@ -160,18 +160,14 @@ def peek_pending(profile_name: str | None = None) -> Optional[dict]:
     paths = [_pending_path(profile_name)] if profile_name else _pending_paths()
     pending_items = []
     for path in paths:
-        data = _safe_read(path)
+        candidate = Path(path)
+        mailbox = PromptMailbox(candidate, candidate.with_name(candidate.name.replace("hh_auth_pending.", "hh_auth_response.", 1)))
+        data = mailbox.peek()
         if not data:
             continue
         request_profile = _normalized_profile_name(data.get("profile_name"))
-        timeout_at = float(data.get("timeout_at") or 0)
-        if timeout_at and timeout_at < time.time():
-            with contextlib.suppress(Exception):
-                os.remove(path)
-            continue
-        resp = _safe_read(_response_path(request_profile))
-        if resp and resp.get("id") == data.get("id"):
-            continue
+        if candidate.name != f"hh_auth_pending.{_profile_file_key(request_profile)}.json":
+            raise ValueError("Auth prompt profile/path mismatch")
         pending_items.append(data)
     if not pending_items:
         return None
@@ -179,20 +175,8 @@ def peek_pending(profile_name: str | None = None) -> Optional[dict]:
 
 
 def write_response(request_id: str, answer: str, profile_name: str = "") -> None:
-    request_profile = _normalized_profile_name(profile_name) if profile_name else ""
-    pending = (
-        _safe_read(_pending_path(request_profile))
-        if request_profile
-        else _find_pending_request(request_id)
-    ) or {}
-    if pending.get("id") != request_id:
-        raise ValueError(f"unknown HH auth request: {request_id}")
-    request_profile = _normalized_profile_name(pending.get("profile_name"))
-    _atomic_write(_response_path(request_profile), {
-        "id": request_id,
-        "kind": pending.get("kind") or "",
-        "profile_name": pending.get("profile_name") or "",
-        "answer": (answer or "").strip(),
-        "received_at": time.time(),
-    })
-    log.info("hh auth response written: id=%s kind=%s", request_id, pending.get("kind"))
+    mailbox = _request_mailbox(request_id, profile_name)
+    if mailbox is None:
+        raise ValueError("Unknown HH auth request")
+    mailbox.respond(request_id, answer, writer=_atomic_write)
+    log.info("hh auth response written: id=%s", request_id)

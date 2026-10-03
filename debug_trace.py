@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from state_store.json_store import atomic_write_text
+from state_store.private_journal import append_json
 
 log = logging.getLogger("debug_trace")
 
@@ -65,7 +67,8 @@ def safe_page_url(value: str) -> str:
             for key, item in parse_qsl(parsed.query, keep_blank_values=True)
             if key in _SAFE_URL_QUERY_KEYS
         ]
-        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(safe_query), ""))
+        netloc = parsed.netloc.rsplit("@", 1)[-1]
+        return urlunsplit((parsed.scheme, netloc, parsed.path, urlencode(safe_query), ""))
     except Exception:
         return ""
 
@@ -86,13 +89,7 @@ def _git_revision(project_root: Path) -> str:
 
 
 def _private_write_text(path: Path, text: str) -> None:
-    encoded = text.encode("utf-8", errors="replace")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, encoded)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    atomic_write_text(path, text.encode("utf-8", errors="replace").decode("utf-8"))
 
 
 def _sanitize_html(value: str) -> str:
@@ -187,7 +184,7 @@ class ApplyTrace:
         project_root: Path,
     ):
         self.trace_id = trace_id
-        self.trace_dir = trace_dir
+        self.trace_dir = Path(trace_dir).absolute()
         self.source = source
         self.vacancy_id = vacancy_id
         self.profile = profile
@@ -215,7 +212,7 @@ class ApplyTrace:
         max_runs: int = 100,
     ) -> ApplyTrace:
         started_at = datetime.now().astimezone()
-        root = Path(home_dir).expanduser() / "traces"
+        root = Path(home_dir).expanduser().absolute() / "traces"
         day_dir = root / started_at.strftime("%Y-%m-%d")
         os.makedirs(day_dir, mode=0o700, exist_ok=True)
         os.chmod(root, 0o700)
@@ -229,12 +226,15 @@ class ApplyTrace:
         base_name = f"{source_key}_{vacancy_key}_{started_at.strftime('%H%M%S')}"
         trace_dir = day_dir / base_name
         suffix = 1
-        while trace_dir.exists():
-            suffix += 1
-            trace_dir = day_dir / f"{base_name}_{suffix}"
+        while True:
+            try:
+                os.mkdir(trace_dir, 0o700)
+                break
+            except FileExistsError:
+                suffix += 1
+                trace_dir = day_dir / f"{base_name}_{suffix}"
         if suffix > 1:
             trace_id = f"{trace_id}:{suffix}"
-        os.mkdir(trace_dir, 0o700)
 
         trace = cls(
             trace_id=trace_id,
@@ -283,13 +283,7 @@ class ApplyTrace:
             if ok is not None:
                 event["ok"] = bool(ok)
             event.update(_sanitize(fields))
-            line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
-            fd = os.open(self.jsonl_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            try:
-                os.write(fd, line.encode("utf-8"))
-                os.fsync(fd)
-            finally:
-                os.close(fd)
+            append_json(self.jsonl_path, event)
             self._events.append(event)
             if event["stage"] != "ARTIFACT_CAPTURED":
                 self.last_stage = str(event["stage"])
@@ -309,21 +303,9 @@ class ApplyTrace:
         artifact_name = _safe_name(name, "artifact")
         saved: dict[str, str] = {}
         try:
-            if screenshot:
-                path = self.trace_dir / f"{artifact_name}.png"
-                previous_umask = os.umask(0o077)
-                try:
-                    await page.screenshot(path=os.fspath(path))
-                finally:
-                    os.umask(previous_umask)
-                os.chmod(path, 0o600)
-                saved["screenshot"] = os.fspath(path)
-                self._artifacts.append(path.name)
-            if html:
-                path = self.trace_dir / f"{artifact_name}.html"
-                _private_write_text(path, _sanitize_html(await page.content()))
-                saved["html"] = os.fspath(path)
-                self._artifacts.append(path.name)
+            from private_artifacts import capture_artifacts
+            saved = await capture_artifacts(page, self.trace_dir, artifact_name, screenshot=screenshot, html=html)
+            self._artifacts.extend(Path(path).relative_to(self.trace_dir).as_posix() for path in saved.values())
             self.event("ARTIFACT_CAPTURED", ok=True, name=artifact_name, files=list(saved.values()))
         except Exception as exc:
             self.event("ARTIFACT_CAPTURED", ok=False, name=artifact_name, error=type(exc).__name__)

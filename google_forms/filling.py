@@ -397,6 +397,7 @@ async def fill_form(page, questions: list[dict], answers: list[dict]) -> dict:
 
 async def _safe_screenshot(page, path: str) -> None:
     try:
-        await page.screenshot(path=path, full_page=True)
+        from private_artifacts import private_screenshot
+        await private_screenshot(page, path, full_page=True)
     except Exception as exc:
-        log.warning("google form screenshot failed: %s", exc)
+        log.warning("google form screenshot failed: %s", type(exc).__name__)

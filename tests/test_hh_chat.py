@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 from hh.chat import (
     CHATIK_CHAT_READY_SELECTOR,
@@ -247,9 +248,10 @@ class FakePreviewPage:
 
     async def screenshot(self, *, path: str):
         self.screenshot_paths.append(path)
+        Path(path).write_bytes(b"synthetic PNG")
 
 
-def test_fill_and_preview_keeps_quick_reply_unsubmitted():
+def test_fill_and_preview_keeps_quick_reply_unsubmitted(tmp_path):
     page = FakePreviewPage()
     open_calls = []
     dismiss_calls = []
@@ -271,7 +273,7 @@ def test_fill_and_preview_keeps_quick_reply_unsubmitted():
             page,
             "123",
             "Да, готов.",
-            state_dir="/tmp/chat-state",
+            state_dir=str(tmp_path),
             now=lambda: 456.9,
             open_page=open_page,
             dismiss_cookies=dismiss_cookies,
@@ -282,7 +284,7 @@ def test_fill_and_preview_keeps_quick_reply_unsubmitted():
     assert result == {
         "filled": True,
         "quick_reply": "Да",
-        "screenshot_path": "/tmp/chat-state/chat_preview_123_456.png",
+        "screenshot_path": result["screenshot_path"],
     }
     assert open_calls == [
         (
@@ -295,7 +297,10 @@ def test_fill_and_preview_keeps_quick_reply_unsubmitted():
         )
     ]
     assert dismiss_calls == [page]
-    assert page.screenshot_paths == ["/tmp/chat-state/chat_preview_123_456.png"]
+    assert Path(result["screenshot_path"]).read_bytes() == b"synthetic PNG"
+    assert Path(result["screenshot_path"]).parent.parent == tmp_path
+    assert Path(result["screenshot_path"]).stat().st_mode & 0o777 == 0o600
+    assert len(page.screenshot_paths) == 1
 
 
 class FakeTextInput:
@@ -324,7 +329,7 @@ class FakeTextPreviewPage(FakePreviewPage):
         self.wait_calls.append(timeout_ms)
 
 
-def test_fill_and_preview_fills_textarea_without_sending():
+def test_fill_and_preview_fills_textarea_without_sending(tmp_path):
     page = FakeTextPreviewPage()
 
     async def no_op(*args, **kwargs):
@@ -335,7 +340,7 @@ def test_fill_and_preview_fills_textarea_without_sending():
             page,
             "456",
             "Готов обсудить детали.",
-            state_dir="/tmp/chat-state",
+            state_dir=str(tmp_path),
             now=lambda: 789,
             open_page=no_op,
             dismiss_cookies=no_op,
@@ -345,15 +350,18 @@ def test_fill_and_preview_fills_textarea_without_sending():
 
     assert result == {
         "filled": True,
-        "screenshot_path": "/tmp/chat-state/chat_preview_456_789.png",
+        "screenshot_path": result["screenshot_path"],
     }
     assert page.input.focused is True
     assert page.input.value == "Готов обсудить детали."
     assert page.wait_calls == [500]
-    assert page.screenshot_paths == ["/tmp/chat-state/chat_preview_456_789.png"]
+    assert Path(result["screenshot_path"]).read_bytes() == b"synthetic PNG"
+    assert Path(result["screenshot_path"]).parent.parent == tmp_path
+    assert Path(result["screenshot_path"]).stat().st_mode & 0o777 == 0o600
+    assert len(page.screenshot_paths) == 1
 
 
-def test_fill_and_preview_uses_new_hh_text_input_selector_as_fallback():
+def test_fill_and_preview_uses_new_hh_text_input_selector_as_fallback(tmp_path):
     page = FakeTextPreviewPage()
     selectors = []
 
@@ -373,7 +381,7 @@ def test_fill_and_preview_uses_new_hh_text_input_selector_as_fallback():
             page,
             "456",
             "Готов обсудить детали.",
-            state_dir="/tmp/chat-state",
+            state_dir=str(tmp_path),
             now=lambda: 789,
             open_page=no_op,
             dismiss_cookies=no_op,

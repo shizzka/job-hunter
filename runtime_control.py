@@ -13,6 +13,7 @@ from pathlib import Path
 
 import config
 from state_store.json_store import JsonStore, atomic_write_text, file_lock
+from state_store.private_journal import open_private_append, read_json_records
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 AGENT_DAEMON_TOKENS = ("agent.py", "--daemon")
@@ -175,21 +176,11 @@ def unregister_current_process(pid_file: str) -> None:
 
 def latest_run_entry(path: str | None = None) -> dict | None:
     run_history_file = path or config.RUN_HISTORY_FILE
-    if not os.path.exists(run_history_file):
-        return None
     try:
-        with open(run_history_file, encoding="utf-8") as f:
-            lines = [line.strip() for line in f if line.strip()]
+        records = read_json_records(run_history_file)
     except OSError:
         return None
-    for line in reversed(lines):
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    return None
+    return records[-1] if records else None
 
 
 def tail_file(path: str, lines: int = 40, chars: int = 3500) -> str:
@@ -308,7 +299,7 @@ def start_background_process(
             return {"ok": False, "already_running": True, "pid": current["pid"], "log_file": log_file}
 
         _ensure_parent(log_file)
-        with open(log_file, "ab") as log:
+        with os.fdopen(open_private_append(log_file), "ab") as log:
             child_env = os.environ.copy()
             child_env["JOB_HUNTER_BACKGROUND"] = "1"
             proc = subprocess.Popen(

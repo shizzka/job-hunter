@@ -488,11 +488,8 @@ async def submit_response_form_via_dom(session, *, logger, before_submit=None) -
 async def save_debug_snapshot(session, prefix: str, *, state_dir: str) -> None:
     """Сохранить скриншот + HTML текущей страницы в state-dir (для отладки)."""
     try:
-        debug_path = os.path.join(state_dir, f"{prefix}.png")
-        debug_html = os.path.join(state_dir, f"{prefix}.html")
-        await session._page.screenshot(path=debug_path)
-        with open(debug_html, "w") as f:
-            f.write(await session._page.content())
+        from private_artifacts import capture_artifacts, state_dir_for
+        await capture_artifacts(session._page, state_dir_for(session, state_dir), prefix)
     except Exception:
         pass
 

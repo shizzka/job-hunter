@@ -19,11 +19,14 @@ import os
 import time
 import uuid
 from typing import Optional
+from pathlib import Path
 
 import config
 from state_store.json_store import atomic_write_json
+from state_store.prompt_mailbox import PromptMailbox, read_prompt
 
 log = logging.getLogger("captcha_bridge")
+_request_channels = {}
 
 
 def _state_dir(profile_name: str | None = None) -> str:
@@ -53,16 +56,22 @@ def _atomic_write(path: str, data: dict) -> None:
 
 
 def _safe_read(path: str) -> Optional[dict]:
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return data
-    except Exception as exc:
-        log.warning("read %s failed: %s", path, exc)
-    return None
+    return read_prompt(path)
+
+
+def _mailbox(profile_name=""):
+    pending = Path(_pending_path(profile_name)).absolute()
+    return PromptMailbox(pending, pending.with_name("captcha_response.json"), profile_name=profile_name or None)
+
+
+def _request_mailbox(request_id, profile_name=""):
+    cached = _request_channels.get(request_id)
+    if cached:
+        name, mailbox = cached
+        if profile_name and profile_name != name:
+            raise ValueError("Captcha request belongs to another profile")
+        return mailbox
+    return _mailbox(profile_name)
 
 
 # ---------- Search-side API ----------
@@ -83,7 +92,7 @@ def create_request(
     profile_name: str = "",
 ) -> str:
     """Открыть pending captcha-запрос. Возвращает request_id (UUID)."""
-    request_id = uuid.uuid4().hex[:8]
+    request_id = uuid.uuid4().hex
     started_at = time.time()
     data = {
         "id": request_id,
@@ -94,13 +103,9 @@ def create_request(
         "timeout_at": started_at + timeout_s,
     }
     request_profile = str(data["profile_name"] or "").strip()
-    _atomic_write(_pending_path(request_profile), data)
-    # очищаем старый response от предыдущего запроса
-    try:
-        if os.path.exists(_response_path(request_profile)):
-            os.remove(_response_path(request_profile))
-    except Exception:
-        pass
+    mailbox = _mailbox(request_profile)
+    mailbox.create(data, writer=_atomic_write)
+    _request_channels[request_id] = (request_profile, mailbox)
     log.info("captcha request created: id=%s screenshot=%s", request_id, screenshot_path)
     return request_id
 
@@ -113,32 +118,24 @@ async def wait_for_response(
 ) -> Optional[str]:
     """Дождаться ответа в captcha_response.json. Возвращает текст ответа или None по таймауту/ошибке."""
     import asyncio
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        data = _safe_read(_response_path(profile_name))
-        if data and data.get("id") == request_id:
-            answer = str(data.get("answer") or "").strip()
-            if answer:
-                log.info("captcha answer received: id=%s answer=%r", request_id, answer[:30])
-                return answer
-        await asyncio.sleep(poll_interval_s)
+    deadline = time.monotonic() + max(1, timeout_s)
+    mailbox = _request_mailbox(request_id, profile_name)
+    while time.monotonic() < deadline:
+        active, answer = mailbox.answer(request_id)
+        if not active:
+            return None
+        if answer:
+            log.info("captcha answer received: id=%s", request_id)
+            return answer
+        await asyncio.sleep(max(0.2, poll_interval_s))
     log.warning("captcha wait timed out: id=%s", request_id)
     return None
 
 
 def complete_request(request_id: str, profile_name: str = "") -> None:
     """Снять pending-флаг (после успешного решения, таймаута или отказа)."""
-    for path in (_pending_path(profile_name), _response_path(profile_name)):
-        try:
-            if not os.path.exists(path):
-                continue
-            data = _safe_read(path)
-            if data and data.get("id") and data.get("id") != request_id:
-                # это другой свежий запрос, не наш — не трогаем
-                continue
-            os.remove(path)
-        except Exception as exc:
-            log.warning("cleanup %s failed: %s", path, exc)
+    _request_mailbox(request_id, profile_name).complete(request_id)
+    _request_channels.pop(request_id, None)
     log.info("captcha request completed: id=%s", request_id)
 
 
@@ -146,29 +143,10 @@ def complete_request(request_id: str, profile_name: str = "") -> None:
 
 def peek_pending(profile_name: str = "") -> Optional[dict]:
     """Возвращает текущий pending-запрос (или None если нет / истёк)."""
-    data = _safe_read(_pending_path(profile_name))
-    if not data:
-        return None
-    timeout_at = float(data.get("timeout_at") or 0)
-    if timeout_at and timeout_at < time.time():
-        # запрос истёк — чистим
-        try:
-            os.remove(_pending_path(profile_name))
-        except Exception:
-            pass
-        return None
-    # пропустить если ответ уже записан
-    resp = _safe_read(_response_path(profile_name))
-    if resp and resp.get("id") == data.get("id"):
-        return None
-    return data
+    return _mailbox(profile_name).peek()
 
 
 def write_response(request_id: str, answer: str, profile_name: str = "") -> None:
     """tg-бот пишет ответ от owner."""
-    _atomic_write(_response_path(profile_name), {
-        "id": request_id,
-        "answer": answer,
-        "received_at": time.time(),
-    })
-    log.info("captcha response written: id=%s answer=%r", request_id, answer[:30])
+    _request_mailbox(request_id, profile_name).respond(request_id, answer, writer=_atomic_write)
+    log.info("captcha response written: id=%s", request_id)

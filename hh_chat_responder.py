@@ -924,16 +924,14 @@ async def _prepare_google_form_preview_from_message(
         raise
     except Exception as exc:
         log.warning("google form preview failed for chat %s: %s", chat_id, exc)
-        screenshot_path = os.path.join(
-            paths.hh_state_dir,
-            f"google_form_failed_{int(time.time())}_{chat_id}.png",
-        )
-        os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
         try:
-            await form_page.screenshot(path=screenshot_path, full_page=True)
+            from private_artifacts import capture_artifacts
+            saved = await capture_artifacts(form_page, paths.hh_state_dir, f"google_form_failed_{chat_id}",
+                                            html=False, full_page=True)
+            screenshot_path = saved.get("screenshot", "")
         except Exception as screenshot_exc:
             screenshot_path = ""
-            log.warning("google form failure screenshot failed for chat %s: %s", chat_id, screenshot_exc)
+            log.warning("google form failure screenshot failed: %s", type(screenshot_exc).__name__)
         detail = {
             "ok": False,
             "message": f"{type(exc).__name__}: {exc}",

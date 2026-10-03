@@ -24,6 +24,8 @@ import client_hh_auth
 import hh_response_counter
 import manual_apply_queue
 import config
+from private_logging import PrivateFileHandler
+from state_store.private_journal import append_json, read_json_records
 import company_blacklist
 import profile as profile_mod
 import runtime_control
@@ -70,7 +72,7 @@ def _build_logging_handlers(
         log_dir = os.path.dirname(paths.bot_log_file)
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
-        handlers.append(logging.FileHandler(paths.bot_log_file))
+        handlers.append(PrivateFileHandler(paths.bot_log_file))
     return handlers
 
 
@@ -375,15 +377,9 @@ class TelegramBot(
             **payload,
         }
         try:
-            import json
-
-            parent = os.path.dirname(path)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            append_json(path, record)
         except Exception as exc:
-            log.warning("chat AI audit write failed: %s", exc)
+            log.warning("chat AI audit write failed: %s", type(exc).__name__)
 
     def _sync_active_runtime(self) -> None:
         active_commands = self._all_active_commands()
@@ -1402,17 +1398,10 @@ class TelegramBot(
         if limit <= 0 or not os.path.exists(run_history_file):
             return []
         try:
-            with open(run_history_file, encoding="utf-8") as f:
-                lines = [line.strip() for line in f if line.strip()]
+            items = read_json_records(run_history_file)
         except OSError:
             return []
-        items = []
-        for line in lines[-limit:]:
-            try:
-                items.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        return list(reversed(items))
+        return list(reversed(items[-limit:]))
 
     def _stats_snapshot(self, profile_name: str) -> dict:
         profile = self._profile(profile_name)
@@ -1683,18 +1672,14 @@ class TelegramBot(
         if not path:
             return
         try:
-            directory = os.path.dirname(path)
-            if directory:
-                os.makedirs(directory, exist_ok=True)
             payload = {
                 "created_at": datetime.now().isoformat(timespec="seconds"),
                 "event": event,
                 **fields,
             }
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
-        except OSError:
-            log.exception("Failed to append Telegram debug log: %s", event)
+            append_json(path, payload, default=str)
+        except Exception as exc:
+            log.warning("Failed to append Telegram debug log: %s", type(exc).__name__)
 
     async def _approve_client(self, chat_id: int, principal: dict, target_user_id: int, *, profile_name: str = "") -> dict | None:
         reply_markup = self._menu_reply_markup(principal)

@@ -45,7 +45,9 @@ def test_save_autoapply_failure_snapshot_writes_screenshot_and_html(tmp_path, mo
 
     assert Path(saved["screenshot"]).is_file()
     assert Path(saved["html"]).is_file()
-    assert Path(saved["screenshot"]).parent == tmp_path
+    assert Path(saved["screenshot"]).parent.parent == tmp_path
+    assert Path(saved["screenshot"]).parent.stat().st_mode & 0o777 == 0o700
+    assert Path(saved["screenshot"]).stat().st_mode & 0o777 == 0o600
     assert Path(saved["html"]).read_text(encoding="utf-8") == "<html>failure</html>"
 
 
@@ -59,4 +61,3 @@ def test_closed_or_archived_helper_detects_hh_lux_state():
         '<html><template>{"translations":{"x":"Вакансия в архиве"}}</template></html>',
     ) is False
     assert agent._looks_like_closed_or_archived({"title": "QA"}, "Откликнуться") is False
-

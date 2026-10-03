@@ -290,7 +290,7 @@ def _acquire_lock(p: Profile) -> None:
     os.makedirs(os.path.dirname(lock_file), exist_ok=True)
 
     try:
-        fd = os.open(lock_file, os.O_CREAT | os.O_RDWR, 0o644)
+        fd = os.open(lock_file, os.O_CREAT | os.O_RDWR, 0o600)
     except OSError as e:
         raise ProfileLockedError(f"Не удалось создать lock-файл {lock_file}: {e}") from e
 
@@ -326,9 +326,16 @@ def _acquire_lock(p: Profile) -> None:
         )
 
     # Записываем PID для диагностики
-    os.ftruncate(fd, 0)
-    os.lseek(fd, 0, os.SEEK_SET)
-    os.write(fd, f"{os.getpid()}\n".encode())
+    try:
+        from state_store.private_journal import write_all
+        os.fchmod(fd, 0o600)
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        write_all(fd, f"{os.getpid()}\n".encode())
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        raise
 
     _lock_fd = fd
     atexit.register(_release_lock)
@@ -715,6 +722,7 @@ def update_env_file(
     *,
     only_missing: bool = False,
     comment: str = "",
+    expected_content: str | None = ...,
 ) -> str:
     """Update an existing env under one stable lock; preserve unrelated settings.
 
@@ -725,6 +733,8 @@ def update_env_file(
     with file_lock(env_file):
         with open(env_file, encoding="utf-8") as stream:
             original = stream.read()
+        if expected_content is not ... and original != expected_content:
+            raise RuntimeError("Profile settings changed; stale import cannot replace them")
         lines = original.splitlines()
         key_to_index: dict[str, int] = {}
         for idx, line in enumerate(lines):

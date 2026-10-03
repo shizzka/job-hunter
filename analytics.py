@@ -15,20 +15,30 @@ import uuid
 import config
 import resume_versions
 from state_store.json_store import JsonStore
+from state_store.private_journal import append_json, read_json_records
 from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket
 
 log = logging.getLogger("analytics")
 
 _event_context = ContextVar("analytics_context", default={})
+_event_destination = ContextVar("analytics_destination", default=None)
+
+
+def _destination():
+    return _event_destination.get() or (os.path.abspath(config.ANALYTICS_EVENTS_FILE),
+                                      os.path.abspath(config.ANALYTICS_STATE_FILE),
+                                      os.path.realpath(config.JOB_HUNTER_HOME))
 
 
 @contextmanager
 def event_context(**fields):
+    destination = _event_destination.set(_destination())
     token = _event_context.set({**_event_context.get(), **fields})
     try:
         yield
     finally:
         _event_context.reset(token)
+        _event_destination.reset(destination)
 
 
 async def tracked_call(stage, run_id, vacancy, function, *args, **kwargs):
@@ -122,10 +132,11 @@ def _reconcile_event_tail(state: dict) -> dict:
     invitation_keys = set(state.get("invitation_keys", []))
     historical_keys = set(state.get("historical_decision_keys", []))
     try:
-        with open(config.ANALYTICS_EVENTS_FILE, encoding="utf-8") as stream:
+        events_file = _destination()[0]
+        with open(events_file, "rb") as stream:
             fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
             stat = os.fstat(stream.fileno())
-            identity = [os.path.realpath(config.ANALYTICS_EVENTS_FILE), stat.st_dev, stat.st_ino]
+            identity = [os.path.realpath(events_file), stat.st_dev, stat.st_ino]
             checkpoint = state.get("_journal_checkpoint") or {}
             offset = checkpoint.get("offset", 0) if isinstance(checkpoint, dict) else 0
             if (
@@ -142,8 +153,8 @@ def _reconcile_event_tail(state: dict) -> dict:
                     break
                 try:
                     event = json.loads(line)
-                except json.JSONDecodeError:
-                    if not line.endswith("\n"):
+                except (ValueError, UnicodeError):
+                    if not line.endswith(b"\n"):
                         # Retry an unfinished legacy record after more data arrives.
                         stream.seek(start)
                         break
@@ -193,7 +204,7 @@ def _recover_corrupt_state() -> dict:
 
 def _state_store() -> JsonStore:
     return JsonStore(
-        config.ANALYTICS_STATE_FILE,
+        _destination()[1],
         default_factory=_recover_state_from_events,
         corrupt_factory=_recover_corrupt_state,
         validator=_valid_state,
@@ -242,25 +253,13 @@ def _append_event(payload: dict, *, durable: bool = False) -> bool:
     payload.setdefault("recorded_at_utc", datetime.now(timezone.utc).isoformat())
     payload.setdefault("created_at", _now().isoformat(timespec="seconds"))
     # Stable local identity; does not disclose the runtime filesystem path.
-    payload.setdefault("profile_id", hashlib.sha256(os.path.realpath(config.JOB_HUNTER_HOME).encode()).hexdigest()[:20])
+    payload.setdefault("profile_id", hashlib.sha256(_destination()[2].encode()).hexdigest()[:20])
     payload.setdefault("rules_version", "matcher-v1")
     try:
-        os.makedirs(os.path.dirname(config.ANALYTICS_EVENTS_FILE), exist_ok=True)
-        fd = os.open(config.ANALYTICS_EVENTS_FILE, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
-        with os.fdopen(fd, "a+", encoding="utf-8") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            os.fchmod(f.fileno(), 0o600)
-            size = os.fstat(f.fileno()).st_size
-            if size and os.pread(f.fileno(), 1, size - 1) != b"\n":
-                # Do not concatenate a fresh JSON record with a truncated old one.
-                f.write("\n")
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            f.flush()
-            if durable:
-                os.fsync(f.fileno())
+        append_json(_destination()[0], payload, durable=durable)
         return True
     except Exception as exc:
-        log.warning("Failed to append analytics event: %s", exc)
+        log.warning("Failed to append analytics event: %s", type(exc).__name__)
         return False
 
 
@@ -650,25 +649,12 @@ def _backfill_seen_decisions(state: dict, entries: dict, run_id: str) -> dict:
 
 
 def _iter_events(events_file: str | None = None) -> list[dict]:
-    path = events_file or config.ANALYTICS_EVENTS_FILE
-    if not os.path.exists(path):
-        return []
-
-    events = []
+    path = events_file or _destination()[0]
     try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.replace("\x00", "").strip()
-                if not line:
-                    continue
-                try:
-                    events.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
+        return read_json_records(path, strip_nuls=True)
     except Exception as exc:
-        log.warning("Failed to read analytics events: %s", exc)
+        log.warning("Failed to read analytics events: %s", type(exc).__name__)
         return []
-    return events
 
 
 FILTER_AUDIT_ALLOWED_DECISIONS = {

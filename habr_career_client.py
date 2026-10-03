@@ -232,8 +232,8 @@ class HabrCareerClient:
             return {"ok": False, "message": "Не залогинен на Хабр Карьере"}
 
         try:
-            debug_path = os.path.join(config.HH_STATE_DIR, "debug_habr_apply_page.png")
-            await self._page.screenshot(path=debug_path)
+            from private_artifacts import capture_artifacts
+            await capture_artifacts(self._page, self._cookie_session.state_dir, "debug_habr_apply_page", html=False)
         except Exception:
             pass
 
