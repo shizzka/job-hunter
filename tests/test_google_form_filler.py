@@ -3,6 +3,7 @@ import asyncio
 import config
 import google_form_filler as gforms
 from runtime_context import RuntimePaths
+from state_store.google_forms import GoogleFormStateRepository
 
 
 def test_extract_google_form_urls_from_text_and_hh_redirect():
@@ -28,11 +29,10 @@ def test_google_form_callback_data_roundtrip():
     assert gforms.parse_google_form_submit_callback_data("gform_submit:qa:not-token") == ("", "")
 
 
-def test_submit_saved_preview_rejects_unfilled_preview(monkeypatch):
-    monkeypatch.setattr(
-        gforms,
-        "_load_state",
-        lambda runtime_paths=None: {
+def test_submit_saved_preview_rejects_unfilled_preview(tmp_path, monkeypatch):
+    paths = RuntimePaths(str(tmp_path), str(tmp_path / 'state'), str(tmp_path / 'resume.md'))
+    monkeypatch.setattr(gforms, '_runtime_paths', lambda: paths)
+    GoogleFormStateRepository(tmp_path).save({
             "items": {
                 "abcdef123456": {
                     "status": "preview",
@@ -40,8 +40,7 @@ def test_submit_saved_preview_rejects_unfilled_preview(monkeypatch):
                     "fill_result": {"filled": [], "skipped": [{"index": 0}]},
                 }
             }
-        },
-    )
+        })
 
     class FakeHHClient:
         _page = None
@@ -118,11 +117,9 @@ def test_submit_saved_preview_uses_one_runtime_path_snapshot(tmp_path, monkeypat
             }
         }
     }
-    saved_paths = []
     screenshots = []
     monkeypatch.setattr(gforms.config, "HH_STATE_DIR", str(tmp_path / "profile-b" / "state"))
-    monkeypatch.setattr(gforms, "_load_state", lambda runtime_paths=None: state)
-    monkeypatch.setattr(gforms, "_save_state", lambda value, runtime_paths=None: saved_paths.append(runtime_paths))
+    GoogleFormStateRepository(paths.home_dir).save(state)
 
     class FakePage:
         url = ""
@@ -169,7 +166,8 @@ def test_submit_saved_preview_uses_one_runtime_path_snapshot(tmp_path, monkeypat
     expected_shot = str(tmp_path / "profile-a" / "state" / f"google_form_submit_{token}.png")
     assert result["ok"] is True
     assert screenshots == [expected_shot]
-    assert saved_paths == [paths]
+    assert GoogleFormStateRepository(paths.home_dir).load()['items'][token]['status'] == 'submitted'
+    assert not (tmp_path / 'profile-b' / 'google_form_previews.json').exists()
 
 
 def test_google_form_preview_markup_contains_submit_button():

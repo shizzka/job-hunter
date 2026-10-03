@@ -2441,6 +2441,7 @@ async def main():
     group.add_argument("--google-form-submit", metavar="TOKEN", help="Отправить ранее подготовленную Google Form по токену")
     group.add_argument("--google-form-recheck", metavar="TOKEN", help="Проверить черновик Google Form после ручных правок")
     group.add_argument("--google-form-recheck-submit", metavar="TOKEN", help="Проверить и отправить подтверждённые ответы Google Form")
+    parser.add_argument("--google-form-approval-revision", default=None, help="Версия ответов, подтверждённая Telegram кнопкой")
     group.add_argument("--manual-apply-token", metavar="TOKEN", help="Отправить yellow-zone отклик по Telegram token")
     group.add_argument("--trace-apply", metavar="VACANCY_ID", help="Один реальный HH-отклик с изолированным debug trace")
     parser.add_argument("--confirm-real", action="store_true", help="Подтвердить реальную отправку для --trace-apply")
@@ -2569,7 +2570,8 @@ async def main():
         elif args.google_form_recheck:
             await google_form_commands.recheck(args.google_form_recheck, profile_name=args.profile)
         elif args.google_form_recheck_submit:
-            await google_form_commands.recheck(args.google_form_recheck_submit, profile_name=args.profile, submit_after=True)
+            await google_form_commands.recheck(args.google_form_recheck_submit, profile_name=args.profile, submit_after=True,
+                                               approval_revision=args.google_form_approval_revision)
         elif args.manual_apply_token:
             result = await do_manual_apply_token(args.manual_apply_token)
             if not result.get("ok"):

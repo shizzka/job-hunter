@@ -271,6 +271,7 @@ async def preview_form(
     runtime_paths: RuntimePaths | None = None,
     saved_draft: dict | None = None,
     manual_edits: dict | None = None,
+    persist: bool = True,
 ) -> dict:
     from google_forms.drafts import needs_review, replay_answers
     paths = runtime_paths or _runtime_paths()
@@ -310,7 +311,8 @@ async def preview_form(
             "status": "already_submitted" if already_submitted else "preview_failed_login_required",
             "profile_name": profile_name,
         }
-        _state_repository(paths).remember(token, detail, trim_expired=False)
+        if persist:
+            _state_repository(paths).remember(token, detail, trim_expired=False)
         if notify:
             await notify_form_preview(detail, profile_name=profile_name)
         return detail
@@ -355,7 +357,8 @@ async def preview_form(
                     "status": "preview_failed_questions_not_found",
                     "profile_name": profile_name,
                 }
-                _state_repository(paths).remember(token, detail, trim_expired=True)
+                if persist:
+                    _state_repository(paths).remember(token, detail, trim_expired=True)
                 if notify:
                     await notify_form_preview(detail, profile_name=profile_name)
                 return detail
@@ -438,7 +441,8 @@ async def preview_form(
         "status": "preview" if preview_ok else "needs_input" if review_indices else "preview_failed",
         "profile_name": profile_name,
     }
-    _state_repository(paths).remember(token, detail, trim_expired=True)
+    if persist:
+        _state_repository(paths).remember(token, detail, trim_expired=True)
     if notify:
         await notify_form_preview(detail, profile_name=profile_name)
     return detail
@@ -501,26 +505,33 @@ async def submit_saved_preview(
     *,
     notify: bool = False,
     runtime_paths: RuntimePaths | None = None,
+    expected_revision: str | None = None,
 ) -> dict:
+    from google_forms.workflow import FormWorkflow
     paths = runtime_paths or _runtime_paths()
-    state = _load_state(paths)
-    item = (state.get("items") or {}).get(token)
-    if not item:
-        return {"ok": False, "message": "google form preview token not found", "token": token}
-    from google_forms.drafts import edits_store, manual_answers, needs_review
-    if manual_answers(paths.home_dir, token) or edits_store(paths.home_dir).load().get(token, {}).get("superseded_by"):
-        return {"ok": False, "message": "Черновик изменён. Нажмите «Проверить заполнение» и отправляйте новый preview.", "token": token}
-    answer_by_index = {int(a["index"]): a for a in item.get("answers", [])}
-    if any(needs_review(q, answer_by_index.get(int(q["index"]), {})) for q in item.get("questions", [])):
-        return {"ok": False, "message": "Нужны уточнения. Откройте черновик через /forms.", "token": token}
-    preview_filled = (item.get("fill_result") or {}).get("filled") or []
-    if item.get("status") != "preview" or not preview_filled:
-        return {
-            "ok": False,
-            "message": "google form preview is not ready for submit",
-            "token": token,
-            "form_url": item.get("form_url"),
-        }
+    workflow = FormWorkflow(paths.home_dir)
+    try:
+        item, attempt = workflow.claim(token, expected_revision=expected_revision)
+    except ValueError as exc:
+        return {"ok": False, "message": str(exc), "token": token}
+    try:
+        result = await _submit_claimed_preview(hh_client, token, item, paths, workflow, attempt)
+        if not workflow.finish(token, attempt, result):
+            raise ValueError('Владелец отправки изменился. Проверьте результат вручную.')
+    except BaseException:
+        # Before click => safe failure; from durable click boundary => uncertain.
+        # Never turn cancellation/timeout after a possible click back into preview.
+        try:
+            workflow.finish(token, attempt)
+        except Exception as exc:
+            log.warning('Google Form completion persistence failed: %s', type(exc).__name__)
+        raise
+    if notify:
+        await notify_form_submit(result)
+    return result
+
+
+async def _submit_claimed_preview(hh_client, token, item, paths, workflow, attempt):
     if not hh_client._page:
         await hh_client.start(headless=True)
     page = hh_client._page
@@ -573,7 +584,7 @@ async def submit_saved_preview(
         ready = False
         validation_message = "Изменился состав страниц формы. Требуется новый preview."
     if ready:
-        submitted = await _click_google_form_submit(page)
+        submitted = await _click_google_form_submit(page, before_click=lambda: workflow.mark_submitting(token, attempt))
         if submitted:
             submit_success, submit_page_text = await _wait_google_form_submit_success(page)
     shot_path = os.path.join(paths.hh_state_dir, f"google_form_submit_{token}.png")
@@ -595,12 +606,6 @@ async def submit_saved_preview(
         "submit_page_text": submit_page_text[:1500],
         "message": "submitted" if ok else "submit clicked, verification uncertain" if submitted else (navigation_error or validation_message),
     }
-    item["status"] = "submitted" if ok else "submit_uncertain" if submitted else "submit_failed"
-    item["submitted_at"] = int(time.time())
-    item["submit_result"] = result
-    _save_state(state, paths)
-    if notify:
-        await notify_form_submit(result)
     return result
 
 

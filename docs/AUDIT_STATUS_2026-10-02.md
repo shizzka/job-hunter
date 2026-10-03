@@ -585,3 +585,64 @@ the published 1317 baseline. Targeted apply/UI/state suite: **81 passed**
 modal-root submission; the fixture now asserts unique response-form scoping.
 Bash syntax and diff checks passed; the explicit staged set contains 20 files
 with zero credential-pattern hits. Browser snapshots are not in that set.
+
+## Async Google Form submit/recheck and Telegram pending replies — 2026-10-03
+
+The initial seven synthetic tests all failed on `091cfff`: two browser sessions
+clicked twice; submit overwrote a preview inserted during a browser await; edits
+and supersede were accepted while sending; cancellation/timeout left a retryable
+preview after a possible click; recheck approved stale answers; and an old prompt
+delivery replaced a newer one. No live browser/transport is used in these tests.
+
+`google_forms.workflow.FormWorkflow` now captures preview/edits coherently under
+the short existing workflow lock. It writes an owner/revision `submit_in_progress`
+claim before browser awaits. Updated edit/remember/supersede writers cannot reopen
+that attempt. The submit-button helper runs the fresh owner/revision check after
+its last scroll await and persists `submitting` before clicking. Completion merges
+only that token/result; unrelated items/metadata stay intact. Cancellation/error
+before this boundary is `submit_failed`; after it is `submit_uncertain`. A later
+notification failure cannot reopen a completed application. Active/uncertain
+attempts do not expire or automatically retry, even after a crash. Matching
+canonical form IDs within the profile also block another token from bypassing
+the active/terminal attempt; unrelated short-link aliases and external/manual
+submissions are not certified exactly-once.
+
+Recheck computes a detached browser preview with persistence/notification off,
+then atomically publishes the successor and the original's superseded link in
+one preview-file transition only if the original revision/edits still match.
+Old manual answers are retained, collisions/changed form targets are refused,
+and no unrelated items are trimmed by this publication. Legacy edits-file
+superseded links remain readable/idempotent. Normal preview discovery expiry
+continues, except active/uncertain attempts. A changed revision after notifying
+the new preview is rejected by the subsequent submit claim.
+
+Telegram send buttons carry a digest of the displayed revision; callback checks
+it and passes the full revision into the agent command. Recheck-submit requires
+this explicit revision, so old/unversioned buttons cannot silently approve edits
+made before the subprocess starts. This deliberately fails closed for an already
+running old bot until a separately agreed restart/new menu renders new buttons.
+No hot-reload/deployment claim is made. Manual answers/prompt consumption use a
+bot-state transaction; request nonce is saved before delivery and late binding,
+cleanup/replies compare ownership instead of overwriting fresh pending state.
+Lock order: bot state -> form workflow -> one preview/edit sidecar; no await under
+these locks. A failure between durable answer and pending cleanup may leave a
+repeatable UI reply, not an automatic external form submission.
+
+Tests cover four spawned processes/30 threads claiming one attempt, same-form
+tokens, expiry, owner/version races, before/after-click cancellation, post-result
+notification cancellation, profile switch, late prompt success/failure, queued
+approval, corruption, read-compatible legacy schemas, serialization/fsync/replace
+errors and post-publication directory-fsync uncertainty. Existing submit tests
+now use real isolated stores rather than bypassing persistence through mocked
+whole-state load/save helpers. Five production JSON files were schema-checked
+read-only; values were not printed and no runtime state was modified.
+
+Targeted form/bot group: **192 passed** (5.72 seconds). Candidate full source:
+**1442 passed** (67.66 seconds), adding 69 tests over the published 1373 baseline.
+The final idempotent legacy-successor follow-up is included in targeted checks
+and must also pass publication-tree/main runs. Ordinary tests use credential-free
+`env -i`, isolated HOME and fake browser/notifier/provider functions. No real
+submit/chat/provider/Telegram request, cookie/env/cron change, production restart
+or OSINT work is part of this group. HH chat transactions, cookie-session
+ownership/counters, journal/diagnostic/shell writers, global state/resume, live
+browser/factual-grounding checks and CI remain open.

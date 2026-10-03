@@ -243,7 +243,7 @@ async def _click_google_form_next(page) -> tuple[bool, str]:
     return False, "google form did not advance after next"
 
 
-async def _click_google_form_submit(page) -> bool:
+async def _click_google_form_submit(page, *, before_click=None) -> bool:
     button = await _find_google_form_button(page, _is_google_form_submit_button_text)
     if not button:
         return False
@@ -251,6 +251,8 @@ async def _click_google_form_submit(page) -> bool:
         await button.scroll_into_view_if_needed(timeout=5000)
     except Exception:
         pass
+    if before_click is not None and not before_click():
+        return False
     await button.click(timeout=10000)
     with contextlib.suppress(Exception):
         await page.wait_for_load_state("networkidle", timeout=15000)

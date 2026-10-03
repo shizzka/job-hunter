@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -88,6 +89,9 @@ class FakeBot(TelegramFormEditor):
     def _save_state(self, state):
         JsonStore(self.home + "/test_bot_state.json").save(state)
 
+    def _update_state(self, mutate):
+        return JsonStore(self.home + "/test_bot_state.json").update(mutate)
+
     def _has_active_command(self, profile):
         return False
 
@@ -162,8 +166,11 @@ def test_send_rechecks_latest_answers_and_blocks_changes(stored, monkeypatch, ch
     monkeypatch.setattr(commands, "HHClient", Client)
     monkeypatch.setattr(gforms, "_runtime_paths", lambda: RuntimePaths(home, home, home))
     monkeypatch.setattr(gforms, "preview_form", preview)
+    monkeypatch.setattr(gforms, "notify_form_preview", AsyncMock(return_value=True))
     monkeypatch.setattr(gforms, "submit_saved_preview", submit)
-    asyncio.run(commands.recheck(TOKEN, profile_name="qa", submit_after=True))
+    from google_forms.workflow import FormWorkflow
+    _, _, revision = FormWorkflow(home).capture(TOKEN)
+    asyncio.run(commands.recheck(TOKEN, profile_name="qa", submit_after=True, approval_revision=revision))
     assert calls == (["checked", "sent", "stopped"] if change is None else ["checked", "stopped"])
 
 

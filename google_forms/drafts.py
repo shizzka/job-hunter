@@ -10,6 +10,7 @@ from pathlib import Path
 from state_store.google_forms import (
     GoogleFormStateRepository,
     TERMINAL_STATUSES,
+    SUBMITTING_STATUS,
     form_state_lock,
 )
 from state_store.protected import ProtectedJsonStore
@@ -58,9 +59,9 @@ def _get_draft_unlocked(home: str, token: str) -> dict:
     item = GoogleFormStateRepository(home).load()["items"].get(token)
     if not item:
         raise ValueError("Черновик не найден или устарел. Откройте /forms.")
-    if edits_store(home).load().get(token, {}).get("superseded_by"):
+    if item.get("superseded_by") or edits_store(home).load().get(token, {}).get("superseded_by"):
         raise ValueError("Есть новая проверенная версия анкеты. Откройте /forms.")
-    if item.get("status") in TERMINAL:
+    if item.get("status") in TERMINAL | {SUBMITTING_STATUS}:
         raise ValueError("Форма уже отправлена или результат отправки требует проверки.")
     return item
 
@@ -76,7 +77,8 @@ def supersede(home: str, token: str, new_token: str) -> None:
         raise ValueError("Новая версия должна иметь отдельный token.")
     with form_state_lock(home):
         store = edits_store(home)
-        previous = store.load().get(token, {}).get("superseded_by")
+        item = GoogleFormStateRepository(home).load()['items'].get(token, {})
+        previous = item.get('superseded_by') or store.load().get(token, {}).get("superseded_by")
         if previous == new_token:
             return
         if previous:

@@ -57,15 +57,21 @@ async def submit(token: str) -> None:
         sys.exit(1)
 
 
-async def recheck(token: str, *, profile_name: str, submit_after: bool = False) -> None:
+async def recheck(token: str, *, profile_name: str, submit_after: bool = False, approval_revision: str | None = None) -> None:
     import google_form_filler as gforms
     from google_forms import drafts
+    from google_forms.workflow import FormWorkflow, answers_for
     paths = gforms._runtime_paths()
-    item = drafts.get_draft(paths.home_dir, token)
-    edits = drafts.manual_answers(paths.home_dir, token)
-    approved = drafts.displayed_answers(paths.home_dir, item)
+    workflow = FormWorkflow(paths.home_dir)
+    item, edit_entry, captured_revision = workflow.capture(token)
+    if approval_revision is not None and approval_revision != captured_revision:
+        raise ValueError('Черновик изменён после подтверждения. Откройте новую версию через /forms.')
+    edits = edit_entry.get('answers', {})
+    approved = answers_for(item, edits)
     if submit_after and any(drafts.needs_review(q, approved.get(int(q["index"]), {})) for q in item["questions"]):
         raise ValueError("Сначала уточните поля с ⚠ в меню анкет.")
+    if submit_after and approval_revision is None:
+        raise ValueError('Нет актуального подтверждения версии. Откройте новую кнопку отправки через /forms.')
     client = HHClient()
     try:
         await client.start(headless=True)
@@ -73,10 +79,12 @@ async def recheck(token: str, *, profile_name: str, submit_after: bool = False) 
             client._page, item["form_url"], profile_name=profile_name,
             chat_id=item.get("chat_id", ""), message_id=item.get("message_id", ""),
             vacancy=item.get("vacancy"), source_message=item.get("source_message", ""),
-            notify=True, runtime_paths=paths, saved_draft=item, manual_edits=edits,
+            notify=False, runtime_paths=paths, saved_draft=item, manual_edits=edits, persist=False,
         )
+        new_revision = None
         if detail.get("token") and (detail.get("questions") or detail.get("status") == "already_submitted"):
-            drafts.supersede(paths.home_dir, token, detail["token"])
+            new_revision = workflow.publish_recheck(token, captured_revision, detail)
+            await gforms.notify_form_preview(detail, profile_name=profile_name)
         if submit_after:
             # Approval applies only to the questions and answers the user saw.
             def snapshot(questions, answers):
@@ -84,9 +92,10 @@ async def recheck(token: str, *, profile_name: str, submit_after: bool = False) 
                          drafts.answer_text(answers.get(int(q["index"]), {})),
                          bool(answers.get(int(q["index"]), {}).get("skip"))) for q in questions]
             actual = {int(a["index"]): a for a in detail.get("answers", [])}
-            if (detail.get("ok") and detail.get("status") == "preview"
+            if (new_revision and detail.get("ok") and detail.get("status") == "preview"
                     and snapshot(item["questions"], approved) == snapshot(detail.get("questions", []), actual)):
-                result = await gforms.submit_saved_preview(client, detail["token"], notify=True, runtime_paths=paths)
+                result = await gforms.submit_saved_preview(client, detail["token"], notify=True, runtime_paths=paths,
+                                                          expected_revision=new_revision)
                 print(f"Отправка: {result.get('message', '')}")
                 if not result.get("ok"):
                     sys.exit(1)

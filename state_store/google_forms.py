@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -17,6 +19,7 @@ from state_store.protected import ProtectedJsonStore
 STATE_FILENAME = "google_form_previews.json"
 MAX_PREVIEW_AGE_SECONDS = 7 * 24 * 60 * 60
 TERMINAL_STATUSES = frozenset({"submitted", "submit_uncertain", "already_submitted"})
+SUBMITTING_STATUS = "submit_in_progress"
 
 
 def form_state_lock(home_dir: str | os.PathLike[str]):
@@ -44,6 +47,27 @@ def valid_preview_state(state: dict[str, Any]) -> bool:
             if key in item and not isinstance(item[key], dict):
                 return False
         if "status" in item and not isinstance(item["status"], str):
+            return False
+        if "superseded_by" in item and not isinstance(item["superseded_by"], str):
+            return False
+        claim = item.get("submission")
+        if claim is not None:
+            if (not isinstance(claim, dict) or not isinstance(claim.get("attempt_id"), str)
+                    or not re.fullmatch(r'[a-f0-9]{32}', claim['attempt_id']) or not isinstance(claim.get('phase'), str)
+                    or claim['phase'] not in {"preparing", "submitting", "completed"}
+                    or not isinstance(claim.get("revision"), str) or not re.fullmatch(r'[a-f0-9]{64}', claim['revision'])):
+                return False
+            started = claim.get('started_at')
+            if isinstance(started, bool) or not isinstance(started, (float, int)) or not math.isfinite(started):
+                return False
+            if claim['phase'] == 'completed':
+                if item.get('status') not in TERMINAL_STATUSES | {'submit_failed'}:
+                    return False
+            elif item.get('status') != SUBMITTING_STATUS:
+                return False
+        if item.get("status") == SUBMITTING_STATUS and not claim:
+            return False
+        if item.get('status') == SUBMITTING_STATUS and claim['phase'] == 'completed':
             return False
     return True
 
@@ -104,7 +128,8 @@ class GoogleFormStateRepository:
 
         def mutate(state):
             previous = state["items"].get(token)
-            if previous and previous.get("status") in TERMINAL_STATUSES and previous != detail:
+            if previous and (previous.get("status") in TERMINAL_STATUSES | {SUBMITTING_STATUS}
+                             or previous.get("superseded_by")) and previous != detail:
                 raise ValueError("Cannot replace a terminal Google Form preview")
             state["items"][token] = detail
             if trim_expired:
@@ -121,6 +146,8 @@ class GoogleFormStateRepository:
 
         cutoff = int(self._clock()) - self._max_preview_age_seconds
         for token, item in list(items.items()):
+            if item.get("status") in {SUBMITTING_STATUS, "submit_uncertain"}:
+                continue  # Never expire a possibly externally delivered attempt.
             try:
                 created_at = int((item or {}).get("created_at") or 0)
             except (TypeError, ValueError):

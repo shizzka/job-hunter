@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import time
+import uuid
+import re
 
 from google_forms import drafts
 from state_store.google_forms import GoogleFormStateRepository
+from google_forms.workflow import FormWorkflow, answers_for
 
 
 def button(label, action, profile, token, number=0):
@@ -26,13 +29,13 @@ class TelegramFormEditor:
         edits = drafts.edits_store(home).load()
         rows, seen = [], set()
         for token, item in sorted(items.items(), key=lambda x: x[1].get("created_at", 0), reverse=True):
-            if edits.get(token, {}).get("superseded_by"):
+            if item.get('superseded_by') or edits.get(token, {}).get("superseded_by"):
                 continue
             key = (item.get("chat_id"), str(item.get("form_url", "")).split("?")[0])
             if key in seen:
                 continue
             seen.add(key)
-            if not item.get("questions") or item.get("status") in drafts.TERMINAL:
+            if not item.get("questions") or item.get("status") in drafts.TERMINAL | {'submit_in_progress'}:
                 continue
             title = (item.get("vacancy") or {}).get("title") or "Анкета"
             label = f"{str(item.get('chat_id', ''))[-4:]} · {title[:45]}"
@@ -47,8 +50,8 @@ class TelegramFormEditor:
 
     async def _show_form(self, chat_id, principal, profile, token, offset=0):
         home = self._form_home(profile)
-        item = drafts.get_draft(home, token)
-        answers = drafts.displayed_answers(home, item)
+        item, edit_entry, approved_revision = FormWorkflow(home).capture(token)
+        answers = answers_for(item, edit_entry.get('answers', {}))
         questions = item.get("questions", [])
         offset = max(0, min(offset, max(0, len(questions) - 1)))
         page = questions[offset:offset + 5]
@@ -76,7 +79,7 @@ class TelegramFormEditor:
                          button("🔄 Проверить", "check", profile, token)])
         else:
             rows.append([button("🔄 Проверить", "check", profile, token)])
-        rows.append([button("✅ Всё ок, отправить", "send", profile, token)])
+        rows.append([button("✅ Всё ок, отправить", "send", profile, token, approved_revision[:12])])
         if item.get("form_url"):
             rows.append([{"text": "Открыть форму", "url": item["form_url"]}])
         await self._send_text(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": rows})
@@ -108,13 +111,34 @@ class TelegramFormEditor:
             text += "\n/skip — оставить поле пустым."
         if len(text) > 3900:
             raise ValueError("Слишком длинное поле: заполните его по ссылке на форму.")
-        sent = await self._send_text(chat_id, text, reply_markup={"force_reply": True, "selective": True})
-        state = self._load_state()
-        state.setdefault("form_pending", {})[f"{principal['user_id']}:{chat_id}"] = {
+        key = f"{principal['user_id']}:{chat_id}"
+        pending = {
             "profile": profile, "token": token, "index": index,
-            "prompt_id": int((sent or {}).get("message_id") or 0), "created_at": time.time(),
+            "prompt_id": 0, "created_at": time.time(), 'request_id': uuid.uuid4().hex,
         }
-        self._save_state(state)
+        def begin(state):
+            state.setdefault('form_pending', {})[key] = dict(pending)
+        self._update_state(begin)
+        try:
+            sent = await self._send_text(chat_id, text, reply_markup={"force_reply": True, "selective": True})
+            def bind(state):
+                entry = state.get('form_pending', {}).get(key)
+                if entry == pending:
+                    entry['prompt_id'] = int((sent or {}).get('message_id') or 0)
+            self._update_state(bind)
+        except BaseException:
+            self._clear_form_pending(key, pending)
+            raise
+
+    def _clear_form_pending(self, key, expected):
+        removed = False
+        def mutate(state):
+            nonlocal removed
+            if state.get('form_pending', {}).get(key) == expected:
+                state['form_pending'].pop(key)
+                removed = True
+        self._update_state(mutate)
+        return removed
 
     async def _accept_form_answer(self, chat_id, principal, message):
         key = f"{principal['user_id']}:{chat_id}"
@@ -124,13 +148,11 @@ class TelegramFormEditor:
             return False
         text = (message.get("text") or "").strip()
         if text == "/cancel_form":
-            state["form_pending"].pop(key, None)
-            self._save_state(state)
-            await self._send_text(chat_id, "Редактирование приостановлено. Сохранённые ответы доступны через /forms.")
+            if self._clear_form_pending(key, pending):
+                await self._send_text(chat_id, "Редактирование приостановлено. Сохранённые ответы доступны через /forms.")
             return True
         if time.time() - pending.get("created_at", 0) > 86400:
-            state["form_pending"].pop(key, None)
-            self._save_state(state)
+            self._clear_form_pending(key, pending)
             return False
         # Never consume an SMS/captcha or a reply to another field.
         reply_id = int((message.get("reply_to_message") or {}).get("message_id") or 0)
@@ -149,17 +171,28 @@ class TelegramFormEditor:
             return True
         try:
             home = self._form_home(profile)
-            drafts.save_answer(home, token, pending["index"], text, principal["user_id"])
+            accepted = False
+            def accept(state):
+                nonlocal accepted
+                # Lock order: bot state -> short form workflow; neither has await.
+                if state.get('form_pending', {}).get(key) != pending:
+                    return
+                drafts.save_answer(home, token, pending["index"], text, principal["user_id"])
+                state['form_pending'].pop(key)
+                accepted = True
+            self._update_state(accept)
+            if not accepted:
+                return False
         except ValueError as exc:
             await self._send_text(chat_id, str(exc))
             return True
-        state = self._load_state()
-        state.get("form_pending", {}).pop(key, None)
-        self._save_state(state)
         await self._send_text(chat_id, "Ответ сохранён.")
-        item = drafts.get_draft(home, token)
-        position = next(i for i, q in enumerate(item["questions"]) if int(q["index"]) == pending["index"])
-        await self._show_form(chat_id, principal, profile, token, position // 5 * 5)
+        try:
+            item = drafts.get_draft(home, token)
+            position = next(i for i, q in enumerate(item["questions"]) if int(q["index"]) == pending["index"])
+            await self._show_form(chat_id, principal, profile, token, position // 5 * 5)
+        except ValueError as exc:
+            await self._send_text(chat_id, str(exc))
         return True
 
     async def _form_callback(self, chat_id, principal, data):
@@ -167,7 +200,10 @@ class TelegramFormEditor:
         if len(parts) != 5:
             raise ValueError("Некорректная кнопка формы.")
         _, action, profile, token, number = parts
-        if not number.isdigit():
+        if action == 'send':
+            if not re.fullmatch(r'[a-f0-9]{12}', number):
+                raise ValueError('Старая кнопка отправки. Откройте актуальный черновик через /forms.')
+        elif not number.isdigit():
             raise ValueError("Некорректный номер поля.")
         home = self._form_home(profile)
         drafts.get_draft(home, token)
@@ -181,20 +217,28 @@ class TelegramFormEditor:
         elif action in {"check", "send"}:
             import runtime_control
             if action == "send":
-                item = drafts.get_draft(home, token)
-                answers = drafts.displayed_answers(home, item)
+                item, edit_entry, approval_revision = FormWorkflow(home).capture(token)
+                if approval_revision[:12] != number:
+                    raise ValueError('Черновик изменён после показа кнопки. Проверьте актуальные ответы через /forms.')
+                answers = answers_for(item, edit_entry.get('answers', {}))
                 if any(drafts.needs_review(q, answers.get(int(q["index"]), {})) for q in item["questions"]):
                     await self._send_text(chat_id, "Сначала уточните поля с ⚠. Затем можно отправить анкету.")
                     await self._show_form(chat_id, principal, profile, token)
                     return
-            state = self._load_state()
-            state.get("form_pending", {}).pop(f"{principal['user_id']}:{chat_id}", None)
-            self._save_state(state)
+            def clear(state):
+                key = f"{principal['user_id']}:{chat_id}"
+                entry = state.get('form_pending', {}).get(key, {})
+                if entry.get('profile') == profile and entry.get('token') == token:
+                    state['form_pending'].pop(key)
+            self._update_state(clear)
+            argv = runtime_control.agent_command_argv(
+                profile, "--google-form-recheck-submit" if action == "send" else "--google-form-recheck", token)
+            if action == 'send':
+                argv += ['--google-form-approval-revision', approval_revision]
             await self._start_google_form_command(
                 chat_id, principal, profile_name=profile,
                 label="Проверка и отправка Google Form" if action == "send" else "Проверка черновика Google Form",
-                argv=runtime_control.agent_command_argv(
-                    profile, "--google-form-recheck-submit" if action == "send" else "--google-form-recheck", token),
+                argv=argv,
             )
         else:
             raise ValueError("Неизвестное действие формы.")
