@@ -1,11 +1,11 @@
 """Telegram client onboarding registry."""
 from __future__ import annotations
 
-import os
+from collections.abc import Callable
 from datetime import datetime
 
 import config
-import runtime_control
+from state_store.registry import RegistryStore
 
 STATUS_NEW = "new"
 STATUS_ONBOARDING = "onboarding"
@@ -96,22 +96,18 @@ def _normalize_registry(payload: dict | None) -> dict:
     return registry
 
 
+def _store() -> RegistryStore:
+    return RegistryStore(config.TELEGRAM_CLIENTS_FILE, normalize=_normalize_registry, collections=("clients",))
+
+
 def load_registry() -> dict:
-    payload = runtime_control.read_json_file(config.TELEGRAM_CLIENTS_FILE)
-    if payload is None and not os.path.exists(config.TELEGRAM_CLIENTS_FILE):
-        registry = _default_registry()
-        save_registry(registry)
-        return registry
-    registry = _normalize_registry(payload)
-    if payload != registry:
-        save_registry(registry)
-    return registry
+    return _store().load()
 
 
 def save_registry(registry: dict) -> None:
     normalized = _normalize_registry(registry)
     normalized["updated_at"] = _now()
-    runtime_control.write_json_file(config.TELEGRAM_CLIENTS_FILE, normalized)
+    _store().save(normalized)
 
 
 def list_clients() -> list[dict]:
@@ -127,52 +123,52 @@ def get_client(user_id: int) -> dict | None:
     return None
 
 
-def upsert_client(user_id: int, **fields: object) -> dict:
-    registry = load_registry()
+def _update_client(user_id: int, fields_factory: Callable[[dict], dict], *, require_existing: bool = False) -> dict:
     target_id = int(user_id)
-    current = None
-    index = -1
-    for idx, item in enumerate(registry["clients"]):
-        if item["user_id"] == target_id:
-            current = item
-            index = idx
-            break
+    normalized = None
 
-    base = current or {
-        "user_id": target_id,
-        "created_at": _now(),
-    }
-    base.update(fields)
-    base["user_id"] = target_id
-    base["updated_at"] = _now()
-    normalized = _normalize_entry(base)
-    if not normalized:
-        raise ValueError("Invalid telegram client id")
-    if index >= 0:
-        registry["clients"][index] = normalized
-    else:
-        registry["clients"].append(normalized)
-    save_registry(registry)
+    def mutate(registry):
+        nonlocal normalized
+        current = None
+        index = -1
+        for idx, item in enumerate(registry["clients"]):
+            if item["user_id"] == target_id:
+                current = item
+                index = idx
+                break
+        if require_existing and current is None:
+            raise KeyError(f"Client not found: {user_id}")
+        base = dict(current) if current is not None else {"user_id": target_id, "created_at": _now()}
+        base.update(fields_factory(dict(current or {})))
+        base["user_id"] = target_id
+        base["updated_at"] = _now()
+        normalized = _normalize_entry(base)
+        if not normalized:
+            raise ValueError("Invalid telegram client id")
+        if index >= 0:
+            registry["clients"][index] = normalized
+        else:
+            registry["clients"].append(normalized)
+        registry["updated_at"] = _now()
+
+    _store().update(mutate)
     return normalized
 
 
+def upsert_client(user_id: int, **fields: object) -> dict:
+    return _update_client(user_id, lambda current: fields)
+
+
 def start_onboarding(user_id: int, *, username: str = "", first_name: str = "", last_name: str = "") -> dict:
-    current = get_client(user_id) or {}
-    return upsert_client(
-        user_id,
-        username=username or current.get("username", ""),
-        first_name=first_name or current.get("first_name", ""),
-        last_name=last_name or current.get("last_name", ""),
-        full_name=current.get("full_name", ""),
-        target_role=current.get("target_role", ""),
-        target_location=current.get("target_location", ""),
-        notes=current.get("notes", ""),
-        status=STATUS_ONBOARDING if current.get("status") != STATUS_APPROVED else current.get("status", STATUS_APPROVED),
-        auth_status=current.get("auth_status", AUTH_NOT_STARTED),
-        profile_name=current.get("profile_name", ""),
-        admin_note=current.get("admin_note", ""),
-        submitted_at=current.get("submitted_at", ""),
-    )
+    def fields(current):
+        return {
+            "username": username or current.get("username", ""),
+            "first_name": first_name or current.get("first_name", ""),
+            "last_name": last_name or current.get("last_name", ""),
+            "status": STATUS_APPROVED if current.get("status") == STATUS_APPROVED else STATUS_ONBOARDING,
+        }
+
+    return _update_client(user_id, fields)
 
 
 def submit_application(
@@ -186,22 +182,20 @@ def submit_application(
     target_location: str = "",
     notes: str = "",
 ) -> dict:
-    current = get_client(user_id) or {}
-    return upsert_client(
-        user_id,
-        username=username or current.get("username", ""),
-        first_name=first_name or current.get("first_name", ""),
-        last_name=last_name or current.get("last_name", ""),
-        full_name=full_name,
-        target_role=target_role,
-        target_location=target_location,
-        notes=notes,
-        status=STATUS_PENDING_REVIEW,
-        auth_status=current.get("auth_status", AUTH_NOT_STARTED),
-        profile_name=current.get("profile_name", ""),
-        admin_note=current.get("admin_note", ""),
-        submitted_at=_now(),
-    )
+    def fields(current):
+        return {
+            "username": username or current.get("username", ""),
+            "first_name": first_name or current.get("first_name", ""),
+            "last_name": last_name or current.get("last_name", ""),
+            "full_name": full_name,
+            "target_role": target_role,
+            "target_location": target_location,
+            "notes": notes,
+            "status": STATUS_PENDING_REVIEW,
+            "submitted_at": _now(),
+        }
+
+    return _update_client(user_id, fields)
 
 
 def set_status(
@@ -212,9 +206,6 @@ def set_status(
     profile_name: str | None = None,
     admin_note: str | None = None,
 ) -> dict:
-    current = get_client(user_id)
-    if not current:
-        raise KeyError(f"Client not found: {user_id}")
     payload: dict[str, object] = {"status": status}
     if auth_status is not None:
         payload["auth_status"] = auth_status
@@ -222,4 +213,4 @@ def set_status(
         payload["profile_name"] = profile_name
     if admin_note is not None:
         payload["admin_note"] = admin_note
-    return upsert_client(user_id, **payload)
+    return _update_client(user_id, lambda current: payload, require_existing=True)

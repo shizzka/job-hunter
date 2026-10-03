@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import config
+from state_store.json_store import JsonStore, atomic_write_text, file_lock
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 AGENT_DAEMON_TOKENS = ("agent.py", "--daemon")
@@ -36,9 +37,7 @@ def read_json_file(path: str) -> dict | None:
 
 
 def write_json_file(path: str, payload: dict) -> None:
-    _ensure_parent(path)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    JsonStore(path).save(payload)
 
 
 def read_pid_file(path: str) -> int | None:
@@ -56,19 +55,19 @@ def read_pid_file(path: str) -> int | None:
 
 
 def write_pid_file(path: str, pid: int) -> None:
-    _ensure_parent(path)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(f"{int(pid)}\n")
+    with file_lock(path):
+        atomic_write_text(path, f"{int(pid)}\n")
 
 
 def remove_pid_file(path: str, pid: int | None = None) -> None:
-    existing = read_pid_file(path)
-    if pid is not None and existing is not None and existing != pid:
-        return
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
+    with file_lock(path):
+        existing = read_pid_file(path)
+        if pid is not None and existing is not None and existing != pid:
+            return
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
 
 
 def is_pid_running(pid: int | None) -> bool:

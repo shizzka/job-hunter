@@ -1,11 +1,10 @@
 """Access registry for the standalone Telegram control bot."""
 from __future__ import annotations
 
-import os
 from datetime import datetime
 
 import config
-import runtime_control
+from state_store.registry import RegistryStore
 
 ROLE_ADMIN = "admin"
 ROLE_USER = "user"
@@ -85,23 +84,18 @@ def _normalize_registry(payload: dict | None) -> dict:
     return result
 
 
-def load_registry() -> dict:
-    payload = runtime_control.read_json_file(config.TELEGRAM_ACCESS_FILE)
-    if payload is None and not os.path.exists(config.TELEGRAM_ACCESS_FILE):
-        registry = _default_registry()
-        save_registry(registry)
-        return registry
+def _store() -> RegistryStore:
+    return RegistryStore(config.TELEGRAM_ACCESS_FILE, normalize=_normalize_registry, collections=("users",))
 
-    registry = _normalize_registry(payload)
-    if payload != registry:
-        save_registry(registry)
-    return registry
+
+def load_registry() -> dict:
+    return _store().load()
 
 
 def save_registry(registry: dict) -> None:
     registry = _normalize_registry(registry)
     registry["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    runtime_control.write_json_file(config.TELEGRAM_ACCESS_FILE, registry)
+    _store().save(registry)
 
 
 def resolve_user(user_id: int) -> dict | None:
@@ -117,7 +111,6 @@ def list_users() -> list[dict]:
 
 
 def upsert_user(user_id: int, *, profile: str, role: str = ROLE_USER, label: str = "", enabled: bool = True) -> dict:
-    registry = load_registry()
     normalized = _normalize_entry({
         "user_id": user_id,
         "profile": profile,
@@ -128,22 +121,29 @@ def upsert_user(user_id: int, *, profile: str, role: str = ROLE_USER, label: str
     if not normalized:
         raise ValueError("Invalid telegram user id")
 
-    for idx, item in enumerate(registry["users"]):
-        if item["user_id"] == normalized["user_id"]:
-            registry["users"][idx] = normalized
-            save_registry(registry)
-            return normalized
+    def mutate(registry):
+        for idx, item in enumerate(registry["users"]):
+            if item["user_id"] == normalized["user_id"]:
+                registry["users"][idx] = normalized
+                break
+        else:
+            registry["users"].append(normalized)
+        registry["updated_at"] = datetime.now().isoformat(timespec="seconds")
 
-    registry["users"].append(normalized)
-    save_registry(registry)
+    _store().update(mutate)
     return normalized
 
 
 def remove_user(user_id: int) -> bool:
-    registry = load_registry()
-    before = len(registry["users"])
-    registry["users"] = [item for item in registry["users"] if item["user_id"] != int(user_id)]
-    if len(registry["users"]) == before:
-        return False
-    save_registry(registry)
-    return True
+    removed = False
+
+    def mutate(registry):
+        nonlocal removed
+        before = len(registry["users"])
+        registry["users"] = [item for item in registry["users"] if item["user_id"] != int(user_id)]
+        removed = len(registry["users"]) != before
+        if removed:
+            registry["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+    _store().update(mutate)
+    return removed

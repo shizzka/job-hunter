@@ -47,10 +47,10 @@ local excludes and the pre-push hook remain unchanged. The publication uses a
 one-time, explicitly authorized hook override. Clean-tree verification is
 recorded below; this resolves missing modules, not every possible runtime bug.
 
-The newly published helpers still contain legacy registry read-modify-write
-paths and non-atomic `runtime_control.write_json_file` / PID persistence. Those
-paths are not covered by the reported atomic-state fixes above and remain a
-separate follow-up; do not describe the entire repository as free of state bugs.
+The 2026-10-03 registry follow-up below closes access/onboarding/quota mutations
+and atomic `runtime_control.write_json_file` / PID persistence. Bot-state
+whole-snapshot read-modify-write and process check/spawn/register races remain
+separate follow-ups; do not describe the entire repository as free of state bugs.
 
 ## Groq-only operational switch
 
@@ -178,3 +178,36 @@ was tightened; a second synthetic probe produced a 148-character factual letter
 with continuous source quotes, `grounding_status=verified` and no fallback.
 No candidate data or real HH submission participated in these probes. Provider
 availability and factual quality remain subject to the limits described above.
+
+### Follow-up: transactional Telegram registries and runtime writes (2026-10-03)
+
+Access, onboarding and resume-analysis usage now load/mutate/save under one
+stable sidecar `flock`, shared across threads and processes. Onboarding transitions
+read approval/profile/auth state inside the transaction rather than copying a
+pre-lock snapshot. The existing owner bootstrap, soft-limit accounting and
+explicit application/status transitions are preserved.
+
+Malformed JSON/UTF-8, invalid collection structure and invalid/duplicate user
+identities block loading with a restoration error. The original file stays in
+place, including on repeated reads: corruption cannot become a fresh empty
+registry or reset quotas. Missing files still support first-time setup. Read
+permission/I/O failures propagate without replacing valid data. Existing field
+normalization remains; this is not exhaustive semantic validation of all fields.
+
+Runtime JSON and PID writes use private (0600), fsync-backed atomic replacement.
+PID cleanup holds the same sidecar lock while checking its owner and removing
+the file. Serialization/pre-replacement failures keep the old file and clean up
+the temporary file. Explicit `save_registry` remains a full replacement API;
+normal application mutations use transactions instead of separate load/save.
+
+Before fixes, the new regression group reproduced **21 failures / 2 passes**,
+including lost counters and users. The final **43 new tests** cover repeated
+corruption reads, I/O/replace failures, concurrent insertions and usage updates,
+four spawned processes (40 analyses retained), and profile/approval preservation.
+Full local verification: **1145 passed** (27.25 seconds); isolated publication-tree
+verification: **1073 passed** (30.27 seconds), using the existing venv. The 72-test
+difference is the pre-existing local-only set. Diff and Bash syntax checks passed.
+No bot restart, provider request, real HH submission, production registry edit
+or OSINT change was made.
+
+Remaining: transactional bot-state updates and process lifecycle locking.

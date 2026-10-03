@@ -62,6 +62,23 @@ def atomic_write_text(path: str | os.PathLike[str], value: str) -> None:
     _atomic_write(path, lambda stream: stream.write(value))
 
 
+@contextlib.contextmanager
+def file_lock(path: str | os.PathLike[str]):
+    """Lock a stable sidecar, not the inode replaced by atomic writes."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.with_name(f".{target.name}.lock")
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 class JsonStore:
     def __init__(
         self,
@@ -92,17 +109,8 @@ class JsonStore:
 
     @contextlib.contextmanager
     def _locked(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = self.path.with_name(f".{self.path.name}.lock")
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            os.fchmod(fd, 0o600)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+        with file_lock(self.path):
             yield
-        finally:
-            with contextlib.suppress(OSError):
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
 
     def _preserve_corrupt_file(self) -> None:
         if not self.path.exists():

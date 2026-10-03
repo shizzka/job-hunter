@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import config
-import runtime_control
+from state_store.registry import RegistryStore
 
 MAX_EVENTS = 100
 
@@ -137,18 +137,18 @@ def _normalize_registry(payload: dict | None) -> dict:
     return registry
 
 
+def _store() -> RegistryStore:
+    return RegistryStore(config.TELEGRAM_AI_LIMITS_FILE, normalize=_normalize_registry, collections=("users", "events"))
+
+
 def load_registry() -> dict:
-    payload = runtime_control.read_json_file(config.TELEGRAM_AI_LIMITS_FILE)
-    registry = _normalize_registry(payload)
-    if payload != registry:
-        save_registry(registry)
-    return registry
+    return _store().load()
 
 
 def save_registry(registry: dict) -> None:
     normalized = _normalize_registry(registry)
     normalized["updated_at"] = _now()
-    runtime_control.write_json_file(config.TELEGRAM_AI_LIMITS_FILE, normalized)
+    _store().save(normalized)
 
 
 def _ensure_user_entry(registry: dict, user_id: int) -> dict:
@@ -190,23 +190,20 @@ def _snapshot(entry: dict) -> dict:
 
 
 def get_user_snapshot(user_id: int) -> dict:
-    registry = load_registry()
-    entry = _ensure_user_entry(registry, user_id)
-    if not any(item["user_id"] == entry["user_id"] for item in registry["users"]):
-        registry["users"].append(entry)
-    save_registry(registry)
-    return _snapshot(entry)
+    return _update_user(user_id, lambda registry, entry: None)
 
 
 def list_user_snapshots(user_ids: list[int] | None = None) -> list[dict]:
-    registry = load_registry()
     if user_ids is None:
-        return [_snapshot(item) for item in registry["users"]]
+        return [_snapshot(item) for item in load_registry()["users"]]
     snapshots = []
-    for user_id in user_ids:
-        entry = _ensure_user_entry(registry, int(user_id))
-        snapshots.append(_snapshot(entry))
-    save_registry(registry)
+
+    def mutate(registry):
+        for user_id in user_ids:
+            snapshots.append(_snapshot(_ensure_user_entry(registry, int(user_id))))
+        registry["updated_at"] = _now()
+
+    _store().update(mutate)
     return snapshots
 
 
@@ -218,46 +215,58 @@ def recent_events(limit: int = 10) -> list[dict]:
     return list(reversed(registry["events"][-limit:]))
 
 
+def _update_user(user_id: int, mutator) -> dict:
+    snapshot = None
+
+    def mutate(registry):
+        nonlocal snapshot
+        entry = _ensure_user_entry(registry, user_id)
+        mutator(registry, entry)
+        registry["updated_at"] = _now()
+        snapshot = _snapshot(entry)
+
+    _store().update(mutate)
+    return snapshot
+
+
 def record_resume_analysis(user_id: int, *, profile_name: str) -> dict:
-    registry = load_registry()
-    entry = _ensure_user_entry(registry, user_id)
-    entry["free_used"] = int(entry.get("free_used", 0)) + 1
-    profile_key = str(profile_name or "").strip() or "default"
-    profile_bucket = entry.setdefault("profiles", {}).setdefault(profile_key, _normalize_profile_bucket({}))
-    profile_bucket["analysis_count"] = int(profile_bucket.get("analysis_count", 0)) + 1
-    profile_bucket["last_used_at"] = _now()
-    entry["updated_at"] = _now()
-    _append_event(registry, action="analysis_used", user_id=user_id, profile_name=profile_key, amount=1)
-    save_registry(registry)
-    return _snapshot(entry)
+    def mutate(registry, entry):
+        entry["free_used"] = int(entry.get("free_used", 0)) + 1
+        profile_key = str(profile_name or "").strip() or "default"
+        profile_bucket = entry.setdefault("profiles", {}).setdefault(profile_key, _normalize_profile_bucket({}))
+        profile_bucket["analysis_count"] = int(profile_bucket.get("analysis_count", 0)) + 1
+        profile_bucket["last_used_at"] = _now()
+        entry["updated_at"] = _now()
+        _append_event(registry, action="analysis_used", user_id=user_id, profile_name=profile_key, amount=1)
+
+    return _update_user(user_id, mutate)
 
 
 def grant_bonus(user_id: int, *, amount: int = 1, actor_user_id: int = 0) -> dict:
-    registry = load_registry()
-    entry = _ensure_user_entry(registry, user_id)
     grant = max(0, int(amount))
-    entry["bonus_total"] = int(entry.get("bonus_total", 0)) + grant
-    entry["updated_at"] = _now()
-    _append_event(registry, action="grant_bonus", user_id=user_id, actor_user_id=actor_user_id, amount=grant)
-    save_registry(registry)
-    return _snapshot(entry)
+
+    def mutate(registry, entry):
+        entry["bonus_total"] = int(entry.get("bonus_total", 0)) + grant
+        entry["updated_at"] = _now()
+        _append_event(registry, action="grant_bonus", user_id=user_id, actor_user_id=actor_user_id, amount=grant)
+
+    return _update_user(user_id, mutate)
 
 
 def reset_free_limit(user_id: int, *, actor_user_id: int = 0, free_total: int | None = None) -> dict:
-    registry = load_registry()
-    entry = _ensure_user_entry(registry, user_id)
-    if free_total is None:
-        entry["free_total"] = max(0, int(config.TELEGRAM_AI_FREE_ANALYSES or 0))
-    else:
-        entry["free_total"] = max(0, int(free_total))
-    entry["free_used"] = 0
-    entry["updated_at"] = _now()
-    _append_event(
-        registry,
-        action="reset_free_limit",
-        user_id=user_id,
-        actor_user_id=actor_user_id,
-        amount=int(entry["free_total"]),
-    )
-    save_registry(registry)
-    return _snapshot(entry)
+    def mutate(registry, entry):
+        if free_total is None:
+            entry["free_total"] = max(0, int(config.TELEGRAM_AI_FREE_ANALYSES or 0))
+        else:
+            entry["free_total"] = max(0, int(free_total))
+        entry["free_used"] = 0
+        entry["updated_at"] = _now()
+        _append_event(
+            registry,
+            action="reset_free_limit",
+            user_id=user_id,
+            actor_user_id=actor_user_id,
+            amount=int(entry["free_total"]),
+        )
+
+    return _update_user(user_id, mutate)
