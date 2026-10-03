@@ -7,10 +7,14 @@ import re
 import time
 from pathlib import Path
 
-from state_store.google_forms import GoogleFormStateRepository
-from state_store.json_store import JsonStore
+from state_store.google_forms import (
+    GoogleFormStateRepository,
+    TERMINAL_STATUSES,
+    form_state_lock,
+)
+from state_store.protected import ProtectedJsonStore
 
-TERMINAL = {"submitted", "submit_uncertain", "already_submitted"}
+TERMINAL = TERMINAL_STATUSES
 
 
 def question_key(question: dict) -> str:
@@ -19,13 +23,38 @@ def question_key(question: dict) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False).encode()).hexdigest()[:24]
 
 
-def edits_store(home: str) -> JsonStore:
-    return JsonStore(Path(home) / "google_form_edits.json")
+def _valid_edits(state: dict) -> bool:
+    if not isinstance(state, dict):
+        return False
+    for entry in state.values():
+        if not isinstance(entry, dict):
+            return False
+        answers = entry.get("answers", {})
+        if not isinstance(answers, dict) or any(not isinstance(answer, dict) for answer in answers.values()):
+            return False
+        successor = entry.get("superseded_by")
+        if successor is not None and not isinstance(successor, str):
+            return False
+    return True
+
+
+def edits_store(home: str) -> ProtectedJsonStore:
+    return ProtectedJsonStore(Path(home) / "google_form_edits.json", validator=_valid_edits)
+
+
+def _validate_token(token: str) -> None:
+    if not isinstance(token, str) or not re.fullmatch(r"[a-f0-9]{12,32}", token):
+        raise ValueError("Некорректная ссылка на черновик.")
 
 
 def get_draft(home: str, token: str) -> dict:
-    if not re.fullmatch(r"[a-f0-9]{12,32}", token):
-        raise ValueError("Некорректная ссылка на черновик.")
+    _validate_token(token)
+    with form_state_lock(home):
+        return _get_draft_unlocked(home, token)
+
+
+def _get_draft_unlocked(home: str, token: str) -> dict:
+    """Read eligibility while the caller owns the preview/edit workflow lock."""
     item = GoogleFormStateRepository(home).load()["items"].get(token)
     if not item:
         raise ValueError("Черновик не найден или устарел. Откройте /forms.")
@@ -41,10 +70,23 @@ def manual_answers(home: str, token: str) -> dict:
 
 
 def supersede(home: str, token: str, new_token: str) -> None:
-    store = edits_store(home)
-    state = store.load()
-    state.setdefault(token, {})["superseded_by"] = new_token
-    store.save(state)
+    _validate_token(token)
+    _validate_token(new_token)
+    if token == new_token:
+        raise ValueError("Новая версия должна иметь отдельный token.")
+    with form_state_lock(home):
+        store = edits_store(home)
+        previous = store.load().get(token, {}).get("superseded_by")
+        if previous == new_token:
+            return
+        if previous:
+            raise ValueError("Есть новая проверенная версия анкеты. Откройте /forms.")
+        _get_draft_unlocked(home, token)
+
+        def mutate(state):
+            state.setdefault(token, {})["superseded_by"] = new_token
+
+        store.update(mutate)
 
 
 def displayed_answers(home: str, item: dict) -> dict:
@@ -101,18 +143,21 @@ def make_answer(question: dict, value: str) -> dict:
 
 
 def save_answer(home: str, token: str, index: int, value: str, user_id: int) -> dict:
-    item = get_draft(home, token)
-    question = next((q for q in item.get("questions", []) if int(q["index"]) == index), None)
-    if not question:
-        raise ValueError("Поле не найдено. Откройте черновик заново.")
-    answer = make_answer(question, value)
-    store = edits_store(home)
-    state = store.load()
-    entry = state.setdefault(token, {"answers": {}})
-    entry["answers"][question_key(question)] = answer
-    entry.update(updated_at=int(time.time()), user_id=user_id)
-    store.save(state)
-    return answer
+    _validate_token(token)
+    with form_state_lock(home):
+        item = _get_draft_unlocked(home, token)
+        question = next((q for q in item.get("questions", []) if int(q["index"]) == index), None)
+        if not question:
+            raise ValueError("Поле не найдено. Откройте черновик заново.")
+        answer = make_answer(question, value)
+
+        def mutate(state):
+            entry = state.setdefault(token, {})
+            entry.setdefault("answers", {})[question_key(question)] = answer
+            entry.update(updated_at=int(time.time()), user_id=user_id)
+
+        edits_store(home).update(mutate)
+        return answer
 
 
 def replay_answers(questions: list[dict], draft: dict, edits: dict) -> tuple[list[dict], list[dict]]:

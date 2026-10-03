@@ -339,3 +339,48 @@ post-publication directory-fsync failure can leave the new complete file visible
 Already running old code and external editors do not acquire the new advisory
 env lock automatically. No production process restart/signal, provider/Telegram
 request, real HH submission, runtime file edit or OSINT change was made.
+
+### Follow-up: synchronous Google Form drafts and preview mutations (2026-10-03)
+
+Manual answers and successor markers now mutate protected JSON under per-file
+locks. Preview `remember` is a transactional update, not a separate load/save.
+A short shared `.google_form_workflow.lock` coordinates preview eligibility with
+edits: workflow first, then one JSON sidecar at a time. All work under the lock
+is synchronous and contains no browser/model/Telegram await.
+
+JSON/UTF-8/collection corruption stays in place and blocks repeated reads and
+mutations; missing files still support initial setup. Expected collection and
+entry shapes are validated without claiming exhaustive field semantics. The
+old test accepting an empty replacement for malformed `items` was deliberately
+updated to require preservation. Read-only compatibility checks passed for two
+existing preview files and one manual-edits file; no records were exposed and
+no runtime files or locks were created by that check.
+
+Answer writes preserve other answers/tokens and metadata. Eligibility is read
+after waiting for the coordinator; a terminal or superseded draft cannot then
+be edited. Competing successor updates retain the first successor, reject a
+different one and treat an identical repeat as a no-op. Invalid/unknown/self
+successors do not create edit records. `remember` cannot replace a terminal
+preview detail; identical terminal details remain no-ops. Normal expiry,
+question fingerprints, option selection and required-field/skip rules remain.
+
+Initial new baseline: **18 failures / 8 passes** on the previous code. Final
+coverage adds **45 tests**: four spawned writers preserve 40 independent previews
+and 40 manual answers, six competing superseders retain one successor and the
+existing answer, eligibility changes while waiting are respected, and
+serialization/read/replace/data-fsync failures preserve old data. Private mode,
+file/parent fsync, malformed schemas, no-op and unrelated metadata are covered.
+Final targeted: **102 passed** (3.85 seconds); local full: **1287 passed**
+(36.43 seconds); isolated staged publication-tree: **1215 passed** (37.25 seconds)
+with the existing venv. The 72-test difference remains the pre-existing
+local-only set. Bash/diff checks passed.
+
+This is a synchronous persistence group, not a complete form/chat workflow fix.
+`google_form_filler.submit_saved_preview` still uses a pre-await full snapshot;
+recheck/edit-version approval, submission ownership/cancellation/uncertain result,
+Telegram pending-form whole snapshots and HH chat writes remain open. Full
+repository `save` remains an explicit whole snapshot, not a safe merge of stale
+data, and the `remember` terminal guard is not a persisted submission claim.
+Older running code/non-cooperating writers do not automatically share the new
+coordinator. No real submit, browser launch, provider/Telegram request,
+production restart/signal, runtime edit or OSINT change was made.

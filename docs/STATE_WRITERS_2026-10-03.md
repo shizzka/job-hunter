@@ -18,13 +18,14 @@ pass. This is an inventory, not certification of every workflow or deployment.
 | `agent` resume download / analysis, `setup_profile` env / resume / analysis | Private atomic text writes; download captures the destination and resume-selection variants before the first await. Setup env publication cannot clobber a concurrent creator. `test_text_env_state`. |
 | `profile.create_profile`, `migrate_profile_note` note creation | Complete private temporary file published by same-directory hard link, then temp unlink and parent fsync. Existing files, including symlinks, cannot be replaced. Unsupported link/filesystem operations fail rather than falling back to truncation. `test_text_env_state`, existing migration tests. |
 | `profile.update_profile_env`, HH-auth resume-slot update, note salary migration | One stable `.profile.env.lock` across read/mutate/atomic replacement. Comments/unrelated keys retained, values normalized; migration inserts only missing keys, including preservation of existing empty values. `test_text_env_state`, profile/auth/migration tests. |
+| `google_forms/drafts.save_answer` / `.supersede`, `state_store/google_forms.remember` | Protected JSON reads, transactional per-file updates and a short `.google_form_workflow.lock` coordinating preview eligibility with edits. Terminal `remember` records cannot be replaced; first successor wins, repeated identical successor is a no-op. `test_form_state_transactions`. Async submit/recheck remain open below. |
 | HH-auth text imports/catalog, auth/CAPTCHA IPC; Habr/GeekJob/SuperJob cookies/auth | Already use private atomic text/JSON. Atomic serialization is covered, but async destination ownership and workflow concurrency are not globally certified; see follow-ups. |
 
 ## Open follow-ups
 
 | Priority / paths | Remaining work |
 | --- | --- |
-| Authoritative form/chat edits: `google_forms/drafts`, `state_store/google_forms`, `google_form_filler`, `state_store/chat_responder`, `hh_chat_responder` | Atomic `save` alone does not make a separately loaded snapshot transactional. Form `remember`, manual-answer/supersede paths and async workflows need concurrency, terminal-state and corruption-preservation audit. Never hold a file lock across network/browser awaits. |
+| Async form/chat workflows: `google_form_filler`, `commands/google_forms`, `telegram_app/forms`, `state_store/chat_responder`, `hh_chat_responder` | Synchronous form mutations are covered above, but async submit still saves a pre-await whole preview snapshot; eligibility checks before browser awaits are not a submission claim. Recheck approval/edit-version races, Telegram pending-form snapshot writes and chat persistence need separate regression groups. Do not hold file locks across network/browser awaits; do not declare exactly-once submit from atomic storage alone. |
 | `hh_response_counter.save_snapshot` | Previous snapshot / delta is calculated between separate `load` and `save` operations. Audit ordering of concurrent refreshes before declaring state/resume complete. |
 | `hh/browser._save_cookies`, browser session callbacks and other cookie clients | HH has file fsync + atomic replace, but no parent-directory fsync. Capture cookie destination/session ownership before awaits; distinguish intentional whole snapshots from read-modify-write and avoid another profile's destination. |
 | `agent._append_run_history`; `telegram_bot._append_chat_ai_audit_event` / `_append_debug_log` | Buffered append without explicit private mode, shared writer lock or durability contract. Test concurrent writers, partial-tail recovery and serialization failures; preserve append semantics instead of replacing the entire journal. |
@@ -64,3 +65,29 @@ manual editors and external non-cooperating writers do not automatically share
 the lock. No production process was restarted, no runtime file was modified,
 and no real application, browser login or provider request was made in this
 group. General roadmap atomicity and `State/resume` remain open.
+
+## Synchronous form verification boundary
+
+Preview and manual-edit JSON/UTF-8/collection corruption now stays in place and
+blocks repeated reads/mutations instead of becoming an empty replacement. The
+old `items`-schema repair test was intentionally changed to require preservation;
+existing production schemas were checked read-only before publication.
+Validation covers expected collections/entry shapes, not every field's business
+meaning. Missing files still support initial setup.
+
+New short synchronous operations acquire the workflow coordinator first, then
+the required per-file sidecar. Draft eligibility is checked after waiting for
+that coordinator; writes preserve unrelated records/answers and metadata.
+The first successor is retained under contention; a different successor is
+rejected, and an identical successor is an idempotent no-op. Normal seven-day
+preview expiry and answer/option/required-field behavior remain unchanged.
+`remember` refuses to replace an already terminal detail, except an identical
+no-op; full snapshot `save` is still available and is not a transactional merge.
+
+These locks protect cooperating updated synchronous writers only. A browser
+submission or an already running old writer is not covered by a lock held only
+around its final save. `google_form_filler.submit_saved_preview` is intentionally
+unchanged in this group and still requires a persisted submit claim, fresh edit
+and terminal checks, token-scoped result persistence and cancellation/uncertain
+outcome tests. A stale recheck must also not submit user approval for newer edits.
+No form-state lock may be held while awaiting browser, model or Telegram work.

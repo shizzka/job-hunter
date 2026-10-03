@@ -1,4 +1,5 @@
 import json
+import pytest
 
 import google_form_filler as gforms
 from runtime_context import RuntimePaths
@@ -8,13 +9,14 @@ from state_store.google_forms import (
 )
 
 
-def test_google_form_repository_repairs_items_schema(tmp_path):
+def test_google_form_repository_preserves_invalid_items_schema(tmp_path):
     path = tmp_path / "google_form_previews.json"
     path.write_text('{"items": ["broken"], "version": 1}', encoding="utf-8")
 
-    state = GoogleFormStateRepository(tmp_path).load()
-
-    assert state == {"items": {}, "version": 1}
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="Corrupt state"):
+            GoogleFormStateRepository(tmp_path).load()
+        assert path.read_text(encoding="utf-8") == '{"items": ["broken"], "version": 1}'
 
 
 def test_google_form_repository_trims_expired_previews(tmp_path):

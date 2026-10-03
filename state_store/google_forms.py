@@ -10,11 +10,42 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from state_store.json_store import JsonStore
+from state_store.json_store import file_lock
+from state_store.protected import ProtectedJsonStore
 
 
 STATE_FILENAME = "google_form_previews.json"
 MAX_PREVIEW_AGE_SECONDS = 7 * 24 * 60 * 60
+TERMINAL_STATUSES = frozenset({"submitted", "submit_uncertain", "already_submitted"})
+
+
+def form_state_lock(home_dir: str | os.PathLike[str]):
+    """Coordinate short preview/edit operations; never hold this across awaits."""
+    # Lock order: workflow first, then one JSON store's sidecar at a time.
+    return file_lock(Path(home_dir) / "google_form_workflow")
+
+
+def valid_preview_state(state: dict[str, Any]) -> bool:
+    if not isinstance(state, dict):
+        return False
+    items = state.get("items")
+    if not isinstance(items, dict):
+        return False
+    for item in items.values():
+        if not isinstance(item, dict):
+            return False
+        for key in ("questions", "answers"):
+            if key in item and (
+                not isinstance(item[key], list)
+                or any(not isinstance(entry, dict) for entry in item[key])
+            ):
+                return False
+        for key in ("fill_result", "vacancy"):
+            if key in item and not isinstance(item[key], dict):
+                return False
+        if "status" in item and not isinstance(item["status"], str):
+            return False
+    return True
 
 
 def new_preview_token(
@@ -43,23 +74,23 @@ class GoogleFormStateRepository:
         self.path = Path(home_dir) / STATE_FILENAME
         self._clock = clock
         self._max_preview_age_seconds = max(0, int(max_preview_age_seconds))
-        self._store = JsonStore(
+        self._store = ProtectedJsonStore(
             self.path,
             default_factory=lambda: {"items": {}},
+            validator=valid_preview_state,
             logger=logger,
             read_error_message="google form state read failed",
         )
 
     def load(self) -> dict[str, Any]:
-        state = self._store.load()
-        if not isinstance(state.get("items"), dict):
-            state["items"] = {}
-        return state
+        return self._store.load()
 
     def save(self, state: dict[str, Any]) -> None:
-        if not isinstance(state.get("items"), dict):
-            state = {**state, "items": {}}
-        self._store.save(state)
+        """Explicit full snapshot; callers must not use stale read/modify/save."""
+        if not valid_preview_state(state):
+            raise ValueError("Invalid Google Form preview state")
+        with form_state_lock(self.path.parent):
+            self._store.save(state)
 
     def remember(
         self,
@@ -68,12 +99,19 @@ class GoogleFormStateRepository:
         *,
         trim_expired: bool,
     ) -> dict[str, Any]:
-        state = self.load()
-        state["items"][token] = detail
-        if trim_expired:
-            self.trim_expired(state)
-        self.save(state)
-        return state
+        if not valid_preview_state({"items": {token: detail}}):
+            raise ValueError("Invalid Google Form preview detail")
+
+        def mutate(state):
+            previous = state["items"].get(token)
+            if previous and previous.get("status") in TERMINAL_STATUSES and previous != detail:
+                raise ValueError("Cannot replace a terminal Google Form preview")
+            state["items"][token] = detail
+            if trim_expired:
+                self.trim_expired(state)
+
+        with form_state_lock(self.path.parent):
+            return self._store.update(mutate)
 
     def trim_expired(self, state: dict[str, Any]) -> None:
         items = state.get("items")
