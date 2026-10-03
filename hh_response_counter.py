@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-import json
 import os
 import re
 from datetime import datetime
@@ -11,7 +10,9 @@ from pathlib import Path
 
 import httpx
 
-from state_store.json_store import JsonStore
+from state_store.hh_response_counter import HHCounterRepository, observation_time, valid_snapshot
+from state_store.hh_cookies import HHCookieRepository
+from state_store.json_store import file_lock
 
 
 SNAPSHOT_FILENAME = "hh_response_counter.json"
@@ -63,16 +64,13 @@ def parse_negotiations_page(page_html: str, *, expected_filter: str) -> dict:
 
 def _load_playwright_cookies(cookies_file: str) -> list[dict]:
     try:
-        with open(cookies_file, encoding="utf-8") as source:
-            payload = json.load(source)
-    except FileNotFoundError as exc:
+        cookies, _ = HHCookieRepository(cookies_file).snapshot()
+    except Exception as exc:
+        raise HHResponseCounterError(f"Не удалось прочитать сессию HH: {type(exc).__name__}") from exc
+    if cookies is None:
         raise HHResponseCounterError(
             "Сессия HH не найдена. Сначала выполните «Вход HH»."
-        ) from exc
-    except Exception as exc:
-        raise HHResponseCounterError(f"Не удалось прочитать сессию HH: {exc}") from exc
-
-    cookies = payload.get("cookies", []) if isinstance(payload, dict) else payload
+        )
     if not isinstance(cookies, list) or not cookies:
         raise HHResponseCounterError(
             "Сессия HH пуста. Сначала выполните «Вход HH»."
@@ -80,7 +78,8 @@ def _load_playwright_cookies(cookies_file: str) -> list[dict]:
     return [item for item in cookies if isinstance(item, dict)]
 
 
-def _authenticated_client(cookies_file: str) -> httpx.Client:
+def _authenticated_client(cookies_file: str, *, cookies: list[dict] | None = None) -> httpx.Client:
+    cookies = _load_playwright_cookies(cookies_file) if cookies is None else cookies
     client = httpx.Client(
         follow_redirects=True,
         headers={
@@ -92,7 +91,7 @@ def _authenticated_client(cookies_file: str) -> httpx.Client:
         },
         timeout=30,
     )
-    for cookie in _load_playwright_cookies(cookies_file):
+    for cookie in cookies:
         name = str(cookie.get("name") or "")
         value = str(cookie.get("value") or "")
         if not name:
@@ -134,30 +133,26 @@ def save_snapshot(
     active: dict,
     archived: dict,
     fetched_at: str | None = None,
+    refresh_sequence: int | None = None,
 ) -> dict:
-    store = JsonStore(snapshot_path(home_dir))
-    previous = store.load()
+    if not isinstance(profile_name, str) or not profile_name:
+        raise ValueError("HH counter profile is required")
+    repository = HHCounterRepository(snapshot_path(home_dir))
     current = {
         "profile": profile_name,
         "fetched_at": fetched_at or datetime.now().astimezone().isoformat(timespec="seconds"),
-        "active": int(active["total"]),
-        "archived": int(archived["total"]),
-        "deleted": int(active["deleted"]),
-        "active_pages": int(active["page_count"]),
-        "archived_pages": int(archived["page_count"]),
+        "active": active["total"],
+        "archived": archived["total"],
+        "deleted": active["deleted"],
+        "active_pages": active["page_count"],
+        "archived_pages": archived["page_count"],
     }
     current["total"] = current["active"] + current["archived"] + current["deleted"]
-    if previous.get("fetched_at"):
-        current["previous_fetched_at"] = previous.get("fetched_at")
-        current["delta"] = {
-            key: current[key] - int(previous.get(key, 0) or 0)
-            for key in ("active", "archived", "deleted", "total")
-        }
-    else:
-        current["previous_fetched_at"] = ""
-        current["delta"] = {}
-    store.save(current)
-    return current
+    observation_time(current["fetched_at"])
+    if not valid_snapshot(current):
+        raise ValueError("Invalid HH counter observation")
+    sequence = repository.begin(profile_name) if refresh_sequence is None else refresh_sequence
+    return repository.commit(current, sequence, enforce_timestamp=refresh_sequence is None)
 
 
 def refresh(
@@ -167,8 +162,18 @@ def refresh(
     cookies_file: str,
     base_url: str = "https://hh.ru",
 ) -> dict:
+    home_dir = os.path.abspath(os.fspath(home_dir))
+    cookies_file = os.path.abspath(os.fspath(cookies_file))
+    repository = HHCounterRepository(snapshot_path(home_dir))
+    cookie_repository = HHCookieRepository(cookies_file)
+    cookies, cookie_revision = cookie_repository.snapshot()
+    if not cookies:
+        raise HHResponseCounterError("Сессия HH пуста или не найдена. Сначала выполните «Вход HH».")
+    # Ticket before requests: later completion cannot roll back a newer refresh.
+    sequence = repository.begin(profile_name)
+    fetched_at = datetime.now().astimezone().isoformat(timespec="microseconds")
     negotiations_url = f"{base_url.rstrip('/')}/applicant/negotiations"
-    with _authenticated_client(cookies_file) as client:
+    with _authenticated_client(cookies_file, cookies=cookies) as client:
         active = _fetch_page(
             client,
             negotiations_url,
@@ -179,9 +184,9 @@ def refresh(
             f"{negotiations_url}?filter=archived",
             expected_filter="archived",
         )
-    return save_snapshot(
-        profile_name=profile_name,
-        home_dir=home_dir,
-        active=active,
-        archived=archived,
-    )
+    # Lock order: cookies -> counter sidecar, synchronous disk work only.
+    with file_lock(cookie_repository.path):
+        if cookie_repository._snapshot_unlocked()[1] != cookie_revision:
+            raise HHResponseCounterError("Сессия HH изменилась во время обновления; повторите проверку.")
+        return save_snapshot(profile_name=profile_name, home_dir=home_dir,
+            active=active, archived=archived, fetched_at=fetched_at, refresh_sequence=sequence)

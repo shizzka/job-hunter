@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
-import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 
 from playwright.async_api import async_playwright
 
@@ -16,41 +16,74 @@ except ImportError:
 
 import config
 import proxy_utils
+from state_store.hh_cookies import HHCookieRepository, HHCookieStateError, validate_cookies
 
 log = logging.getLogger("hh_client")
 HH_AUTH_COOKIE_NAMES = {"hhtoken", "hhuid", "crypted_hhuid", "crypted_id"}
 
 
-def _ensure_dirs():
-    os.makedirs(os.path.dirname(config.HH_COOKIES_FILE), exist_ok=True)
-    os.makedirs(config.HH_STATE_DIR, exist_ok=True)
+@dataclass(frozen=True)
+class CookiePaths:
+    cookies_file: str
+    state_dir: str
+
+    @classmethod
+    def capture(cls, settings=config):
+        return cls(os.path.abspath(os.fspath(getattr(settings, "HH_COOKIES_FILE", config.HH_COOKIES_FILE))),
+                   os.path.abspath(os.fspath(getattr(settings, "HH_STATE_DIR", config.HH_STATE_DIR))))
 
 
-def _load_cookies() -> list[dict] | None:
-    if os.path.exists(config.HH_COOKIES_FILE):
-        with open(config.HH_COOKIES_FILE) as f:
-            return json.load(f)
-    return None
+@dataclass
+class CookieBinding:
+    repository: HHCookieRepository
+    revision: object
+    had_auth: bool
+    context: object = None
+    closing: bool = False
+    revoked: bool = False
 
 
-def _save_cookies(cookies: list[dict]):
-    _ensure_dirs()
-    cookies_dir = os.path.dirname(config.HH_COOKIES_FILE)
-    fd, temporary_path = tempfile.mkstemp(
-        prefix=".hh_cookies_",
-        suffix=".json",
-        dir=cookies_dir,
-        text=True,
-    )
+def _ensure_dirs(paths: CookiePaths | None = None):
+    paths = paths or CookiePaths.capture()
+    Path(paths.cookies_file).parent.mkdir(parents=True, exist_ok=True)
+    Path(paths.state_dir).mkdir(parents=True, exist_ok=True)
+
+
+def _load_cookies(paths: CookiePaths | None = None) -> list[dict] | None:
+    paths = paths or CookiePaths.capture()
+    return HHCookieRepository(paths.cookies_file).snapshot()[0]
+
+
+def _save_cookies(cookies: list[dict], paths: CookiePaths | None = None):
+    """Explicit synchronous import; browser workflows use bound CAS instead."""
+    paths = paths or CookiePaths.capture()
+    _ensure_dirs(paths)
+    HHCookieRepository(paths.cookies_file).save(cookies)
+
+
+def _persist_captured(session, context, binding, nonce, revision, cookies, save_cookies, *, shutdown=False):
+    if session._context is not context or getattr(session, "_cookie_write_nonce", None) is not nonce:
+        raise HHCookieStateError("HH browser changed during cookie capture")
+    if save_cookies is not _save_cookies:
+        # Injected callbacks remain useful for tests; they own their destination.
+        save_cookies(cookies)
+        return
+    if (binding is None or binding is not getattr(session, "_cookie_binding", None)
+            or binding.context is not context or binding.revoked):
+        raise HHCookieStateError("HH cookie session ownership unavailable")
+    if not isinstance(cookies, list):
+        raise HHCookieStateError("Browser returned an invalid HH cookie collection")
+    validate_cookies(cookies)
+    if shutdown and binding.had_auth and not any(item.get("name", "").lower() == "hhtoken" for item in cookies):
+        raise HHCookieStateError("Refusing to erase cached HH auth during shutdown")
     try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(cookies, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temporary_path, config.HH_COOKIES_FILE)
-    finally:
-        if os.path.exists(temporary_path):
-            os.unlink(temporary_path)
+        binding.revision = binding.repository.save(cookies, expected_revision=revision)
+        binding.had_auth = any(item.get("name", "").lower() == "hhtoken" for item in cookies)
+    except BaseException:
+        # Replacement may already be visible if directory fsync failed. Never
+        # adopt an unknown new revision or retry from this old browser.
+        binding.revoked = True
+        raise
 
 
 async def start_browser(
@@ -66,9 +99,24 @@ async def start_browser(
     load_cookies=_load_cookies,
     logger=log,
 ):
-    ensure_dirs()
-    session._pw = await playwright_factory().start()
-
+    if getattr(session, "_starting", False) or any(getattr(session, field, None) is not None
+            for field in ("_pw", "_browser", "_context")):
+        raise RuntimeError("HH browser is already active or starting")
+    paths = getattr(session, "_cookie_paths", None) or CookiePaths.capture(settings)
+    session._cookie_paths = paths
+    if ensure_dirs is _ensure_dirs:
+        ensure_dirs(paths)
+    else:
+        ensure_dirs()
+    if load_cookies is _load_cookies:
+        repository = HHCookieRepository(paths.cookies_file)
+        cookies, revision = repository.snapshot()
+        binding = CookieBinding(repository, revision,
+                                any(item.get("name", "").lower() == "hhtoken" for item in cookies or []))
+    else:
+        cookies, binding = load_cookies(), None
+    session._cookie_binding = binding
+    session._cookie_write_nonce = object()
     launch_opts = {
         "headless": headless if headless is not None else settings.HEADLESS,
         "slow_mo": settings.SLOW_MO,
@@ -80,63 +128,95 @@ async def start_browser(
         logger.info("Using proxy: %s", proxy_url)
     launch_opts["env"] = proxy_env_builder(proxy_url)
 
-    session._browser = await session._pw.chromium.launch(**launch_opts)
-    session._context = await session._browser.new_context(
-        viewport={"width": 1280, "height": 900},
-        user_agent=(
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        ),
-        locale="ru-RU",
-    )
-    cookies = load_cookies()
-    if cookies:
-        await session._context.add_cookies(cookies)
-        logger.info("Loaded %d cookies", len(cookies))
-    session._page = await session._context.new_page()
+    session._starting = True
+    try:
+        session._pw = await playwright_factory().start()
+        session._browser = await session._pw.chromium.launch(**launch_opts)
+        session._context = await session._browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            ),
+            locale="ru-RU",
+        )
+        if binding is not None:
+            binding.context = session._context
+        if cookies:
+            await session._context.add_cookies(cookies)
+            logger.info("Loaded %d cookies", len(cookies))
+        session._page = await session._context.new_page()
 
-    # Anti-bot: применяем stealth-патчи к контексту/странице, чтобы hh.ru
-    # не палил navigator.webdriver и прочие headless-маркеры.
-    if stealth_available:
-        try:
-            stealth = stealth_factory()
-            await stealth.apply_stealth_async(session._context)
-            logger.info("playwright-stealth applied to context")
-        except Exception as exc:
-            logger.warning("playwright-stealth failed: %s", exc)
+        # Anti-bot patches belong to this captured context.
+        if stealth_available:
+            try:
+                stealth = stealth_factory()
+                await stealth.apply_stealth_async(session._context)
+                logger.info("playwright-stealth applied to context")
+            except Exception as exc:
+                logger.warning("playwright-stealth failed: %s", type(exc).__name__)
+    except BaseException:
+        session._starting = False
+        await stop_browser(session, save_cookies=None)
+        raise
+    finally:
+        session._starting = False
 
 
 async def stop_browser(session, *, save_cookies=_save_cookies):
+    if getattr(session, "_starting", False):
+        raise RuntimeError("HH browser startup is still in progress")
     context = getattr(session, "_context", None)
     browser = getattr(session, "_browser", None)
     playwright = getattr(session, "_pw", None)
+    page = getattr(session, "_page", None)
+    binding = getattr(session, "_cookie_binding", None)
+    if binding is not None:
+        if binding.closing:
+            return
+        binding.closing = True
+    nonce = object()
+    session._cookie_write_nonce = nonce
+    revision = binding.revision if binding is not None else None
     try:
         if context:
             try:
                 if save_cookies is not None:
                     cookies = await context.cookies()
-                    save_cookies(cookies)
+                    _persist_captured(session, context, binding, nonce, revision, cookies,
+                                      save_cookies, shutdown=True)
             except Exception as exc:
                 # Ctrl-C or an externally closed page may tear down the
                 # Playwright context before the owning task reaches cleanup.
-                log.debug("skip HH cookie save during browser shutdown: %s", exc)
+                log.debug("skip HH cookie save during browser shutdown: %s", type(exc).__name__)
     finally:
         try:
             if browser:
                 await browser.close()
         finally:
-            if playwright:
-                await playwright.stop()
-            session._context = None
-            session._browser = None
-            session._pw = None
-            session._page = None
+            try:
+                if playwright:
+                    await playwright.stop()
+            finally:
+                for field, captured in (("_context", context), ("_browser", browser),
+                                        ("_pw", playwright), ("_page", page), ("_cookie_binding", binding)):
+                    if getattr(session, field, None) is captured:
+                        setattr(session, field, None)
 
 
 async def save_session(session, *, save_cookies=_save_cookies, logger=log):
-    if session._context:
-        cookies = await session._context.cookies()
-        save_cookies(cookies)
+    if getattr(session, "_starting", False):
+        raise RuntimeError("HH browser startup is still in progress")
+    context = session._context
+    if context:
+        binding = getattr(session, "_cookie_binding", None)
+        if binding is not None and (binding.closing or binding.revoked):
+            raise HHCookieStateError("HH cookie session is closed or superseded")
+        nonce = object()
+        session._cookie_write_nonce = nonce
+        revision = binding.revision if binding is not None else None
+        cookies = await context.cookies()
+        _persist_captured(session, context, binding, nonce, revision, cookies, save_cookies)
         logger.info("Session saved (%d cookies)", len(cookies))
 
 
@@ -146,11 +226,14 @@ async def has_auth_cookies(
     base_url: str = config.HH_BASE_URL,
     auth_cookie_names=HH_AUTH_COOKIE_NAMES,
 ) -> bool:
-    if not session._context:
+    context = session._context
+    if not context:
         return False
     try:
-        cookies = await session._context.cookies([base_url])
+        cookies = await context.cookies([base_url])
     except TypeError:
-        cookies = await session._context.cookies()
+        cookies = await context.cookies()
+    if session._context is not context:
+        return False
     names = {(item.get("name") or "").casefold() for item in cookies or []}
     return "hhtoken" in names and bool(names & auth_cookie_names)

@@ -38,6 +38,7 @@ from hh.apply import (
     submit_response_form_via_dom as _submit_response_form_via_dom,
 )
 from hh.browser import (
+    CookiePaths,
     HH_AUTH_COOKIE_NAMES,
     _ensure_dirs,
     _load_cookies,
@@ -152,6 +153,7 @@ class HHClient:
     """Управляет браузерной сессией hh.ru."""
 
     def __init__(self):
+        self._cookie_paths = CookiePaths.capture(config)
         self._pw = None
         self._browser = None
         self._context: BrowserContext | None = None
