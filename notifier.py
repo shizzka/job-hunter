@@ -2,16 +2,18 @@
 import html
 import json
 import logging
+import math
 import os
 import re
 import time
+import uuid
 import aiohttp
 
 import config
 import profile as profile_mod
 import telegram_access
 from telegram_app.formatting import limit_telegram_text
-from state_store.json_store import JsonStore
+from state_store.protected import ProtectedJsonStore
 
 log = logging.getLogger("notifier")
 
@@ -641,19 +643,30 @@ async def notify_digest(analytics_summary: dict):
 
 _COOKIE_WARN_INTERVAL = 24 * 3600  # раз в сутки
 _COOKIE_STALE_DAYS = 7
+_COOKIE_WARN_RETRY_INTERVAL = 5 * 60
+
+
+def _valid_cookie_warning_state(state: dict) -> bool:
+    for key in ("sent_at", "attempt_at"):
+        value = state.get(key, 0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return False
+    return "attempt_id" not in state or isinstance(state["attempt_id"], str)
 
 
 async def notify_stale_cookies():
     """Отправить уведомление если куки площадок устарели (>7 дней)."""
     sources = {
-        "hh.ru": config.HH_COOKIES_FILE,
-        "SuperJob": config.SUPERJOB_COOKIES_FILE,
-        "Habr Career": config.HABR_COOKIES_FILE,
-        "GeekJob": config.GEEKJOB_COOKIES_FILE,
+        "hh.ru": (config.HH_ENABLED, config.HH_COOKIES_FILE),
+        "SuperJob": (config.SUPERJOB_ENABLED, config.SUPERJOB_COOKIES_FILE),
+        "Habr Career": (config.HABR_ENABLED, config.HABR_COOKIES_FILE),
+        "GeekJob": (config.GEEKJOB_ENABLED, config.GEEKJOB_COOKIES_FILE),
     }
     now = time.time()
     stale = []
-    for name, path in sources.items():
+    for name, (enabled, path) in sources.items():
+        if not enabled:
+            continue
         if not os.path.exists(path):
             stale.append(f"❌ {name}: файл куки не найден")
             continue
@@ -664,15 +677,30 @@ async def notify_stale_cookies():
     if not stale:
         return
 
-    # Отдельная атомарная отметка для каждого профиля.
-    store = JsonStore(os.path.join(config.JOB_HUNTER_HOME, "cookie_warn_sent.json"), logger=log)
+    # Claim before the network await: parallel searches cannot all send.
+    # A failed/cancelled/uncertain send retains a short retry cooldown.
+    store = ProtectedJsonStore(
+        os.path.join(config.JOB_HUNTER_HOME, "cookie_warn_sent.json"),
+        logger=log, validator=_valid_cookie_warning_state,
+    )
+    attempt_id = uuid.uuid4().hex
+    claimed = False
+
+    def claim(state):
+        nonlocal claimed
+        if state.get("sent_at") and now - state["sent_at"] < _COOKIE_WARN_INTERVAL:
+            return state
+        if state.get("attempt_at") and now - state["attempt_at"] < _COOKIE_WARN_RETRY_INTERVAL:
+            return state
+        claimed = True
+        return {**state, "attempt_at": now, "attempt_id": attempt_id}
+
     try:
-        state = store.load()
-        last_sent = float(state.get("sent_at") or 0)
+        store.update(claim)
     except Exception as exc:
         log.warning("Cookie warning state read failed: %s", type(exc).__name__)
         return
-    if now - last_sent < _COOKIE_WARN_INTERVAL:
+    if not claimed:
         return
 
     text = (
@@ -688,7 +716,8 @@ async def notify_stale_cookies():
         return
 
     try:
-        store.update(lambda state: {**state, "sent_at": now, "stale": stale})
+        store.update(lambda state: {**state, "sent_at": time.time(), "stale": stale}
+                     if state.get("attempt_id") == attempt_id else state)
     except Exception as exc:
         log.warning("Cookie warning state save failed: %s", type(exc).__name__)
 

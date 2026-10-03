@@ -384,3 +384,66 @@ data, and the `remember` terminal guard is not a persisted submission claim.
 Older running code/non-cooperating writers do not automatically share the new
 coordinator. No real submit, browser launch, provider/Telegram request,
 production restart/signal, runtime edit or OSINT change was made.
+
+### Incident correction: offline smoke isolation / cookie alerts (2026-10-03)
+
+The user's screenshot showed repeated four-source missing-cookie warnings at
+13:26. Three temporary smoke-profile warning states were persisted at
+13:26:38–41. The subprocess smoke helper read the real default env file and
+inherited Telegram credentials while using temporary state without cookies.
+Each temporary profile had its own daily cooldown. Consequently the previous
+local-full-run claims of "no Telegram request" were incorrect: those smoke
+subprocesses could deliver real alerts. Publication runs with an isolated HOME
+did not read that env file. The known incident is not evidence that QA cookie
+files disappeared; all four QA cookie files were present when checked.
+
+Ordinary subprocess smoke now uses an allowlisted, credential-free environment,
+synthetic resume/state, forced disabled sources and temporary logs. It no longer
+reads/copies candidate env, cookies, resumes or production seen. An autouse
+fixture refuses real IPv4/IPv6 connect/connect_ex calls in the pytest process;
+this is not an OS network sandbox and does not automatically cover subprocesses.
+Their isolation is tested separately. Live checks remain separate and explicit.
+
+Cookie alerts skip disabled sources. A protected transactional attempt claim is
+persisted before sending, without holding a file lock across awaits. Failure,
+cancellation or uncertain completion retains a five-minute retry cooldown;
+success retains the daily cooldown. Late completion cannot overwrite a newer
+attempt. Corrupt cooldown JSON/schema stays in place and suppresses delivery;
+persistence failures before the claim suppress delivery too. This prevents
+cooperating local senders from flooding, not external exactly-once delivery.
+
+Verification: **1311 local tests passed** (35.77 seconds), using an empty process
+environment, isolated HOME and the existing browser cache for a synthetic DOM
+test. The first stricter run set JOB_HUNTER_HOME externally and exposed 33 fixture
+path conflicts; removing that override resolved 32. Supplying the existing
+browser cache resolved the remaining missing-browser prerequisite. Added
+24 regressions cover env isolation, 30 concurrent coroutines, four spawned
+senders with one delivery, retry/daily cooldowns, cancellation, corruption,
+write failures, original-profile completion and late-owner protection.
+
+Clean staged publication export: **1239 passed** (39.88 seconds), with the same
+isolated HOME/environment and browser-cache prerequisite. The local-only test
+difference remains 72. For subsequent ordinary full runs:
+
+```bash
+task_test_home=$(mktemp -d /tmp/job-hunter-tests-XXXXXX)
+env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$task_test_home" \
+  PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}" \
+  ./venv/bin/python -m pytest -q
+```
+
+Do not add an outer JOB_HUNTER_HOME override: profile fixtures set their own
+temporary config paths. Do not source production env to run ordinary tests.
+
+QA bot restart was explicitly requested; it was temporarily stopped during
+triage and restored with --keep-pending. Runtime and code backups are private
+and separate. The async form-submit/recheck group was deferred, not completed.
+
+An explicitly authorized short live dry-run used a private copy of QA state,
+cookies and resume, one page per source and no Telegram/Office delivery. Sources
+returned 322 records (HH 75, SuperJob 202, Habr 25, GeekJob 20); most were already
+seen, three reached evaluation and two matched. The history's `applied=2` is a
+legacy dry-run simulation counter, not real applications. Production seen was
+not the destination, no application/chat-send branch ran, and the probe logged
+no missing-cookie, expired-session or CAPTCHA warning. This is a bounded search
+check, not certification of every cookie's session or live submit behavior.

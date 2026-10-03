@@ -167,8 +167,14 @@ def test_cookie_notifications_are_isolated_and_retry_after_failed_delivery(tmp_p
 
     monkeypatch.setattr(notifier, "send_message", send)
     monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(homes[0]))
+    for setting in ("HH_ENABLED", "SUPERJOB_ENABLED", "HABR_ENABLED", "GEEKJOB_ENABLED"):
+        monkeypatch.setattr(config, setting, True)
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(notifier.time, "time", lambda: clock[0])
     asyncio.run(notifier.notify_stale_cookies())
-    assert not (homes[0] / "cookie_warn_sent.json").exists()
+    asyncio.run(notifier.notify_stale_cookies())
+    assert len(sent) == 1
+    clock[0] += notifier._COOKIE_WARN_RETRY_INTERVAL
     asyncio.run(notifier.notify_stale_cookies())
     asyncio.run(notifier.notify_stale_cookies())
     monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(homes[1]))

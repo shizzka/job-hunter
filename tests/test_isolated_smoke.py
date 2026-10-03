@@ -6,33 +6,22 @@ Isolated smoke tests (B-003).
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent
-REAL_HOME = Path.home() / ".job-hunter"
 
 
 def _make_isolated_home(tmp: Path) -> Path:
-    """Создать временный JOB_HUNTER_HOME с копией cookies и resume."""
+    """Create synthetic state only; ordinary smoke tests never read real data."""
     home = tmp / "job-hunter-test"
     home.mkdir()
     (home / "state").mkdir()
 
-    # Копируем cookies (нужны для live smoke, но не для import/stats)
-    for pattern in ["*.cookies.json", "superjob_auth.json"]:
-        for f in REAL_HOME.glob(pattern):
-            shutil.copy2(f, home / f.name)
-
-    # Копируем resume
-    resume = REAL_HOME / "resume.md"
-    if resume.exists():
-        shutil.copy2(resume, home / "resume.md")
+    (home / "resume.md").write_text("# Synthetic candidate\nOffline smoke fixture.\n")
 
     # Пустой seen — чтобы не мешать
     (home / "seen_vacancies.json").write_text("{}")
@@ -45,31 +34,26 @@ def isolated_home(tmp_path):
     return _make_isolated_home(tmp_path)
 
 
-def _run_agent(args: list[str], home: Path, timeout: int = 30) -> subprocess.CompletedProcess:
-    """Запустить agent.py с изолированным HOME."""
-    env = os.environ.copy()
-    env["JOB_HUNTER_HOME"] = str(home)
-    # Отключаем все источники по умолчанию
-    env.setdefault("HH_ENABLED", "0")
-    env.setdefault("SUPERJOB_ENABLED", "0")
-    env.setdefault("HABR_ENABLED", "0")
-    env.setdefault("GEEKJOB_ENABLED", "0")
-    # Тихий режим
-    env.setdefault("HEADLESS", "1")
+def _isolated_env(home: Path) -> dict[str, str]:
+    """Allowlist process essentials; never inherit credentials or runtime paths."""
+    return {
+        "PATH": os.defpath,
+        "LANG": "C.UTF-8",
+        "HOME": str(home),
+        "JOB_HUNTER_HOME": str(home),
+        "JOB_HUNTER_ENV_FILE": str(home / "nonexistent.env"),
+        "JOB_HUNTER_LOG_FILE": str(home / "agent.log"),
+        "JOB_HUNTER_BOT_LOG_FILE": str(home / "bot.log"),
+        "HH_ENABLED": "0",
+        "SUPERJOB_ENABLED": "0",
+        "HABR_ENABLED": "0",
+        "GEEKJOB_ENABLED": "0",
+        "HEADLESS": "1",
+    }
 
-    # Подгружаем env file если есть
-    env_file = REAL_HOME / "job-hunter.env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            key = key.strip()
-            val = val.strip()
-            # Не перезаписываем то, что мы уже выставили
-            if key not in env or key not in ("HH_ENABLED", "SUPERJOB_ENABLED", "HABR_ENABLED", "GEEKJOB_ENABLED", "JOB_HUNTER_HOME"):
-                env[key] = val
+
+def _run_agent(args: list[str], home: Path, timeout: int = 30) -> subprocess.CompletedProcess:
+    """Запустить agent.py с изолированными HOME и настройками."""
 
     return subprocess.run(
         [sys.executable, "agent.py"] + args,
@@ -77,20 +61,18 @@ def _run_agent(args: list[str], home: Path, timeout: int = 30) -> subprocess.Com
         text=True,
         timeout=timeout,
         cwd=str(PROJECT_ROOT),
-        env=env,
+        env=_isolated_env(home),
     )
 
 
 def _run_python(script: str, args: list[str], home: Path, timeout: int = 30) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    env["JOB_HUNTER_HOME"] = str(home)
     return subprocess.run(
         [sys.executable, script] + args,
         capture_output=True,
         text=True,
         timeout=timeout,
         cwd=str(PROJECT_ROOT),
-        env=env,
+        env=_isolated_env(home),
     )
 
 
@@ -127,16 +109,15 @@ class TestIsolatedDryRun:
         assert "Traceback" not in r.stderr
 
     def test_state_isolation(self, isolated_home):
-        """Боевой seen не изменился после dry-run."""
-        real_seen = REAL_HOME / "seen_vacancies.json"
-        if real_seen.exists():
-            before = real_seen.read_text()
-
-        _run_agent(["--dry-run"], isolated_home, timeout=60)
-
-        if real_seen.exists():
-            after = real_seen.read_text()
-            assert before == after, "Боевой seen_vacancies.json изменился!"
+        """A synthetic neighbouring profile is untouched by dry-run."""
+        other_home = isolated_home.parent / "other-profile"
+        other_home.mkdir()
+        seen_file = other_home / "seen_vacancies.json"
+        seen_file.write_text('{"synthetic": true}')
+        before = seen_file.read_bytes()
+        r = _run_agent(["--dry-run"], isolated_home, timeout=60)
+        assert r.returncode == 0
+        assert seen_file.read_bytes() == before
 
     def test_isolated_seen_created(self, isolated_home):
         _run_agent(["--dry-run"], isolated_home, timeout=60)
@@ -166,3 +147,41 @@ class TestStatsAndAnalytics:
         (isolated_home / "run_history.jsonl").write_text(entry + "\n")
         r = _run_agent(["--stats"], isolated_home)
         assert r.returncode == 0
+
+
+@pytest.mark.parametrize("runner", ["agent", "python"])
+def test_smoke_children_ignore_parent_secrets_and_source_flags(isolated_home, monkeypatch, runner):
+    for key in (
+        "HUNTER_CONTROL_BOT_TOKEN", "HUNTER_NOTIFY_BOT_TOKEN", "HUNTER_BOT_TOKEN",
+        "NOTIFY_CHAT_ID", "GROQ_API_KEY", "OPENAI_API_KEY", "OFFICE_URL", "OFFICE_DB",
+        "HH_ENABLED", "SUPERJOB_ENABLED", "HABR_ENABLED", "GEEKJOB_ENABLED",
+        "JOB_HUNTER_LOG_FILE", "JOB_HUNTER_ENV_FILE", "HTTP_PROXY",
+    ):
+        monkeypatch.setenv(key, "synthetic-parent-value")
+    captured = []
+
+    def run(argv, **kwargs):
+        captured.append(kwargs["env"])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    if runner == "agent":
+        _run_agent(["--dry-run"], isolated_home)
+    else:
+        _run_python("telegram_bot.py", ["--help"], isolated_home)
+    env = captured[0]
+    assert "synthetic-parent-value" not in env.values()
+    assert env["HOME"] == env["JOB_HUNTER_HOME"] == str(isolated_home)
+    assert all(env[source + "_ENABLED"] == "0" for source in ("HH", "SUPERJOB", "HABR", "GEEKJOB"))
+    assert not any("TOKEN" in key or "API_KEY" in key for key in env)
+
+
+def test_smoke_setup_does_not_read_candidate_home(tmp_path, monkeypatch):
+    def forbidden_read(*args, **kwargs):
+        pytest.fail("Offline fixture construction must not read candidate data")
+
+    monkeypatch.setattr(Path, "read_text", forbidden_read)
+    monkeypatch.setattr(Path, "read_bytes", forbidden_read)
+    home = _make_isolated_home(tmp_path)
+    assert not list(home.glob("*cookies*"))
+    assert (home / "resume.md").exists()
