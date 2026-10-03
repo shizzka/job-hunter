@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import fcntl
 import json
 import logging
@@ -63,12 +64,13 @@ def atomic_write_text(path: str | os.PathLike[str], value: str) -> None:
 
 
 @contextlib.contextmanager
-def file_lock(path: str | os.PathLike[str]):
+def file_lock(path: str | os.PathLike[str], *, lock_path: str | os.PathLike[str] | None = None):
     """Lock a stable sidecar, not the inode replaced by atomic writes."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = target.with_name(f".{target.name}.lock")
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    lock_target = Path(lock_path) if lock_path is not None else target.with_name(f".{target.name}.lock")
+    lock_target.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_target, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         os.fchmod(fd, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -179,12 +181,16 @@ class JsonStore:
     def update(
         self,
         mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
+        *,
+        skip_unchanged: bool = False,
     ) -> dict[str, Any]:
         """Atomically load, mutate and save state while holding one file lock."""
         with self._locked():
             value = self._load_unlocked()
+            before = copy.deepcopy(value) if skip_unchanged else None
             updated = mutator(value)
             if updated is None:
                 updated = value
-            self._save_unlocked(updated)
+            if not skip_unchanged or updated != before:
+                self._save_unlocked(updated)
             return updated

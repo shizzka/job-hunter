@@ -1,12 +1,10 @@
 """Profile-local employer exclusions, checked again immediately before applying."""
-import fcntl
 import json
-import os
 import re
-import tempfile
 from pathlib import Path
 
 import config
+from state_store.json_store import atomic_write_json, file_lock
 
 
 def normalize(company: str) -> str:
@@ -26,7 +24,10 @@ def _path(profile_name=None):
 
 
 def list_companies(profile_name=None):
-    path = _path(profile_name)
+    return _read_companies(_path(profile_name))
+
+
+def _read_companies(path):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -47,17 +48,8 @@ def set_blocked(company, blocked=True, profile_name=None):
     if not key or len(company) > 200 or "\n" in company:
         raise ValueError("Введите название одной компании (до 200 символов).")
     path = _path(profile_name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.with_suffix(".lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        companies = [x for x in list_companies(profile_name) if normalize(x) != key]
+    with file_lock(path, lock_path=path.with_suffix(".lock")):
+        companies = [x for x in _read_companies(path) if normalize(x) != key]
         if blocked:
             companies.append(company)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".blacklist-")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump(sorted(companies, key=str.casefold), stream, ensure_ascii=False)
-            os.replace(tmp, path)
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
+        atomic_write_json(path, sorted(companies, key=str.casefold))

@@ -2,10 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-import fcntl
-from functools import wraps
 import html
-import json
 import os
 import re
 import time
@@ -14,6 +11,7 @@ from pathlib import Path
 
 import config
 import company_blacklist
+from state_store.protected import ProtectedJsonStore
 
 CALLBACK_MANUAL_APPLY = "manual_apply"
 CALLBACK_MANUAL_FEEDBACK = "manual_fb"
@@ -38,39 +36,32 @@ def _queue_path(profile_name: str | None = None) -> Path:
 
 
 
-def _queue_transaction(function):
-    @wraps(function)
-    def locked(*args, **kwargs):
-        path = _queue_path(kwargs.get("profile_name"))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.with_suffix(".lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            return function(*args, **kwargs)
-    return locked
+def _valid_queue(data: dict) -> bool:
+    items = data.get("items")
+    return isinstance(items, dict) and all(
+        isinstance(item, dict)
+        and all(name not in item or isinstance(item[name], dict) for name in ("vacancy", "evaluation"))
+        for item in items.values()
+    )
+
+
+def _store(profile_name: str | None = None) -> ProtectedJsonStore:
+    # Resolve once, before waiting: every operation uses the locked profile's
+    # original path, even if process-wide active config changes in the meantime.
+    path = _queue_path(profile_name)
+    return ProtectedJsonStore(
+        path, lock_path=path.with_suffix(".lock"),
+        default_factory=lambda: {"items": {}}, validator=_valid_queue,
+    )
 
 
 def _read_queue(profile_name: str | None = None) -> dict:
-    path = _queue_path(profile_name)
-    if not path.exists():
-        return {"items": {}}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"items": {}}
-    if not isinstance(data, dict):
-        return {"items": {}}
-    items = data.get("items")
-    if not isinstance(items, dict):
-        data["items"] = {}
-    return data
+    return _store(profile_name).load()
 
 
 def _write_queue(data: dict, profile_name: str | None = None) -> None:
-    path = _queue_path(profile_name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp_path, path)
+    """Explicit full replacement; queue mutations use a locked transaction."""
+    _store(profile_name).save(data)
 
 
 def _safe_profile(profile_name: str | None) -> str:
@@ -119,7 +110,6 @@ def _prune(data: dict, now: float) -> None:
     data["items"] = dict(ordered[:MAX_ITEMS])
 
 
-@_queue_transaction
 def create_candidate(
     vacancy: dict,
     evaluation: dict,
@@ -152,10 +142,12 @@ def create_candidate(
         "evaluation": _compact_evaluation(evaluation),
         "details": (details or "")[:8000],
     }
-    data = _read_queue(profile_name)
-    _prune(data, now)
-    data.setdefault("items", {})[token] = item
-    _write_queue(data, profile_name)
+
+    def mutate(data):
+        _prune(data, now)
+        data["items"][token] = item
+
+    _store(profile_name).update(mutate)
     return item
 
 
@@ -167,17 +159,19 @@ def get_candidate(token: str, *, profile_name: str | None = None) -> dict | None
     return item if isinstance(item, dict) else None
 
 
-@_queue_transaction
 def mark_candidate(token: str, status: str, message: str = "", *, profile_name: str | None = None) -> dict | None:
-    data = _read_queue(profile_name)
-    item = data.get("items", {}).get((token or "").strip())
-    if not isinstance(item, dict):
-        return None
-    item["status"] = status
-    item["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    if message:
-        item["message"] = str(message)[:1000]
-    _write_queue(data, profile_name)
+    item = None
+
+    def mutate(data):
+        nonlocal item
+        item = data["items"].get((token or "").strip())
+        if item is not None:
+            item["status"] = status
+            item["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            if message:
+                item["message"] = str(message)[:1000]
+
+    _store(profile_name).update(mutate)
     return item
 
 
@@ -185,24 +179,27 @@ def feedback_label(value: str) -> str:
     return FEEDBACK_LABELS.get((value or "").strip(), "")
 
 
-@_queue_transaction
 def record_feedback(token: str, value: str, *, user_id: int = 0, profile_name: str | None = None) -> dict | None:
     value = (value or "").strip()
     if value not in FEEDBACK_LABELS:
         return None
-    data = _read_queue(profile_name)
-    item = data.get("items", {}).get((token or "").strip())
-    if not isinstance(item, dict):
-        return None
-    item["feedback"] = value
-    item["feedback_label"] = feedback_label(value)
-    item["feedback_at"] = datetime.now().isoformat(timespec="seconds")
-    if user_id:
-        item["feedback_user_id"] = int(user_id)
-    if value == "bad" and item.get("status") == "pending":
-        item["status"] = "dismissed"
-    item["updated_at"] = item["feedback_at"]
-    _write_queue(data, profile_name)
+    item = None
+
+    def mutate(data):
+        nonlocal item
+        item = data["items"].get((token or "").strip())
+        if item is None:
+            return
+        item["feedback"] = value
+        item["feedback_label"] = feedback_label(value)
+        item["feedback_at"] = datetime.now().isoformat(timespec="seconds")
+        if user_id:
+            item["feedback_user_id"] = int(user_id)
+        if value == "bad" and item.get("status") == "pending":
+            item["status"] = "dismissed"
+        item["updated_at"] = item["feedback_at"]
+
+    _store(profile_name).update(mutate)
     return item
 
 
@@ -227,17 +224,21 @@ def list_candidates(profile_name: str, *, limit: int = 8, include_snoozed: bool 
     return items[:max(1, int(limit or 1))]
 
 
-@_queue_transaction
 def snooze_candidate(token: str, *, profile_name: str, hours: int = 24) -> dict | None:
-    data = _read_queue(profile_name)
-    item = data.get("items", {}).get((token or "").strip())
-    if not isinstance(item, dict) or item.get("status") != "pending":
-        return None
-    until = time.time() + max(1, int(hours)) * 3600
-    item["snoozed_until"] = until
-    item["snoozed_until_at"] = datetime.fromtimestamp(until).isoformat(timespec="seconds")
-    item["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    _write_queue(data, profile_name)
+    item = None
+
+    def mutate(data):
+        nonlocal item
+        current = data["items"].get((token or "").strip())
+        if current is None or current.get("status") != "pending":
+            return
+        item = current
+        until = time.time() + max(1, int(hours)) * 3600
+        item["snoozed_until"] = until
+        item["snoozed_until_at"] = datetime.fromtimestamp(until).isoformat(timespec="seconds")
+        item["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+    _store(profile_name).update(mutate)
     return item
 
 

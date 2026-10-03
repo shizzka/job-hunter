@@ -1,15 +1,14 @@
 """Confirmed candidate facts and adaptive Telegram interview plans."""
 from __future__ import annotations
 
-import json
 import os
-import tempfile
 from datetime import datetime
 from typing import Any
 
 import config
 from llm_client import get_llm_client
 from llm_utils import parse_llm_json
+from state_store.protected import ProtectedJsonStore
 
 
 def _profile_dir() -> str:
@@ -20,29 +19,22 @@ def data_path(profile_dir: str | None = None) -> str:
     return os.path.join(profile_dir or _profile_dir(), "candidate_interview.json")
 
 
+def _store(profile_dir: str | None = None) -> ProtectedJsonStore:
+    return ProtectedJsonStore(
+        data_path(profile_dir),
+        default_factory=lambda: {"facts": []},
+        validator=lambda state: isinstance(state.get("facts"), list)
+        and all(isinstance(item, dict) and isinstance(item.get("text"), str) for item in state["facts"]),
+    )
+
+
 def load(profile_dir: str | None = None) -> dict[str, Any]:
-    try:
-        with open(data_path(profile_dir), encoding="utf-8") as handle:
-            value = json.load(handle)
-        if isinstance(value, dict):
-            return value
-    except (OSError, ValueError):
-        pass
-    return {"facts": []}
+    return _store(profile_dir).load()
 
 
 def _save(data: dict[str, Any], profile_dir: str | None = None) -> None:
-    path = data_path(profile_dir)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix="candidate-interview-", suffix=".json", dir=os.path.dirname(path))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    """Explicit full replacement; fact additions use a locked transaction."""
+    _store(profile_dir).save(data)
 
 
 def facts(profile_dir: str | None = None) -> list[dict[str, str]]:
@@ -56,18 +48,20 @@ def add_fact(text: str, *, topic: str = "общий", profile_dir: str | None = 
         raise ValueError("Пустой факт нельзя сохранить")
     if max_chars is not None and len(clean) > max_chars:
         raise ValueError(f"Факт слишком длинный: максимум {max_chars} символов")
-    data = load(profile_dir)
-    current = [item for item in data.get("facts") or [] if isinstance(item, dict)]
     item = {
         "text": clean,
         "topic": " ".join(str(topic or "общий").split())[:80] or "общий",
         "source": "telegram_confirmed",
         "confirmed_at": datetime.now().isoformat(timespec="seconds"),
     }
-    if not any(existing.get("text", "").casefold() == clean.casefold() for existing in current):
-        current.append(item)
-        data["facts"] = current[-100:]
-        _save(data, profile_dir)
+
+    def mutate(data):
+        current = data["facts"]
+        if not any(existing["text"].casefold() == clean.casefold() for existing in current):
+            current.append(item)
+            data["facts"] = current[-100:]
+
+    _store(profile_dir).update(mutate)
     return item
 
 

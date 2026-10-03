@@ -255,5 +255,49 @@ HH submission, production state edit or OSINT change was made. Locks are advisor
 older already-running code does not retroactively adopt them. Offsets are still
 recorded before handling updates; this is not transactional message processing
 or exactly-once notifications. PID reuse and external non-cooperating writers
-are not fully solved by sidecar locking. Repository-wide state work, including
-the manual-apply queue and other writers, still needs its own inspection/tests.
+are not fully solved by sidecar locking. Queue/fact/blacklist paths are covered
+by the next follow-up; remaining repository-wide writers still need inspection.
+
+### Follow-up: queued decisions, confirmed facts and employer exclusions (2026-10-03)
+
+Queue operations and confirmed-fact additions now load/mutate/save through
+`ProtectedJsonStore` under one stable lock. JSON/UTF-8/collection corruption
+blocks repeated reads/mutations and leaves the original file in place;
+permission/I/O errors propagate instead of creating empty replacement state.
+Validation covers the expected collection and entry structure, not every field's
+business meaning. Missing files still support first-time setup.
+
+Queue and blacklist retain their existing `<stem>.lock` sidecar names, so older
+cooperating code still locks the same inode. Paths are resolved once before
+waiting; queue and blacklist mutations cannot re-resolve another active profile
+inside the critical section. Facts use a shared per-file sidecar for all new
+writers. Older fact writers do not retroactively acquire this new lock.
+
+All three writers use unique private (0600) temporary files, data fsync, atomic
+replace and parent-directory fsync. Data-fsync/serialization/replace failures
+before replacement retain the old file and clean temporary files. A directory
+fsync failure after replacement does not roll back an already replaced file;
+hardware/filesystem failure guarantees are not implied by these tests.
+
+Queue feedback/status/snooze behavior, fact case-insensitive deduplication and
+100-fact cap, metadata preservation, employer matching and profile isolation
+remain unchanged. Unknown queue tokens and duplicate facts do not create or
+rewrite JSON; listing/pruning remains read-only for queue data. Explicit full
+replacement helpers remain for restoration/tests, not application mutations.
+Locks/parent directories may be created by reads, but state JSON is not saved.
+
+Initial new regression baseline: **18 failures / 5 passes**. The final **42 new
+tests** exercise corruption/UTF-8/schema, permission/replace/data-fsync errors,
+concurrent updates and duplicate facts, profile changes at lock acquisition,
+legacy sidecar names and unchanged no-op/listing behavior. Four spawned workers
+retain all 40 insertions independently for queue, facts and blacklist.
+Local full verification: **1210 passed** (38.17 seconds); isolated staged
+publication-tree verification: **1138 passed** (41.03 seconds), using the existing
+venv. The 72-test difference remains the pre-existing local-only set.
+Targeted verification: **64 passed**. Read-only checks across existing profiles found compatible schemas
+for three queues, two fact files and two blacklists, without exposing records
+or modifying state. Diff and Bash syntax checks passed.
+
+No production process restart/signal, provider/Telegram request, real HH
+submission, production state edit or OSINT change was made. This does not provide
+exactly-once vacancy submission or complete repository-wide state safety.
