@@ -1,5 +1,6 @@
 """Pure helpers for HH employer questionnaires."""
 
+import json
 import re
 
 from hh.text import normalize_text
@@ -53,7 +54,8 @@ def extract_resume_salary_text(resume_text: str) -> str:
 
     for line in resume_text.splitlines():
         stripped = line.strip()
-        if "₽" in stripped or "руб" in stripped.casefold():
+        if ("₽" in stripped or "руб" in stripped.casefold()) and re.search(
+                r"зарплат|ожидан|желаем|оклад", stripped, flags=re.I):
             return stripped
     return ""
 
@@ -304,13 +306,15 @@ async def inspect_employer_questions(page, *, logger) -> dict:
                         if (seenGroups.has(groupKey)) continue;
                         seenGroups.add(groupKey);
 
-                        let members;
+                        let members, allMembers;
                         if (groupName) {
-                            members = Array.from(
+                            allMembers = Array.from(
                                 document.querySelectorAll(`input[type="${inputType}"][name="${CSS.escape(groupName)}"]`)
-                            ).filter(visible);
+                            );
+                            members = allMembers.filter(visible);
                         } else {
                             members = [el];
+                            allMembers = members;
                         }
                         if (!members.length) continue;
 
@@ -321,7 +325,7 @@ async def inspect_employer_questions(page, *, logger) -> dict:
                         const options = members.map((m, idx) => {
                             const label = optionLabel(m);
                             return {
-                                index: idx,
+                                index: allMembers.indexOf(m),
                                 value: m.value || "",
                                 label: label.slice(0, 200),
                                 is_custom: isCustomOption(label),
@@ -354,14 +358,14 @@ async def inspect_employer_questions(page, *, logger) -> dict:
                         el.setAttribute("data-codex-auto-field-id", autoId);
 
                         const opts = Array.from(el.querySelectorAll("option"))
-                            .filter((o) => !o.disabled)
                             .map((o, idx) => ({
                                 index: idx,
+                                disabled: o.disabled,
                                 value: o.value || "",
                                 label: clean(o.innerText || o.value).slice(0, 200),
                                 is_custom: isCustomOption(o.innerText),
                             }))
-                            .filter((o) => o.label && o.value !== ""); // drop placeholder "выберите"
+                            .filter((o) => !o.disabled && o.label && o.value !== ""); // preserve real DOM indexes
 
                         const described = describeField(el);
                         fields.push({
@@ -575,6 +579,52 @@ async def fill_employer_question_answers(page, answers: list[dict], *, logger) -
         return {"filled": 0, "errors": [str(exc)]}
 
 
+async def verify_filled_answers(page, answers: list[dict]) -> bool:
+    """Read back the native DOM, never trust a filled-count as submission proof."""
+    try:
+        return await page.evaluate("""plan => {
+            /* codex:auto-question-verify */
+            const anchors = Array.from(document.querySelectorAll('[data-codex-auto-field-id]'));
+            return (plan || []).length > 0 && plan.every(item => {
+                const found = anchors.filter(el => el.getAttribute('data-codex-auto-field-id') === item.field_id);
+                if (found.length !== 1 || found[0].disabled) return false;
+                const anchor = found[0], control = (item.control || '').toLowerCase();
+                if (control === 'radio' || control === 'checkbox') {
+                    const name = anchor.getAttribute('name');
+                    const members = name ? Array.from(document.querySelectorAll('input')).filter(
+                        el => el.type === control && el.getAttribute('name') === name) : [anchor];
+                    const expected = item.selected_indices || [];
+                    if (!expected.length || expected.some(i => !Number.isInteger(i) || i < 0 ||
+                            i >= members.length || members[i].disabled)) return false;
+                    if (control === 'radio' && expected.length !== 1) return false;
+                    if (members.some((el, i) => el.checked !== expected.includes(i))) return false;
+                    if (item.custom_text) {
+                        const selected = members[expected[0]], label = selected.closest('label');
+                        let text = label?.querySelector("input[type='text'], textarea");
+                        if (!text) {
+                            const parent = selected.closest('fieldset') || selected.parentElement?.parentElement;
+                            text = Array.from(parent?.querySelectorAll("input[type='text'], textarea") || []).find(el => {
+                                if (el.disabled) return false;
+                                const owner = el.closest('label')?.querySelector("input[type='radio'], input[type='checkbox']");
+                                return !owner || owner === selected;
+                            });
+                        }
+                        if (!text || text.disabled || text.value !== String(item.custom_text)) return false;
+                    }
+                    return true;
+                }
+                if (control === 'select') {
+                    const expected = item.selected_indices || [];
+                    return expected.length === 1 && Number.isInteger(expected[0]) &&
+                        anchor.selectedIndex === expected[0] && !anchor.options[expected[0]]?.disabled;
+                }
+                return anchor.value === String(item.answer ?? '');
+            });
+        }""", answers) is True
+    except Exception:
+        return False
+
+
 async def submit_employer_questions(
     page,
     *,
@@ -623,6 +673,8 @@ async def answer_question_with_llm(
     parse_llm_json,
     repair_llm_json,
 ) -> str | None:
+    from answer_grounding import current_answer_settings
+    settings = current_answer_settings() or settings
     if not settings.HH_AUTO_ANSWER_USE_LLM or not settings.LLM_API_KEY or not resume_text.strip():
         return None
 
@@ -640,26 +692,29 @@ async def answer_question_with_llm(
         logger.info("HH auto-answer skipped risky question: %s", truncate_text(question_text, 120))
         return None
 
-    stable_answer = answer_question_from_library(question_text, max_chars=max_chars)
-    if stable_answer:
-        return stable_answer
-
     vacancy_block = (
         f"Контекст вакансии (на неё откликаемся):\n{vacancy_context}\n\n"
         if vacancy_context else ""
     )
-    salary_block = build_salary_rule_block()
-    facts_block = build_facts_block()
-    profile_note_block = build_profile_note_block()
+    from answer_grounding import capture_candidate, current_candidate, current_answer_client, verify_answers
+    snapshot = current_candidate() or capture_candidate(resume_text, settings=settings,
+        profile_builder=build_profile_note_block, facts_builder=build_facts_block,
+        salary_builder=build_salary_rule_block, knowledge_builder=build_knowledge_base_block)
+    salary_block, facts_block, profile_note_block = snapshot.salary, snapshot.facts, snapshot.profile_note
+    client = current_answer_client() or get_question_answer_client()
+    model = snapshot.models['HH_QUESTION_MODEL'] or snapshot.models['LLM_MODEL']
+    stable_answer = answer_question_from_library(question_text, max_chars=max_chars)
+    if stable_answer:
+        supported = await verify_answers([{'index': 0, 'question': question_text, 'answer': stable_answer}],
+                                         snapshot.sources, client, model, constraints=snapshot.fact_constraints)
+        return stable_answer if 0 in supported else None
     # 2-pass: фильтруем KB под конкретную вакансию (если контекст есть)
     try:
-        knowledge_block = await build_filtered_kb_block(
-            vacancy_context, get_question_answer_client(),
-            max_sections=5, limit_chars=8000,
-        )
+        knowledge_block = snapshot.knowledge[:8000] if current_candidate() else await build_filtered_kb_block(
+            vacancy_context, client, max_sections=5, limit_chars=8000)
     except Exception as exc:
-        logger.debug("filtered KB failed, fallback to full: %s", exc)
-        knowledge_block = build_knowledge_base_block(limit_chars=8000)
+        logger.debug("filtered KB failed, fallback to captured: %s", type(exc).__name__)
+        knowledge_block = snapshot.knowledge[:8000]
 
     prompt = f"""Ты отвечаешь на вопрос работодателя на hh.ru от имени кандидата.
 
@@ -688,9 +743,8 @@ async def answer_question_with_llm(
 - НЕ объясняй свой ответ за пределами JSON."""
 
     try:
-        client = get_question_answer_client()
         response = await client.chat.completions.create(
-            model=settings.HH_QUESTION_MODEL or settings.LLM_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": "Ты отвечаешь строго в формате JSON. Не пиши никакого текста до или после JSON-объекта."},
                 {"role": "user", "content": prompt},
@@ -698,28 +752,34 @@ async def answer_question_with_llm(
             temperature=0.1,
             max_tokens=600,
         )
+        if response.choices[0].finish_reason != 'stop':
+            return None
         raw_text = response.choices[0].message.content or ""
-        model = settings.HH_QUESTION_MODEL or settings.LLM_MODEL
         try:
             parsed = parse_llm_json(raw_text)
         except Exception as parse_exc:
-            logger.info("LLM question JSON parse failed, trying repair: %s", parse_exc)
+            logger.info("LLM question JSON parse failed, trying repair: %s", type(parse_exc).__name__)
             parsed = await repair_llm_json(
                 client,
                 model=model,
                 raw_text=raw_text,
-                parse_error=str(parse_exc),
+                parse_error=type(parse_exc).__name__,
                 schema='{"status": "answer" | "skip", "answer": "..."}',
                 max_tokens=600,
             )
+            if response.choices[0].finish_reason != 'stop':
+                return None
     except Exception as exc:
-        logger.warning("LLM question answer failed: %s", exc)
+        logger.warning("LLM question answer failed: %s", type(exc).__name__)
         return None
 
-    if parsed.get("status") != "answer":
+    if not isinstance(parsed, dict) or parsed.get("status") != "answer":
         return None
 
-    answer = str(parsed.get("answer", "")).strip()
+    answer = parsed.get("answer", "")
+    if not isinstance(answer, str):
+        return None
+    answer = answer.strip()
     if not answer:
         return None
 
@@ -727,9 +787,11 @@ async def answer_question_with_llm(
         answer = extract_numeric_salary(answer) if not answer.isdigit() else answer
         if not answer:
             return None
-        return answer
-
-    return truncate_text(answer, max_chars)
+    else:
+        answer = truncate_text(answer, max_chars)
+    supported = await verify_answers([{'index': 0, 'question': question_text, 'answer': answer}],
+                                     snapshot.sources, client, model, constraints=snapshot.fact_constraints)
+    return answer if 0 in supported else None
 
 
 async def answer_choice_with_llm(
@@ -754,6 +816,8 @@ async def answer_choice_with_llm(
     Returns dict {"selected": [{"index": int, "custom_text": str | None}], "is_skip": bool}
     or None on error.
     """
+    from answer_grounding import current_answer_settings
+    settings = current_answer_settings() or settings
     if not settings.HH_AUTO_ANSWER_USE_LLM or not settings.LLM_API_KEY or not resume_text.strip():
         return None
 
@@ -763,6 +827,9 @@ async def answer_choice_with_llm(
 
     options = field.get("options") or []
     if not options:
+        return None
+    option_map = {opt.get('index', i): opt for i, opt in enumerate(options) if isinstance(opt, dict)}
+    if len(option_map) != len(options) or any(type(index) is not int or index < 0 for index in option_map):
         return None
 
     question_text = (field.get("question_text") or field.get("placeholder") or "").strip()
@@ -776,18 +843,20 @@ async def answer_choice_with_llm(
         f"Контекст вакансии (на неё откликаемся):\n{vacancy_context}\n\n"
         if vacancy_context else ""
     )
-    salary_block = build_salary_rule_block()
-    facts_block = build_facts_block()
-    profile_note_block = build_profile_note_block()
+    from answer_grounding import capture_candidate, current_candidate, current_answer_client, verify_answers
+    snapshot = current_candidate() or capture_candidate(resume_text, settings=settings,
+        profile_builder=build_profile_note_block, facts_builder=build_facts_block,
+        salary_builder=build_salary_rule_block, knowledge_builder=build_knowledge_base_block)
+    salary_block, facts_block, profile_note_block = snapshot.salary, snapshot.facts, snapshot.profile_note
+    client = current_answer_client() or get_question_answer_client()
+    model = snapshot.models['HH_CHOICE_MODEL'] or snapshot.models['LLM_MODEL']
     # 2-pass: фильтруем KB под конкретную вакансию (если контекст есть)
     try:
-        knowledge_block = await build_filtered_kb_block(
-            vacancy_context, get_question_answer_client(),
-            max_sections=5, limit_chars=8000,
-        )
+        knowledge_block = snapshot.knowledge[:8000] if current_candidate() else await build_filtered_kb_block(
+            vacancy_context, client, max_sections=5, limit_chars=8000)
     except Exception as exc:
-        logger.debug("filtered KB failed, fallback to full: %s", exc)
-        knowledge_block = build_knowledge_base_block(limit_chars=8000)
+        logger.debug("filtered KB failed, fallback to captured: %s", type(exc).__name__)
+        knowledge_block = snapshot.knowledge[:8000]
 
     multi_hint = (
         "Если уверен в нескольких — верни их в массиве selected."
@@ -829,9 +898,8 @@ async def answer_choice_with_llm(
 
     async def _call_llm(user_prompt: str) -> dict | None:
         try:
-            client = get_question_answer_client()
             response = await client.chat.completions.create(
-                model=settings.HH_CHOICE_MODEL or settings.LLM_MODEL,
+                model=model,
                 messages=[
                     {"role": "system", "content": "Ты отвечаешь строго в формате JSON. Не пиши никакого текста до или после JSON-объекта."},
                     {"role": "user", "content": user_prompt},
@@ -839,25 +907,27 @@ async def answer_choice_with_llm(
                 temperature=0.1,
                 max_tokens=600,
             )
+            if response.choices[0].finish_reason != 'stop':
+                return None
             raw_text = response.choices[0].message.content or ""
             try:
                 return parse_llm_json(raw_text)
             except Exception as parse_exc:
-                logger.info("LLM choice JSON parse failed, trying repair: %s", parse_exc)
+                logger.info("LLM choice JSON parse failed, trying repair: %s", type(parse_exc).__name__)
                 return await repair_llm_json(
                     client,
-                    model=settings.HH_CHOICE_MODEL or settings.LLM_MODEL,
+                    model=model,
                     raw_text=raw_text,
-                    parse_error=str(parse_exc),
+                    parse_error=type(parse_exc).__name__,
                     schema='{"status": "answer" | "skip", "selected": [{"index": 0, "custom_text": null}]}',
                     max_tokens=600,
                 )
         except Exception as exc:
-            logger.warning("LLM choice answer failed: %s", exc)
+            logger.warning("LLM choice answer failed: %s", type(exc).__name__)
             return None
 
     def _normalize(parsed: dict | None, best_guess: bool) -> dict | None:
-        if not parsed:
+        if not isinstance(parsed, dict) or not parsed:
             return None
         if parsed.get("status") != "answer":
             return {"selected": [], "is_skip": True}
@@ -869,50 +939,47 @@ async def answer_choice_with_llm(
         for item in sel:
             if not isinstance(item, dict):
                 continue
-            try:
-                idx = int(item.get("index"))
-            except (TypeError, ValueError):
-                continue
-            if idx < 0 or idx >= len(options):
-                continue
+            idx = item.get("index")
+            if type(idx) is not int:
+                return None
+            if idx not in option_map:
+                return None
             custom_text = item.get("custom_text")
+            if custom_text is not None and not isinstance(custom_text, str):
+                return None
             if isinstance(custom_text, str):
                 custom_text = truncate_text(custom_text.strip(), max_chars)
                 if not custom_text:
                     custom_text = None
             else:
                 custom_text = None
+            if custom_text and not option_map[idx].get('is_custom'):
+                return None
+            if option_map[idx].get('is_custom') and not custom_text:
+                return None
             normalized.append({"index": idx, "custom_text": custom_text})
         if not normalized:
             return None
-        if control != "checkbox":
-            normalized = normalized[:1]
+        if len({item['index'] for item in normalized}) != len(normalized):
+            return None
+        if control != "checkbox" and len(normalized) != 1:
+            return None
+        if sum(bool(item.get('custom_text')) for item in normalized) > 1:
+            return None  # Native DOM filling supports one custom companion per field.
         return {"selected": normalized, "is_skip": False, "best_guess": best_guess}
 
     # First attempt — обычный промпт с разрешённым SKIP.
     result = _normalize(await _call_llm(prompt), best_guess=False)
     if result is None:
         return None
-    if not result.get("is_skip"):
+    if result.get("is_skip"):
         return result
-
-    # Second attempt — best-guess (SKIP запрещён). Только для radio/select; для checkbox
-    # отказ от ответа допустим (можно ничего не выбирать).
-    if control == "checkbox":
-        return result
-
-    logger.info("choice LLM said skip, retrying with best-guess directive")
-    retry_prompt = (
-        prompt
-        + "\n\nВНИМАНИЕ: предыдущая попытка вернула skip. SKIP теперь ЗАПРЕЩЁН. "
-        "Возьми лучшее предположение из готовых вариантов (или «Свой вариант» с осторожным "
-        "нейтральным текстом). Допустимо ошибиться, лучше прикинуть чем потерять отклик."
-    )
-    retry = _normalize(await _call_llm(retry_prompt), best_guess=True)
-    if retry is None or retry.get("is_skip"):
-        # сдаёмся
-        return {"selected": [], "is_skip": True}
-    return retry
+    text = '\n'.join(option_map[item['index']].get('label', '') +
+                     (': ' + item['custom_text'] if item.get('custom_text') else '')
+                     for item in result['selected'])
+    supported = await verify_answers([{'index': 0, 'question': question_text, 'answer': text}],
+                                     snapshot.sources, client, model, constraints=snapshot.fact_constraints)
+    return result if 0 in supported else {'selected': [], 'is_skip': True}
 
 
 async def try_auto_answer_questions(
@@ -932,12 +999,28 @@ async def try_auto_answer_questions(
             "notes": [],
         }
 
+    # The resume and explicit salary preference belong to this operation,
+    # not whichever global profile happens to be current after inspection.
+    resume_text = load_resume_text()
+    salary_text = settings.HH_AUTO_ANSWER_SALARY_TEXT or extract_resume_salary_text(resume_text)
+    salary_number = settings.HH_AUTO_ANSWER_SALARY_NUMBER or extract_numeric_salary(salary_text)
     inspected = await session._inspect_employer_questions()
     fields = inspected.get("fields") or []
     unsupported_fields = int(inspected.get("unsupported_fields") or 0)
     unsupported_items = inspected.get("unsupported_items") or []
     total_questions = len(fields) + unsupported_fields
     page_text = inspected.get("page_text", "")
+    def shape(value):
+        keys = ('field_id', 'control', 'input_type', 'group_name', 'question_text',
+                'placeholder', 'options', 'max_length', 'required', 'starred')
+        return json.dumps({'fields': [{key: field.get(key) for key in keys} for field in value.get('fields', [])],
+                           'unsupported': value.get('unsupported_fields', 0)}, sort_keys=True, ensure_ascii=False)
+    original_shape = shape(inspected)
+    native = getattr(session, '_cookie_paths', None) is not None
+    async def unchanged_questions():
+        if before_submit is not None and not await before_submit():
+            return False
+        return not native or shape(await session._inspect_employer_questions()) == original_shape
 
     if total_questions <= 0:
         return {
@@ -974,10 +1057,6 @@ async def try_auto_answer_questions(
             "message": "Требуются доп. вопросы работодателя — пропускаем (слишком много полей)",
             "notes": [f"автоответ пропущен: полей {total_questions}, лимит {settings.HH_AUTO_ANSWER_MAX_QUESTIONS}"],
         }
-
-    resume_text = load_resume_text()
-    salary_text = settings.HH_AUTO_ANSWER_SALARY_TEXT or extract_resume_salary_text(resume_text)
-    salary_number = settings.HH_AUTO_ANSWER_SALARY_NUMBER or extract_numeric_salary(salary_text)
 
     answers = []
     notes = []
@@ -1037,7 +1116,8 @@ async def try_auto_answer_questions(
             })
             options = field.get("options") or []
             picked_labels = [
-                (options[i].get("label") if i < len(options) else f"#{i}")
+                next((option.get('label', '') for position, option in enumerate(options)
+                      if option.get('index', position) == i), f"#{i}")
                 for i in selected_indices
             ]
             answer_text = ", ".join(picked_labels)
@@ -1095,6 +1175,9 @@ async def try_auto_answer_questions(
             )
         )
 
+    if native and not await unchanged_questions():
+        return {'handled': True, 'ok': False, 'message': 'Анкета или согласование изменились — отправка остановлена',
+                'notes': notes, 'question_answers': question_answers}
     fill_result = await session._fill_employer_question_answers(answers)
     if int(fill_result.get("filled", 0)) != len(answers):
         return {
@@ -1107,12 +1190,19 @@ async def try_auto_answer_questions(
 
     await session._page.wait_for_timeout(500)
 
-    if before_submit is not None and not await before_submit():
+    if not await unchanged_questions():
         return {"handled": True, "ok": False,
                 "message": "Резюме или сопроводительное изменилось при заполнении анкеты — отправка остановлена",
                 "notes": notes, "question_answers": question_answers}
 
-    submit_extra = {"before_submit": before_submit} if before_submit is not None else {}
+    async def unchanged_filled_answers():
+        return await unchanged_questions() and await verify_filled_answers(session._page, answers)
+
+    if native and not await unchanged_filled_answers():
+        return {'handled': True, 'ok': False, 'message': 'Ответы анкеты изменились — отправка остановлена',
+                'notes': notes, 'question_answers': question_answers}
+    submit_extra = {"before_submit": unchanged_filled_answers} if native else (
+        {"before_submit": before_submit} if before_submit is not None else {})
     if not await session._submit_employer_questions(**submit_extra):
         return {
             "handled": True,

@@ -119,35 +119,13 @@ def _question_signature(questions: list[dict]) -> list[str]:
 
 
 async def _fill_google_form_email_consent(page) -> bool:
-    checkboxes = await page.locator('[role="checkbox"]:visible').element_handles()
-    for checkbox in checkboxes:
-        try:
-            label = await checkbox.get_attribute("aria-label") or ""
-        except Exception:
-            label = ""
-        if not label:
-            try:
-                label = await checkbox.inner_text()
-            except Exception:
-                label = ""
-        if not _is_google_form_email_consent_text(label):
-            continue
-        try:
-            checked = await checkbox.get_attribute("aria-checked") or ""
-        except Exception:
-            checked = ""
-        if checked.casefold() == "true":
-            return True
-        try:
-            await checkbox.scroll_into_view_if_needed(timeout=5000)
-        except Exception:
-            pass
-        await _click_google_form_option(checkbox)
-        try:
-            checked = await checkbox.get_attribute("aria-checked") or ""
-        except Exception:
-            checked = ""
-        return checked.casefold() == "true"
+    """Compatibility hook: never grant consent based on an email substring.
+
+    Even Google's standard-looking label is not proof of candidate/account
+    identity or approved intent. Ordinary question checkboxes must follow the
+    grounded/reviewed answer path; an unhandled required account-email control
+    stays manual rather than being implicitly consented to before extraction.
+    """
     return False
 
 

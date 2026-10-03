@@ -280,7 +280,7 @@ def test_screenshot_fsync_failure_has_explicit_publication_boundary(tmp_path, mo
 def test_hh_search_and_resume_diagnostics_do_not_use_raw_browser_writers():
     import inspect
     from hh_client import HHClient
-    for method in (HHClient.search_vacancies, HHClient.download_resume_by_id):
+    for method in (HHClient._search_vacancies, HHClient.download_resume_by_id):
         source = inspect.getsource(method)
         assert 'await self._save_debug_snapshot(' in source
         assert '.screenshot(' not in source and 'with open(' not in source

@@ -254,12 +254,16 @@ def run_wizard():
             print()
             import asyncio
             import resume_analyzer
-            analysis = asyncio.run(resume_analyzer.analyze_resume(resume_text))
+            from state_store.resume_analysis import AnalysisPublication
+            analysis_path = os.path.join(profile_dir, "resume_analysis.md")
+            publication = AnalysisPublication(resume_file, analysis_path)
+            analysis = asyncio.run(resume_analyzer.analyze_resume(publication.original_resume.decode('utf-8')))
             print(analysis)
             # Сохраняем анализ
-            analysis_path = os.path.join(profile_dir, "resume_analysis.md")
-            atomic_write_text(analysis_path, analysis)
-            print(f"\n📄 Анализ сохранён: {analysis_path}")
+            if publication.publish(analysis):
+                print(f"\n📄 Анализ сохранён: {analysis_path}")
+            else:
+                print('\n❌ Анализ не завершён; предыдущий результат сохранён.')
             print()
     elif resume_text and not config.LLM_API_KEY:
         print("  LLM не настроен — анализ резюме пропущен.")

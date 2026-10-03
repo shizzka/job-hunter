@@ -5,6 +5,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlencode
 from playwright.async_api import async_playwright, BrowserContext, Page
 
@@ -309,14 +310,31 @@ class HHClient:
         )
 
     async def _try_auto_answer_questions(self, vacancy_context: str = "", *, before_submit=None) -> dict:
-        return await _try_auto_answer_questions(
-            self,
-            vacancy_context,
-            settings=config,
-            load_resume_text=_load_resume_text,
-            anti_bot_message=_anti_bot_message,
-            before_submit=before_submit,
-        )
+        if not config.HH_AUTO_ANSWER_SIMPLE_QUESTIONS:
+            return await _try_auto_answer_questions(self, vacancy_context, settings=config,
+                load_resume_text=_load_resume_text, anti_bot_message=_anti_bot_message,
+                before_submit=before_submit)
+        if os.path.abspath(config.HH_COOKIES_FILE) != self._cookie_paths.cookies_file:
+            return {'handled': True, 'ok': False, 'message': 'Профиль анкеты изменился — нужна ручная проверка', 'notes': []}
+        from answer_grounding import capture_candidate, candidate_context
+        try:
+            resume = _load_resume_text()
+            captured = SimpleNamespace(**{key: getattr(config, key) for key in (
+                'HH_AUTO_ANSWER_SIMPLE_QUESTIONS', 'HH_AUTO_ANSWER_MAX_QUESTIONS',
+                'HH_AUTO_ANSWER_MAX_CHARS', 'HH_AUTO_ANSWER_SALARY_TEXT',
+                'HH_AUTO_ANSWER_SALARY_NUMBER', 'HH_AUTO_ANSWER_USE_LLM',
+                'HH_QUESTION_MODEL', 'HH_CHOICE_MODEL', 'LLM_MODEL', 'LLM_API_KEY')})
+            snapshot = capture_candidate(resume, settings=captured,
+                profile_builder=_build_profile_note_block, facts_builder=_build_facts_block,
+                salary_builder=_build_salary_rule_block, knowledge_builder=_build_knowledge_base_block)
+            client = _get_question_answer_client() if captured.HH_AUTO_ANSWER_USE_LLM and captured.LLM_API_KEY else None
+        except Exception as exc:
+            log.warning('Candidate answer snapshot failed: %s', type(exc).__name__)
+            return {'handled': True, 'ok': False, 'message': 'Данные кандидата не подтверждены — нужна ручная проверка', 'notes': []}
+        with candidate_context(snapshot, client, captured):
+            return await _try_auto_answer_questions(self, vacancy_context, settings=captured,
+                load_resume_text=lambda: resume, anti_bot_message=_anti_bot_message,
+                before_submit=before_submit)
 
     async def _dismiss_magritte_dropdowns(self) -> None:
         return await _dismiss_magritte_dropdowns(self)
@@ -506,18 +524,10 @@ class HHClient:
 
     async def search_vacancies(self, query: str, page: int = 0,
                               area: int = 113, schedule: str = "") -> list[dict]:
-        """
-        Поиск вакансий по запросу. Возвращает список:
-        [{"id": "...", "title": "...", "company": "...", "salary": "...",
-          "url": "...", "snippet": "..."}]
-        """
-        params = {
-            "text": query,
-            "area": area,
-            "page": page,
-            "per_page": 20,
-            "order_by": "publication_time",  # свежие первые
-        }
+        # Resolve profile-sensitive query settings before the new scheduling
+        # boundary, just as the original inline implementation did.
+        params = {"text": query, "area": area, "page": page, "per_page": 20,
+                  "order_by": "publication_time"}
         if config.SEARCH_EXPERIENCE:
             params["experience"] = config.SEARCH_EXPERIENCE
         if schedule:
@@ -526,8 +536,22 @@ class HHClient:
             params["salary"] = config.SEARCH_SALARY
         if config.SEARCH_ONLY_WITH_SALARY:
             params["only_with_salary"] = "true"
-
         url = f"{config.HH_BASE_URL}/search/vacancy?{urlencode(params)}"
+        # Playwright binds protocol callbacks to the current Task. Give page
+        # work its own cancellation boundary: its callbacks must be cancelled
+        # before the caller's finally block closes the browser. No shield,
+        # retry, ignored exception or global event-loop suppression.
+        return await asyncio.create_task(
+            self._search_vacancies(query, page=page, url=url),
+            name='hh-search-page',
+        )
+
+    async def _search_vacancies(self, query: str, *, page: int, url: str) -> list[dict]:
+        """
+        Поиск вакансий по запросу. Возвращает список:
+        [{"id": "...", "title": "...", "company": "...", "salary": "...",
+          "url": "...", "snippet": "..."}]
+        """
         log.info("Searching: %s", url)
 
         await self._ensure_expected_ui("search_before_navigation", allowed=("captcha",))

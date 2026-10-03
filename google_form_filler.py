@@ -258,6 +258,10 @@ def _reuse_cached_answers(
     return answers if isinstance(answers, list) else []
 
 
+from answer_grounding import candidate_operation
+
+
+@candidate_operation(client_factory=lambda: get_llm_client())
 async def preview_form(
     page,
     form_url: str,
@@ -367,7 +371,10 @@ async def preview_form(
         saved_answers, missing = replay_answers(page_questions, saved_draft, manual_edits or {}) if saved_draft else ([], page_questions)
         answers = await generate_form_answers(missing, vacancy=vacancy, source_message=source_message) if missing else []
         if not answers and not saved_draft:
-            answers = _reuse_cached_answers(form_url, page_questions, paths)
+            # A previous model's confidence is not proof for the current candidate
+            # snapshot. Retain cache text for human review, never auto-fill it.
+            answers = [{**answer, 'skip': True, 'confidence': 'low', 'source': 'cached_needs_confirmation'}
+                       for answer in _reuse_cached_answers(form_url, page_questions, paths)]
         answers = _prepare_form_answers(page_questions, answers)
         # Previously reviewed answers and manual edits must win over LLM/contact overrides.
         answer_map = {int(a["index"]): a for a in answers}
@@ -448,6 +455,7 @@ async def preview_form(
     return detail
 
 
+@candidate_operation(client_factory=lambda: get_llm_client())
 async def preview_from_hh_chat(
     hh_client,
     chat_id: str,

@@ -289,10 +289,6 @@ async def generate_answer(
     question = target_message.get("text", "").strip()
     if not question:
         return None
-    deterministic_answer = _deterministic_chat_answer(question)
-    if deterministic_answer:
-        return deterministic_answer
-
     # Контексты
     from prompt_blocks import (
         build_profile_note_block,
@@ -301,18 +297,26 @@ async def generate_answer(
         build_knowledge_base_block,
         build_filtered_kb_block,
     )
-    profile_note = build_profile_note_block()
-    facts = build_facts_block()
-    salary = build_salary_rule_block()
+    from answer_grounding import capture_candidate, current_candidate, current_answer_client, verify_answers
+    snapshot = current_candidate() or capture_candidate(resume_text)
+    resume_text = snapshot.resume
+    profile_note, facts, salary = snapshot.profile_note, snapshot.facts, snapshot.salary
+    client = current_answer_client() or _get_llm_client()
+    model = snapshot.models['HH_CHAT_RESPONDER_MODEL'].strip() or snapshot.models['LLM_MODEL']
+    deterministic_answer = _deterministic_chat_answer(question)
+    if deterministic_answer:
+        supported = await verify_answers([{'index': 0, 'question': question, 'answer': deterministic_answer}],
+                                         snapshot.sources, client, model, constraints=snapshot.fact_constraints)
+        return deterministic_answer if 0 in supported else None
     # 2-pass: фильтруем KB под вакансию (используем title+company как контекст)
     vacancy_summary = f"Должность: {vacancy.get('title','')}\nКомпания: {vacancy.get('company','')}\n"
     try:
-        knowledge = await build_filtered_kb_block(
-            vacancy_summary, _get_llm_client(), max_sections=6, limit_chars=12000,
+        knowledge = snapshot.knowledge if current_candidate() else await build_filtered_kb_block(
+            vacancy_summary, client, max_sections=6, limit_chars=12000,
         )
     except Exception as exc:
-        log.warning("filtered KB selection failed, fallback to full: %s", exc)
-        knowledge = build_knowledge_base_block(limit_chars=12000)
+        log.warning("filtered KB selection failed, fallback to captured: %s", type(exc).__name__)
+        knowledge = snapshot.knowledge
 
     vacancy_block = ""
     if vacancy.get("title") or vacancy.get("company"):
@@ -333,9 +337,9 @@ async def generate_answer(
 
 Тип вопроса: {question_kind}. Если это похоже на автоматический HR-скрининг, отвечай так же конкретно, как AI-помощнику, но без упоминания, что собеседник является ботом. На вопрос о зарплатных ожиданиях отвечай по блоку зарплатных ожиданий ниже.
 
-Опирайся на канонический профиль, структурированные факты, резюме и контекст вакансии. Если факт отсутствует — отвечай ЧЕСТНО: «нет такого опыта», «не работал с этим», «изучаю сейчас». Не выдумывай инструменты/языки/опыт.
+Опирайся на канонический профиль, структурированные факты и резюме. Контекст вакансии не является фактом о кандидате. Если данных нет — status=skip для ручного уточнения. Отсутствие данных НЕ означает «нет опыта», «не работал» или «изучаю». Не выдумывай инструменты/языки/опыт.
 
-Если AI спрашивает количество лет опыта в конкретной технологии — назови конкретно или скажи «не работал». QA-опыт кандидата — около 1 года практического тестирования, не путай с общим инженерным.
+Если AI спрашивает количество лет опыта в конкретной технологии — назови только явно подтверждённое значение или верни skip.
 
 Длина ответа: 2-4 предложения, конкретика. Без приветствий («Здравствуйте» — не нужно, мы уже в диалоге). Без шаблонных оборотов «активно», «успешно», «эффективно», «глубокий опыт».
 
@@ -359,11 +363,9 @@ async def generate_answer(
 - status=skip только если совсем нельзя ответить (например AI предлагает конкретную дату собеседования или просит принять оффер — это требует решения человека).
 - НЕ начинай ответ с приветствия.
 - НЕ объясняй что ты ассистент.
-- Отвечай как Eugene в первом лице."""
+- Отвечай в первом лице без предположений об имени или профессии кандидата."""
 
-    model = (getattr(config, "HH_CHAT_RESPONDER_MODEL", "") or "").strip() or config.LLM_MODEL
     try:
-        client = _get_llm_client()
         resp = await client.chat.completions.create(
             model=model,
             messages=[
@@ -373,22 +375,29 @@ async def generate_answer(
             temperature=0.55 if alternative else 0.3,
             max_tokens=600,
         )
+        if resp.choices[0].finish_reason != 'stop':
+            return None
         raw = (resp.choices[0].message.content or "").strip()
         parsed = parse_llm_json(raw)
     except Exception as exc:
-        log.warning("LLM chat-answer failed: %s", exc)
+        log.warning("LLM chat-answer failed: %s", type(exc).__name__)
         return None
 
-    if parsed.get("status") != "answer":
+    if not isinstance(parsed, dict) or parsed.get("status") != "answer":
         return None
-    answer = str(parsed.get("answer", "")).strip()
+    answer = parsed.get("answer", "")
+    if not isinstance(answer, str):
+        return None
+    answer = answer.strip()
     if answer and _looks_like_screening_form_artifact(answer) and not _is_screening_form_question(question):
         log.warning(
             "LLM chat-answer dropped form artifact for non-form question: %s",
             question[:160],
         )
         return None
-    return answer or None
+    supported = await verify_answers([{'index': 0, 'question': question, 'answer': answer}],
+                                     snapshot.sources, client, model, constraints=snapshot.fact_constraints) if answer else set()
+    return answer if 0 in supported else None
 
 
 # ── Send ────────────────────────────────────────────────────────────────────
@@ -1032,6 +1041,10 @@ async def _execute_reply(
         return detail
 
 
+from answer_grounding import candidate_operation
+
+
+@candidate_operation(client_factory=lambda: _get_llm_client())
 async def process_one(
     hh_client,
     chat_id: str,
@@ -1087,7 +1100,8 @@ async def process_one(
         from hh_client import _load_resume_text
     except Exception:
         _load_resume_text = lambda: ""
-    resume_text = _load_resume_text()
+    from answer_grounding import current_candidate
+    resume_text = current_candidate().resume
     vacancy = data.get("vacancy", {})
     async def notify_result(detail):
         detail.update(suspicious=is_approved_suspicious, manual_any=is_manual_any,
@@ -1122,6 +1136,7 @@ async def process_one(
 
 # ── Main process loop ──────────────────────────────────────────────────────
 
+@candidate_operation(client_factory=lambda: _get_llm_client())
 async def process_all(
     hh_client,
     dry_run: bool | None = None,
@@ -1191,7 +1206,8 @@ async def process_all(
         from hh_client import _load_resume_text  # late import
     except Exception:
         _load_resume_text = lambda: ""
-    resume_text = _load_resume_text()
+    from answer_grounding import current_candidate
+    resume_text = current_candidate().resume
 
     try:
         import notifier

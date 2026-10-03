@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import hh_client
 from hh import forms
+from cover_grounding import split_sentences
 
 
 def test_legacy_question_helpers_are_reexported():
@@ -204,7 +205,12 @@ def _unexpected_dependency(*args, **kwargs):
     raise AssertionError("stable answer must not call external dependencies")
 
 
-def test_answer_question_with_llm_uses_stable_library_before_llm():
+def test_answer_question_library_requires_independent_evidence_check():
+    from tests.test_answer_grounding_regressions import Responses
+    source = forms.answer_question_from_library('Какой у вас опыт REST API, Postman и JSON?', max_chars=140)
+    llm = Responses({'verdict': 'supported', 'answers': [{'index': 0, 'supported': True,
+        'sentences': [{'index': i, 'supported': True, 'evidence': [{'source': 'profile_note', 'quote': sentence}]}
+                      for i, sentence in enumerate(split_sentences(source))]}]})
     answer = asyncio.run(
         forms.answer_question_with_llm(
             {
@@ -214,12 +220,12 @@ def test_answer_question_with_llm_uses_stable_library_before_llm():
             "Резюме QA",
             settings=AnswerSettings,
             logger=hh_client.log,
-            get_question_answer_client=_unexpected_dependency,
-            build_salary_rule_block=_unexpected_dependency,
-            build_facts_block=_unexpected_dependency,
-            build_profile_note_block=_unexpected_dependency,
+            get_question_answer_client=lambda: llm,
+            build_salary_rule_block=lambda: '',
+            build_facts_block=lambda: '',
+            build_profile_note_block=lambda: source,
             build_filtered_kb_block=_unexpected_dependency,
-            build_knowledge_base_block=_unexpected_dependency,
+            build_knowledge_base_block=lambda **k: '',
             parse_llm_json=_unexpected_dependency,
             repair_llm_json=_unexpected_dependency,
         )
@@ -228,6 +234,7 @@ def test_answer_question_with_llm_uses_stable_library_before_llm():
     assert answer is not None
     assert "REST API" in answer
     assert len(answer) <= AnswerSettings.HH_AUTO_ANSWER_MAX_CHARS
+    assert len(llm.calls) == 1 and llm.calls[0]['temperature'] == 0
 
 
 def test_legacy_text_answer_wrapper_forwards_patchable_dependencies(monkeypatch):
@@ -280,7 +287,15 @@ async def _empty_filtered_block(*args, **kwargs):
 
 
 def test_answer_choice_with_llm_normalizes_selected_option():
-    llm = FakeChoiceClient()
+    from tests.test_answer_grounding_regressions import Responses
+    class VerifiedChoice(Responses):
+        async def create(self, **kwargs):
+            self.payload = ({'verdict': 'supported', 'answers': [{'index': 0, 'supported': True,
+                'sentences': [{'index': 0, 'supported': True,
+                    'evidence': [{'source': 'resume', 'quote': 'Готов работать удалённо'}]}]}]}
+                if 'response_format' in kwargs else {'status': 'answer', 'selected': [{'index': 1}]})
+            return await super().create(**kwargs)
+    llm = VerifiedChoice({})
     field = {
         "control": "radio",
         "question_text": "Готовы работать удалённо?",
@@ -293,7 +308,7 @@ def test_answer_choice_with_llm_normalizes_selected_option():
     result = asyncio.run(
         forms.answer_choice_with_llm(
             field,
-            "Резюме QA",
+            "Готов работать удалённо",
             settings=AnswerSettings,
             logger=hh_client.log,
             get_question_answer_client=lambda: llm,
@@ -312,7 +327,8 @@ def test_answer_choice_with_llm_normalizes_selected_option():
         "is_skip": False,
         "best_guess": False,
     }
-    assert llm.completions.calls[0]["model"] == AnswerSettings.LLM_MODEL
+    assert llm.calls[0]["model"] == AnswerSettings.LLM_MODEL
+    assert len(llm.calls) == 2
 
 
 def test_legacy_choice_answer_wrapper_forwards_patchable_dependencies(monkeypatch):
@@ -374,6 +390,7 @@ def test_legacy_question_orchestration_forwards_patchable_dependencies(monkeypat
     assert asyncio.run(client._try_auto_answer_questions("QA vacancy"))["ok"] is True
     assert captured["session"] is client
     assert captured["vacancy_context"] == "QA vacancy"
-    assert captured["kwargs"]["settings"] is hh_client.config
-    assert captured["kwargs"]["load_resume_text"] is hh_client._load_resume_text
+    assert captured["kwargs"]["settings"] is not hh_client.config
+    assert captured["kwargs"]["settings"].LLM_MODEL == hh_client.config.LLM_MODEL
+    assert captured["kwargs"]["load_resume_text"]() == hh_client._load_resume_text()
     assert captured["kwargs"]["anti_bot_message"] is hh_client._anti_bot_message

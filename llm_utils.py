@@ -97,4 +97,7 @@ async def repair_llm_json(
         temperature=0,
         max_tokens=max_tokens,
     )
-    return parse_llm_json(response.choices[0].message.content or "")
+    choice = response.choices[0]
+    if choice.finish_reason != 'stop':
+        raise ValueError('Incomplete JSON repair response')
+    return parse_llm_json(choice.message.content or "")

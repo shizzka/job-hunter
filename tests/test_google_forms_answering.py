@@ -59,7 +59,7 @@ def test_generate_form_answers_uses_injected_client_and_parser(monkeypatch):
     import hh_client
     import prompt_blocks
 
-    monkeypatch.setattr(hh_client, "_load_resume_text", lambda: "QA resume")
+    monkeypatch.setattr(hh_client, "_load_resume_text", lambda: "Три года в QA")
     monkeypatch.setattr(prompt_blocks, "build_profile_note_block", lambda: "profile\n")
     monkeypatch.setattr(prompt_blocks, "build_contact_block", lambda: "")
     monkeypatch.setattr(prompt_blocks, "build_facts_block", lambda: "facts\n")
@@ -76,11 +76,17 @@ def test_generate_form_answers_uses_injected_client_and_parser(monkeypatch):
     class FakeCompletions:
         def __init__(self):
             self.request = {}
+            self.requests = []
 
         async def create(self, **kwargs):
-            self.request = kwargs
-            message = SimpleNamespace(content='{"answers":[]}')
-            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+            self.requests.append(kwargs)
+            if 'response_format' in kwargs:
+                content = '{"verdict":"supported","answers":[{"index":0,"supported":true,"sentences":[{"index":0,"supported":true,"evidence":[{"source":"resume","quote":"Три года в QA"}]}]}]}'
+            else:
+                self.request = kwargs
+                content = '{"answers":[]}'
+            message = SimpleNamespace(content=content)
+            return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason='stop')])
 
     completions = FakeCompletions()
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
@@ -106,7 +112,8 @@ def test_generate_form_answers_uses_injected_client_and_parser(monkeypatch):
         )
     )
 
-    assert answers == parsed["answers"]
+    assert answers == [{**parsed['answers'][0], 'source': 'grounded_model'}]
+    assert len(completions.requests) == 2
     assert completions.request["model"] == "test-model"
     assert completions.request["temperature"] == 0.2
     assert "QA engineer" in completions.request["messages"][1]["content"]

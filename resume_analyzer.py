@@ -110,20 +110,18 @@ async def analyze_resume(
     if not level:
         level = "определи по содержанию резюме"
 
-    system_prompt, user_template = _load_prompt()
-
-    user_prompt = user_template.format(
-        resume=resume_text,
-        vacancy=vacancy_text or "(не указана — адаптируй под наиболее очевидную целевую роль из резюме)",
-        market=market,
-        level=level,
-    )
-
-    client = _get_client()
-
     try:
+        model = config.LLM_MODEL
+        system_prompt, user_template = _load_prompt()
+        user_prompt = user_template.format(
+            resume=resume_text,
+            vacancy=vacancy_text or "(не указана — адаптируй под наиболее очевидную целевую роль из резюме)",
+            market=market,
+            level=level,
+        )
+        client = _get_client()
         response = await client.chat.completions.create(
-            model=config.LLM_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -131,10 +129,16 @@ async def analyze_resume(
             temperature=0.4,
             max_tokens=8000,
         )
-        return response.choices[0].message.content or "(пустой ответ LLM)"
+        choice = response.choices[0]
+        if choice.finish_reason != "stop":
+            raise ValueError("Incomplete resume analysis")
+        content = choice.message.content
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("Empty resume analysis")
+        return content
     except Exception as e:
-        log.error("Resume analysis failed: %s", e)
-        return f"Ошибка анализа: {e}"
+        log.error("Resume analysis failed: %s", type(e).__name__)
+        return f"Ошибка анализа ({type(e).__name__}). Результат не сохранён как успешный анализ."
 
 
 async def analyze_resume_file(
@@ -147,7 +151,11 @@ async def analyze_resume_file(
     if not os.path.isfile(resume_path):
         return f"Файл не найден: {resume_path}"
 
-    with open(resume_path, encoding="utf-8") as f:
-        resume_text = f.read()
+    try:
+        with open(resume_path, encoding="utf-8") as f:
+            resume_text = f.read()
+    except (OSError, UnicodeError) as exc:
+        log.error("Resume file read failed: %s", type(exc).__name__)
+        return f"Ошибка анализа: не удалось прочитать файл ({type(exc).__name__})."
 
     return await analyze_resume(resume_text, vacancy_text, market, level)

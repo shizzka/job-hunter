@@ -118,6 +118,7 @@ class _FakeMessage:
 class _FakeChoice:
     def __init__(self, content: str):
         self.message = _FakeMessage(content)
+        self.finish_reason = 'stop'
 
 
 class _FakeResponse:

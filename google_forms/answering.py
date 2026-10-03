@@ -92,10 +92,10 @@ def _contact_override_answer(idx: int, value: str) -> dict:
     }
 
 
-def _apply_contact_overrides(questions: list[dict], answers: list[dict]) -> list[dict]:
+def _apply_contact_overrides(questions: list[dict], answers: list[dict], *, contacts=None) -> list[dict]:
     from prompt_blocks import get_candidate_contacts
 
-    contacts = get_candidate_contacts()
+    contacts = get_candidate_contacts() if contacts is None else contacts
     email = str(contacts.get("email") or "").strip()
     phone = str(contacts.get("phone") or "").strip()
     telegram = str(contacts.get("telegram") or "").strip()
@@ -414,12 +414,17 @@ def _avoid_bare_other_options(questions: list[dict], answers: list[dict]) -> lis
     return ordered
 
 
-def _prepare_form_answers(questions: list[dict], answers: list[dict]) -> list[dict]:
+def _prepare_form_answers(questions: list[dict], answers: list[dict], *, contacts=None, confirmed=None) -> list[dict]:
+    from answer_grounding import current_candidate
+    snapshot = current_candidate()
+    if snapshot is not None:
+        contacts = snapshot.contacts if contacts is None else contacts
+        confirmed = snapshot.confirmed if confirmed is None else confirmed
     answers = _normalize_choice_answer_values(questions, answers)
-    answers = _apply_contact_overrides(questions, answers)
+    answers = _apply_contact_overrides(questions, answers, contacts=contacts)
     # Exact personal facts should not depend on LLM paraphrasing.
     from facts import load_facts
-    confirmed = load_facts().get("confirmed", {})
+    confirmed = load_facts().get("confirmed", {}) if confirmed is None else confirmed
     by_index = _answers_by_index(answers)
     for q in questions:
         if q.get("type") != "text":
@@ -464,25 +469,27 @@ async def generate_form_answers(
     )
 
     resume_text = _load_resume_text()
-    profile_note = build_profile_note_block()
-    contacts = build_contact_block()
-    facts = build_facts_block()
-    salary = build_salary_rule_block()
+    from answer_grounding import capture_candidate, current_candidate, current_answer_client, verify_answers
+    snapshot = current_candidate() or capture_candidate(resume_text)
+    resume_text = snapshot.resume
+    profile_note, facts, salary = snapshot.profile_note, snapshot.facts, snapshot.salary
+    contacts = json.dumps(snapshot.contacts, ensure_ascii=False)
     vacancy = vacancy or {}
     vacancy_summary = f"Должность: {vacancy.get('title','')}\nКомпания: {vacancy.get('company','')}\n"
     model = (
-        getattr(config, "HH_QUESTION_MODEL", "")
-        or getattr(config, "HH_CHAT_RESPONDER_MODEL", "")
+        snapshot.models['HH_QUESTION_MODEL']
+        or snapshot.models['HH_CHAT_RESPONDER_MODEL']
         or ""
-    ).strip() or config.LLM_MODEL
-    client = client_factory()
+    ).strip() or snapshot.models['LLM_MODEL']
+    client = current_answer_client() or client_factory()
     try:
-        knowledge = await build_filtered_kb_block(vacancy_summary, client, max_sections=5, limit_chars=8000)
+        knowledge = snapshot.knowledge[:8000] if current_candidate() else await build_filtered_kb_block(
+            vacancy_summary, client, max_sections=5, limit_chars=8000)
     except Exception as exc:
-        logger.warning("google form KB filter failed, fallback to full: %s", exc)
-        knowledge = build_knowledge_base_block(limit_chars=8000)
+        logger.warning("google form KB filter failed, fallback to captured: %s", type(exc).__name__)
+        knowledge = snapshot.knowledge[:8000]
 
-    prompt = f"""Ты заполняешь Google Form от лица кандидата Евгения для отклика на работу.
+    prompt = f"""Ты заполняешь Google Form от лица кандидата для отклика на работу.
 
 Отвечай честно по резюме, фактам и базе знаний. Не выдумывай опыт, инструменты, образование, гражданство, уровень английского или даты. Если опыта нет — так и напиши. Если вопрос про зарплату — используй блок зарплатных ожиданий и правило, что итоговая зарплата зависит от загрузки, ответственности, графика и условий проекта. Если вопрос просит Telegram или ссылку на резюме, используй контактные данные кандидата ниже.
 
@@ -513,11 +520,59 @@ async def generate_form_answers(
             temperature=0.2,
             max_tokens=4000,
         )
+        if resp.choices[0].finish_reason != 'stop':
+            return _prepare_form_answers(questions, [], contacts=snapshot.contacts, confirmed=snapshot.confirmed)
         parsed = json_parser((resp.choices[0].message.content or "").strip())
     except Exception as exc:
-        logger.warning("google form answer generation failed: %s", exc)
+        logger.warning("google form answer generation failed: %s", type(exc).__name__)
+        return []
+    if not isinstance(parsed, dict):
         return []
     answers = parsed.get("answers") or []
     if not isinstance(answers, list):
         return []
-    return _prepare_form_answers(questions, answers)
+    # The native generation path never trusts model confidence or forged source
+    # markers. Compatibility preparation helpers remain explicit local APIs.
+    question_map = {q['index']: q for q in questions if isinstance(q, dict) and type(q.get('index')) is int}
+    if len(question_map) != len(questions):
+        return []
+    checked, seen, drafts = [], set(), []
+    for answer in answers:
+        if not isinstance(answer, dict) or type(answer.get('index')) is not int:
+            return []
+        index = answer['index']
+        if index not in question_map or index in seen:
+            return []
+        seen.add(index)
+        text, options = answer.get('answer', ''), answer.get('options', [])
+        if not isinstance(text, str) or not isinstance(options, list) or any(not isinstance(o, str) for o in options):
+            return []
+        item = {'index': index, 'answer': text, 'options': options,
+                'skip': answer.get('skip') is not False, 'confidence': 'low'}
+        qtype = question_map[index].get('type') or 'text'
+        if qtype == 'text':
+            if options:
+                return []  # Text fields fill answer, never verify unrelated options.
+        elif qtype in {'radio', 'checkbox', 'select'}:
+            selected = list(options) if options else ([text] if text.strip() else [])
+            if text.strip() and options and text not in options:
+                return []  # Do not append unverified text during compatibility preparation.
+            if (len(selected) != len(set(selected)) or
+                    (qtype != 'checkbox' and len(selected) > 1) or
+                    any(value not in (question_map[index].get('options') or []) for value in selected)):
+                return []  # Exact actual labels only: no substring expansion.
+            item.update(answer=selected[0] if selected else '', options=selected)
+        else:
+            return []
+        checked.append(item)
+        if not item['skip'] and (item['answer'].strip() or item['options']):
+            drafts.append({'index': index, 'question': question_map[index].get('question', ''),
+                           'answer': '\n'.join(item['options']) if item['options'] else item['answer']})
+    supported = await verify_answers(drafts, snapshot.sources, client, model,
+                                     constraints=snapshot.fact_constraints) if drafts else set()
+    for item in checked:
+        if item['index'] in supported:
+            item.update(skip=False, confidence='high', source='grounded_model')
+        else:
+            item.update(answer='', options=[], skip=True, confidence='low', source='needs_confirmation')
+    return _prepare_form_answers(questions, checked, contacts=snapshot.contacts, confirmed=snapshot.confirmed)

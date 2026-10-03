@@ -2588,14 +2588,17 @@ async def main():
             print(f"Анализирую резюме: {resume_path}")
             print(f"Модель: {config.LLM_MODEL}")
             print("Это может занять 30-60 секунд...\n")
-            result_text = await resume_analyzer.analyze_resume_file(resume_path)
+            from state_store.resume_analysis import AnalysisPublication
+            source = Path(resume_path)
+            analysis_path = str(source.with_name(source.stem + '_analysis.md')) if source.suffix == '.md' else resume_path + '.analysis.md'
+            publication = AnalysisPublication(resume_path, analysis_path)
+            result_text = await resume_analyzer.analyze_resume(publication.original_resume.decode('utf-8'))
             print(result_text)
             # Сохраняем анализ рядом с резюме
-            analysis_path = resume_path.replace(".md", "_analysis.md")
-            if analysis_path == resume_path:
-                analysis_path = resume_path + ".analysis.md"
-            atomic_write_text(analysis_path, result_text)
-            print(f"\n📄 Анализ сохранён: {analysis_path}")
+            if publication.publish(result_text):
+                print(f"\n📄 Анализ сохранён: {analysis_path}")
+            else:
+                print('\n❌ Анализ не завершён; предыдущий результат сохранён.')
         elif args.dry_run:
             result = await do_search(dry_run=True)
             print(f"\n🔍 [DRY RUN] Найдено: {result['found']} | Подходящих: {result['applied']} | Отфильтровано: {result['skipped']}")

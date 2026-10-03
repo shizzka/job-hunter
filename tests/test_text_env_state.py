@@ -6,6 +6,7 @@ import os
 import stat
 import threading
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -104,7 +105,7 @@ def _cli_analysis(tmp_path, monkeypatch, filename="resume.md"):
     monkeypatch.setattr(agent, "_apply_source_selection", lambda *args: None)
     for name in ("close_office_session", "close_notify_session", "close_llm_client"):
         monkeypatch.setattr(agent, name, AsyncMock())
-    monkeypatch.setattr(resume_analyzer, "analyze_resume_file", AsyncMock(return_value="Synthetic analysis\n"))
+    monkeypatch.setattr(resume_analyzer, "analyze_resume", AsyncMock(return_value="Synthetic analysis\n"))
     return target
 
 
@@ -153,6 +154,33 @@ def test_wizard_creates_private_env_resume_and_analysis(tmp_path, monkeypatch):
         assert stat.S_IMODE((directory / name).stat().st_mode) == 0o600
     assert (directory / "resume.md").read_text() == "Synthetic resume\n"
     assert (directory / "resume_analysis.md").read_text() == "Synthetic analysis\n"
+
+
+@pytest.mark.parametrize('entrypoint', ['cli', 'wizard'])
+def test_resume_analysis_uses_exact_captured_publication_bytes(tmp_path, monkeypatch, entrypoint):
+    from state_store.resume_analysis import AnalysisPublication
+    if entrypoint == 'cli':
+        resume = _cli_analysis(tmp_path, monkeypatch)
+    else:
+        directory = _wizard(tmp_path, monkeypatch, analysis=True)
+        resume = directory / 'resume.md'
+    original_init = AnalysisPublication.__init__
+    def capture_new_source(self, source, output):
+        # For wizard, input can be replaced after its local text was saved.
+        Path(source).write_text('Current source at publication capture\n')
+        original_init(self, source, output)
+    monkeypatch.setattr(AnalysisPublication, '__init__', capture_new_source)
+    analyzed = []
+    async def analyze(text):
+        analyzed.append(text)
+        return 'Synthetic current analysis\n'
+    monkeypatch.setattr(resume_analyzer, 'analyze_resume', analyze)
+    if entrypoint == 'cli':
+        asyncio.run(agent.main())
+    else:
+        setup_profile.run_wizard()
+    assert analyzed == ['Current source at publication capture\n']
+    assert resume.read_text() == analyzed[0]
 
 
 def test_wizard_refuses_profile_created_while_prompting(tmp_path, monkeypatch):

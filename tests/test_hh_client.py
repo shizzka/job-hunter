@@ -615,6 +615,8 @@ class FakeAutoAnswerQuestionPage(FakeQuestionResponsePage):
         if "codex:auto-question-fill" in script:
             self.filled_answer = arg[0]["answer"]
             return {"filled": len(arg), "errors": []}
+        if "codex:auto-question-verify" in script:
+            return len(arg) == 1 and self.filled_answer == arg[0].get('answer')
         if "form.requestSubmit" in script:
             self.stage = "success"
             return True
@@ -649,6 +651,8 @@ class FakeManyAutoAnswerQuestionPage(FakeAutoAnswerQuestionPage):
         if "codex:auto-question-fill" in script:
             self.filled_answers = list(arg)
             return {"filled": len(arg), "errors": []}
+        if "codex:auto-question-verify" in script:
+            return self.filled_answers == arg
         return await super().evaluate(script, arg=arg)
 
 
