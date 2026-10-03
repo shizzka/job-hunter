@@ -41,7 +41,7 @@ from telegram_app.auth_bridge import (
     clean_hh_auth_code_text as _clean_hh_auth_code_text,
     looks_like_standalone_hh_auth_code as _looks_like_standalone_hh_auth_code,
 )
-from telegram_app.api import TelegramAPIClient
+from telegram_app.api import TelegramAPIClient, TelegramAPIError, telegram_error_summary
 from telegram_app.callbacks import TelegramCallbackRouter
 from telegram_app.forms import TelegramFormEditor
 from telegram_app.subprocesses import (
@@ -234,6 +234,8 @@ class TelegramBot(
         self.drop_pending = drop_pending
         self.runtime_paths = runtime_paths or _telegram_runtime_paths()
         self._stop_event = asyncio.Event()
+        self._poll_health = {"status": "starting"}
+        self._last_poll_runtime_at: float | None = None
         self._llm_test_next_at = 0.0
         self._llm_test_lock = asyncio.Lock()
 
@@ -268,19 +270,20 @@ class TelegramBot(
                 except Exception as exc:
                     if self._stop_event.is_set():
                         break
-                    log.error("Failed to fetch updates: %s", exc)
-                    self._write_runtime("bot_poll_error", f"Ошибка опроса: {exc}", "error")
+                    self._record_poll_result(exc)
                     await asyncio.sleep(5)
                     continue
 
+                self._record_poll_result()
                 for update in updates:
                     await self._handle_update(update)
                 await self._maybe_send_daily_summary()
                 try:
                     await self._maybe_send_health_alert()
                 except Exception as exc:
-                    log.warning("health check failed: %s", exc)
+                    log.warning("health check failed: %s", telegram_error_summary(exc))
         finally:
+            self._poll_health = {**self._poll_health, "status": "stopped"}
             self._write_runtime("bot_stop", "Бот Telegram остановлен", "offline")
             runtime_control.unregister_current_process(self.runtime_paths.bot_pid_file)
             await self._close_sessions()
@@ -316,8 +319,50 @@ class TelegramBot(
                 "pid": os.getpid(),
                 "profile": self.profile_name,
                 "updated_at": datetime.now().isoformat(timespec="seconds"),
+                "polling": dict(self._poll_health),
             },
         )
+
+    def _record_poll_result(self, error: Exception | None = None) -> None:
+        """Publish bounded diagnostic heartbeats, never raw transport payloads.
+
+        A diagnostic write failure must not discard updates already fetched.
+        The successful-poll throttle is monotonic; recovery bypasses it.
+        """
+        if self._stop_event.is_set():
+            return
+        now = time.monotonic()
+        previous = self._poll_health
+        if error is None and previous["status"] == "ok" and self._last_poll_runtime_at is not None:
+            if now - self._last_poll_runtime_at < 30:
+                return
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        if error is None:
+            self._poll_health = {**previous, "status": "ok", "last_success_at": timestamp}
+        else:
+            error_type = type(error).__name__
+            api_status = error.status if isinstance(error, TelegramAPIError) else None
+            self._poll_health = {**previous, "status": "error", "last_error_at": timestamp,
+                                 "last_error_type": error_type, "last_error_status": api_status}
+            summary = telegram_error_summary(error)
+            log.error("Failed to fetch updates: %s", summary)
+        try:
+            if error is None:
+                # Preserve busy status while an agent command is still active.
+                self._sync_active_runtime()
+            else:
+                self._write_runtime("bot_poll_error", f"Ошибка опроса: {summary}", "error")
+        except Exception as exc:
+            if error is None:
+                self._poll_health = previous
+            # An observed network failure remains in memory even if its
+            # diagnostic publication failed (possibly after replacement).
+            # The next recovery must bypass the successful-heartbeat throttle.
+            log.warning("Telegram polling diagnostic write failed: %s", type(exc).__name__)
+            return
+        self._last_poll_runtime_at = now
+        if error is None and previous["status"] == "error":
+            log.info("Telegram polling recovered")
 
     def _append_chat_ai_audit_event(self, event: str, **payload: object) -> None:
         path = self.runtime_paths.bot_debug_log_file
@@ -1223,7 +1268,7 @@ class TelegramBot(
             username = str((me or {}).get("username") or "bot") if isinstance(me, dict) else "bot"
             checks.append({"name": "Telegram API", "ok": True, "detail": f"getMe ok: @{username}"})
         except Exception as exc:
-            checks.append({"name": "Telegram API", "ok": False, "detail": str(exc)[:160]})
+            checks.append({"name": "Telegram API", "ok": False, "detail": telegram_error_summary(exc)})
 
         recipients = self._profile_recipient_ids(profile_name)
         checks.append({

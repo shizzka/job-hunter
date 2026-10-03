@@ -32,6 +32,14 @@ class TelegramAPIError(RuntimeError):
         super().__init__(f"{method} failed: {self.status} {self.payload}")
 
 
+def telegram_error_summary(error: BaseException) -> str:
+    """Safe diagnostics: request URLs and response payloads may contain secrets."""
+    kind = type(error).__name__
+    if isinstance(error, TelegramAPIError):
+        return f"{kind} (HTTP {error.status})"
+    return kind
+
+
 class TelegramAPIClient:
     """Own Telegram HTTP sessions, proxy fallback, and API serialization."""
 
@@ -116,7 +124,7 @@ class TelegramAPIClient:
                 raise
             self._api_log.warning(
                 "Telegram proxy failed for bot, retrying direct: %s",
-                exc,
+                telegram_error_summary(exc),
             )
             self._mark_proxy_transport_failure()
             return await self._call_with_rate_limit_retry(
@@ -161,7 +169,7 @@ class TelegramAPIClient:
         except _TRANSPORT_ERRORS as exc:
             if not use_proxy:
                 raise
-            self._api_log.warning("Telegram proxy failed for file download, retrying direct: %s", exc)
+            self._api_log.warning("Telegram proxy failed for file download, retrying direct: %s", telegram_error_summary(exc))
             self._mark_proxy_transport_failure()
             return await self._call_with_rate_limit_retry(
                 lambda: self._download_file_once(file_path, use_proxy=False)
@@ -201,7 +209,7 @@ class TelegramAPIClient:
                 raise
             self._api_log.warning(
                 "Telegram proxy failed for bot document upload, retrying direct: %s",
-                exc,
+                telegram_error_summary(exc),
             )
             self._mark_proxy_transport_failure()
             return await self._call_with_rate_limit_retry(
