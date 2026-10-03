@@ -41,12 +41,10 @@ def write_json_file(path: str, payload: dict) -> None:
 
 
 def read_pid_file(path: str) -> int | None:
-    if not os.path.exists(path):
-        return None
     try:
         with open(path, encoding="utf-8") as f:
             raw = f.read().strip()
-    except OSError:
+    except FileNotFoundError:
         return None
     if not raw.isdigit():
         return None
@@ -99,7 +97,23 @@ def _cmdline_matches(cmdline: str, expected_tokens: tuple[str, ...] | list[str] 
     return all(token in cmdline for token in expected_tokens)
 
 
+def _lifecycle_lock(pid_file: str):
+    # Separate from the PID writer lock: shutdown cleanup must remain usable
+    # while another controller waits for that process to exit.
+    return file_lock(f"{pid_file}.lifecycle")
+
+
 def describe_process(
+    pid_file: str,
+    *,
+    expected_tokens: tuple[str, ...] | list[str] | None = None,
+    fallback_pid: int | None = None,
+) -> dict:
+    with _lifecycle_lock(pid_file):
+        return _describe_process_unlocked(pid_file, expected_tokens=expected_tokens, fallback_pid=fallback_pid)
+
+
+def _describe_process_unlocked(
     pid_file: str,
     *,
     expected_tokens: tuple[str, ...] | list[str] | None = None,
@@ -143,16 +157,16 @@ def register_current_process(
     retry_interval_sec: float = 1.0,
 ) -> int:
     pid = os.getpid()
-    deadline = time.time() + max(0.0, float(wait_timeout_sec))
+    deadline = time.monotonic() + max(0.0, float(wait_timeout_sec))
     while True:
-        current = describe_process(pid_file, expected_tokens=expected_tokens)
-        if not (current["running"] and current["pid"] != pid):
-            break
-        if time.time() >= deadline:
+        with _lifecycle_lock(pid_file):
+            current = _describe_process_unlocked(pid_file, expected_tokens=expected_tokens)
+            if not (current["running"] and current["pid"] != pid):
+                write_pid_file(pid_file, pid)
+                return pid
+        if time.monotonic() >= deadline:
             raise RuntimeError(f"Process already running: pid={current['pid']}")
         time.sleep(max(0.1, float(retry_interval_sec)))
-    write_pid_file(pid_file, pid)
-    return pid
 
 
 def unregister_current_process(pid_file: str) -> None:
@@ -288,24 +302,41 @@ def start_background_process(
     cwd: str | None = None,
     start_delay: float = 0.8,
 ) -> dict:
-    current = describe_process(pid_file, expected_tokens=expected_tokens, fallback_pid=fallback_pid)
-    if current["running"]:
-        return {"ok": False, "already_running": True, "pid": current["pid"], "log_file": log_file}
+    with _lifecycle_lock(pid_file):
+        current = _describe_process_unlocked(pid_file, expected_tokens=expected_tokens, fallback_pid=fallback_pid)
+        if current["running"]:
+            return {"ok": False, "already_running": True, "pid": current["pid"], "log_file": log_file}
 
-    _ensure_parent(log_file)
-    with open(log_file, "ab") as log:
-        child_env = os.environ.copy()
-        child_env["JOB_HUNTER_BACKGROUND"] = "1"
-        proc = subprocess.Popen(
-            argv,
-            cwd=cwd or str(PROJECT_ROOT),
-            stdout=log,
-            stderr=log,
-            env=child_env,
-            start_new_session=True,
-        )
+        _ensure_parent(log_file)
+        with open(log_file, "ab") as log:
+            child_env = os.environ.copy()
+            child_env["JOB_HUNTER_BACKGROUND"] = "1"
+            proc = subprocess.Popen(
+                argv,
+                cwd=cwd or str(PROJECT_ROOT),
+                stdout=log,
+                stderr=log,
+                env=child_env,
+                start_new_session=True,
+            )
+        try:
+            write_pid_file(pid_file, proc.pid)
+        except Exception:
+            # Only this just-created child is in scope; do not leave a worker
+            # unregistered if PID publication fails.
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+            except ProcessLookupError:
+                pass
+            raise
 
-    write_pid_file(pid_file, proc.pid)
+    # The child can now register itself; never hold lifecycle while waiting
+    # for startup or it would be unable to acquire the registration lock.
     time.sleep(max(0.0, start_delay))
     current = describe_process(pid_file, expected_tokens=expected_tokens, fallback_pid=proc.pid)
     return {
@@ -323,7 +354,18 @@ def stop_process(
     fallback_pid: int | None = None,
     timeout: float = 15.0,
 ) -> dict:
-    current = describe_process(pid_file, expected_tokens=expected_tokens, fallback_pid=fallback_pid)
+    with _lifecycle_lock(pid_file):
+        return _stop_process_unlocked(pid_file, expected_tokens=expected_tokens, fallback_pid=fallback_pid, timeout=timeout)
+
+
+def _stop_process_unlocked(
+    pid_file: str,
+    *,
+    expected_tokens: tuple[str, ...] | list[str] | None = None,
+    fallback_pid: int | None = None,
+    timeout: float = 15.0,
+) -> dict:
+    current = _describe_process_unlocked(pid_file, expected_tokens=expected_tokens, fallback_pid=fallback_pid)
     pid = current["pid"]
     if not pid:
         return {"ok": True, "already_stopped": True, "pid": 0}
@@ -349,8 +391,10 @@ def stop_process(
     except ProcessLookupError:
         pass
     time.sleep(0.2)
-    remove_pid_file(pid_file, pid)
-    return {"ok": not is_pid_running(pid), "stopped": True, "signal": "SIGKILL", "pid": pid}
+    stopped = not is_pid_running(pid)
+    if stopped:
+        remove_pid_file(pid_file, pid)
+    return {"ok": stopped, "stopped": stopped, "signal": "SIGKILL", "pid": pid}
 
 
 async def run_command_capture(

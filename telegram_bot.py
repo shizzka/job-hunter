@@ -14,6 +14,7 @@ import signal
 import sys
 import time
 import traceback
+from collections.abc import Callable
 from datetime import datetime
 
 import analytics
@@ -32,6 +33,8 @@ import telegram_access
 import telegram_clients
 import telegram_resume_limits
 from runtime_context import TelegramRuntimePaths
+from state_store.json_store import JsonStore
+from state_store.bot_state import BotStateStore
 from telegram_app.auth_bridge import (
     TelegramHHAuthBridge,
     can_answer_hh_auth_prompt as _can_answer_hh_auth_prompt,
@@ -283,10 +286,25 @@ class TelegramBot(
             await self._close_sessions()
 
     def _load_state(self) -> dict:
-        return runtime_control.read_json_file(self.runtime_paths.bot_state_file) or {}
+        return BotStateStore(self.runtime_paths.bot_state_file).load()
 
     def _save_state(self, state: dict) -> None:
-        runtime_control.write_json_file(self.runtime_paths.bot_state_file, state)
+        """Explicit full replacement; application mutations use _update_state."""
+        BotStateStore(self.runtime_paths.bot_state_file).save(state)
+
+    def _update_state(self, mutator: Callable[[dict], dict | None]) -> dict:
+        return BotStateStore(self.runtime_paths.bot_state_file).update(mutator)
+
+    def _update_user_state(self, section: str, user_id: int, *, fields: dict | None = None, remove_keys: tuple = ()) -> dict:
+        def mutate(state):
+            entry = state.setdefault(section, {}).setdefault(str(user_id), {})
+            entry.update(fields or {})
+            for key in remove_keys:
+                entry.pop(key, None)
+            entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+        state = self._update_state(mutate)
+        return dict(state[section][str(user_id)])
 
     def _write_runtime(self, action: str, message: str, status: str) -> None:
         runtime_control.write_json_file(
@@ -471,12 +489,7 @@ class TelegramBot(
         return selected or principal_profile or default_profile
 
     def _set_selected_profile(self, user_id: int, profile_name: str) -> None:
-        state = self._load_state()
-        user_state = state.setdefault("user_state", {})
-        entry = user_state.setdefault(str(user_id), {})
-        entry["selected_profile"] = profile_name
-        entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
-        self._save_state(state)
+        self._update_user_state("user_state", user_id, fields={"selected_profile": profile_name})
 
     def _selected_menu(self, principal: dict) -> str:
         role = principal.get("role", ROLE_USER)
@@ -485,31 +498,20 @@ class TelegramBot(
         return _normalize_menu(role, selected or MENU_MAIN)
 
     def _set_selected_menu(self, user_id: int, menu: str) -> None:
-        state = self._load_state()
-        user_state = state.setdefault("user_state", {})
-        entry = user_state.setdefault(str(user_id), {})
-        entry["menu"] = menu
-        entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
-        self._save_state(state)
+        self._update_user_state("user_state", user_id, fields={"menu": menu})
 
     def _guest_state(self, user_id: int) -> dict:
         state = self._load_state()
         return dict((state.get("guest_state") or {}).get(str(user_id)) or {})
 
     def _set_guest_state(self, user_id: int, **fields: object) -> dict:
-        state = self._load_state()
-        guest_state = state.setdefault("guest_state", {})
-        entry = guest_state.setdefault(str(user_id), {})
-        entry.update(fields)
-        entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
-        self._save_state(state)
-        return dict(entry)
+        return self._update_user_state("guest_state", user_id, fields=fields)
 
     def _clear_guest_state(self, user_id: int) -> None:
-        state = self._load_state()
-        guest_state = state.setdefault("guest_state", {})
-        guest_state.pop(str(user_id), None)
-        self._save_state(state)
+        def mutate(state):
+            state.setdefault("guest_state", {}).pop(str(user_id), None)
+
+        self._update_state(mutate)
 
     def _menu_reply_markup(self, principal: dict, *, menu: str | None = None, profile_buttons: list[str] | None = None) -> dict:
         role = principal.get("role", ROLE_USER)
@@ -640,21 +642,10 @@ class TelegramBot(
         return dict(((state.get("user_state") or {}).get(str(user_id)) or {}))
 
     def _set_search_settings_state(self, user_id: int, **fields: object) -> dict:
-        state = self._load_state()
-        user_state = state.setdefault("user_state", {})
-        entry = user_state.setdefault(str(user_id), {})
-        entry.update(fields)
-        entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
-        self._save_state(state)
-        return dict(entry)
+        return self._update_user_state("user_state", user_id, fields=fields)
 
     def _clear_search_settings_state(self, user_id: int, *keys: str) -> None:
-        state = self._load_state()
-        entry = (state.setdefault("user_state", {})).setdefault(str(user_id), {})
-        for key in keys:
-            entry.pop(key, None)
-        entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
-        self._save_state(state)
+        self._update_user_state("user_state", user_id, remove_keys=keys)
 
     def _candidate_profile_dir(self, profile_name: str) -> str:
         return os.path.dirname(self._profile(profile_name).resume_file)
@@ -1322,16 +1313,18 @@ class TelegramBot(
         checks = await self._collect_diagnostics(self.profile_name)
         failed = [item for item in checks if item.get("ok") is False]
         signature = "|".join(sorted(str(item.get("name") or "") for item in failed))
-        previous_alert_signature = str(health_state.get("last_alert_signature") or "")
-        next_health_state = {
-            **health_state,
+        health_fields = {
             "last_checked_at": time.time(),
             "last_checked_iso": datetime.now().isoformat(timespec="seconds"),
             "last_signature": signature,
             "last_failed_count": len(failed),
         }
-        state["health_check"] = next_health_state
-        self._save_state(state)
+
+        def record_check(latest):
+            latest.setdefault("health_check", {}).update(health_fields)
+
+        latest = self._update_state(record_check)
+        previous_alert_signature = str(latest["health_check"].get("last_alert_signature") or "")
         if not failed:
             return
         if signature == previous_alert_signature:
@@ -1350,12 +1343,13 @@ class TelegramBot(
             if result is not None:
                 sent += 1
         if sent:
-            state = self._load_state()
-            health_state = state.get("health_check") if isinstance(state.get("health_check"), dict) else {}
-            health_state["last_alert_signature"] = signature
-            health_state["last_alert_at"] = datetime.now().isoformat(timespec="seconds")
-            state["health_check"] = health_state
-            self._save_state(state)
+            def record_alert(latest):
+                latest.setdefault("health_check", {}).update({
+                    "last_alert_signature": signature,
+                    "last_alert_at": datetime.now().isoformat(timespec="seconds"),
+                })
+
+            self._update_state(record_alert)
             self._append_debug_log("health_alert_sent", profile_name=self.profile_name, failed=len(failed), recipients=sent)
 
     def _recent_runs(self, profile_name: str, limit: int = 5) -> list[dict]:
@@ -1454,13 +1448,14 @@ class TelegramBot(
 
         if sent <= 0:
             return
-        state = self._load_state()
-        state["daily_summary"] = {
-            "last_sent_date": today,
-            "last_sent_at": datetime.now().isoformat(timespec="seconds"),
-            "recipients": sent,
-        }
-        self._save_state(state)
+        def record_summary(state):
+            state["daily_summary"] = {
+                "last_sent_date": today,
+                "last_sent_at": datetime.now().isoformat(timespec="seconds"),
+                "recipients": sent,
+            }
+
+        self._update_state(record_summary)
         self._append_debug_log("daily_summary_sent", date=today, recipients=sent)
 
     def _runtime_status(self, profile_name: str) -> dict | None:
@@ -1468,7 +1463,12 @@ class TelegramBot(
         runtime = runtime_control.read_json_file(runtime_file)
         normalized = _normalize_process_runtime(runtime, expected_tokens=ACTIVE_RUNTIME_TOKENS)
         if runtime and normalized and normalized != runtime:
-            runtime_control.write_json_file(runtime_file, normalized)
+            # A process can publish progress after the initial read. Normalize
+            # the current snapshot under its writer lock, not the stale one.
+            latest = JsonStore(runtime_file).update(
+                lambda state: _normalize_process_runtime(state, expected_tokens=ACTIVE_RUNTIME_TOKENS) or state
+            )
+            return _normalize_process_runtime(latest, expected_tokens=ACTIVE_RUNTIME_TOKENS)
         return normalized
 
     def _daemon_state(self, profile_name: str) -> dict:
@@ -1499,9 +1499,12 @@ class TelegramBot(
         updates = await self._get_updates(timeout=0, save_state=False)
         if not updates:
             return
-        state["last_update_id"] = updates[-1]["update_id"]
-        state["bootstrapped_at"] = datetime.now().isoformat(timespec="seconds")
-        self._save_state(state)
+        def bootstrap(latest):
+            if latest.get("last_update_id") is None:
+                latest["last_update_id"] = int(updates[-1]["update_id"])
+                latest["bootstrapped_at"] = datetime.now().isoformat(timespec="seconds")
+
+        self._update_state(bootstrap)
 
     async def _get_updates(self, timeout: int | None = None, save_state: bool = True) -> list[dict]:
         state = self._load_state()
@@ -1514,9 +1517,12 @@ class TelegramBot(
         result = await self._api_request("getUpdates", payload, timeout=payload["timeout"] + 20)
         updates = result if isinstance(result, list) else []
         if updates and save_state:
-            state["last_update_id"] = updates[-1]["update_id"]
-            state["updated_at"] = datetime.now().isoformat(timespec="seconds")
-            self._save_state(state)
+            def advance_offset(latest):
+                current = latest.get("last_update_id")
+                latest["last_update_id"] = max(int(current) if current is not None else 0, int(updates[-1]["update_id"]))
+                latest["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+            self._update_state(advance_offset)
         return updates
 
     async def _send_text(self, chat_id: int, text: str, *, reply_markup: dict | None = None) -> dict | None:

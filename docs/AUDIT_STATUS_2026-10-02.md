@@ -48,9 +48,10 @@ one-time, explicitly authorized hook override. Clean-tree verification is
 recorded below; this resolves missing modules, not every possible runtime bug.
 
 The 2026-10-03 registry follow-up below closes access/onboarding/quota mutations
-and atomic `runtime_control.write_json_file` / PID persistence. Bot-state
-whole-snapshot read-modify-write and process check/spawn/register races remain
-separate follow-ups; do not describe the entire repository as free of state bugs.
+and atomic `runtime_control.write_json_file` / PID persistence. The bot/lifecycle
+follow-up below also closes whole-snapshot bot-state mutations and serializes
+process check/spawn/register. This is bounded coverage, not a claim that the
+entire repository is free of state bugs.
 
 ## Groq-only operational switch
 
@@ -210,4 +211,49 @@ difference is the pre-existing local-only set. Diff and Bash syntax checks passe
 No bot restart, provider request, real HH submission, production registry edit
 or OSINT change was made.
 
-Remaining: transactional bot-state updates and process lifecycle locking.
+The next bot/lifecycle follow-up below completes these two scoped remaining paths.
+
+### Follow-up: bot-state transactions and process ownership (2026-10-03)
+
+Bot user/menu/profile/guest/search settings, health and daily-summary records,
+bootstrap and poll offsets now mutate the latest on-disk state under one lock.
+No file lock spans a network await. Late poll responses cannot lower a persisted
+offset; bootstrap cannot replace an offset established during its request.
+Malformed JSON/UTF-8 or invalid control-state structure stays in place and blocks
+mutations rather than resetting settings/offsets. Explicit full replacement is
+still available for tests/restoration, not normal bot mutations. Frozen runtime
+paths remain profile-safe.
+
+Runtime-status normalization re-reads inside its transaction. The agent's runtime
+writer now uses the same `JsonStore` lock, preventing stale bot normalization from
+overwriting a newer progress record. Existing status/error-reporting semantics
+are preserved.
+
+Process describe/check/spawn/PID publication and registration share a distinct
+lifecycle sidecar lock. Startup releases it before waiting so the child can
+register. Registration retries release it between attempts and use monotonic
+deadlines. Stop holds lifecycle while waiting, but shutdown PID cleanup uses
+only the separate PID lock; graceful child exit is not blocked. Unreadable PID
+files propagate permission/I/O failures rather than authorizing a duplicate
+spawn. Failed PID publication triggers cleanup of only the newly created child.
+An unsuccessful stop retains the owner record instead of claiming it stopped.
+
+The initial new group reproduced **13 failures** on the previous code. Final
+coverage adds **23 tests**, including stale await responses, thread contention,
+four spawned registration contenders with one winner, graceful cleanup,
+PID-publication failures, shared runtime writer locks and corruption/I/O failures.
+Final verification: **1168 local tests passed** (29.14 seconds), and **1096 passed**
+in an isolated staged publication-tree export (30.39 seconds), using the existing
+venv. The 72-test difference is the pre-existing local-only set. The export check
+caught an excluded helper basename; the module is published as
+`state_store/bot_state.py` without changing local excludes or hook protection.
+Diff and Bash syntax checks passed. The existing production bot-state schema
+passed a read-only compatibility check without exposing records or modifying it.
+
+No production bot/daemon restart or signal, provider/Telegram network call, real
+HH submission, production state edit or OSINT change was made. Locks are advisory:
+older already-running code does not retroactively adopt them. Offsets are still
+recorded before handling updates; this is not transactional message processing
+or exactly-once notifications. PID reuse and external non-cooperating writers
+are not fully solved by sidecar locking. Repository-wide state work, including
+the manual-apply queue and other writers, still needs its own inspection/tests.

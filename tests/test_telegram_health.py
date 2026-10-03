@@ -3,18 +3,15 @@ import asyncio
 import telegram_bot
 
 
-def test_health_alert_does_not_grant_admin_menu_to_unknown_recipient(monkeypatch):
-    bot = telegram_bot.TelegramBot.__new__(telegram_bot.TelegramBot)
-    bot.profile_name = "qa"
-    saved_states = []
+def test_health_alert_does_not_grant_admin_menu_to_unknown_recipient(monkeypatch, tmp_path):
+    monkeypatch.setattr(telegram_bot.config, "TELEGRAM_BOT_STATE_FILE", str(tmp_path / "bot-state.json"))
+    bot = telegram_bot.TelegramBot(profile_name="qa")
     sent_messages = []
     menu_calls = []
 
     monkeypatch.setattr(telegram_bot.config, "TELEGRAM_HEALTH_CHECK_ENABLED", True)
     monkeypatch.setattr(telegram_bot.config, "TELEGRAM_HEALTH_CHECK_INTERVAL_MIN", 5)
     monkeypatch.setattr(telegram_bot.telegram_access, "resolve_user", lambda user_id: None)
-    monkeypatch.setattr(bot, "_load_state", lambda: {})
-    monkeypatch.setattr(bot, "_save_state", lambda state: saved_states.append(state))
     monkeypatch.setattr(bot, "_profile_recipient_ids", lambda profile_name: [123])
     monkeypatch.setattr(bot, "_append_debug_log", lambda *args, **kwargs: None)
 
@@ -38,4 +35,4 @@ def test_health_alert_does_not_grant_admin_menu_to_unknown_recipient(monkeypatch
     assert menu_calls == []
     assert sent_messages[0][0] == 123
     assert sent_messages[0][2] is None
-    assert saved_states
+    assert bot._load_state()["health_check"]["last_alert_signature"] == "HH auth"

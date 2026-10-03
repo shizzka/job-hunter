@@ -39,7 +39,7 @@ import search_pipeline
 import apply_orchestrator
 import invitation_sync
 import manual_apply_queue
-from state_store.json_store import atomic_write_json
+from state_store.json_store import JsonStore
 from llm_client import close_llm_client
 from outcome import (
     DECISION_APPLIED_AUTO,
@@ -225,7 +225,7 @@ def _write_runtime_status(
         payload.update(extra)
 
     try:
-        atomic_write_json(config.RUNTIME_STATUS_FILE, payload)
+        JsonStore(config.RUNTIME_STATUS_FILE).save(payload)
     except Exception as exc:
         log.warning("Failed to write runtime status: %s", exc)
 
