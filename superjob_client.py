@@ -15,6 +15,8 @@ from playwright.async_api import async_playwright, BrowserContext, Page
 import config
 import proxy_utils
 from state_store.json_store import atomic_write_json
+from browser_cookie_session import BrowserCookieSession
+from state_store.browser_cookies import CookieRepository
 
 log = logging.getLogger("superjob_client")
 
@@ -79,19 +81,12 @@ def _ensure_dirs():
 
 
 def _load_cookies() -> list[dict] | None:
-    if not os.path.exists(config.SUPERJOB_COOKIES_FILE):
-        return None
-    try:
-        with open(config.SUPERJOB_COOKIES_FILE) as f:
-            return json.load(f)
-    except Exception as exc:
-        log.warning("Failed to load SuperJob cookies: %s", exc)
-        return None
+    return CookieRepository(config.SUPERJOB_COOKIES_FILE).snapshot()[0]
 
 
 def _save_cookies(payload: list[dict]):
     _ensure_dirs()
-    atomic_write_json(config.SUPERJOB_COOKIES_FILE, payload)
+    CookieRepository(config.SUPERJOB_COOKIES_FILE).save(payload)
 
 
 def _load_auth_file() -> dict:
@@ -114,6 +109,7 @@ class SuperJobClient:
     """Поиск вакансий и автоотклик через официальный API SuperJob."""
 
     def __init__(self):
+        self._cookie_session = BrowserCookieSession(config.SUPERJOB_COOKIES_FILE, config.HH_STATE_DIR)
         self._session: aiohttp.ClientSession | None = None
         self._session_uses_env_proxy = True
         self._auth: dict | None = None
@@ -140,18 +136,18 @@ class SuperJobClient:
         self._session_uses_env_proxy = trust_env
 
     async def stop(self):
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
-        await self.stop_browser()
+        session = self._session
+        binding = self._cookie_session.binding
+        try:
+            if session and not session.closed:
+                await session.close()
+        finally:
+            if self._session is session:
+                self._session = None
+            if self._cookie_session.binding is binding:
+                await self.stop_browser()
 
     async def start_browser(self, headless: bool | None = None):
-        if self._page is not None:
-            return
-
-        _ensure_dirs()
-        self._pw = await async_playwright().start()
-
         launch_opts = {
             "headless": config.HEADLESS if headless is None else headless,
             "slow_mo": config.SLOW_MO,
@@ -159,47 +155,17 @@ class SuperJobClient:
         proxy_url = os.environ.get("HH_PROXY") or config.BROWSER_PROXY
         if proxy_url:
             launch_opts["proxy"] = {"server": proxy_url}
-            log.info("Using proxy for SuperJob browser: %s", proxy_url)
+            log.info("Using configured proxy for SuperJob browser")
         launch_opts["env"] = proxy_utils.browser_launch_env(proxy_url)
 
-        self._browser = await self._pw.chromium.launch(**launch_opts)
-        self._context = await self._browser.new_context(
-            viewport={"width": 1280, "height": 900},
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-            locale="ru-RU",
-        )
-
-        cookies = _load_cookies()
-        if cookies:
-            await self._context.add_cookies(cookies)
-            log.info("Loaded %d SuperJob cookies", len(cookies))
-
-        self._page = await self._context.new_page()
+        await self._cookie_session.start(self, playwright_factory=async_playwright,
+                                         launch_options=launch_opts, logger=log)
 
     async def stop_browser(self):
-        if self._context:
-            try:
-                cookies = await self._context.cookies()
-                _save_cookies(cookies)
-            except Exception:
-                pass
-        if self._browser:
-            await self._browser.close()
-        if self._pw:
-            await self._pw.stop()
-        self._context = None
-        self._browser = None
-        self._pw = None
-        self._page = None
+        await self._cookie_session.stop(self, logger=log)
 
     async def save_session(self):
-        if self._context:
-            cookies = await self._context.cookies()
-            _save_cookies(cookies)
-            log.info("SuperJob session saved (%d cookies)", len(cookies))
+        await self._cookie_session.save(self, logger=log)
 
     def _get_auth(self) -> dict:
         if self._auth is None:
@@ -527,7 +493,7 @@ class SuperJobClient:
             await self.save_session()
             print("\n✅ SuperJob cookies сохранены!")
             print(f"   Пользователь: {login}")
-            print(f"   Файл: {config.SUPERJOB_COOKIES_FILE}")
+            print(f"   Файл: {self._cookie_session.repository.path}")
         finally:
             await self.stop_browser()
 

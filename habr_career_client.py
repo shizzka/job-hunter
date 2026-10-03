@@ -11,7 +11,8 @@ from playwright.async_api import async_playwright, BrowserContext, Page
 
 import config
 import proxy_utils
-from state_store.json_store import atomic_write_json
+from browser_cookie_session import BrowserCookieSession
+from state_store.browser_cookies import CookieRepository
 
 log = logging.getLogger("habr_career_client")
 
@@ -57,21 +58,19 @@ def _ensure_dirs():
 
 
 def _load_cookies() -> list[dict] | None:
-    if os.path.exists(config.HABR_COOKIES_FILE):
-        with open(config.HABR_COOKIES_FILE) as f:
-            return json.load(f)
-    return None
+    return CookieRepository(config.HABR_COOKIES_FILE).snapshot()[0]
 
 
 def _save_cookies(cookies: list[dict]):
     _ensure_dirs()
-    atomic_write_json(config.HABR_COOKIES_FILE, cookies)
+    CookieRepository(config.HABR_COOKIES_FILE).save(cookies)
 
 
 class HabrCareerClient:
     """Парсинг публичных страниц Хабр Карьеры без браузера."""
 
     def __init__(self):
+        self._cookie_session = BrowserCookieSession(config.HABR_COOKIES_FILE, config.HH_STATE_DIR)
         self._session: aiohttp.ClientSession | None = None
         self._session_uses_env_proxy = True
         self._pw = None
@@ -101,14 +100,18 @@ class HabrCareerClient:
         self._session_uses_env_proxy = trust_env
 
     async def stop(self):
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        session = self._session
+        binding = self._cookie_session.binding
+        try:
+            if session and not session.closed:
+                await session.close()
+        finally:
+            if self._session is session:
+                self._session = None
+            if self._cookie_session.binding is binding:
+                await self.stop_browser()
 
     async def start_browser(self, headless: bool | None = None):
-        _ensure_dirs()
-        self._pw = await async_playwright().start()
-
         launch_opts = {
             "headless": config.HEADLESS if headless is None else headless,
             "slow_mo": config.SLOW_MO,
@@ -120,42 +123,17 @@ class HabrCareerClient:
         )
         if proxy_url:
             launch_opts["proxy"] = {"server": proxy_url}
-            log.info("Using proxy for Habr Career: %s", proxy_url)
+            log.info("Using configured proxy for Habr Career browser")
         launch_opts["env"] = proxy_utils.browser_launch_env(proxy_url)
 
-        self._browser = await self._pw.chromium.launch(**launch_opts)
-        self._context = await self._browser.new_context(
-            viewport={"width": 1280, "height": 900},
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-            locale="ru-RU",
-        )
-        cookies = _load_cookies()
-        if cookies:
-            await self._context.add_cookies(cookies)
-            log.info("Loaded %d Habr cookies", len(cookies))
-        self._page = await self._context.new_page()
+        await self._cookie_session.start(self, playwright_factory=async_playwright,
+                                         launch_options=launch_opts, logger=log)
 
     async def stop_browser(self):
-        if self._context:
-            cookies = await self._context.cookies()
-            _save_cookies(cookies)
-        if self._browser:
-            await self._browser.close()
-        if self._pw:
-            await self._pw.stop()
-        self._context = None
-        self._browser = None
-        self._pw = None
-        self._page = None
+        await self._cookie_session.stop(self, logger=log)
 
     async def save_session(self):
-        if self._context:
-            cookies = await self._context.cookies()
-            _save_cookies(cookies)
-            log.info("Habr session saved (%d cookies)", len(cookies))
+        await self._cookie_session.save(self, logger=log)
 
     async def _page_is_logged_in(self) -> bool:
         try:
@@ -207,22 +185,22 @@ class HabrCareerClient:
     async def login_interactive(self):
         await self.start_browser(headless=False)
         try:
-            await self._page.goto(
-                config.HABR_LOGIN_URL,
-                wait_until="domcontentloaded",
-                timeout=60000,
-            )
-        except Exception:
-            pass
-        print("\n" + "=" * 60)
-        print("Браузер открыт. Залогинься на Хабр Карьере.")
-        print("После успешного входа нажми Enter здесь...")
-        print("=" * 60)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, input)
-        await self.save_session()
-        print("✅ Habr cookies сохранены!")
-        await self.stop_browser()
+            try:
+                await self._page.goto(
+                    config.HABR_LOGIN_URL, wait_until="domcontentloaded", timeout=60000,
+                )
+            except Exception:
+                pass
+            print("\n" + "=" * 60)
+            print("Браузер открыт. Залогинься на Хабр Карьере.")
+            print("После успешного входа нажми Enter здесь...")
+            print("=" * 60)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, input)
+            await self.save_session()
+            print("✅ Habr cookies сохранены!")
+        finally:
+            await self.stop_browser()
 
     async def is_logged_in(self) -> bool:
         if self._page is None:
