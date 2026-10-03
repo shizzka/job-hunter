@@ -441,6 +441,7 @@ async def send_message(
     extract_current_messages=extract_messages,
     messages_contain=messages_contain_sent_text,
     logger=log,
+    before_send=None,
 ) -> bool:
     """Полная отправка: перейти, набрать, нажать Send."""
     result = await fill_preview(page, chat_id, text)
@@ -461,6 +462,8 @@ async def send_message(
         logger.warning("send button not found (quick_reply=%r)", quick_reply)
         return False
     await ensure_page_ui(page, "chat_send")
+    if before_send is not None:
+        await before_send()
     try:
         await button.click()
         await page.wait_for_timeout(2500)
@@ -480,6 +483,8 @@ async def send_message(
             if messages_contain(messages, quick_reply or text):
                 return True
             await page.wait_for_timeout(1000)
+    except HHUnexpectedUI:
+        raise
     except Exception as exc:
         logger.warning("send verification failed to read current chat %s: %s", chat_id, exc)
         return False

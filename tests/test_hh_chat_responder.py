@@ -511,7 +511,7 @@ def test_process_all_uses_injected_reply_limits(tmp_path, monkeypatch):
 
     async def fake_fill_and_preview(*args, **kwargs):
         preview_paths.append(kwargs.get("runtime_paths"))
-        return {}
+        return {"filled": True}
 
     async def fake_sleep(seconds):
         sleeps.append(seconds)
@@ -519,12 +519,15 @@ def test_process_all_uses_injected_reply_limits(tmp_path, monkeypatch):
     async def fake_notify(*args, **kwargs):
         return True
 
-    def fake_load_state(runtime_paths=None):
+    repository = chat_responder._state_repository(paths)
+    repository.save({"limited": {"replies_count": 3}})
+
+    def fake_repository(runtime_paths=None):
         loaded_paths.append(runtime_paths)
-        return {"limited": {"replies_count": 3}}
+        return repository
 
     monkeypatch.setattr(hh_client, "_load_resume_text", lambda: "QA resume")
-    monkeypatch.setattr(chat_responder, "load_state", fake_load_state)
+    monkeypatch.setattr(chat_responder, "_state_repository", fake_repository)
     monkeypatch.setattr(chat_responder, "list_chats", fake_list_chats)
     monkeypatch.setattr(chat_responder, "get_messages", fake_get_messages)
     monkeypatch.setattr(chat_responder, "generate_answer", fake_generate_answer)
@@ -626,7 +629,6 @@ def test_process_all_deduplicates_dry_run_preview_before_llm(tmp_path, monkeypat
     class FakeHHClient:
         _page = FakePage()
 
-    state = {}
     llm_calls = []
     notifications = []
     paths = RuntimePaths(
@@ -667,8 +669,6 @@ def test_process_all_deduplicates_dry_run_preview_before_llm(tmp_path, monkeypat
         return None
 
     monkeypatch.setattr(hh_client, "_load_resume_text", lambda: "QA resume")
-    monkeypatch.setattr(chat_responder, "load_state", lambda runtime_paths=None: state)
-    monkeypatch.setattr(chat_responder, "save_state", lambda payload, runtime_paths=None: None)
     monkeypatch.setattr(chat_responder, "list_chats", fake_list_chats)
     monkeypatch.setattr(chat_responder, "get_messages", fake_get_messages)
     monkeypatch.setattr(chat_responder, "generate_answer", fake_generate_answer)
@@ -684,6 +684,7 @@ def test_process_all_deduplicates_dry_run_preview_before_llm(tmp_path, monkeypat
     assert second["skipped"] == 1
     assert len(llm_calls) == 1
     assert len(notifications) == 1
+    state = chat_responder.load_state(paths)
     assert state["42"]["last_previewed_msg_id"] == "message-7"
     assert len(state["42"]["last_preview_answer_hash"]) == 16
 

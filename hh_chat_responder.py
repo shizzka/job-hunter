@@ -23,6 +23,7 @@ ENV:
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import html
 import logging
@@ -511,6 +512,7 @@ async def send_message(
     text: str,
     *,
     runtime_paths: RuntimePaths | None = None,
+    before_send=None,
 ) -> bool:
     """Полная отправка: перейти, набрать, нажать Send."""
     paths = runtime_paths or _runtime_paths()
@@ -532,6 +534,7 @@ async def send_message(
         extract_current_messages=_extract_messages,
         messages_contain=_messages_contain_sent_text,
         logger=log,
+        **({"before_send": before_send} if before_send is not None else {}),
     )
 
 
@@ -800,7 +803,7 @@ async def _notify_one_chat_result(notifier, detail: dict) -> None:
     )
     markup = (
         build_chat_answer_preview_markup(
-            _active_profile_name(),
+            detail.get("profile_name") or _active_profile_name(),
             raw_chat_id,
             raw_message_id,
             allow_any=bool(detail.get("manual_any")),
@@ -881,16 +884,18 @@ async def _prepare_google_form_preview_from_message(
     form_url: str,
     notifier,
     runtime_paths: RuntimePaths | None = None,
+    profile_name: str | None = None,
 ) -> dict:
     import google_form_filler as gforms
 
     paths = runtime_paths or _runtime_paths()
+    profile_name = profile_name or _active_profile_name()
     form_page = await page.context.new_page()
     try:
         detail = await gforms.preview_form(
             form_page,
             form_url,
-            profile_name=_active_profile_name(),
+            profile_name=profile_name,
             chat_id=chat_id,
             message_id=str(message.get("id") or ""),
             vacancy=vacancy,
@@ -900,7 +905,7 @@ async def _prepare_google_form_preview_from_message(
         )
         if detail.get("ok") or detail.get("questions") or detail.get("status") == "already_submitted":
             if notifier:
-                await gforms.notify_form_preview(detail, profile_name=_active_profile_name())
+                await gforms.notify_form_preview(detail, profile_name=profile_name)
         else:
             detail.setdefault("chat_id", chat_id)
             detail.setdefault("message_id", str(message.get("id") or ""))
@@ -915,6 +920,8 @@ async def _prepare_google_form_preview_from_message(
                 error=detail.get("message") or "preview failed",
                 screenshot_path=detail.get("screenshot_path") or "",
             )
+    except HHUnexpectedUI:
+        raise
     except Exception as exc:
         log.warning("google form preview failed for chat %s: %s", chat_id, exc)
         screenshot_path = os.path.join(
@@ -954,6 +961,79 @@ async def _prepare_google_form_preview_from_message(
     return detail
 
 
+def _message_revision(message: dict) -> tuple:
+    return tuple(copy.deepcopy(message.get(field)) for field in
+                 ("id", "text", "links", "author", "is_me", "is_ai", "is_ai_suspect"))
+
+
+async def _execute_reply(
+    repository, page, chat_id, target, messages, vacancy, resume_text, paths,
+    *, dry_run, max_replies=None, repeat_preview=False, answer_kwargs=None, notify=None,
+) -> dict:
+    """Claim before model/browser waits; persist only the owning chat's result."""
+    chat_id, target_id = str(chat_id), str(target.get("id") or "")
+    target_revision = _message_revision(target)
+    kind = "preview" if dry_run else "reply"
+    with repository.attempt(chat_id, kind, target_id, max_replies=max_replies,
+                            repeat=dry_run and repeat_preview) as owner:
+        if not owner:
+            return {"ok": False, "blocked": True, "message": "chat attempt blocked; inspect state", "chat_id": chat_id}
+        answer = await generate_answer(messages, vacancy, resume_text, **copy.deepcopy(answer_kwargs or {}))
+        if not answer:
+            return {"ok": False, "message": "LLM did not produce answer", "chat_id": chat_id}
+        # The model may have taken minutes. Never answer an obsolete question.
+        fresh = await get_messages(page, chat_id)
+        latest = (fresh.get("messages") or [{}])[-1]
+        if _message_revision(latest) != target_revision or latest.get("is_me"):
+            return {"ok": False, "stale": True, "message": "chat message changed", "chat_id": chat_id}
+        detail = {"ok": True, "chat_id": chat_id, "message_id": target_id,
+                  "vacancy": vacancy, "question": (target.get("text") or "")[:500],
+                  "answer": answer, "dry_run": dry_run, "sent": False}
+        if dry_run:
+            preview = await fill_and_preview(page, chat_id, answer, runtime_paths=paths)
+            detail["preview"] = preview
+            if not preview.get("filled"):
+                detail.update(ok=False, message="preview not filled")
+                return detail
+            def remember(chat):
+                chat["last_previewed_msg_id"] = target_id
+                chat["last_preview_answer_hash"] = hashlib.sha256(answer.encode()).hexdigest()[:16]
+                chat["last_previewed_at"] = time.time()
+            # Reserve delivery before await. Uncertain notifications are not replayed.
+            if notify is not None:
+                repository.mark_acting(chat_id, owner)
+                try:
+                    await notify(detail)
+                except Exception as exc:
+                    log.warning("chat preview notification failed: %s", type(exc).__name__)
+                    detail["notification_uncertain"] = True
+                    repository.finish(chat_id, owner, "uncertain", remember)
+                    return detail
+            if not repository.finish(chat_id, owner, "completed", remember):
+                raise RuntimeError("Chat preview completion ownership lost")
+        else:
+            async def before_send():
+                data = await _extract_messages(page)
+                latest = (data.get("messages") or [{}])[-1]
+                if _message_revision(latest) != target_revision or latest.get("is_me"):
+                    raise RuntimeError("Chat changed before send")
+                # Last synchronous durable check immediately before the click.
+                repository.mark_acting(chat_id, owner)
+            ok = await send_message(page, chat_id, answer, runtime_paths=paths, before_send=before_send)
+            detail["sent"] = ok
+            if not ok:
+                detail.update(ok=False, message="send failed or uncertain; inspect state")
+                return detail
+            if not repository.finish(chat_id, owner, "completed"):
+                raise RuntimeError("Chat send completion ownership lost")
+            if notify is not None:
+                try:
+                    await notify(detail)
+                except Exception as exc:
+                    log.warning("chat sent notification failed: %s", type(exc).__name__)
+        return detail
+
+
 async def process_one(
     hh_client,
     chat_id: str,
@@ -968,6 +1048,7 @@ async def process_one(
 ) -> dict:
     """Generate/send one reply for a specific chat message after human approval."""
     paths = runtime_paths or _runtime_paths()
+    profile_name = _active_profile_name()
     if dry_run is None:
         dry_run = _default_chat_dry_run()
 
@@ -986,8 +1067,10 @@ async def process_one(
         return {"ok": False, "message": "target message is ours", "chat_id": chat_id}
 
     target_id = str(target.get("id") or "")
-    state = load_state(paths)
-    chat_state = state.setdefault(str(chat_id), {})
+    if not target_id or _message_revision(target) != _message_revision(messages[-1]):
+        return {"ok": False, "message": "target message is no longer latest", "chat_id": chat_id}
+    repository = _state_repository(paths)
+    chat_state = repository.load().get(str(chat_id), {})
     if chat_state.get("last_replied_msg_id") == target_id:
         return {"ok": True, "already_replied": True, "message": "already replied", "chat_id": chat_id}
 
@@ -1008,56 +1091,34 @@ async def process_one(
         _load_resume_text = lambda: ""
     resume_text = _load_resume_text()
     vacancy = data.get("vacancy", {})
-    answer = await generate_answer(
-        messages,
-        vacancy,
-        resume_text,
-        question_message=target if (is_approved_suspicious or is_manual_any) else None,
-        question_kind=(
-            "подозрительное HR-сообщение"
-            if is_approved_suspicious
-            else "ручное HR-сообщение"
-            if is_manual_any
-            else "AI-помощник"
-        ),
-        alternative=alternative,
+    async def notify_result(detail):
+        detail.update(suspicious=is_approved_suspicious, manual_any=is_manual_any,
+                      profile_name=profile_name)
+        if notify:
+            try:
+                import notifier
+            except Exception:
+                notifier = None
+            await _notify_one_chat_result(notifier, detail)
+
+    detail = await _execute_reply(
+        repository, page, str(chat_id), copy.deepcopy(target), copy.deepcopy(messages),
+        copy.deepcopy(vacancy), resume_text, paths, dry_run=dry_run,
+        repeat_preview=True, notify=notify_result if notify else None,
+        answer_kwargs={
+            "question_message": target if (is_approved_suspicious or is_manual_any) else None,
+            "question_kind": (
+                "подозрительное HR-сообщение"
+                if is_approved_suspicious
+                else "ручное HR-сообщение"
+                if is_manual_any
+                else "AI-помощник"
+            ),
+            "alternative": alternative,
+        },
     )
-    if not answer:
-        return {"ok": False, "message": "LLM did not produce answer", "chat_id": chat_id}
-
-    detail = {
-        "ok": True,
-        "chat_id": chat_id,
-        "message_id": target_id,
-        "vacancy": vacancy,
-        "question": (target.get("text") or "")[:500],
-        "answer": answer,
-        "dry_run": dry_run,
-        "suspicious": is_approved_suspicious,
-        "manual_any": is_manual_any,
-    }
-    if dry_run:
-        preview = await fill_and_preview(page, chat_id, answer, runtime_paths=paths)
-        detail["preview"] = preview
-        detail["sent"] = False
-    else:
-        ok = await send_message(page, chat_id, answer, runtime_paths=paths)
-        detail["sent"] = ok
-        if ok:
-            chat_state["last_replied_msg_id"] = target_id
-            chat_state["replies_count"] = int(chat_state.get("replies_count", 0)) + 1
-            chat_state["last_reply_at"] = time.time()
-            save_state(state, paths)
-        else:
-            detail["ok"] = False
-            detail["message"] = "send failed"
-
-    if notify:
-        try:
-            import notifier
-        except Exception:
-            notifier = None
-        await _notify_one_chat_result(notifier, detail)
+    detail.update(suspicious=is_approved_suspicious, manual_any=is_manual_any,
+                  profile_name=profile_name)
     return detail
 
 
@@ -1080,6 +1141,8 @@ async def process_all(
     paths = runtime_paths or _runtime_paths()
     runtime_limits = limits or ChatResponderLimits.from_env(os.environ)
     max_replies = max_replies_per_chat or runtime_limits.max_replies_per_chat
+    profile_name = _active_profile_name()
+    repository = _state_repository(paths)
 
     if not hh_client._page:
         await hh_client.start(headless=True)
@@ -1089,7 +1152,7 @@ async def process_all(
     await page.goto("https://hh.ru/", wait_until="domcontentloaded", timeout=30000)
     await page.wait_for_timeout(1500)
 
-    state = load_state(paths)
+    repository.load()  # Fail closed before running model/notification workflows.
     summary = {
         "chats_scanned": 0,
         "with_ai": 0,
@@ -1138,13 +1201,15 @@ async def process_all(
         notifier = None
 
     for chat in scan_chats:
-        chat_id = chat["chat_id"]
-        chat_state = state.setdefault(chat_id, {})
+        chat_id = str(chat["chat_id"])
+        chat_state = repository.load().get(chat_id, {})
         replies_so_far = int(chat_state.get("replies_count", 0))
 
         try:
             data = await get_messages(page, chat_id)
             summary["chats_read"] += 1
+        except HHUnexpectedUI:
+            raise
         except Exception as exc:
             log.warning(
                 "get_messages(%s) failed: %s; preview=%r",
@@ -1167,17 +1232,19 @@ async def process_all(
             if preview_text and (not vac.get("title") or _normalize_ai_marker_text(vac.get("title") or "") == "перейти"):
                 vac["title"] = preview_text
             summary["google_forms_found"] += 1
-            detail = await _prepare_google_form_preview_from_message(
-                page,
-                chat_id=chat_id,
-                vacancy=vac,
-                message=form_msg,
-                form_url=form_url,
-                notifier=notifier,
-                runtime_paths=paths,
-            )
-            _remember_google_form_preview(chat_state, form_item["key"], detail)
-            save_state(state, paths)
+            with repository.attempt(chat_id, "form", form_item["key"]) as owner:
+                if not owner:
+                    summary["skipped"] += 1
+                    continue
+                repository.mark_acting(chat_id, owner)
+                detail = await _prepare_google_form_preview_from_message(
+                    page, chat_id=chat_id, vacancy=copy.deepcopy(vac),
+                    message=copy.deepcopy(form_msg), form_url=form_url,
+                    notifier=notifier, runtime_paths=paths, profile_name=profile_name,
+                )
+                if not repository.finish(chat_id, owner, "completed", lambda current:
+                        _remember_google_form_preview(current, form_item["key"], detail)):
+                    raise RuntimeError("Chat form completion ownership lost")
             if detail.get("ok"):
                 summary["google_forms_prepared"] += 1
             else:
@@ -1233,24 +1300,28 @@ async def process_all(
             preview_text = (chat.get("preview") or "").strip()
             if preview_text and (not vac.get("title") or _normalize_ai_marker_text(vac.get("title") or "") == "перейти"):
                 vac["title"] = preview_text
-            profile_name = _active_profile_name()
             notified = False
-            if notifier:
-                try:
-                    notified = await notify_suspicious_screening_message(
-                        notifier,
-                        chat_id=chat_id,
-                        vacancy=vac,
-                        message=last,
-                        profile_name=profile_name,
-                    )
-                except Exception as exc:
-                    log.warning("notify suspicious chat %s failed: %s", chat_id, exc)
+            with repository.attempt(chat_id, "notice", last_id) as owner:
+                if not owner:
+                    summary["skipped"] += 1
+                    continue
+                if notifier:
+                    repository.mark_acting(chat_id, owner)
+                    try:
+                        notified = await notify_suspicious_screening_message(
+                            notifier, chat_id=chat_id, vacancy=vac, message=last,
+                            profile_name=profile_name,
+                        )
+                    except Exception as exc:
+                        log.warning("notify suspicious chat %s failed: %s", chat_id, type(exc).__name__)
+                if notified:
+                    def remember_notice(current):
+                        current["last_suspicious_msg_id"] = last_id
+                        current["last_suspicious_at"] = time.time()
+                    if not repository.finish(chat_id, owner, "completed", remember_notice):
+                        raise RuntimeError("Chat notification completion ownership lost")
             if notified:
                 summary["suspicious_notified"] += 1
-                chat_state["last_suspicious_msg_id"] = last_id
-                chat_state["last_suspicious_at"] = time.time()
-                save_state(state, paths)
             summary["details"].append({
                 "chat_id": chat_id,
                 "vacancy": vac.get("title", ""),
@@ -1271,61 +1342,34 @@ async def process_all(
             continue  # последний от человека-HR — не лезем
 
         # генерируем ответ
-        answer = await generate_answer(msgs, data.get("vacancy", {}), resume_text)
-        if not answer:
-            log.info("chat %s: LLM не дал ответ", chat_id)
+        vac = copy.deepcopy(data.get("vacancy", {}))
+        async def notify_reply(detail):
+            if notifier is None:
+                return
+            if detail["dry_run"]:
+                preview = detail.get("preview") or {}
+                caption = _dry_run_caption(vac, last, detail["answer"])
+                if preview.get("screenshot_path"):
+                    await notifier.send_photo(preview["screenshot_path"], caption=caption)
+                else:
+                    await notifier.send_message_with_markup(caption)
+            else:
+                await notifier.send_message_with_markup(_sent_caption(chat_id, vac, last, detail["answer"]))
+
+        detail = await _execute_reply(
+            repository, page, chat_id, copy.deepcopy(last), copy.deepcopy(msgs),
+            vac, resume_text, paths, dry_run=dry_run, max_replies=max_replies,
+            notify=notify_reply if notifier is not None else None,
+        )
+        if not detail.get("answer"):
             summary["skipped"] += 1
             continue
         summary["answers_drafted"] += 1
-
-        vac = data.get("vacancy", {})
-        detail = {
-            "chat_id": chat_id,
-            "vacancy": vac.get("title", ""),
-            "company": vac.get("company", ""),
-            "question": (last.get("text") or "")[:300],
-            "answer": answer,
-        }
-
-        if dry_run:
-            # Превью: набираем текст без отправки + скрин
-            preview = await fill_and_preview(page, chat_id, answer, runtime_paths=paths)
-            detail["dry_run"] = True
-            detail["preview"] = preview
-            if preview.get("filled"):
-                chat_state["last_previewed_msg_id"] = last_id
-                chat_state["last_preview_answer_hash"] = hashlib.sha256(
-                    answer.encode("utf-8")
-                ).hexdigest()[:16]
-                chat_state["last_previewed_at"] = time.time()
-                save_state(state, paths)
-            if notifier:
-                try:
-                    caption = _dry_run_caption(vac, last, answer)
-                    if preview.get("screenshot_path"):
-                        await notifier.send_photo(preview["screenshot_path"], caption=caption)
-                    else:
-                        await notifier.send_message_with_markup(caption)
-                except Exception as exc:
-                    log.warning("notify dry-run failed: %s", exc)
-        else:
-            # реальная отправка
-            ok = await send_message(page, chat_id, answer, runtime_paths=paths)
-            detail["sent"] = ok
-            if ok:
-                summary["answers_sent"] += 1
-                chat_state["last_replied_msg_id"] = last_id
-                chat_state["replies_count"] = replies_so_far + 1
-                chat_state["last_reply_at"] = time.time()
-                save_state(state, paths)
-                if notifier:
-                    try:
-                        caption = _sent_caption(chat_id, vac, last, answer)
-                        await notifier.send_message_with_markup(caption)
-                    except Exception as exc:
-                        log.warning("notify sent failed: %s", exc)
-            else:
-                summary["skipped"] += 1
+        if detail.get("sent"):
+            summary["answers_sent"] += 1
+        elif not detail.get("ok"):
+            summary["skipped"] += 1
+        detail.update(vacancy=vac.get("title", ""), company=vac.get("company", ""))
 
         summary["details"].append(detail)
         # cooldown между ответами в разных чатах

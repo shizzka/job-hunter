@@ -21,6 +21,7 @@ pass. This is an inventory, not certification of every workflow or deployment.
 | `google_forms/drafts.save_answer` / `.supersede`, `state_store/google_forms.remember` | Protected JSON reads, transactional per-file updates and a short `.google_form_workflow.lock` coordinating preview eligibility with edits. Active/terminal/superseded records cannot be replaced; first successor wins, repeated identical successor is a no-op. `test_form_state_transactions`. |
 | `google_forms.workflow`, `google_form_filler.submit_saved_preview`, `commands/google_forms.recheck` | Per-profile durable pre-await attempt claim, fresh revision/owner guard before click, token-scoped completion, sticky active/uncertain attempts without automatic expiry/retry. Recheck successor and original superseded link are one atomic preview-file transition after fresh source/edit check. Callback approval binds displayed revision and CLI requires full revision for recheck-submit. Four-process/30-thread claims, disk/corruption/cancellation/version tests; not exactly-once external delivery. |
 | `telegram_app.forms` pending prompts/replies | Transactional bot-state mutation; request nonce before delivery, owner-checked binding/cleanup, pending identity check and synchronous manual-answer save before consumption. No whole-snapshot save or await under lock. Lock order for reply acceptance: bot state -> form workflow -> one form JSON sidecar. Late prompt/reply cannot consume newer state; legacy pending shapes stay readable. |
+| `state_store.chat_responder`, `hh_chat_responder.process_one` / `.process_all` | Protected per-chat transactions and durable owner claims before model/browser/notification waits. Latest-question checks after model and before click, durable pre-click phase, owner-scoped completion, counter increment once and completed-message dedupe. Cancellation after possible click becomes sticky uncertain; active attempts have no expiry. Linked-form and suspicious-message notifications also reserve ownership. `test_chat_state_transactions`, `test_chat_workflow_transactions`; see `HH_CHAT_STATE.md` for manual review and compatibility whole-save boundaries. |
 | `notifier.notify_stale_cookies` | Protected transactional attempt claim before network await, five-minute failure retry cooldown, daily success cooldown and owner-checked completion. Disabled sources ignored. `test_cookie_warning_safety`; the smoke-isolation incident and correction are in the audit document. |
 | `state_store.hh_ui`, `hh.ui` unexpected-dialog warnings | Captured per-profile `hh_ui_warnings.json`, protected claim before screenshot/delivery awaits, five-minute attempt cooldown, daily successful-delivery cooldown and owner-checked completion. Corruption/read/write failure preserves state and suppresses delivery. Only fingerprints/timing/attempt metadata persist. Guard-owned images use private temporary directories/files and cleanup on success/failure/cancellation; legacy diagnostic artifacts are not covered. `test_hh_ui_safety`, `test_hh_ui_warning_state`. |
 | `state_store.matcher_deferred`, agent Matcher retry queue | Per-profile captured path, protected transactional JSON, private/fsync-backed writes, cooldown without expiry, revision-checked removal only after durable handling. Unknown sources/schema, corrupt reads and write failures block instead of resetting state. Disabled sources are retained; thread/process contention and downstream cancellation/error/HH guard retention are covered by `test_matcher_deferred_queue` / `test_matcher_deferred_safety`. No file lock crosses an await; this is not an external submission claim. |
@@ -30,7 +31,6 @@ pass. This is an inventory, not certification of every workflow or deployment.
 
 | Priority / paths | Remaining work |
 | --- | --- |
-| Async chat workflows: `state_store/chat_responder`, `hh_chat_responder` | Form submit/recheck/pending prompts now have scoped claims/version checks above. HH chat whole-snapshot persistence, ownership around preview/send/model waits, counters/dedupe and cancellation/uncertain external sends still need a separate regression group. No lock across awaits and no exactly-once external-send claim. |
 | `hh_response_counter.save_snapshot` | Previous snapshot / delta is calculated between separate `load` and `save` operations. Audit ordering of concurrent refreshes before declaring state/resume complete. |
 | `hh/browser._save_cookies`, browser session callbacks and other cookie clients | HH has file fsync + atomic replace, but no parent-directory fsync. Capture cookie destination/session ownership before awaits; distinguish intentional whole snapshots from read-modify-write and avoid another profile's destination. |
 | `agent._append_run_history`; `telegram_bot._append_chat_ai_audit_event` / `_append_debug_log` | Buffered append without explicit private mode, shared writer lock or durability contract. Test concurrent writers, partial-tail recovery and serialization failures; preserve append semantics instead of replacing the entire journal. |
@@ -106,3 +106,16 @@ No automatic recovery/retry is inferred from elapsed time. See
 `GOOGLE_FORM_EDITING.md` for stale-button and manual-review boundaries. Existing
 whole-snapshot `save` helpers remain explicit non-cooperating replacements, not
 new async workflow mutation APIs. HH chat transactions remain open.
+
+## Subsequent HH chat verification boundary
+
+The following chat group closes those production responder workflow mutations,
+not the earlier compatibility whole-save APIs or the remaining inventory rows.
+Six synthetic regressions fail on the previous `99c059e` tree: lost concurrent
+chat state, four changed-question variants and approval for a nonlatest message.
+The new 62-case group additionally covers thread/process contention, retained
+metadata/counters, stale owners, cancellation/disk failures and notification
+ownership. The full candidate tree passes 1504 tests, without production
+credentials or live browser/model/Telegram sends. The existing QA chat-state
+schema was inspected read-only; contents were neither exported nor modified by
+these checks. This does not certify grounding, resume provenance or live sends.
