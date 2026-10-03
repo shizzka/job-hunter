@@ -54,6 +54,31 @@ cloud-only allowlist). Config is loaded when the shared client is first created;
 an existing process needs an explicitly approved restart to pick up changes.
 Installing this patch alone does not restart a bot or run search/apply.
 
+## Optional private quality journal
+
+Set `OLLAMA_QUALITY_LOG_FILE=~/.job-hunter/llm-quality/ollama.jsonl` in the private
+provider file to retain full local text requests/responses for quality evaluation.
+`OLLAMA2_QUALITY_LOG_FILE` / `OLLAMA3_QUALITY_LOG_FILE` optionally override the shared
+path. Blank/unset overrides inherit the shared path; unset/blank all three paths
+to disable tracing. There is no default full-content logging.
+
+JSONL records pair request/response/error by `call_id` and include UTC time,
+provider, requested model, actual mapped model, latency and response finish/usage
+metadata. Malformed envelopes are recorded before the existing safe error policy.
+Transport errors record their class/status only, not raw exception content.
+Cloud and skipped vision providers are not traced. Streaming chunks are not captured
+(native JH text tasks use non-streaming requests).
+
+These files **contain personal candidate data** (resume/facts/prompts/answers), not
+just analytics. Keep them private and outside the repository; new journal
+directories are 0700 and files/lock sidecars are 0600. Writes use the existing
+locked private journal implementation. Do not upload or publish logs without
+separate consent. There is no automatic rotation, so monitor disk usage and disable
+the path when enough samples are collected. No header/API-key/base-URL fields are
+recorded; recognizable credential strings are redacted best-effort, not a guarantee
+that arbitrary secrets in user-supplied text can be detected. Failure to write the
+quality journal never rejects a vacancy or changes a successful model response.
+
 ## Verification
 
 `tests/test_emergency_ollama.py` uses synthetic providers and HTTP MockTransport.
@@ -80,3 +105,6 @@ model-aware dedupe, direct bounded transport and guarded completion branches in
 cloud fallback/error policy, usage analytics and Matcher deferred semantics until
 their replacement is verified. Remove this document, the emergency env example
 block, `tests/test_emergency_ollama.py`, and `scripts/smoke/lan_ollama.py` together.
+Also remove `ollama_quality_log.py`, `tests/test_ollama_quality_log.py`, the
+`quality_log_file` field/slot wiring/call hooks and `*_QUALITY_LOG_FILE` examples
+when Gateway replaces this temporary path.

@@ -7,6 +7,7 @@ import math
 import os
 import re
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -17,6 +18,7 @@ from httpx import TransportError
 import config
 import analytics
 import proxy_utils
+import ollama_quality_log
 
 log = logging.getLogger("llm_client")
 
@@ -38,6 +40,7 @@ class ProviderSpec:
     # Emergency temporary compatibility path; remove after AI Gateway migration.
     text_fallback_model: str = ""
     timeout_seconds: float | None = None
+    quality_log_file: str = ""
 
     def model_for(self, requested_model: str) -> str:
         model = (requested_model or "").strip()
@@ -356,6 +359,7 @@ def _build_provider_specs() -> list[ProviderSpec]:
         default_headers: dict[str, str] | None = None,
         text_fallback_model: str = "",
         timeout_seconds: float | None = None,
+        quality_log_file: str = "",
     ) -> None:
         base = (base_url or "").strip().rstrip("/")
         key = (api_key or "").strip()
@@ -370,6 +374,7 @@ def _build_provider_specs() -> list[ProviderSpec]:
                 default_headers=default_headers or {},
                 text_fallback_model=text_fallback_model,
                 timeout_seconds=timeout_seconds,
+                quality_log_file=os.path.abspath(os.path.expanduser(quality_log_file)) if quality_log_file else "",
             )
         )
 
@@ -392,6 +397,8 @@ def _build_provider_specs() -> list[ProviderSpec]:
             model_aliases=_ollama_model_aliases(provider_env, name),
             text_fallback_model=local_model,
             timeout_seconds=_ollama_timeout(provider_env, name) if local_model else None,
+            quality_log_file=(provider_env.get(f"{name}_QUALITY_LOG_FILE")
+                              or provider_env.get("OLLAMA_QUALITY_LOG_FILE", "")) if local_model else "",
         )
 
     add(
@@ -670,10 +677,17 @@ class FallbackLLMClient:
                 continue  # Never send CAPTCHA/images to emergency text-only models.
             provider_kwargs = self._kwargs_for_provider(provider, kwargs)
             attempted.append(provider.name)
+            call_id = uuid.uuid4().hex if provider.quality_log_file else ""
+            attempt_started = time.monotonic()
+            quality_meta = {"call_id": call_id, "requested_model": requested_model,
+                            "actual_model": str(provider_kwargs.get("model") or "")}
+            ollama_quality_log.record(provider, event="request", request=provider_kwargs, **quality_meta)
             try:
                 call = self._client_for(index).chat.completions.create(**provider_kwargs)
                 response = (await asyncio.wait_for(call, timeout=provider.timeout_seconds)
                             if provider.timeout_seconds is not None else await call)
+                ollama_quality_log.record(provider, event="response", response=response,
+                    latency_seconds=time.monotonic() - attempt_started, **quality_meta)
                 if provider.text_fallback_model and not kwargs.get("stream"):
                     choices = getattr(response, "choices", None)
                     content = getattr(getattr(choices[0], "message", None), "content", None) if choices else None
@@ -700,7 +714,13 @@ class FallbackLLMClient:
                     )
                 _record_usage(provider.name, str(provider_kwargs.get("model") or ""), response=response)
                 return response
+            except asyncio.CancelledError:
+                ollama_quality_log.record(provider, event="cancelled",
+                    latency_seconds=time.monotonic() - attempt_started, **quality_meta)
+                raise
             except Exception as exc:
+                ollama_quality_log.record(provider, event="error", error=exc,
+                    latency_seconds=time.monotonic() - attempt_started, **quality_meta)
                 _record_usage(provider.name, str(provider_kwargs.get("model") or ""), error_kind=type(exc).__name__)
                 last_exc = exc
                 if not _is_retryable_provider_error(exc):
