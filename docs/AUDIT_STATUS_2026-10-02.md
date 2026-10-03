@@ -532,3 +532,56 @@ against the already published critical-guard checkpoint before deployment.
 Follow-up verification: **39 HH target tests passed** (17.23 seconds);
 **1317 clean-export tests passed** (57.76 seconds). Total new tests: 78.
 Follow-up staged scan: 3 files / zero credential-pattern hits; diff check passed.
+
+## Unexpected HH dialog safety — 2026-10-03
+
+`hh.ui` classifies fresh visible DOM dialogs at guarded HH navigation, search,
+resume catalog, response/questionnaire and chat boundaries. Known optional
+dialogs require an exact known heading (profile dialogs also require a specific
+profile marker) and an enabled non-submit X/close. No profile answers, confirm
+button, Escape or outside click are used. Closing triggers a fresh scan; an
+unknown replacement or another blocking dialog stops the session. An old submit
+handle is discarded after close, and DOM submit refetches the unique response
+form before its selected-resume callback. Generic profile-form submit fallback
+is removed. A document capture barrier also blocks click/submit if an unknown
+dialog appears between the last Python scan and an action.
+
+Unknown/unsafe inspection sets a sticky `HHUnexpectedUI` stop before screenshot
+or network work. Search/details/collector/chat paths preserve that signal rather
+than rejecting/marking seen, navigating around the popup, or capturing another
+trace image. The original home and Telegram delivery target are captured before
+browser awaits. Fingerprint claims coordinate updated processes; successful
+alerts have a daily cooldown and failed/uncertain attempts a five-minute cooldown.
+Corrupt warning state remains in place and suppresses delivery. Claims are not
+exactly-once Telegram delivery: proxy/direct retries and ambiguous transport
+outcomes retain the existing delivery semantics.
+
+Screenshots may contain personal data, so guard-owned temporary directories are
+0700 and files 0600, all multipart retry handles close, and owned files/directories
+are removed on success, failure and cancellation. Missing screenshots use one
+text warning. Raw modal text/URL and credentials are not stored in the new state.
+Legacy screenshots/HTML and global retention remain separate open work.
+
+Synthetic Chromium fixtures abort requests; notifier/provider transports are
+mocked. Tests cover unknown/unsafe/multiple/nested dialogs, late dialog arrival,
+normal/force/JS/native submit, changed resume selection after close, persistence
+errors, 30 concurrent sessions and four spawned processes. Legacy fake DOMs now
+explicitly model an empty dialog scan; the production guard is not disabled.
+The Playwright CLI independently snapshots the synthetic fixture in about:blank,
+clicks only its X, and resnapshots the untouched response form. Its file://
+restriction is retained. Only this task's named browser session was closed.
+
+This is offline verification, not certification of current live HH markup,
+native browser dialogs, cross-origin frames, shadow DOM or every browser path.
+Unknown/new markup intentionally requires manual review. Live appearance checks,
+chat/negotiation original-resume provenance, async form/chat transactions and
+global state/browser parents remain open. No production bot restart, signals,
+forced search, real application/chat/provider/Telegram request, cookie/env/cron
+change or OSINT change is part of this group.
+
+Final detached source suite: **1373 passed** (87.01 seconds), 56 new tests over
+the published 1317 baseline. Targeted apply/UI/state suite: **81 passed**
+(37.84 seconds). The preceding full run found one outdated fake requiring generic
+modal-root submission; the fixture now asserts unique response-form scoping.
+Bash syntax and diff checks passed; the explicit staged set contains 20 files
+with zero credential-pattern hits. Browser snapshots are not in that set.

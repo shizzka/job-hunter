@@ -181,6 +181,8 @@ class SubmitElement:
         self.attempts = 0
 
     async def evaluate(self, script):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if 'dataQa:' in script:
             if self.page.switch_on_descriptor:
                 self.page.selected = 'wrong'
@@ -220,6 +222,8 @@ class ResumeOption:
         return 'QA'
 
     async def evaluate(self, script):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if 'value:' in script:
             return {'value': 'target', 'id': 'target'}
         return None
@@ -255,6 +259,8 @@ class ApplyPage:
         return [ResumeOption(self)] if self.target_exists else []
 
     async def evaluate(self, script):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if 'const root' in script:
             return {'ids': [self.selected], 'titles': ['QA']}
         if 'form.requestSubmit' in script:
@@ -360,6 +366,8 @@ def test_questionnaire_dom_failure_rechecks_id_before_selector_fallback():
             return self.submit
 
         async def evaluate(self, script):
+            if 'codex:hh-ui-inspect' in script:
+                return []
             if 'form.requestSubmit' in script:
                 self.selected = 'wrong'
                 return False

@@ -4,6 +4,7 @@
 Извлечено из agent.py (A-001).
 """
 from query_normalization import clean_query_list
+from hh.ui import HHUnexpectedUI
 
 import inspect
 import logging
@@ -402,6 +403,8 @@ async def collect_all(
             await _status("search_collect", f"Собираю {label}", "working")
         try:
             return await collector()
+        except HHUnexpectedUI:
+            raise
         except Exception as exc:
             log.warning("%s collection failed: %s", label, exc, exc_info=True)
             await office_log(f"{source_key}_collect_failed", f"{label} пропущен: {exc}", "warning")

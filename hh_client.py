@@ -84,6 +84,7 @@ from hh.text import compact_text as _compact_text
 from hh.text import normalize_text as _normalize_text
 from llm_client import get_llm_client
 import proxy_utils
+from hh.ui import HHUIGuard, HHUnexpectedUI
 
 log = logging.getLogger("hh_client")
 _question_answer_client = None
@@ -156,10 +157,25 @@ class HHClient:
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._last_antibot_signal: dict | None = None
+        self._ui_home = str(config.JOB_HUNTER_HOME)
+        import notifier
+        self._ui_target = notifier.capture_delivery_target()
+        self._ui_guard = None
+
+    async def _ensure_expected_ui(self, stage, *, allowed=()):
+        if self._ui_guard is None:
+            import notifier
+            target = self._ui_target
+            async def notify(photo, alert_stage, fingerprint):
+                return await notifier.notify_hh_unexpected_ui(photo, alert_stage, fingerprint, target=target)
+            self._ui_guard = HHUIGuard(self._ui_home, notify=notify)
+        if self._page is not None:
+            self._page._hh_ui_guard = self._ui_guard
+            return await self._ui_guard.ensure(self._page, stage, allowed=allowed)
 
     async def start(self, headless: bool | None = None):
         """Запустить браузер и загрузить cookies."""
-        return await _start_browser(
+        result = await _start_browser(
             self,
             headless,
             settings=config,
@@ -171,6 +187,8 @@ class HHClient:
             load_cookies=_load_cookies,
             logger=log,
         )
+        await self._ensure_expected_ui("browser_start", allowed=("captcha",))
+        return result
 
     async def stop(self, *, persist_cookies: bool = True):
         """Закрыть браузер, optionally retaining the previously saved session."""
@@ -224,9 +242,11 @@ class HHClient:
         return await _response_requires_questions(self, current_url, logger=log)
 
     async def _inspect_employer_questions(self) -> dict:
+        await self._ensure_expected_ui("inspect_questions", allowed=("response", "captcha"))
         return await _inspect_employer_questions(self._page, logger=log)
 
     async def _fill_employer_question_answers(self, answers: list[dict]) -> dict:
+        await self._ensure_expected_ui("fill_questions", allowed=("response", "captcha"))
         return await _fill_employer_question_answers(self._page, answers, logger=log)
 
     async def _submit_employer_questions(self, *, before_submit=None) -> bool:
@@ -439,6 +459,7 @@ class HHClient:
     async def is_logged_in(self) -> bool:
         """Проверить залогинен ли пользователь."""
         try:
+            await self._ensure_expected_ui("login_before_navigation", allowed=("captcha",))
             await self._page.goto(f"{config.HH_BASE_URL}/applicant/resumes", wait_until="domcontentloaded", timeout=30000)
             await self._page.wait_for_timeout(2000)
             # Закрыть модалку "Резюме стали компактнее" (whats-new-modal) если есть
@@ -453,20 +474,15 @@ class HHClient:
             # Проверяем наличие элемента резюме (новый дизайн: resume-card-link-*)
             resumes = await self._page.query_selector_all("[data-qa='resume'], [data-qa^='resume-card-link-']")
             return len(resumes) > 0 or "/applicant/resumes" in url
+        except HHUnexpectedUI:
+            raise
         except Exception as e:
             log.warning("Login check failed: %s", e)
             return False
 
     async def _dismiss_whats_new_modal(self):
-        """Закрыть модалку 'Резюме стали компактнее' (whats-new-modal) если появилась."""
-        try:
-            btn = await self._page.query_selector("[data-qa='whats-new-modal-confirm']")
-            if btn:
-                await btn.click()
-                await self._page.wait_for_timeout(500)
-                log.info("Dismissed whats-new-modal popup")
-        except Exception:
-            pass
+        """Only safe scoped close; no onboarding confirm/answers."""
+        await self._ensure_expected_ui("resume_catalog", allowed=("captcha",))
 
     async def is_logged_in_passive(self) -> bool:
         """Проверить логин без навигации текущей страницы."""
@@ -512,12 +528,14 @@ class HHClient:
         url = f"{config.HH_BASE_URL}/search/vacancy?{urlencode(params)}"
         log.info("Searching: %s", url)
 
+        await self._ensure_expected_ui("search_before_navigation", allowed=("captcha",))
         try:
             await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
         except Exception as e:
             log.warning("Search page nav issue: %s", e)
 
         await self._page.wait_for_timeout(4000)  # дать JS подгрузиться
+        await self._ensure_expected_ui("search", allowed=("captcha",))
 
         # Дебаг: скриншот поисковой выдачи (первый запрос)
         if page == 0:
@@ -702,8 +720,10 @@ class HHClient:
 
     async def get_vacancy_details(self, vacancy_url: str) -> str:
         """Получить полный текст вакансии."""
+        await self._ensure_expected_ui("details_before_navigation", allowed=("captcha",))
         await self._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=20000)
         await self._page.wait_for_timeout(2000)
+        await self._ensure_expected_ui("vacancy_details", allowed=("captcha",))
 
         body_text = await self._page_text(limit=20000)
         try:
@@ -741,6 +761,7 @@ class HHClient:
         )
 
     async def _detect_response_controls(self):
+        await self._ensure_expected_ui("response_controls", allowed=("response", "captcha"))
         return await _detect_response_controls(self)
 
     async def apply_to_vacancy(
@@ -781,12 +802,14 @@ class HHClient:
         Проверить статус откликов.
         Возвращает {"invitations": [...], "responses": int, "new_messages": int}
         """
+        await self._ensure_expected_ui("negotiations_before_navigation", allowed=("captcha",))
         await self._page.goto(
             f"{config.HH_BASE_URL}/applicant/negotiations",
             wait_until="domcontentloaded",
             timeout=20000,
         )
         await self._page.wait_for_timeout(3000)
+        await self._ensure_expected_ui("negotiations", allowed=("captcha",))
 
         result = {"invitations": [], "responses": 0, "new_messages": 0}
 
@@ -840,12 +863,14 @@ class HHClient:
 
     async def get_negotiation_statuses(self) -> list[dict]:
         """Прочитать видимые статусы откликов на странице переговоров."""
+        await self._ensure_expected_ui("negotiation_statuses_before_navigation", allowed=("captcha",))
         await self._page.goto(
             f"{config.HH_BASE_URL}/applicant/negotiations",
             wait_until="domcontentloaded",
             timeout=20000,
         )
         await self._page.wait_for_timeout(3000)
+        await self._ensure_expected_ui("negotiation_statuses", allowed=("captcha",))
 
         items = []
         cards = await self._page.query_selector_all(

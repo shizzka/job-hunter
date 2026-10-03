@@ -15,6 +15,7 @@ import profile as profile_mod
 from debug_trace import ApplyTrace
 from hh_client import HHClient
 from hh.resume_target import exact_title_resume_id
+from hh.ui import HHUnexpectedUI
 from superjob_client import SuperJobClient
 from habr_career_client import HabrCareerClient
 from geekjob_client import GeekJobClient
@@ -92,6 +93,8 @@ async def fetch_vacancy_details(
             details = await habr_client.get_vacancy_details(url)
         elif source == "geekjob" and geekjob_client is not None:
             details = await geekjob_client.get_vacancy_details(url)
+    except HHUnexpectedUI:
+        raise
     except Exception as e:
         log.warning("Failed to get %s details for %s: %s", source, vacancy.get("id"), e)
 
@@ -116,6 +119,8 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
             if target_title:
                 try:
                     target_id = exact_title_resume_id(await hh_client.get_resume_ids(), target_title)
+                except HHUnexpectedUI:
+                    raise
                 except Exception as exc:
                     log.warning("HH resume target resolution failed: %s", type(exc).__name__)
             if not target_id:
@@ -169,7 +174,7 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
             if trace is not None:
                 failure_stage = trace.last_stage
                 hh_client = kwargs.get("hh_client") or (args[0] if args else None)
-                if getattr(hh_client, "_page", None) is not None:
+                if not isinstance(exc, HHUnexpectedUI) and getattr(hh_client, "_page", None) is not None:
                     await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
                 trace.finish(
                     ok=False,

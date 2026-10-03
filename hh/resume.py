@@ -5,6 +5,7 @@ import os
 
 import config
 from hh.text import normalize_text as _normalize_text
+from hh.ui import ensure_session_ui
 
 log = logging.getLogger("hh_client")
 
@@ -65,6 +66,7 @@ async def get_resume_ids(
     logger=log,
 ) -> list[dict]:
     """Получить ID резюме пользователя."""
+    await ensure_session_ui(session, "catalog_before_navigation", allowed=("captcha",))
     try:
         await session._page.goto(
             f"{settings.HH_BASE_URL}/applicant/resumes",

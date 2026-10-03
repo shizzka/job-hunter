@@ -123,7 +123,13 @@ async def _deliver_multipart(url: str, form: "aiohttp.FormData", use_proxy: bool
     return True
 
 
-async def _send_to_chats(method: str, build_request, *, multipart: bool = False) -> bool:
+def capture_delivery_target():
+    """Capture routing before browser awaits; never persist or log credentials."""
+    profile = _active_profile()
+    return (_resolve_bot_token(profile), tuple(_resolve_target_chat_ids(profile)), _resolve_proxy_url(profile))
+
+
+async def _send_to_chats(method: str, build_request, *, multipart: bool = False, target=None) -> bool:
     """Универсальная отправка в Telegram-API с резолвом профиля/токена/чатов и
     автоматическим proxy→direct retry.
 
@@ -131,14 +137,11 @@ async def _send_to_chats(method: str, build_request, *, multipart: bool = False)
     ``aiohttp.FormData`` (multipart). Вызывается заново для каждого chat_id и для
     каждой попытки (proxy/direct), потому что file-handle в FormData одноразовый.
     """
-    profile = _active_profile()
-    bot_token = _resolve_bot_token(profile)
-    chat_ids = _resolve_target_chat_ids(profile)
+    bot_token, chat_ids, proxy_url = capture_delivery_target() if target is None else target
     if not bot_token or not chat_ids:
         log.warning("Telegram not configured (no token or targets)")
         return False
 
-    proxy_url = _resolve_proxy_url(profile)
     url = f"https://api.telegram.org/bot{bot_token}/{method}"
     proxy_modes = [(True, proxy_url)] if proxy_url else []
     proxy_modes.append((False, ""))  # direct fallback всегда есть
@@ -220,6 +223,32 @@ async def send_photo(photo_path: str, caption: str = "", parse_mode: str = "HTML
         _build_photo_form(photo_path, caption, parse_mode, reply_markup),
         multipart=True,
     )
+
+
+async def notify_hh_unexpected_ui(photo_path, stage, fingerprint, *, target):
+    """One guarded delivery; do not include raw modal text or page URL."""
+    caption = ("⚠️ <b>Нестандартное поведение HH</b>\n"
+               "Текущий browser flow остановлен. Вопросы профиля не заполнялись; нужна ручная проверка.\n"
+               f"Этап: <code>{_html(stage, 100)}</code>\n"
+               f"Fingerprint: <code>{_html(fingerprint[:12], 12)}</code>")
+    if photo_path:
+        # This alert owns the temporary file: close every retry handle explicitly.
+        handles = []
+        def build(chat_id):
+            form = aiohttp.FormData()
+            form.add_field("chat_id", str(chat_id))
+            form.add_field("caption", caption)
+            form.add_field("parse_mode", "HTML")
+            handle = open(photo_path, "rb")
+            handles.append(handle)
+            form.add_field("photo", handle, filename="unexpected-ui.png", content_type="image/png")
+            return form
+        try:
+            return await _send_to_chats("sendPhoto", build, multipart=True, target=target)
+        finally:
+            for handle in handles:
+                handle.close()
+    return await _send_to_chats("sendMessage", _build_text_payload(caption + "\nСнимок недоступен.", "HTML", None), target=target)
 
 
 def _html(value, limit: int | None = 1000) -> str:

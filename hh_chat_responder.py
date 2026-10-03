@@ -32,6 +32,7 @@ import time
 from typing import Any
 
 import config
+from hh.ui import HHUnexpectedUI
 from llm_client import get_llm_client
 from llm_utils import parse_llm_json
 from google_form_filler import extract_google_form_urls
@@ -718,6 +719,8 @@ async def list_reply_candidates(
         try:
             data = await get_messages(page, chat_id)
             summary["chats_read"] += 1
+        except HHUnexpectedUI:
+            raise
         except Exception as exc:
             log.warning("candidate get_messages(%s) failed: %s", chat_id, exc)
             summary["read_failures"] += 1

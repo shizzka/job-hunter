@@ -1,6 +1,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import hh_client
 from hh import forms
@@ -71,7 +72,7 @@ def test_inspect_employer_questions_repairs_missing_result_keys():
 
 def test_legacy_inspect_wrapper_forwards_patchable_dependencies(monkeypatch):
     client = hh_client.HHClient()
-    client._page = object()
+    client._page = SimpleNamespace(evaluate=AsyncMock(return_value=[]))
     captured = {}
 
     async def fake_inspect(page, *, logger):
@@ -108,7 +109,7 @@ def test_fill_employer_question_answers_passes_plan_to_page():
 
 def test_legacy_fill_wrapper_forwards_patchable_dependencies(monkeypatch):
     client = hh_client.HHClient()
-    client._page = object()
+    client._page = SimpleNamespace(evaluate=AsyncMock(return_value=[]))
     captured = {}
 
     async def fake_fill(page, answers, *, logger):

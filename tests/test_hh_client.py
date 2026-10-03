@@ -53,6 +53,11 @@ class FakePage:
     def is_closed(self) -> bool:
         return self._closed
 
+    async def evaluate(self, script, *args):
+        if 'codex:hh-ui-inspect' in script:
+            return []
+        return None
+
 
 class FakeContext:
     def __init__(self, names: list[str] | None = None):
@@ -133,6 +138,8 @@ def test_search_link_fallback_disposes_parent_handle(monkeypatch):
             self.disposed = False
 
         async def evaluate(self, script):
+            if 'codex:hh-ui-inspect' in script:
+                return []
             return "QA Engineer\nAcme\nот 100 000 руб"
 
         async def dispose(self):
@@ -158,6 +165,11 @@ def test_search_link_fallback_disposes_parent_handle(monkeypatch):
             self.link = link
 
         async def goto(self, *args, **kwargs):
+            return None
+
+        async def evaluate(self, script, *args):
+            if 'codex:hh-ui-inspect' in script:
+                return []
             return None
 
         async def wait_for_timeout(self, timeout_ms):
@@ -260,6 +272,8 @@ class FakeApplyElement:
         return None
 
     async def evaluate(self, script: str):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         return None
 
     async def inner_text(self):
@@ -286,6 +300,8 @@ class FakeTextField:
         self.value = value
 
     async def evaluate(self, script: str, value: str | None = None):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if value is not None:
             self.value = value
         return None
@@ -347,6 +363,8 @@ class FakeApplyPage:
         return None
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if "document.body.innerText" in script:
             if self.stage == "success":
                 return "Резюме доставлено\nОтклик отправлен"
@@ -365,6 +383,8 @@ class FakeArchivedApplyPage(FakeApplyPage):
         )
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if "document.body.innerText" in script:
             return "Вакансия в архиве\nОтклики больше не принимаются"
         if "[...document.querySelectorAll('[data-qa]')]" in script:
@@ -433,6 +453,8 @@ class FakeDirectResponsePage:
         return []
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if 'const root' in script:
             return {'ids': ['synthetic-resume'], 'titles': ['Synthetic QA']}
         if "document.body.innerText.slice(0, 2000)" in script:
@@ -490,6 +512,8 @@ class FakeQuestionResponsePage(FakeDirectResponsePage):
         return await super().query_selector(selector)
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if "codex:response-form-signature" in script:
             return {
                 "controls": [
@@ -543,6 +567,8 @@ class FakeExpandableCoverLetterPage(FakeDirectResponsePage):
         return []
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if "document.body.innerText.slice(0, 2000)" in script:
             return "Форма отклика"
         if "document.body.innerText.slice(0, 4000)" in script:
@@ -569,6 +595,8 @@ class FakeAutoAnswerQuestionPage(FakeQuestionResponsePage):
         self.filled_answer = ""
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if "codex:auto-question-inspect" in script:
             return {
                 "page_text": f"Ответьте на вопросы {self.question_text}",
@@ -600,6 +628,8 @@ class FakeManyAutoAnswerQuestionPage(FakeAutoAnswerQuestionPage):
         self.filled_answers = []
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if "codex:auto-question-inspect" in script:
             return {
                 "page_text": "Ответьте на вопросы анкеты",
@@ -664,6 +694,8 @@ class FakeTwoStepAutoAnswerQuestionPage(FakeAutoAnswerQuestionPage):
         return await super().query_selector(selector)
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if "codex:response-form-signature" in script:
             if self.stage == "response":
                 return {
@@ -763,6 +795,8 @@ class FakeResumeSelectionReturnsToVacancyPage:
         return []
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if "document.body.innerText.slice(0, 4000)" in script:
             if self.stage == "resume":
                 return "Выберите резюме QA Resume"
@@ -1158,6 +1192,8 @@ def test_explicit_resume_is_verified_before_submit(monkeypatch):
     client._page = FakeDirectResponsePage()
     original = client._page.evaluate
     async def evaluate(script, arg=None):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if 'return {ids, titles}' in script:
             return {'ids': ['qa-id'], 'titles': ['QA Resume']}
         return await original(script, arg)
@@ -1174,6 +1210,8 @@ def test_matching_title_cannot_override_mismatched_explicit_resume_id(monkeypatc
     client._page = FakeDirectResponsePage()
     original = client._page.evaluate
     async def evaluate(script, arg=None):
+        if 'codex:hh-ui-inspect' in script:
+            return []
         if 'return {ids, titles}' in script:
             return {'ids': ['electrician-id'], 'titles': ['QA Resume']}
         return await original(script, arg)

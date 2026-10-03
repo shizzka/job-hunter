@@ -5,6 +5,7 @@ import os
 import re
 
 from hh.text import compact_text, normalize_text
+from hh.ui import HHUnexpectedUI, ensure_session_ui
 
 
 CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS = (
@@ -94,14 +95,24 @@ async def click_with_fallbacks(session, element, label: str, *, logger, before_c
     )
 
     for strategy_name, action in strategies:
+        if await ensure_session_ui(session, "click:" + label, allowed=("response", "captcha")):
+            # Closing can replace the form/selection. Never force an old handle;
+            # the caller may refetch through the guarded DOM-submit fallback.
+            logger.warning("%s handle invalidated by modal close; refetch required", label)
+            return False
         if before_click is not None and not await before_click():
             logger.warning("%s blocked by fresh pre-submit guard", label)
+            return False
+        if await ensure_session_ui(session, "verified_click:" + label, allowed=("response", "captcha")):
             return False
         try:
             logger.info("Clicking %s via %s strategy", label, strategy_name)
             await action()
             await session._page.wait_for_timeout(1000)
+            await ensure_session_ui(session, "after_click:" + label, allowed=("response", "captcha"))
             return True
+        except HHUnexpectedUI:
+            raise
         except Exception as e:
             logger.warning("%s click via %s failed: %s", label, strategy_name, e)
 
@@ -432,7 +443,10 @@ async def expand_cover_letter_input(session) -> bool:
 
 
 async def submit_response_form_via_dom(session, *, logger, before_submit=None) -> bool:
+    await ensure_session_ui(session, "dom_submit", allowed=("response", "captcha"))
     if before_submit is not None and not await before_submit():
+        return False
+    if await ensure_session_ui(session, "verified_dom_submit", allowed=("response", "captcha")):
         return False
     try:
         result = await session._page.evaluate(
@@ -449,24 +463,10 @@ async def submit_response_form_via_dom(session, *, logger, before_submit=None) -
                         "[data-qa='vacancy-response-letter-submit']",
                         "button[type='submit']"
                     ].join(",");
-                    const roots = [
-                        ...document.querySelectorAll(
-                            "[data-qa='modal-overlay'], [role='dialog']"
-                        )
-                    ].filter(visible);
-                    let button = null;
-                    for (const root of roots) {
-                        button = [...root.querySelectorAll(buttonSelector)].find(visible);
-                        if (button) {
-                            break;
-                        }
-                    }
-                    if (!button) {
-                        button = [...document.querySelectorAll(buttonSelector)].find(visible);
-                    }
-                    const form = button?.form
-                        || button?.closest("form[name='vacancy_response']")
-                        || [...document.querySelectorAll("form[name='vacancy_response']")].find(visible);
+                    const forms = [...document.querySelectorAll("form[name='vacancy_response']")].filter(visible);
+                    if (forms.length !== 1) return false;
+                    const form = forms[0];
+                    const button = [...form.querySelectorAll(buttonSelector)].find(visible);
                     if (form && typeof form.requestSubmit === 'function') {
                         if (button && button.form === form) {
                             form.requestSubmit(button);
@@ -475,16 +475,13 @@ async def submit_response_form_via_dom(session, *, logger, before_submit=None) -
                         }
                         return true;
                     }
-                    if (button) {
-                        button.click();
-                        return true;
-                    }
                     return false;
                 }"""
         )
     except Exception as exc:
         logger.debug("DOM submit fallback failed: %s", exc)
         return False
+    await ensure_session_ui(session, "after_dom_submit", allowed=("response", "captcha"))
     return bool(result)
 
 
@@ -874,6 +871,7 @@ async def apply_to_vacancy(
 
     async def answer_questions_with_verified_resume():
         nonlocal cover_letter_filled
+        await ensure_session_ui(session, "answer_questions", allowed=("response", "captcha"))
         if wants_specific_resume and not await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
             return {"ok": False, "message": "Резюме в анкете не подтверждено — нужна ручная проверка"}
         if cover_letter:
@@ -1053,6 +1051,7 @@ async def apply_to_vacancy(
         return await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title)
 
     try:
+        await ensure_session_ui(session, "apply_before_navigation", allowed=("response", "captcha"))
         await session._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=30000)
         trace_event(
             "VACANCY_NAVIGATION",
@@ -1060,6 +1059,8 @@ async def apply_to_vacancy(
             requested_url=vacancy_url,
             url=getattr(session._page, "url", vacancy_url),
         )
+    except HHUnexpectedUI:
+        raise
     except Exception as e:
         logger.warning("Vacancy page nav issue: %s", e)
         trace_event(
@@ -1071,6 +1072,7 @@ async def apply_to_vacancy(
         )
 
     await session._page.wait_for_timeout(3000)
+    await ensure_session_ui(session, "vacancy_open", allowed=("response", "captcha"))
     await save_debug_snapshot("debug_apply_page")
 
     anti_bot_kind = await session._detect_anti_bot_kind()
@@ -1087,6 +1089,7 @@ async def apply_to_vacancy(
             except Exception as e:
                 logger.warning("Direct response page nav issue: %s", e)
             await session._page.wait_for_timeout(3000)
+            await ensure_session_ui(session, "response_open", allowed=("response", "captcha"))
             await save_debug_snapshot("debug_apply_response_page")
     anti_bot_kind = await session._detect_anti_bot_kind()
     anti_bot_kind = await session._handle_anti_bot_with_solver(anti_bot_kind, stage="vacancy_page")
@@ -1169,10 +1172,13 @@ async def apply_to_vacancy(
             if not re.search(rf"[?&]vacancyId={re.escape(expected_vacancy_id)}(?:[&#]|$)", str(session._page.url)):
                 raise RuntimeError("Target vacancy response URL not confirmed")
             await session._page.wait_for_timeout(1000)
+            await ensure_session_ui(session, "resume_preflight", allowed=("response", "captcha"))
             current_url, response_header, questions_required, resume_select, letter_field, submit_btn = await detect_response_controls()
             if await session._apply_success_detected():
                 return await finalize_success("Уже откликались ранее", already_applied=True)
             resume_verified = await select_preferred_resume()
+        except HHUnexpectedUI:
+            raise
         except Exception as exc:
             logger.warning("Resume preflight failed: %s", type(exc).__name__)
         trace_event(

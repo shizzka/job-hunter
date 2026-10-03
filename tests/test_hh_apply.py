@@ -264,7 +264,8 @@ class FakeDomSubmitPage:
         self.script = script
         assert "form[name='vacancy_response']" in script
         assert "vacancy-response-submit-popup" in script
-        assert "modal-overlay" in script
+        assert "modal-overlay" not in script  # Only a unique response form, never a profile modal.
+        assert "forms.length !== 1" in script
         assert "requestSubmit(button)" in script
         return True
 

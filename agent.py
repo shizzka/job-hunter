@@ -58,6 +58,7 @@ from outcome import (
 from geekjob_client import GeekJobClient
 from habr_career_client import HabrCareerClient
 from hh_client import HHClient
+from hh.ui import HHUnexpectedUI
 from matcher import analyze_cover_letter, evaluate_vacancy, generate_cover_letter, is_manual_review_candidate, is_deferred_evaluation
 from office_bridge import office_log, create_task, task_progress, task_complete
 from office_bridge import close_session as close_office_session
@@ -714,6 +715,10 @@ async def do_manual_apply_token(token: str) -> dict:
         print(f"❌ ИИ-отклик не завершился: {message}")
         return {"ok": False, "message": message}
 
+    except HHUnexpectedUI as exc:
+        # Keep the existing pending candidate available for a manual retry;
+        # the UI guard already delivered/deduped the warning and owns its image.
+        return {"ok": False, "reason": "hh_unexpected_ui", "message": str(exc)}
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
         manual_apply_queue.mark_candidate(token, "failed", message)
@@ -956,6 +961,8 @@ async def do_search(dry_run: bool = False) -> dict:
                                 "Prepared %d hh retry candidates for staged resumes",
                                 len(hh_retry_vacancies),
                             )
+            except HHUnexpectedUI:
+                raise
             except Exception as e:
                 log.warning("Failed to prepare hh staged resume pipeline: %s", e)
 
@@ -1525,6 +1532,8 @@ async def do_search(dry_run: bool = False) -> dict:
                     preferred_resume_id=(hh_resume_variant or {}).get("id", ""),
                     trace=apply_trace,
                 )
+            except HHUnexpectedUI:
+                raise
             except Exception as e:
                 snapshot = await _save_autoapply_failure_snapshot(
                     source,
@@ -1940,9 +1949,15 @@ async def do_search(dry_run: bool = False) -> dict:
                     chat_summary.get("skipped", 0),
                     chat_summary.get("read_failures", 0),
                 )
+            except HHUnexpectedUI:
+                raise
             except Exception as exc:
                 log.warning("chat-responder failed: %s", exc)
 
+    except HHUnexpectedUI as exc:
+        result["note"] = str(exc)
+        await set_hunter_status("hh_ui_blocked", str(exc), "busy")
+        _record_search_run(result, dry_run=dry_run, ok=False, error="hh_unexpected_ui")
     except Exception as e:
         log.error("Search failed: %s", e, exc_info=True)
         await set_hunter_status("error", f"Ошибка поиска: {e}", "idle")

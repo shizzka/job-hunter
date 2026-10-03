@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from chat_screening import classify_message_author
+from hh.ui import HHUnexpectedUI, ensure_page_ui
 
 log = logging.getLogger("chat_responder")
 CHATIK_ROOT = "https://chatik.hh.ru"
@@ -92,6 +93,7 @@ async def open_chatik_page(
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
+            await ensure_page_ui(page, "chat_before_navigation")
             # Chatik is an SPA; DOMContentLoaded can hang even after the useful UI
             # is rendered. Wait for the actual chatik element instead.
             await page.goto(
@@ -105,7 +107,10 @@ async def open_chatik_page(
                 timeout=ready_timeout_ms,
             )
             await page.wait_for_timeout(settle_ms)
+            await ensure_page_ui(page, "chat_open")
             return
+        except HHUnexpectedUI:
+            raise
         except Exception as exc:
             last_exc = exc
             current_url = getattr(page, "url", "") or ""
@@ -315,6 +320,8 @@ async def get_messages_safe(
         data = await extract_current_messages(page)
         data.setdefault("error", "")
         return data
+    except HHUnexpectedUI:
+        raise
     except Exception as exc:
         await reset_page(page)
         return {
@@ -384,6 +391,7 @@ async def fill_and_preview(
         settle_ms=2000,
     )
     await dismiss_cookies(page)
+    await ensure_page_ui(page, "chat_preview")
     quick_reply = choose_quick_reply(text)
     quick_button = await find_quick_reply(page, quick_reply)
     if quick_button:
@@ -409,6 +417,7 @@ async def fill_and_preview(
     if not inp:
         return {"filled": False, "reason": "input not found"}
     await inp.focus()
+    await ensure_page_ui(page, "chat_fill")
     await inp.fill(text)
     await page.wait_for_timeout(500)
     shot_path = path_join(
@@ -451,9 +460,13 @@ async def send_message(
     if not button:
         logger.warning("send button not found (quick_reply=%r)", quick_reply)
         return False
+    await ensure_page_ui(page, "chat_send")
     try:
         await button.click()
         await page.wait_for_timeout(2500)
+        await ensure_page_ui(page, "after_chat_send")
+    except HHUnexpectedUI:
+        raise
     except Exception as exc:
         logger.warning("send click failed: %s", exc)
         return False
