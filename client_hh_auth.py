@@ -187,29 +187,7 @@ def _update_profile_resume_ids(profile_name: str, resumes: list[dict]) -> str:
         updates[id_key] = _normalize_env_value(item.get("id") or "")
         updates[title_key] = _normalize_env_value(item.get("title") or "")
 
-    with open(env_file, encoding="utf-8") as f:
-        lines = f.read().splitlines()
-
-    key_to_index: dict[str, int] = {}
-    for idx, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, _ = stripped.partition("=")
-        key_to_index[key.strip()] = idx
-
-    for key, value in updates.items():
-        rendered = f"{key}={_normalize_env_value(value)}"
-        if key in key_to_index:
-            lines[key_to_index[key]] = rendered
-        else:
-            if lines and lines[-1].strip():
-                lines.append("")
-            lines.append(rendered)
-
-    atomic_write_text(env_file, "\n".join(lines).rstrip() + "\n")
-
-    return env_file
+    return profile_mod.update_env_file(env_file, updates)
 
 
 

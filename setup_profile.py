@@ -12,6 +12,7 @@ import sys
 
 import config
 import profile as profile_mod
+from state_store.json_store import atomic_create_text, atomic_write_text
 
 
 def _ask(prompt: str, default: str = "") -> str:
@@ -234,14 +235,12 @@ def run_wizard():
     )
 
     env_file = os.path.join(profile_dir, "profile.env")
-    with open(env_file, "w") as f:
-        f.write(env_content)
+    atomic_create_text(env_file, env_content)
 
     # Сохраняем резюме
     resume_file = os.path.join(profile_dir, "resume.md")
     if resume_text:
-        with open(resume_file, "w", encoding="utf-8") as f:
-            f.write(resume_text)
+        atomic_write_text(resume_file, resume_text)
         print(f"  Резюме сохранено ({len(resume_text)} символов)")
 
     p = profile_mod.load_profile(name)
@@ -259,8 +258,7 @@ def run_wizard():
             print(analysis)
             # Сохраняем анализ
             analysis_path = os.path.join(profile_dir, "resume_analysis.md")
-            with open(analysis_path, "w", encoding="utf-8") as f:
-                f.write(analysis)
+            atomic_write_text(analysis_path, analysis)
             print(f"\n📄 Анализ сохранён: {analysis_path}")
             print()
     elif resume_text and not config.LLM_API_KEY:

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import config
-from state_store.json_store import atomic_write_text
+from state_store.json_store import atomic_create_text, atomic_write_text, file_lock
 
 log = logging.getLogger("profile")
 
@@ -675,7 +675,7 @@ def create_profile(name: str, search_queries: list[str] | None = None) -> Profil
         f"INVITE_CHECK_INTERVAL_MIN=480\n"
     )
 
-    atomic_write_text(env_file, template)
+    atomic_create_text(env_file, template)
 
     log.info("Created profile '%s' at %s", name, profiles_dir)
     return load_profile(name)
@@ -706,29 +706,54 @@ def update_profile_env(name: str, updates: dict[str, str | int]) -> str:
     env_file = profile_env_path(name)
     if not os.path.isfile(env_file):
         raise FileNotFoundError(f"Профиль '{name}' не найден: {env_file}")
+    return update_env_file(env_file, updates)
 
-    with open(env_file, encoding="utf-8") as f:
-        lines = f.read().splitlines()
 
-    key_to_index: dict[str, int] = {}
-    for idx, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, _ = stripped.partition("=")
-        key_to_index[key.strip()] = idx
+def update_env_file(
+    env_file: str | os.PathLike[str],
+    updates: dict[str, str | int],
+    *,
+    only_missing: bool = False,
+    comment: str = "",
+) -> str:
+    """Update an existing env under one stable lock; preserve unrelated settings.
 
-    for key, value in updates.items():
-        rendered = f"{key}={_normalize_env_value(value)}"
-        if key in key_to_index:
-            lines[key_to_index[key]] = rendered
-        else:
-            if lines and lines[-1].strip():
-                lines.append("")
-            lines.append(rendered)
+    Read/decode failures propagate without replacing the original. Migration can
+    add only absent keys; existing empty values still belong to the candidate.
+    """
+    env_file = os.fspath(env_file)
+    with file_lock(env_file):
+        with open(env_file, encoding="utf-8") as stream:
+            original = stream.read()
+        lines = original.splitlines()
+        key_to_index: dict[str, int] = {}
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, _, _ = stripped.partition("=")
+            key_to_index[key.strip()] = idx
 
-    atomic_write_text(env_file, "\n".join(lines).rstrip() + "\n")
+        selected = {
+            key: value for key, value in updates.items()
+            if not only_missing or key not in key_to_index
+        }
+        if not selected:
+            return env_file
+        if comment:
+            lines.extend(["", f"# {_normalize_env_value(comment)}"])
+        for key, value in selected.items():
+            rendered = f"{key}={_normalize_env_value(value)}"
+            if key in key_to_index:
+                lines[key_to_index[key]] = rendered
+            else:
+                if lines and lines[-1].strip():
+                    lines.append("")
+                lines.append(rendered)
 
+        updated = "\n".join(lines).rstrip() + "\n"
+        if updated != original:
+            atomic_write_text(env_file, updated)
     return env_file
 
 

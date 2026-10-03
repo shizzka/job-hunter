@@ -301,3 +301,41 @@ or modifying state. Diff and Bash syntax checks passed.
 No production process restart/signal, provider/Telegram request, real HH
 submission, production state edit or OSINT change was made. This does not provide
 exactly-once vacancy submission or complete repository-wide state safety.
+
+### Follow-up: resume/setup text and profile env transactions (2026-10-03)
+
+Resume downloads, CLI/setup analysis and setup resume persistence now use
+private atomic text with file and parent-directory fsync. Download captures both
+the output path and HH resume-selection variants before its first await; ID and
+title resolution cannot switch to another profile's settings while downloading.
+Existing resolver callers retain their current-config behavior.
+
+Profile/setup env creation and legacy note migration publish a fully written
+private file by same-directory hard link, refusing an existing target even if
+another creator appeared after the initial existence check. No destructive
+fallback is used if that operation is unsupported. Profile edits, HH-auth resume
+slots and optional salary migration share one stable env sidecar across the
+entire read/modify/atomic-replace operation. Other keys/comments and last-duplicate
+key behavior remain; salary migration preserves existing values, including empty
+ones, and adds its comment only when inserting missing settings.
+
+The corrected initial 17-check baseline on old commit `974058f` gives **15
+failures / 2 passes**. Two more regressions reproduced wrong-profile resume
+selection on the intermediate fix. Final coverage adds **32 tests**, including
+four spawned env writers retaining 40 keys, eight simultaneous atomic creators
+with one winner, private permissions, fsync/link/replace and read/UTF-8 failures,
+symlink refusal, no-clobber setup and offline CLI analysis. Full verification:
+**1242 local tests passed** (36.72 seconds), **1170 passed** in a clean staged
+publication-tree export with isolated HOME (40.29 seconds), using the existing
+venv. The 72-test difference remains the pre-existing local-only set. Bash syntax
+and diff checks passed.
+
+The writer inventory is [STATE_WRITERS_2026-10-03.md](STATE_WRITERS_2026-10-03.md).
+It identifies unclosed form/chat whole-snapshot workflows, cookie session
+ownership/durability, JSONL journals, diagnostics and log/shell handling. General
+atomicity, state/resume and semantic resume-analysis coverage remain open. These
+are per-file guarantees, not multi-file rollback or exactly-once processing;
+post-publication directory-fsync failure can leave the new complete file visible.
+Already running old code and external editors do not acquire the new advisory
+env lock automatically. No production process restart/signal, provider/Telegram
+request, real HH submission, runtime file edit or OSINT change was made.

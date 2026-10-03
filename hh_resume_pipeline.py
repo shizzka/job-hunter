@@ -230,9 +230,10 @@ def get_variant_by_name(name: str) -> dict | None:
     return None
 
 
-def resolve_variants(resumes: list[dict]) -> list[dict]:
+def resolve_variants(resumes: list[dict], *, variants: list[dict] | None = None) -> list[dict]:
+    """Resolve titles/IDs, optionally using a pre-await profile snapshot."""
     resolved = []
-    for variant in get_variants():
+    for variant in get_variants() if variants is None else variants:
         resolved_variant = dict(variant)
         if not resolved_variant.get("id") and resolved_variant.get("title"):
             title_cf = resolved_variant["title"].casefold()

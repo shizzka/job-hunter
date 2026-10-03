@@ -1,0 +1,66 @@
+# Persistent writer inventory — 2026-10-03
+
+Scope: Python production modules and smoke scripts in the local Job Hunter
+checkout. Static searches covered `open`/`os.open`, `write_text`/`write_bytes`,
+`json.dump`, atomic helpers, repository `save`/`update`, logging handlers and
+browser screenshots. Tests, venv, generated output and network JSON payloads are
+not persistent-state writers. Shell launch/log handling still needs a separate
+pass. This is an inventory, not certification of every workflow or deployment.
+
+## Covered groups
+
+| Writers | Current protection / evidence |
+| --- | --- |
+| `seen`, `hh_guard`, analytics JSON state, `hh_resume_pipeline`, `facts` | Shared locked atomic updates, corruption backups and propagation of read I/O failures. Existing state-store and module regression tests; candidate-facts backup uses private atomic JSON. |
+| `runtime_control`, Telegram access/clients/resume limits | Private atomic JSON/PID, transactional registry mutations and lifecycle/owner locks. Registry/lifecycle follow-ups in the audit document. |
+| `telegram_bot` authoritative state and agent runtime status | Transactional bot-state mutations, shared runtime sidecar lock, separate process lifecycle locks. `test_bot_state_transactions`. |
+| `manual_apply_queue`, `candidate_interview`, `company_blacklist` | Transactional updates, corruption retained in place, private/fsync-backed writes; legacy queue/blacklist lock names retained. `test_queue_fact_state`. |
+| `agent` resume download / analysis, `setup_profile` env / resume / analysis | Private atomic text writes; download captures the destination and resume-selection variants before the first await. Setup env publication cannot clobber a concurrent creator. `test_text_env_state`. |
+| `profile.create_profile`, `migrate_profile_note` note creation | Complete private temporary file published by same-directory hard link, then temp unlink and parent fsync. Existing files, including symlinks, cannot be replaced. Unsupported link/filesystem operations fail rather than falling back to truncation. `test_text_env_state`, existing migration tests. |
+| `profile.update_profile_env`, HH-auth resume-slot update, note salary migration | One stable `.profile.env.lock` across read/mutate/atomic replacement. Comments/unrelated keys retained, values normalized; migration inserts only missing keys, including preservation of existing empty values. `test_text_env_state`, profile/auth/migration tests. |
+| HH-auth text imports/catalog, auth/CAPTCHA IPC; Habr/GeekJob/SuperJob cookies/auth | Already use private atomic text/JSON. Atomic serialization is covered, but async destination ownership and workflow concurrency are not globally certified; see follow-ups. |
+
+## Open follow-ups
+
+| Priority / paths | Remaining work |
+| --- | --- |
+| Authoritative form/chat edits: `google_forms/drafts`, `state_store/google_forms`, `google_form_filler`, `state_store/chat_responder`, `hh_chat_responder` | Atomic `save` alone does not make a separately loaded snapshot transactional. Form `remember`, manual-answer/supersede paths and async workflows need concurrency, terminal-state and corruption-preservation audit. Never hold a file lock across network/browser awaits. |
+| `hh_response_counter.save_snapshot` | Previous snapshot / delta is calculated between separate `load` and `save` operations. Audit ordering of concurrent refreshes before declaring state/resume complete. |
+| `hh/browser._save_cookies`, browser session callbacks and other cookie clients | HH has file fsync + atomic replace, but no parent-directory fsync. Capture cookie destination/session ownership before awaits; distinguish intentional whole snapshots from read-modify-write and avoid another profile's destination. |
+| `agent._append_run_history`; `telegram_bot._append_chat_ai_audit_event` / `_append_debug_log` | Buffered append without explicit private mode, shared writer lock or durability contract. Test concurrent writers, partial-tail recovery and serialization failures; preserve append semantics instead of replacing the entire journal. |
+| `analytics._append_event` | Already private, inode-locked append with truncated-tail separation and optional file fsync. Do not classify as unprotected append. Review reader handling, create/rotation durability and profile destination capture as a separate contract. |
+| `debug_trace._private_write_text` / `.event` | Private diagnostic artifacts, not authoritative business state. Text uses truncation and a single `os.write`; JSONL also assumes a full write. Check short writes, concurrency and atomic summaries; do not publish artifacts containing personal data. |
+| Legacy HTML/screenshots in `agent`, `hh_client`, `hh/apply`, `hh/resume`, `hh/chat`, `hh_chat_responder`, `superjob_client`, `habr_career_client`, `google_forms/filling` | Non-authoritative diagnostics; some HTML is directly truncated and screenshots are browser-owned writes. Audit private permissions, unique names, redaction and destination ownership. CAPTCHA has existing private-temp cleanup coverage; do not broaden that claim to all screenshots. |
+| CLI/bot `FileHandler`, subprocess logs in `runtime_control`, launcher shell | Operational append logs, not JSON control state. Review privacy, multi-process writes and retention separately; log history is not a reason to mark general atomicity complete. |
+| `profile._acquire_lock` PID metadata | Intentionally writes the held flock inode. Do not replace this inode atomically or unlink it: that would break mutual exclusion. PID text is diagnostic; review short writes/mode independently of lock ownership. |
+| `scripts/smoke/model_bench` output | Direct diagnostic JSON export; not runtime state, but may contain model response samples. Separate safe-export follow-up. |
+
+## Text/env verification boundary
+
+The initial 17-check regression group reproduces 15 failures / 2 passes on
+commit `974058f`, including cross-profile download destination, lost concurrent
+env fields, unsafe creation and incomplete migration writes. The test fixture
+for late profile creation was corrected and the baseline rerun in a separate
+old-tree export. The expanded suite also exercises four spawned processes with
+40 retained env fields, eight concurrent file creators with one winner,
+file/directory fsync, private mode, symlink refusal, malformed UTF-8 and read
+permission failures. All inputs are synthetic; analysis/API/browser calls are
+stubbed.
+
+Two additional regressions reproduced selection of the other profile's resume
+after the first await, even with the already captured file destination. Both
+explicit-ID and title-based selection now resolve against the original variants;
+existing resolver callers still default to the current configuration.
+
+Atomic text guarantees are per file, not a transaction across setup's env,
+resume and analysis, or migration's note and salary settings. A failure may
+leave a completed earlier file; it must not truncate an old file or clobber a
+concurrent profile. Failures after publication (for example directory fsync)
+can report uncertain durability with the new complete file already visible.
+Do not claim rollback to the old file for such post-publication failures.
+
+Sidecar env locks coordinate updated writers only. Already running old code,
+manual editors and external non-cooperating writers do not automatically share
+the lock. No production process was restarted, no runtime file was modified,
+and no real application, browser login or provider request was made in this
+group. General roadmap atomicity and `State/resume` remain open.

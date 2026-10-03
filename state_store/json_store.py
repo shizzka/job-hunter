@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-def _atomic_write(path: str | os.PathLike[str], write) -> None:
+def _atomic_write(path: str | os.PathLike[str], write, *, overwrite: bool = True) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -34,7 +34,12 @@ def _atomic_write(path: str | os.PathLike[str], write) -> None:
             write(stream)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(tmp_path, target)
+        if overwrite:
+            os.replace(tmp_path, target)
+        else:
+            # Publish only a complete file, without replacing a concurrent creator.
+            os.link(tmp_path, target)
+            os.unlink(tmp_path)
         tmp_path = ""
         os.chmod(target, 0o600)
 
@@ -61,6 +66,11 @@ def atomic_write_json(path: str | os.PathLike[str], value: Any) -> None:
 def atomic_write_text(path: str | os.PathLike[str], value: str) -> None:
     """Atomically write private text, keeping the old file if replacement fails."""
     _atomic_write(path, lambda stream: stream.write(value))
+
+
+def atomic_create_text(path: str | os.PathLike[str], value: str) -> None:
+    """Publish private text atomically; raise FileExistsError without clobbering."""
+    _atomic_write(path, lambda stream: stream.write(value), overwrite=False)
 
 
 @contextlib.contextmanager

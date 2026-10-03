@@ -39,7 +39,7 @@ import search_pipeline
 import apply_orchestrator
 import invitation_sync
 import manual_apply_queue
-from state_store.json_store import JsonStore
+from state_store.json_store import JsonStore, atomic_write_text
 from llm_client import close_llm_client
 from outcome import (
     DECISION_APPLIED_AUTO,
@@ -472,9 +472,11 @@ async def do_geekjob_login():
 
 async def _save_resume_from_client(client: HHClient):
     """Скачать и сохранить резюме через уже открытый клиент."""
-    import os
     import hh_resume_pipeline
 
+    resume_path = config.RESUME_FILE
+    pipeline_enabled = hh_resume_pipeline.enabled()
+    resume_variants = hh_resume_pipeline.get_variants() if pipeline_enabled else []
     resumes = await client.get_resume_ids()
     if not resumes:
         print("❌ Резюме не найдены на hh.ru")
@@ -483,8 +485,8 @@ async def _save_resume_from_client(client: HHClient):
     # Профильный фильтр: если включён HH-резюме-пайплайн с заданными тайтлами,
     # оставляем только резюме, попавшие в варианты профиля. Остальные
     # (например, резюме другого профиля в том же hh-аккаунте) скрываем.
-    if hh_resume_pipeline.enabled():
-        resolved = hh_resume_pipeline.resolve_variants(resumes)
+    if pipeline_enabled:
+        resolved = hh_resume_pipeline.resolve_variants(resumes, variants=resume_variants)
         expected_ids = {v["id"] for v in resolved if v.get("id")}
         if expected_ids:
             filtered = [r for r in resumes if str(r.get("id", "")) in expected_ids]
@@ -517,11 +519,9 @@ async def _save_resume_from_client(client: HHClient):
         print("❌ Не удалось скачать резюме")
         return
 
-    os.makedirs(os.path.dirname(config.RESUME_FILE), exist_ok=True)
-    with open(config.RESUME_FILE, "w") as f:
-        f.write(result["raw"])
+    atomic_write_text(resume_path, result["raw"])
 
-    print(f"\n✅ Резюме сохранено: {config.RESUME_FILE}")
+    print(f"\n✅ Резюме сохранено: {resume_path}")
     print(f"   Должность: {result['title']}")
     print(f"   Разделов: {len(result['sections'])}")
     for name in result["sections"]:
@@ -2541,8 +2541,7 @@ async def main():
             analysis_path = resume_path.replace(".md", "_analysis.md")
             if analysis_path == resume_path:
                 analysis_path = resume_path + ".analysis.md"
-            with open(analysis_path, "w", encoding="utf-8") as f:
-                f.write(result_text)
+            atomic_write_text(analysis_path, result_text)
             print(f"\n📄 Анализ сохранён: {analysis_path}")
         elif args.dry_run:
             result = await do_search(dry_run=True)
