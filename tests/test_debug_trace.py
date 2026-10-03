@@ -110,6 +110,7 @@ def test_dispatch_apply_passes_and_finishes_existing_trace(tmp_path, monkeypatch
             "cover",
             hh_client=client,
             trace=trace,
+            preferred_resume_id="synthetic-resume",
         )
     )
 

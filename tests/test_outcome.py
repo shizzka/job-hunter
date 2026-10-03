@@ -526,7 +526,7 @@ class TestResumePipeline:
             assert resolved[0]["id"] == "aaa"
             assert resolved[1]["id"] == "bbb"
 
-    def test_remember_resolved_variants_preserves_known_ids(self):
+    def test_configured_variant_ids_override_cached_ids(self):
         from hh_resume_pipeline import remember_resolved_variants, get_resolved_variants
 
         remember_resolved_variants(
@@ -543,5 +543,5 @@ class TestResumePipeline:
         )
 
         resolved = get_resolved_variants()
-        assert resolved[0]["id"] == "aaa"
-        assert resolved[1]["id"] == "bbb"
+        assert resolved[0]["id"] == "111"
+        assert resolved[1]["id"] == "222"

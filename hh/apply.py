@@ -69,7 +69,7 @@ def looks_like_hh_apply_success(value: str) -> bool:
     )
 
 
-async def click_with_fallbacks(session, element, label: str, *, logger) -> bool:
+async def click_with_fallbacks(session, element, label: str, *, logger, before_click=None) -> bool:
     """Надёжный клик по элементу с fallback-стратегиями."""
     if not element:
         return False
@@ -94,6 +94,9 @@ async def click_with_fallbacks(session, element, label: str, *, logger) -> bool:
     )
 
     for strategy_name, action in strategies:
+        if before_click is not None and not await before_click():
+            logger.warning("%s blocked by fresh pre-submit guard", label)
+            return False
         try:
             logger.info("Clicking %s via %s strategy", label, strategy_name)
             await action()
@@ -428,7 +431,9 @@ async def expand_cover_letter_input(session) -> bool:
     return False
 
 
-async def submit_response_form_via_dom(session, *, logger) -> bool:
+async def submit_response_form_via_dom(session, *, logger, before_submit=None) -> bool:
+    if before_submit is not None and not await before_submit():
+        return False
     try:
         result = await session._page.evaluate(
             """() => {
@@ -720,13 +725,20 @@ async def selected_resume_matches(page, resume_id: str, title: str) -> bool:
     """Read selected controls only; a title elsewhere in the page is not evidence."""
     try:
         script = r"""() => {
-            const root = document.querySelector('form[name="vacancy_response"], [role="dialog"]');
+            const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
+            const forms = Array.from(document.querySelectorAll('form[name="vacancy_response"]')).filter(visible);
+            if (forms.length > 1) return {ids: [], titles: []};
+            const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(el => visible(el) &&
+                el.querySelector('[data-qa="vacancy-response-submit-popup"], [data-qa="vacancy-response-letter-submit"]'));
+            const root = forms[0] || (dialogs.length === 1 ? dialogs[0] : null);
             if (!root) return {ids: [], titles: []};
             const ids = Array.from(root.querySelectorAll(
                 'input[name="resume_id"], input[name="resumeId"], input[name="resumeHash"], input[type="radio"]:checked'
-            )).map(el => el.value).filter(Boolean);
+            )).filter(el => !el.disabled && (!(el.type === 'radio' || el.type === 'checkbox') || el.checked))
+                .map(el => el.value).filter(Boolean);
             root.querySelectorAll('[data-qa="resume-title"] a[href*="/resume/"]').forEach(el => {
-                const match = el.getAttribute('href').match(/\/resume\/([a-zA-Z0-9]+)/);
+                if (el.closest('[role="listbox"], [data-magritte-select-option], [data-qa*="resume-item"]')) return;
+                const match = el.getAttribute('href').match(/\/resume\/([a-zA-Z0-9_-]+)(?:[/?#]|$)/);
                 if (match) ids.push(match[1]);
             });
             const titles = Array.from(root.querySelectorAll('[data-qa="resume-title"]')).map(el => el.innerText.trim());
@@ -735,7 +747,8 @@ async def selected_resume_matches(page, resume_id: str, title: str) -> bool:
                 .filter(el => el.querySelector('[data-qa="resume-title"]') && el.getClientRects().length);
             const checked = options.filter(el => el.getAttribute('aria-selected') === 'true' && el.querySelector('input[type="radio"]:checked'));
             if (options.length) {
-                return {ids: checked.map(el => el.querySelector('input[type="radio"]:checked').value),
+                if (checked.length !== 1) return {ids: [], titles: []};
+                return {ids: ids.concat(checked.map(el => el.querySelector('input[type="radio"]:checked').value)),
                     titles: checked.map(el => el.querySelector('[data-qa="resume-title"]').innerText.trim())};
             }
             return {ids, titles};
@@ -753,8 +766,12 @@ async def selected_resume_matches(page, resume_id: str, title: str) -> bool:
     if not isinstance(selected, dict):
         return False
     if resume_id:
-        return resume_id in selected.get('ids', [])
-    return bool(title) and any(normalize_text(value) == normalize_text(title) for value in selected.get('titles', []))
+        ids = selected.get('ids')
+        return isinstance(ids, list) and all(isinstance(value, str) for value in ids) and set(ids) == {resume_id}
+    titles = selected.get('titles')
+    return bool(title) and isinstance(titles, list) and any(
+        isinstance(value, str) and normalize_text(value) == normalize_text(title) for value in titles
+    )
 
 
 async def apply_to_vacancy(
@@ -777,6 +794,11 @@ async def apply_to_vacancy(
         """
     vacancy_url = absolute_hh_url(vacancy_url)
     response_url = absolute_hh_url(response_url)
+    preferred_resume_id = str(preferred_resume_id or "").strip()
+    if not preferred_resume_id:
+        return {"ok": False, "reason": "hh_resume_target_unresolved",
+                "message": "Exact HH resume ID не задан — отклик не отправлен",
+                "resume_selection_verified": False}
 
     legacy_save_debug_snapshot = session._save_debug_snapshot
 
@@ -820,6 +842,10 @@ async def apply_to_vacancy(
             notes = list(notes or []) + ["Отклик отправлен, но доставка сопроводительного письма не подтверждена"]
         if already_applied:
             result["already_applied"] = True
+            result["resume_selection_verified"] = False
+            result["selected_resume_id"] = ""
+            result["resume_selection_status"] = "unknown_existing_response"
+            result["message"] = "Существующий HH-отклик: resume ID исходного отклика не подтверждён; новый отклик не отправлял"
         if notes:
             result["notes"] = notes
         if auto_answer_question_answers:
@@ -864,15 +890,15 @@ async def apply_to_vacancy(
                     return {"ok": False, "message": "Сопроводительное в анкете не сохранилось — отклик остановлен"}
                 cover_letter_filled = True
         async def verify_before_submit():
-            if wants_specific_resume and not await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
-                return False
             await session._dismiss_magritte_dropdowns()
             if cover_letter:
                 current = (await session._detect_response_controls())[4]
                 if current:
-                    return normalize_text(await current.input_value()) == normalize_text(cover_letter)
-                return cover_letter_filled
-            return True
+                    if normalize_text(await current.input_value()) != normalize_text(cover_letter):
+                        return False
+                elif not cover_letter_filled:
+                    return False
+            return await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title)
         return await session._try_auto_answer_questions(vacancy_context=vacancy_context, before_submit=verify_before_submit)
 
     detect_response_controls = session._detect_response_controls
@@ -1134,7 +1160,14 @@ async def apply_to_vacancy(
             trace_event("RESUME_SELECTED", ok=False, expected=True, reason="vacancy_id_missing")
             return {"ok": False, "message": "Не удалось открыть форму для проверки резюме"}
         try:
-            await session._page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                await session._page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as exc:
+                # HH can time out after loading the correct response DOM.
+                # No submit is allowed until URL and selected ID are verified.
+                logger.warning("Resume response navigation issue: %s", type(exc).__name__)
+            if not re.search(rf"[?&]vacancyId={re.escape(expected_vacancy_id)}(?:[&#]|$)", str(session._page.url)):
+                raise RuntimeError("Target vacancy response URL not confirmed")
             await session._page.wait_for_timeout(1000)
             current_url, response_header, questions_required, resume_select, letter_field, submit_btn = await detect_response_controls()
             if await session._apply_success_detected():
@@ -1455,10 +1488,23 @@ async def apply_to_vacancy(
                 "message": f"Остались обязательные вопросы без ответа: {unanswered_required}",
             }
         submit_selector = await describe_submit_control(submit_btn)
-        clicked = await session._click_with_fallbacks(submit_btn, "submit_button")
+
+        async def verify_final_submit():
+            nonlocal resume_verified
+            await session._dismiss_magritte_dropdowns()
+            if cover_letter:
+                current_letter = (await refetch_response_controls())[4]
+                if not current_letter or normalize_text(await current_letter.input_value()) != normalize_text(cover_letter):
+                    return False
+            if await count_unanswered_required_questions(session, logger=logger):
+                return False
+            resume_verified = await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title)
+            return resume_verified
+
+        clicked = await session._click_with_fallbacks(submit_btn, "submit_button", before_click=verify_final_submit)
         submit_method = "selector"
         if not clicked:
-            clicked = await session._submit_response_form_via_dom()
+            clicked = await session._submit_response_form_via_dom(before_submit=verify_final_submit)
             submit_method = "dom_fallback"
         trace_event(
             "SUBMIT_CLICK",

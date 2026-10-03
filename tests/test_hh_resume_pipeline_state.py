@@ -58,7 +58,7 @@ def test_switching_profiles_isolates_attempts_resolved_ids_and_blocks(isolated_p
         monkeypatch.setattr(config, "HH_RESUME_PIPELINE_FILE", str(paths[name]))
         assert pipeline.get_attempt_count(own_id) == 1
         assert pipeline.get_attempt_count(other_id) == 0
-        assert pipeline.get_resolved_variants()[0]["id"] == f"{name}-resume"
+        assert pipeline.get_resolved_variants()[0]["id"] == "111"
         assert pipeline.list_blocked_companies()[0]["company"] == f"{name.title()}-only company"
 
 

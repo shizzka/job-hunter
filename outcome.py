@@ -16,6 +16,7 @@ DECISION_QUESTIONS_REQUIRED = "questions_required"
 DECISION_APPLY_FAILED = "apply_failed"
 DECISION_APPLY_FAILED_EXCEPTION = "apply_failed_exception"
 DECISION_MANUAL_REVIEW = "manual_review"
+DECISION_DEFERRED_UNSCORED = "deferred_unscored"
 
 # Группировка для аналитики
 DECISIONS_AUTO_APPLIED = {DECISION_APPLIED_AUTO}

@@ -307,6 +307,8 @@ def print_stats(days: int | None = None):
     )
     if analytics_summary.get("dry_run_matched", 0) > 0:
         print(f"  dry-run совпадений: {analytics_summary['dry_run_matched']}")
+    if analytics_summary.get("deferred_unscored", 0) > 0:
+        print(f"  Оценка отложена (LLM/provider): {analytics_summary['deferred_unscored']}")
     print(
         "  "
         f"keyword skip: {analytics_summary['keyword_filtered']} | "

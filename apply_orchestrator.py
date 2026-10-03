@@ -14,6 +14,7 @@ import company_blacklist
 import profile as profile_mod
 from debug_trace import ApplyTrace
 from hh_client import HHClient
+from hh.resume_target import exact_title_resume_id
 from superjob_client import SuperJobClient
 from habr_career_client import HabrCareerClient
 from geekjob_client import GeekJobClient
@@ -100,10 +101,35 @@ async def fetch_vacancy_details(
 # ── Диспетчеризация отклика ──
 
 async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> dict:
+    # Do not navigate to the resume catalog for a blocked company; still recheck
+    # in _dispatch_apply after any preflight awaits.
+    if company_blacklist.is_blocked(vacancy.get("company", "")):
+        return {"ok": False, "message": "Компания в чёрном списке", "reason": "company_blacklisted"}
     if vacancy.get("source", "hh") == "hh":
         if not kwargs.get("preferred_resume_id") and not kwargs.get("preferred_resume_title"):
             kwargs["preferred_resume_id"] = getattr(config, "HH_PRIMARY_RESUME_ID", "")
             kwargs["preferred_resume_title"] = getattr(config, "HH_PRIMARY_RESUME_TITLE", "")
+        hh_client = kwargs.get("hh_client") or (args[0] if args else None)
+        if hh_client is not None and not str(kwargs.get("preferred_resume_id") or "").strip():
+            target_title = str(kwargs.get("preferred_resume_title") or "").strip()
+            target_id = ""
+            if target_title:
+                try:
+                    target_id = exact_title_resume_id(await hh_client.get_resume_ids(), target_title)
+                except Exception as exc:
+                    log.warning("HH resume target resolution failed: %s", type(exc).__name__)
+            if not target_id:
+                result = {
+                    "ok": False, "reason": "hh_resume_target_unresolved",
+                    "resume_selection_verified": False,
+                    "message": "Целевое HH-резюме не определено однозначно — отклик не отправлен. Нужна ручная проверка resume ID.",
+                }
+                trace = kwargs.get("trace")
+                if trace is not None:
+                    trace.event("RESUME_TARGET", ok=False, reason=result["reason"])
+                    trace.finish(ok=False, message=result["message"], failure_stage="RESUME_TARGET")
+                return result
+            kwargs["preferred_resume_id"] = target_id
         trace = kwargs.get("trace")
         if trace is None:
             trace = create_hh_apply_trace(

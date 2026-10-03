@@ -396,6 +396,8 @@ def record_decision(
         "overclaim_guard": bool(evaluation.get("overclaim_guard", False)),
         "preferred_resume_variant": evaluation.get("preferred_resume_variant", ""),
         "should_apply": bool(evaluation.get("should_apply", False)),
+        "evaluation_status": evaluation.get("evaluation_status", "scored"),
+        "error_kind": evaluation.get("error_kind", ""),
         "reason": evaluation.get("reason", ""),
         "red_flags": list(evaluation.get("red_flags", []) or []),
         "hard_flags": list(evaluation.get("hard_flags", []) or evaluation.get("red_flags", []) or []),
@@ -818,6 +820,7 @@ def summarize(
         "keyword_filtered": 0,
         "red_flagged": 0,
         "low_score": 0,
+        "deferred_unscored": 0,
         "invitations": 0,
         "questionnaires": 0,
         "questionnaire_successes": 0,
@@ -908,6 +911,9 @@ def summarize(
                 summary["low_score"] += 1
             elif decision == "dry_run_match":
                 summary["dry_run_matched"] += 1
+            elif decision == "deferred_unscored":
+                summary["deferred_unscored"] += 1
+                source_bucket["deferred_unscored"] = source_bucket.get("deferred_unscored", 0) + 1
 
             if decision == "applied_auto":
                 summary["auto_applied"] += 1

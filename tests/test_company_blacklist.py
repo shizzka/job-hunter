@@ -46,7 +46,7 @@ def test_dispatch_rechecks_block_after_queue_creation(homes, monkeypatch):
     assert result['reason'] == 'company_blacklisted'
     client.apply_to_vacancy.assert_not_awaited()
     blacklist.set_blocked('Acme', False, 'alice')
-    asyncio.run(apply_orchestrator.dispatch_apply(vacancy, '', hh_client=client))
+    asyncio.run(apply_orchestrator.dispatch_apply(vacancy, '', hh_client=client, preferred_resume_id='synthetic-resume'))
     client.apply_to_vacancy.assert_awaited_once()
 
 

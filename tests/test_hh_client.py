@@ -433,6 +433,8 @@ class FakeDirectResponsePage:
         return []
 
     async def evaluate(self, script: str, arg=None):
+        if 'const root' in script:
+            return {'ids': ['synthetic-resume'], 'titles': ['Synthetic QA']}
         if "document.body.innerText.slice(0, 2000)" in script:
             return "Форма отклика"
         if "document.body.innerText.slice(0, 4000)" in script:
@@ -555,7 +557,7 @@ class FakeExpandableCoverLetterPage(FakeDirectResponsePage):
             return "Форма отклика"
         if "[...document.querySelectorAll('[data-qa]')]" in script:
             return []
-        return None
+        return await super().evaluate(script, arg)
 
 
 class FakeAutoAnswerQuestionPage(FakeQuestionResponsePage):
@@ -786,7 +788,7 @@ class FakeResumeSelectionReturnsToVacancyPage:
         return None
 
 
-def test_apply_to_vacancy_postfills_cover_letter_on_success_notification(monkeypatch):
+def test_apply_to_vacancy_blocks_unverified_one_click_without_postfill(monkeypatch):
     client = HHClient()
     client._page = FakeApplyPage()
 
@@ -799,12 +801,13 @@ def test_apply_to_vacancy_postfills_cover_letter_on_success_notification(monkeyp
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
 
     result = asyncio.run(
-        client.apply_to_vacancy("https://hh.ru/vacancy/1", cover_letter="hello from cover letter")
+        client.apply_to_vacancy("https://hh.ru/vacancy/1", cover_letter="hello from cover letter", preferred_resume_id="synthetic-resume")
     )
 
-    assert result["ok"] is True
-    assert result["message"] == "Отклик отправлен"
-    assert called["value"] is True
+    assert result["ok"] is False
+    assert result["resume_selection_verified"] is False
+    assert client._page.stage != "success"
+    assert called["value"] is False
 
 
 def test_apply_to_vacancy_skips_archived_page_before_click(monkeypatch):
@@ -814,7 +817,7 @@ def test_apply_to_vacancy_skips_archived_page_before_click(monkeypatch):
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
 
     result = asyncio.run(
-        client.apply_to_vacancy("https://hh.ru/vacancy/1", cover_letter="hello from cover letter")
+        client.apply_to_vacancy("https://hh.ru/vacancy/1", cover_letter="hello from cover letter", preferred_resume_id="synthetic-resume")
     )
 
     assert result["ok"] is False
@@ -834,6 +837,7 @@ def test_apply_to_vacancy_blocks_unverified_resume_when_picker_missing(monkeypat
             "https://hh.ru/vacancy/1",
             cover_letter="hello from cover letter",
             preferred_resume_title="QA Resume",
+            preferred_resume_id="qa-id",
         )
     )
 
@@ -852,6 +856,7 @@ def test_apply_to_vacancy_blocks_unverified_resume_after_selection(monkeypatch):
         client.apply_to_vacancy(
             "https://hh.ru/vacancy/1",
             preferred_resume_title="QA Resume",
+            preferred_resume_id="qa-id",
         )
     )
 
@@ -869,6 +874,7 @@ def test_apply_to_vacancy_marks_questionnaire_as_manual(monkeypatch):
         client.apply_to_vacancy(
             "https://hh.ru/vacancy/1",
             cover_letter="hello from cover letter",
+            preferred_resume_id="synthetic-resume",
         )
     )
 
@@ -890,6 +896,7 @@ def test_apply_to_vacancy_autoanswers_salary_question(monkeypatch):
         client.apply_to_vacancy(
             "https://hh.ru/vacancy/1",
             cover_letter="hello from cover letter",
+            preferred_resume_id="synthetic-resume",
         )
     )
 
@@ -915,6 +922,7 @@ def test_apply_to_vacancy_keeps_filled_letter_across_separate_question_step(monk
         client.apply_to_vacancy(
             "https://hh.ru/vacancy/1",
             cover_letter="hello from cover letter",
+            preferred_resume_id="synthetic-resume",
         )
     )
 
@@ -944,6 +952,7 @@ def test_apply_to_vacancy_autoanswers_resume_question_with_llm(monkeypatch):
         client.apply_to_vacancy(
             "https://hh.ru/vacancy/1",
             cover_letter="hello from cover letter",
+            preferred_resume_id="synthetic-resume",
         )
     )
 
@@ -976,6 +985,7 @@ def test_apply_to_vacancy_sends_risky_question_to_manual(monkeypatch):
         client.apply_to_vacancy(
             "https://hh.ru/vacancy/1",
             cover_letter="hello from cover letter",
+            preferred_resume_id="synthetic-resume",
         )
     )
 
@@ -1011,6 +1021,7 @@ def test_apply_to_vacancy_autoanswers_fourteen_questions_when_limit_allows(monke
         client.apply_to_vacancy(
             "https://hh.ru/vacancy/1",
             cover_letter="hello from cover letter",
+            preferred_resume_id="synthetic-resume",
         )
     )
 
@@ -1033,6 +1044,7 @@ def test_apply_to_vacancy_keeps_question_limit(monkeypatch):
         client.apply_to_vacancy(
             "https://hh.ru/vacancy/1",
             cover_letter="hello from cover letter",
+            preferred_resume_id="synthetic-resume",
         )
     )
 
@@ -1051,6 +1063,7 @@ def test_apply_to_vacancy_expands_hidden_cover_letter_before_submit(monkeypatch)
         client.apply_to_vacancy(
             "https://hh.ru/vacancy/1",
             cover_letter="hello from cover letter",
+            preferred_resume_id="synthetic-resume",
         )
     )
 
@@ -1178,7 +1191,7 @@ def test_apply_stops_when_letter_field_does_not_retain_text(monkeypatch):
         return ''
     monkeypatch.setattr(client._page.letter, 'input_value', empty_value)
     monkeypatch.setattr(client, '_is_captcha_page', lambda: asyncio.sleep(0, result=False))
-    result = asyncio.run(client.apply_to_vacancy('https://hh.ru/vacancy/1', cover_letter='required letter'))
+    result = asyncio.run(client.apply_to_vacancy('https://hh.ru/vacancy/1', cover_letter='required letter', preferred_resume_id='synthetic-resume'))
     assert result['ok'] is False
     assert 'не сохранилось' in result['message']
 
@@ -1194,7 +1207,7 @@ def test_apply_trace_separates_navigation_timeout_from_ready_dom(monkeypatch):
     trace = RecordingApplyTrace()
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
 
-    result = asyncio.run(client.apply_to_vacancy("https://hh.ru/vacancy/1", trace=trace))
+    result = asyncio.run(client.apply_to_vacancy("https://hh.ru/vacancy/1", trace=trace, preferred_resume_id="synthetic-resume"))
 
     assert result["ok"] is True
     navigation = _trace_event(trace, "VACANCY_NAVIGATION")
@@ -1212,17 +1225,19 @@ def test_apply_trace_records_dom_submit_fallback(monkeypatch):
     trace = RecordingApplyTrace()
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
 
-    async def failed_control_click(element, label):
+    async def failed_control_click(element, label, *, before_click=None):
+        assert before_click is not None and await before_click()
         return False
 
-    async def dom_submit():
+    async def dom_submit(*, before_submit=None):
+        assert before_submit is not None and await before_submit()
         client._page.stage = "success"
         return True
 
     monkeypatch.setattr(client, "_click_with_fallbacks", failed_control_click)
     monkeypatch.setattr(client, "_submit_response_form_via_dom", dom_submit)
 
-    result = asyncio.run(client.apply_to_vacancy("https://hh.ru/vacancy/1", trace=trace))
+    result = asyncio.run(client.apply_to_vacancy("https://hh.ru/vacancy/1", trace=trace, preferred_resume_id="synthetic-resume"))
 
     assert result["ok"] is True
     submit = _trace_event(trace, "SUBMIT_CLICK")
@@ -1242,7 +1257,7 @@ def test_apply_trace_blocks_real_unanswered_required_questions(monkeypatch):
 
     monkeypatch.setattr(hh_apply, "count_unanswered_required_questions", unanswered_required)
 
-    result = asyncio.run(client.apply_to_vacancy("https://hh.ru/vacancy/1", trace=trace))
+    result = asyncio.run(client.apply_to_vacancy("https://hh.ru/vacancy/1", trace=trace, preferred_resume_id="synthetic-resume"))
 
     assert result == {"ok": False, "message": "Остались обязательные вопросы без ответа: 2"}
     verify = _trace_event(trace, "PRE_SUBMIT_VERIFY")
@@ -1261,6 +1276,6 @@ def test_questionnaire_stops_if_answers_clear_letter(monkeypatch):
         assert await before_submit() is False
         return {'ok': False, 'message': 'stopped before submit'}
     monkeypatch.setattr(client, '_try_auto_answer_questions', answer)
-    result = asyncio.run(client.apply_to_vacancy('https://hh.ru/vacancy/1', cover_letter='required letter'))
+    result = asyncio.run(client.apply_to_vacancy('https://hh.ru/vacancy/1', cover_letter='required letter', preferred_resume_id='synthetic-resume'))
     assert result['ok'] is False
     assert result['message'] == 'stopped before submit'

@@ -192,8 +192,9 @@ class HHClient:
             "url": (self._page.url if self._page else ""),
         }
 
-    async def _click_with_fallbacks(self, element, label: str) -> bool:
-        return await _click_with_fallbacks(self, element, label, logger=log)
+    async def _click_with_fallbacks(self, element, label: str, *, before_click=None) -> bool:
+        extra = {"before_click": before_click} if before_click is not None else {}
+        return await _click_with_fallbacks(self, element, label, logger=log, **extra)
 
     async def _has_existing_response_ui(self) -> bool:
         return await _has_existing_response_ui(
@@ -228,11 +229,13 @@ class HHClient:
     async def _fill_employer_question_answers(self, answers: list[dict]) -> dict:
         return await _fill_employer_question_answers(self._page, answers, logger=log)
 
-    async def _submit_employer_questions(self) -> bool:
+    async def _submit_employer_questions(self, *, before_submit=None) -> bool:
+        extra = {"before_submit": before_submit} if before_submit is not None else {}
         return await _submit_employer_questions(
             self._page,
             submit_response_form_via_dom=self._submit_response_form_via_dom,
             click_with_fallbacks=self._click_with_fallbacks,
+            **extra,
         )
 
     async def _answer_question_with_llm(
@@ -299,8 +302,9 @@ class HHClient:
     async def _expand_cover_letter_input(self) -> bool:
         return await _expand_cover_letter_input(self)
 
-    async def _submit_response_form_via_dom(self) -> bool:
-        return await _submit_response_form_via_dom(self, logger=log)
+    async def _submit_response_form_via_dom(self, *, before_submit=None) -> bool:
+        extra = {"before_submit": before_submit} if before_submit is not None else {}
+        return await _submit_response_form_via_dom(self, logger=log, **extra)
 
     async def _detect_anti_bot_kind(self) -> str:
         current_url = (self._page.url or "").lower()

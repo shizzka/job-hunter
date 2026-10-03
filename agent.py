@@ -40,6 +40,8 @@ import apply_orchestrator
 import invitation_sync
 import manual_apply_queue
 from state_store.json_store import JsonStore, atomic_write_text
+from state_store.protected import ProtectedJsonStore
+from state_store.matcher_deferred import MatcherDeferredQueue
 from llm_client import close_llm_client
 from outcome import (
     DECISION_APPLIED_AUTO,
@@ -49,13 +51,14 @@ from outcome import (
     DECISION_DRY_RUN_MATCH,
     DECISION_QUESTIONS_REQUIRED,
     DECISION_MANUAL_REVIEW,
+    DECISION_DEFERRED_UNSCORED,
     DECISION_SKIPPED_LOW_SCORE,
     DECISION_SKIPPED_RED_FLAGS,
 )
 from geekjob_client import GeekJobClient
 from habr_career_client import HabrCareerClient
 from hh_client import HHClient
-from matcher import analyze_cover_letter, evaluate_vacancy, generate_cover_letter, is_manual_review_candidate
+from matcher import analyze_cover_letter, evaluate_vacancy, generate_cover_letter, is_manual_review_candidate, is_deferred_evaluation
 from office_bridge import office_log, create_task, task_progress, task_complete
 from office_bridge import close_session as close_office_session
 import notifier
@@ -248,6 +251,7 @@ def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -
         "found": result.get("found", 0),
         "applied": result.get("applied", 0),
         "skipped": result.get("skipped", 0),
+        "deferred": result.get("deferred", 0),
         "source_stats": result.get("source_stats", {}),
         "note": result.get("note", ""),
         "error": error,
@@ -673,6 +677,8 @@ async def do_manual_apply_token(token: str) -> dict:
             hh_pipeline.mark_terminal(vacancy.get("id", token), "already_applied")
             manual_apply_queue.mark_candidate(token, "already_applied", apply_message or "already applied")
             print("ℹ️ Уже откликались ранее")
+            if apply_result.get("resume_selection_status") == "unknown_existing_response":
+                await notify_needs_manual(vacancy, score, reason, note=apply_message)
             return {"ok": True, "already_applied": True, "message": apply_message}
 
         if apply_result.get("ok"):
@@ -864,7 +870,25 @@ async def do_search(dry_run: bool = False) -> dict:
     Один прогон поиска + откликов.
     Возвращает {"found": int, "applied": int, "skipped": int}
     """
-    result: dict = {"found": 0, "applied": 0, "skipped": 0, "source_stats": {}, "note": "", "_run_id": ""}
+    result: dict = {"found": 0, "applied": 0, "skipped": 0, "deferred": 0, "source_stats": {}, "note": "", "_run_id": ""}
+    deferred_queue = MatcherDeferredQueue(config.JOB_HUNTER_HOME, cooldown_seconds=config.MATCHER_DEFER_COOLDOWN_SECONDS)
+    deferred_seen_path = config.SEEN_VACANCIES_FILE
+    deferred_candidates = []
+
+    def acknowledge_processed_deferred():
+        # A successful score alone is not durable handling: downstream guards,
+        # cancellation or errors may still leave the vacancy pending.
+        if not deferred_candidates:
+            return set()
+        processed = ProtectedJsonStore(deferred_seen_path, default_factory=dict).load()
+        acknowledged = set()
+        for candidate in deferred_candidates:
+            payload = processed.get(candidate["id"])
+            if not candidate.get("_hh_retry") and isinstance(payload, dict) and payload.get("action"):
+                deferred_queue.resolve(candidate)
+                acknowledged.add(deferred_queue.key(candidate))
+        return acknowledged
+
     await notifier.notify_stale_cookies()
     hh_client: HHClient | None = HHClient() if config.HH_ENABLED else None
     superjob_client: SuperJobClient | None = SuperJobClient() if config.SUPERJOB_ENABLED else None
@@ -977,6 +1001,14 @@ async def do_search(dry_run: bool = False) -> dict:
         raw_count = len(all_vacancies)
         await set_hunter_status("search_dedupe", f"Убираю дубли {raw_count}", "thinking")
         all_vacancies = search_pipeline.deduplicate(all_vacancies)
+        enabled_source_keys = {source for source, enabled in (
+            ("hh", config.HH_ENABLED), ("superjob", config.SUPERJOB_ENABLED),
+            ("habr", config.HABR_ENABLED), ("geekjob", config.GEEKJOB_ENABLED),
+        ) if enabled}
+        all_vacancies = deferred_queue.merge_ready(all_vacancies, enabled_source_keys)
+        deferred_candidates = [v for v in all_vacancies if v.get("_matcher_deferred_revision")]
+        already_processed = acknowledge_processed_deferred()
+        all_vacancies = [v for v in all_vacancies if deferred_queue.key(v) not in already_processed]
         for vacancy in all_vacancies:
             if not vacancy.get("_hh_retry"):
                 search_pipeline.get_source_bucket(result["source_stats"], vacancy)["new"] += 1
@@ -985,7 +1017,12 @@ async def do_search(dry_run: bool = False) -> dict:
         await set_hunter_status("search_filter", f"Фильтр {len(all_vacancies)} вакансий", "thinking")
 
         # Keyword-фильтрация
+        before_keyword_filter = all_vacancies
         all_vacancies = search_pipeline.keyword_filter(all_vacancies, result["source_stats"], run_id)
+        retained_keys = {deferred_queue.key(v) for v in all_vacancies}
+        for vacancy in before_keyword_filter:
+            if deferred_queue.key(vacancy) not in retained_keys and vacancy.get("_matcher_deferred_revision"):
+                deferred_queue.resolve(vacancy)
         result["found"] = len(all_vacancies)
 
         log.info("Found %d relevant vacancies", len(all_vacancies))
@@ -1069,6 +1106,8 @@ async def do_search(dry_run: bool = False) -> dict:
                     "should_apply": False,
                 }
                 seen.mark_seen(vid, v, "skipped_archived")
+                if v.get("_matcher_deferred_revision"):
+                    deferred_queue.resolve(v)
                 if source == "hh":
                     hh_pipeline.mark_terminal(vid, "closed_or_archived")
                 result["skipped"] += 1
@@ -1101,25 +1140,26 @@ async def do_search(dry_run: bool = False) -> dict:
                 }
             else:
                 evaluation = await analytics.tracked_call("matcher", run_id, v, evaluate_vacancy, v, details)
+            if is_deferred_evaluation(evaluation):
+                evaluation = {**evaluation, "score": None, "should_apply": False,
+                              "evaluation_status": "deferred_unscored"}
+                deferred_queue.defer(v, details, evaluation.get("error_kind") or "llm_error")
+                result["deferred"] += 1
+                bucket["deferred_unscored"] = bucket.get("deferred_unscored", 0) + 1
+                result["note"] = f"Оценка отложена: LLM quota/rate-limit или ошибка провайдера ({result['deferred']} вакансий)"
+                analytics.record_decision(run_id=run_id, vacancy=v, decision=DECISION_DEFERRED_UNSCORED,
+                                          evaluation=evaluation, details=details, note=evaluation.get("error_kind") or "llm_error")
+                await set_hunter_status("search_deferred_unscored", result["note"], "thinking")
+                if not llm_issue_alert_sent:
+                    await notifier.notify_llm_issue(v, evaluation, source_index=source_index, source_total=source_total)
+                    llm_issue_alert_sent = True
+                continue
             await shadow_verifier.check(run_id, v, details, evaluation)
             score = evaluation.get("score", 0)
             reason = evaluation.get("reason", "")
             red_flags = evaluation.get("red_flags", [])
 
             log.info("  Score: %d | %s | Flags: %s", score, reason, red_flags)
-
-            if (
-                not llm_issue_alert_sent
-                and score <= 0
-                and evaluation.get("error_kind") in {"llm_limits_exhausted", "llm_error"}
-            ):
-                await notifier.notify_llm_issue(
-                    v,
-                    evaluation,
-                    source_index=source_index,
-                    source_total=source_total,
-                )
-                llm_issue_alert_sent = True
 
             if red_flags:
                 log.warning("  Red flags: %s", red_flags)
@@ -1680,6 +1720,8 @@ async def do_search(dry_run: bool = False) -> dict:
 
             # 8. Обработка результата
             if apply_result.get("already_applied"):
+                if apply_result.get("resume_selection_status") == "unknown_existing_response":
+                    await notify_needs_manual(v, score, reason, note=str(apply_result.get("message") or "Исходное HH-резюме не подтверждено"))
                 seen.mark_seen(vid, v, "already_applied")
                 if source == "hh":
                     hh_pipeline.mark_terminal(vid, "already_applied")
@@ -1871,6 +1913,8 @@ async def do_search(dry_run: bool = False) -> dict:
             await asyncio.sleep(3)
 
         status_msg = f"Поиск завершён: найдено {result['found']}, откликов {result['applied']}, пропущено {result['skipped']}"
+        if result["deferred"]:
+            status_msg += f"; оценка отложена (LLM quota/rate-limit/provider): {result['deferred']}"
         await set_hunter_status("search_done", status_msg, "idle")
         await notify_summary(
             result["found"],
@@ -1904,6 +1948,10 @@ async def do_search(dry_run: bool = False) -> dict:
         await set_hunter_status("error", f"Ошибка поиска: {e}", "idle")
         _record_search_run(result, dry_run=dry_run, ok=False, error=str(e))
     finally:
+        try:
+            acknowledge_processed_deferred()
+        except Exception as exc:
+            log.warning("Deferred queue acknowledgement failed; records retained: %s", type(exc).__name__)
         if hh_client:
             await hh_client.stop()
         if superjob_client:

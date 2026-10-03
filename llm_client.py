@@ -7,7 +7,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIConnectionError
+from httpx import TransportError
 
 import config
 import analytics
@@ -501,7 +502,12 @@ def _is_model_unavailable(exc: Exception) -> bool:
 
 
 def _is_retryable_provider_error(exc: Exception) -> bool:
-    return _is_quota_or_rate_limit(exc) or _is_model_unavailable(exc)
+    status = _status_code(exc)
+    return (
+        _is_quota_or_rate_limit(exc) or _is_model_unavailable(exc)
+        or status == 408 or (status is not None and 500 <= status <= 599)
+        or isinstance(exc, (APIConnectionError, TransportError, ConnectionError, TimeoutError))
+    )
 
 
 class _FallbackCompletions:

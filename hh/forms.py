@@ -580,8 +580,10 @@ async def submit_employer_questions(
     *,
     submit_response_form_via_dom,
     click_with_fallbacks,
+    before_submit=None,
 ) -> bool:
-    if await submit_response_form_via_dom():
+    dom_extra = {"before_submit": before_submit} if before_submit is not None else {}
+    if await submit_response_form_via_dom(**dom_extra):
         return True
 
     selectors = (
@@ -598,7 +600,8 @@ async def submit_employer_questions(
             button = await page.query_selector(selector)
         except Exception:
             continue
-        if button and await click_with_fallbacks(button, f"question_submit:{selector}"):
+        click_extra = {"before_click": before_submit} if before_submit is not None else {}
+        if button and await click_with_fallbacks(button, f"question_submit:{selector}", **click_extra):
             return True
     return False
 
@@ -1109,7 +1112,8 @@ async def try_auto_answer_questions(
                 "message": "Резюме или сопроводительное изменилось при заполнении анкеты — отправка остановлена",
                 "notes": notes, "question_answers": question_answers}
 
-    if not await session._submit_employer_questions():
+    submit_extra = {"before_submit": before_submit} if before_submit is not None else {}
+    if not await session._submit_employer_questions(**submit_extra):
         return {
             "handled": True,
             "ok": False,

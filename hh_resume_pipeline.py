@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 import config
 import company_blacklist
+from hh.resume_target import exact_title_resume_id
 from state_store.json_store import JsonStore
 from outcome import (
     STATUS_DETAIL_PENDING_NEW,
@@ -236,36 +237,15 @@ def resolve_variants(resumes: list[dict], *, variants: list[dict] | None = None)
     for variant in get_variants() if variants is None else variants:
         resolved_variant = dict(variant)
         if not resolved_variant.get("id") and resolved_variant.get("title"):
-            title_cf = resolved_variant["title"].casefold()
-            exact_match = None
-            fuzzy_match = None
-            for resume in resumes:
-                resume_title = str(resume.get("title") or "")
-                resume_lines = [line.strip() for line in resume_title.splitlines() if line.strip()]
-                if resume_title.casefold() == title_cf:
-                    exact_match = str(resume.get("id") or "").strip()
-                    break
-                if any(line.casefold() == title_cf for line in resume_lines):
-                    exact_match = str(resume.get("id") or "").strip()
-                    break
-                if (
-                    fuzzy_match is None
-                    and len(title_cf) >= 18
-                    and title_cf
-                    and title_cf in resume_title.casefold()
-                ):
-                    fuzzy_match = str(resume.get("id") or "").strip()
-            resolved_variant["id"] = exact_match or fuzzy_match or ""
+            resolved_variant["id"] = exact_title_resume_id(resumes, resolved_variant["title"])
         resolved.append(resolved_variant)
     return resolved
 
 
 def remember_resolved_variants(resolved_variants: list[dict]) -> None:
     def remember(state: dict) -> None:
-        state["_resolved_variants"] = _merge_variant_lists(
-            resolved_variants,
-            _resolved_variants(state),
-        )
+        # Fresh ambiguity/missing results must not resurrect an old resolved ID.
+        state["_resolved_variants"] = [dict(variant) for variant in resolved_variants]
         state["_resolved_at"] = _to_iso(_now())
 
     _update(remember)
@@ -276,10 +256,16 @@ def get_resolved_variants() -> list[dict]:
 
 
 def _resolved_variants(state: dict) -> list[dict]:
-    resolved = state.get("_resolved_variants")
-    if isinstance(resolved, list) and resolved:
-        return _merge_variant_lists(resolved, get_variants())
-    return get_variants()
+    cached = {item.get("name"): item for item in state.get("_resolved_variants", [])
+              if isinstance(item, dict)} if isinstance(state.get("_resolved_variants", []), list) else {}
+    variants = []
+    for configured in get_variants():
+        variant = dict(configured)
+        previous = cached.get(variant["name"], {})
+        if not variant["id"] and variant["title"] == previous.get("title"):
+            variant["id"] = str(previous.get("id") or "").strip()
+        variants.append(variant)
+    return variants
 
 
 def all_entries() -> dict:

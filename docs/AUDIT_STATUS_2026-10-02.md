@@ -447,3 +447,78 @@ legacy dry-run simulation counter, not real applications. Production seen was
 not the destination, no application/chat-send branch ran, and the probe logged
 no missing-cookie, expired-session or CAPTCHA warning. This is a bounded search
 check, not certification of every cookie's session or live submit behavior.
+
+### Critical guards: HH resume identity / Matcher deferral (2026-10-03)
+
+User-added critical items take precedence over async form/chat persistence.
+Implementation was prepared in a detached worktree; the running bot and private
+runtime were not used as test fixtures. Code/history/roadmap/handoff rollback
+artifacts were saved beforehand with private permissions and verified bundles.
+
+HH dispatch uses the configured primary target even when the staged pipeline
+is off. Title-only targets require a unique exact catalog match; fuzzy matches,
+ambiguous titles and missing configuration block dispatch. Apply requires an
+exact ID before navigation. Configured pipeline variants are authoritative:
+cached foreign/removed variants cannot enter apply, explicit configured IDs win,
+and a fresh failed title resolution cannot resurrect a stale cached ID.
+
+Selected-ID evidence is limited to one visible response form (or one identified
+response dialog), enabled selected controls and its selected header. Unchecked
+named radios are not evidence; conflicting IDs, unrelated dialogs, multiple
+selected options and malformed evaluate results fail closed. Before each submit
+strategy, including questionnaire and DOM fallbacks, refresh letter/question
+checks and then re-read the exact selected ID. A failed click followed by a
+changed selection must not send through a later fallback. Navigation timeout
+after a ready response remains supported only with the target vacancy URL and
+selected ID confirmed. Blacklist is checked both before catalog navigation and
+again after preflight awaits.
+
+An existing response/chat topic does not prove which resume was originally sent:
+its result explicitly reports unknown identity and requests manual review,
+rather than claiming verified selection. Live chat/negotiation provenance and
+unexpected-modal handling remain open; no existing wrong response is repaired.
+The legacy unverified one-click/postfill test now requires blocking, while
+positive questionnaire/trace tests provide explicit synthetic IDs and DOM
+evidence. The initial new HH baseline reproduced 17 failures / 5 passes on the
+previous implementation. The first full modified run exposed 18 failures;
+blacklist ordering was fixed and old fixture prerequisites updated without
+removing the production guard.
+
+Matcher provider exhaustion and generic evaluation errors return null score,
+`deferred_unscored`, no fabricated numeric strategy and no semantic rejection.
+HTTP 408/5xx and transport failures can fall back through the existing configured
+provider pool; keys, pool membership and order were not changed. Agent persists
+the vacancy/details before notification and bypasses ShadowVerifier, seen,
+terminal and rejection branches while unscored. Analytics counts deferrals
+separately and Telegram/status describes delayed evaluation, not a bad vacancy;
+only one LLM issue alert is attempted per run.
+
+The per-profile `matcher_deferred.json` queue retries after a configurable
+cooldown (default 300 seconds, env minimum 60), even when discovery no longer
+returns the vacancy. Records do not expire, and disabled sources stay on disk.
+Removal is revision-checked: an old result cannot clear a newer deferral. A
+successful score alone is insufficient for removal; downstream errors,
+cancellation or an HH guard leave the record pending until durable seen handling.
+Malformed state is retained and requires restoration, not silent reset. These
+are retry/persistence guarantees for cooperating updated writers, not exactly-
+once evaluation or external application delivery. Historical score-zero losses
+are not automatically reclassified or replayed.
+
+Synthetic verification includes pipeline-off/multiple resumes, wrong default
+selection, target absent, explicit retry ID, last-moment selection changes,
+questionnaire fallback, existing-topic uncertainty, all-provider 429, partial
+fallback success, 503 fallback and queue-only recovery after cooldown. Queue
+tests cover private mode, corruption, serialization/read/fsync/replace failures,
+30 threaded records plus retry counts and four processes retaining 40 records.
+Ordinary tests use the documented credential-free environment and isolated HOME;
+Chromium DOM fixtures abort external requests. No real application, chat send,
+provider request or Telegram delivery is part of these tests. Production env,
+cookies, crontab, running processes and OSINT were not changed in this group.
+
+Final targeted verification: **227 passed** (17.07 seconds). Detached publication
+worktree full: **1315 passed** (51.83 seconds), adding 76 new tests to the previous
+1239 published tests. Separate clean staged export: **1315 passed** (55.19 seconds).
+Bash syntax and diff checks passed; staged scan covered 26 files with zero
+credential-pattern hits. Local-only tests remain outside that export. Read-only
+QA configuration check confirmed primary ID/title are present; values were not
+printed. No live resume catalog or application was queried in this group.

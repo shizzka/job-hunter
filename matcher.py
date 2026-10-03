@@ -18,6 +18,12 @@ def _get_client():
     return get_llm_client()
 
 
+def is_deferred_evaluation(evaluation: dict) -> bool:
+    return evaluation.get("evaluation_status") == "deferred_unscored" or evaluation.get("error_kind") in {
+        "llm_limits_exhausted", "llm_error",
+    }
+
+
 def _load_resume() -> str:
     """Загрузить резюме из файла."""
     if os.path.exists(config.RESUME_FILE):
@@ -1408,12 +1414,13 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
         return _apply_response_probability_threshold(result)
 
     except LLMProvidersExhaustedError as e:
-        log.error("LLM providers exhausted for evaluation: %s", e)
+        log.error("LLM providers exhausted for evaluation")
         providers = ", ".join(e.provider_names)
         result = {
-            "score": 0,
+            "score": None,
+            "evaluation_status": "deferred_unscored",
             "reason": (
-                f"LLM лимиты исчерпаны для модели {e.model or 'unknown'}"
+                f"Оценка отложена: LLM quota/rate-limit или недоступность провайдеров для модели {e.model or 'unknown'}"
                 f"; провайдеры: {providers or 'нет'}"
             ),
             "should_apply": False,
@@ -1421,22 +1428,23 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
             "error_kind": "llm_limits_exhausted",
             "llm_model": e.model,
             "llm_providers": list(e.provider_names),
-            "llm_error": e.last_error,
+            "llm_error": "providers_exhausted",
         }
-        return _add_strategy_fields(result, vacancy, details)
+        return result
 
     except Exception as e:
-        log.error("LLM evaluation failed: %s", e)
+        log.error("LLM evaluation failed: %s", type(e).__name__)
         result = {
-            "score": 0,
-            "reason": f"LLM ошибка: {e}",
+            "score": None,
+            "evaluation_status": "deferred_unscored",
+            "reason": "Оценка отложена: временная ошибка LLM/provider или невалидный ответ",
             "should_apply": False,  # при ошибке LLM — не откликаться вслепую
             "red_flags": [],
             "error_kind": "llm_error",
             "llm_model": config.HH_MATCHER_MODEL or config.LLM_MODEL,
-            "llm_error": str(e),
+            "llm_error": type(e).__name__,
         }
-        return _add_strategy_fields(result, vacancy, details)
+        return result
 
 
 async def generate_cover_letter(vacancy: dict, details: str = "") -> str:

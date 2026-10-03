@@ -349,6 +349,7 @@ TELEGRAM_NOTIFY_AUTO_DIGEST = _env_flag("TELEGRAM_NOTIFY_AUTO_DIGEST", "0")
 
 # ── Таймеры ───────────────────────────────────────────────────────────────
 SEARCH_INTERVAL_MIN = 30      # поиск каждые N минут
+MATCHER_DEFER_COOLDOWN_SECONDS = max(60, _env_int("MATCHER_DEFER_COOLDOWN_SECONDS", "300"))
 INVITE_CHECK_INTERVAL_MIN = 60  # проверка приглашений каждые N минут
 
 # ── Playwright ────────────────────────────────────────────────────────────

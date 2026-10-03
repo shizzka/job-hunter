@@ -307,13 +307,13 @@ async def notify_llm_issue(
     source_index: int = 0,
     source_total: int = 0,
 ):
-    """Уведомить, что оценки вакансий стали score=0 из-за LLM-проблемы."""
+    """Unscored infrastructure failures are retried, not semantic rejects."""
     kind = evaluation.get("error_kind")
     if kind == "llm_limits_exhausted":
         title = "⚠️ <b>LLM лимиты исчерпаны</b>"
-        impact = "Все доступные LLM-провайдеры ответили quota/rate-limit."
+        impact = "Доступные LLM-провайдеры исчерпали квоту или временно недоступны."
     else:
-        title = "⚠️ <b>LLM ошибка: вакансии получают score 0</b>"
+        title = "⚠️ <b>Оценка вакансий отложена: ошибка LLM</b>"
         impact = "Оценщик не получил нормальный ответ от LLM."
 
     providers = ", ".join(evaluation.get("llm_providers") or [])
@@ -329,9 +329,10 @@ async def notify_llm_issue(
         f"<b>{_html(vacancy.get('title', '—'), 200)}</b>\n"
         f"🏢 {_html(vacancy.get('company', '—'), 200)}\n"
         f"🌐 {_html(source, 80)}\n\n"
-        f"Что значит: {impact} Matcher ставит <code>score=0</code> и пропускает вакансии, "
-        f"чтобы не откликаться вслепую.\n\n"
-        f"Что проверить: лимиты аккаунтов Ollama, ключи в "
+        f"Что значит: {impact} Оценка отложена, score не выставлен. "
+        f"Вакансия сохранена для повторной оценки после cooldown; это не отказ и не rejected/seen. "
+        f"Отклик вслепую не отправляется.\n\n"
+        f"Что проверить: лимиты настроенных провайдеров, ключи в "
         f"<code>~/.job-hunter/llm-providers.env</code>, затем лог поиска.\n\n"
         f"Где смотреть: <code>статус</code> → <b>📜 Лог поиска</b> или команда <code>/log</code>.\n\n"
         f"Ошибка: <code>{_html(evaluation.get('llm_error', ''), 800)}</code>"
@@ -507,6 +508,8 @@ def _format_source_stats(source_stats: dict | None) -> str:
             parts.append(f"ручных {bucket['manual']}")
         if bucket.get("rejected"):
             parts.append(f"отсеяно {bucket['rejected']}")
+        if bucket.get("deferred_unscored"):
+            parts.append(f"оценка отложена {bucket['deferred_unscored']}")
         lines.append(f"• <b>{bucket.get('label', source)}</b>: " + ", ".join(parts))
 
     # На случай новых источников вне явного порядка
