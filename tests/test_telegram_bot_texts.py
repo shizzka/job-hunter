@@ -358,10 +358,10 @@ def test_chat_ai_manual_callback_parser():
         "5416682595",
         "14513855732",
     )
-    assert _parse_chat_manual_send_callback_data("chat_send_any:qa:5416682595:14513855732") == (
+    assert _parse_chat_manual_send_callback_data("chat_send_any:qa:5416682595:14513855732~abcdef012345") == (
         "qa",
         "5416682595",
-        "14513855732",
+        "14513855732~abcdef012345",
     )
     assert _parse_chat_ai_manual_callback_data("chat_ai:qa:5416682595:14513855732") == ("", "", "")
 

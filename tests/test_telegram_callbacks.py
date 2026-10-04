@@ -271,7 +271,7 @@ def test_callback_router_starts_google_form_actions(monkeypatch):
             "Генерирую ответ через ИИ…",
         ),
         (
-            "chat_send:qa:5416682595:14513855732",
+            "chat_send:qa:5416682595:14513855732~abcdef012345",
             True,
             False,
             False,
@@ -285,7 +285,7 @@ def test_callback_router_starts_google_form_actions(monkeypatch):
             "Генерирую ответ через ИИ…",
         ),
         (
-            "chat_send_any:qa:5416682595:14513855732",
+            "chat_send_any:qa:5416682595:14513855732~abcdef012345",
             True,
             True,
             False,
@@ -364,7 +364,7 @@ def test_callback_router_starts_chat_ai_action(
             "chat_id": 42,
             "profile_name": "qa",
             "hh_chat_id": "5416682595",
-            "hh_message_id": "14513855732",
+            "hh_message_id": "14513855732~abcdef012345" if force_send else "14513855732",
             "force_send": force_send,
             "allow_any": allow_any,
             "alternative": alternative,

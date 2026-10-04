@@ -34,8 +34,8 @@ def test_sent_text_helpers_find_own_message_before_follow_up():
 
 
 def test_quick_reply_choice_extracts_only_leading_yes_or_no():
-    assert quick_reply_choice("Нет, высшего образования нет.") == "Нет"
-    assert quick_reply_choice("Да. Есть опыт.") == "Да"
+    assert quick_reply_choice("Нет, высшего образования нет.") == ""
+    assert quick_reply_choice("Да. Есть опыт.") == ""
     assert quick_reply_choice("Готов обсудить детали.") == ""
 
 
@@ -272,7 +272,7 @@ def test_fill_and_preview_keeps_quick_reply_unsubmitted(tmp_path):
         fill_and_preview(
             page,
             "123",
-            "Да, готов.",
+            "Да",
             state_dir=str(tmp_path),
             now=lambda: 456.9,
             open_page=open_page,

@@ -60,8 +60,8 @@ def quick_reply_choice(
     *,
     normalize_text=normalize_sent_message_text,
 ) -> str:
-    match = re.match(
-        r"^(да|нет)(?:[\s,.:;!?—-]|$)",
+    match = re.fullmatch(
+        r"(да|нет)[.!?]?",
         normalize_text(text),
         re.I,
     )

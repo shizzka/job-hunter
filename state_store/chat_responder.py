@@ -41,6 +41,15 @@ def _valid_state(state: dict) -> bool:
             value = item.get("created_at", 0)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
                 return False
+        draft = chat.get("draft")
+        if draft is not None and (not isinstance(draft, dict)
+                or not all(isinstance(draft.get(key), str) and draft[key] for key in
+                           ('message_id', 'answer', 'answer_hash', 'revision', 'candidate_revision', 'source_revision'))
+                or not re.fullmatch(r'[0-9a-f]{12}', draft['revision'])
+                or any(not re.fullmatch(r'[0-9a-f]{64}', draft[key]) for key in
+                       ('answer_hash', 'candidate_revision', 'source_revision'))
+                or hashlib.sha256(draft['answer'].encode()).hexdigest() != draft['answer_hash']):
+            return False
         attempts = chat.get("attempts", {})
         if not isinstance(attempts, dict):
             return False
@@ -183,6 +192,14 @@ class ChatResponderStateRepository:
 
         self.update_chat(chat_id, update)
         return owner if claimed else None
+
+    def set_draft(self, chat_id, owner, draft):
+        def update(chat):
+            if not any(item['owner'] == owner and item['status'] == 'preparing'
+                       and item['kind'] == 'preview' for item in chat.get('attempts', {}).values()):
+                raise RuntimeError('Chat draft ownership lost')
+            chat['draft'] = draft
+        self.update_chat(chat_id, update)
 
     def mark_acting(self, chat_id: str, owner: str) -> None:
         marked = False

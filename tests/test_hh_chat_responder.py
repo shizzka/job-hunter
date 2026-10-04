@@ -219,8 +219,8 @@ def test_messages_contain_sent_text_when_robot_immediately_asks_next_question():
 
 
 def test_quick_reply_choice_extracts_yes_and_no():
-    assert chat_responder._quick_reply_choice("Нет, высшего образования нет.") == "Нет"
-    assert chat_responder._quick_reply_choice("Да. Есть опыт.") == "Да"
+    assert chat_responder._quick_reply_choice("Нет, высшего образования нет.") == ""
+    assert chat_responder._quick_reply_choice("Да. Есть опыт.") == ""
 
 
 def test_quick_reply_choice_ignores_unrelated_answer():

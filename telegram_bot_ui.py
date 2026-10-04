@@ -780,7 +780,11 @@ def _parse_chat_action_callback_data(data: str, action: str) -> tuple[str, str, 
     if len(parts) != 4 or parts[0] != action:
         return "", "", ""
     profile_name, chat_id, message_id = (part.strip() for part in parts[1:])
-    if not profile_name or not chat_id.isdigit() or not message_id.isdigit():
+    if action in {CALLBACK_CHAT_AI_SEND, CALLBACK_CHAT_AI_MANUAL_SEND}:
+        valid_message = bool(re.fullmatch(r"\d+~[0-9a-f]{12}", message_id))
+    else:
+        valid_message = message_id.isdigit()
+    if not profile_name or not chat_id.isdigit() or not valid_message:
         return "", "", ""
     return profile_name, chat_id, message_id
 

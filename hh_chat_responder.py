@@ -25,6 +25,9 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import json
+import uuid
+from dataclasses import asdict
 import html
 import logging
 import os
@@ -600,12 +603,14 @@ def build_chat_answer_preview_markup(
     message_id: str,
     *,
     allow_any: bool = False,
+    draft_revision: str = "",
 ) -> dict:
     rows = [[{"text": "Открыть чат", "url": f"{CHATIK_ROOT}/chat/{chat_id}"}]]
+    send_id = message_id + ("~" + draft_revision if draft_revision else "")
     callback_data = (
-        chat_manual_send_callback_data(profile_name, chat_id, message_id)
+        chat_manual_send_callback_data(profile_name, chat_id, send_id)
         if allow_any
-        else chat_send_callback_data(profile_name, chat_id, message_id)
+        else chat_send_callback_data(profile_name, chat_id, send_id)
     )
     alternative_data = (
         chat_ai_manual_alternative_callback_data(profile_name, chat_id, message_id)
@@ -788,7 +793,7 @@ async def _notify_one_chat_result(notifier, detail: dict) -> None:
     title = html.escape((vac.get("title") or "—")[:160])
     company = html.escape((vac.get("company") or "—")[:160])
     question = html.escape((detail.get("question") or "")[:450])
-    answer = html.escape((detail.get("answer") or "")[:850])
+    answer = html.escape(detail.get("answer") or "")
     raw_chat_id = str(detail.get("chat_id") or "")
     raw_message_id = str(detail.get("message_id") or "")
     chat_id = html.escape(raw_chat_id)
@@ -816,14 +821,19 @@ async def _notify_one_chat_result(notifier, detail: dict) -> None:
             raw_chat_id,
             raw_message_id,
             allow_any=bool(detail.get("manual_any")),
+            draft_revision=detail.get("draft_revision", ""),
         )
         if raw_chat_id and raw_message_id
         else None
     )
     screenshot_path = preview.get("screenshot_path") or ""
-    if screenshot_path:
+    if len(caption) > 4000:
+        raise ValueError("Full approved chat preview exceeds Telegram message limit")
+    if screenshot_path and len(caption) <= 1000:
         await notifier.send_photo(screenshot_path, caption=caption, reply_markup=markup)
     else:
+        if screenshot_path:
+            await notifier.send_photo(screenshot_path, caption="Preview ответа в HH")
         await notifier.send_message_with_markup(caption, reply_markup=markup)
 
 
@@ -973,19 +983,56 @@ def _message_revision(message: dict) -> tuple:
                  ("id", "text", "links", "author", "is_me", "is_ai", "is_ai_suspect"))
 
 
+def _revision_hash(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def _candidate_revision():
+    from answer_grounding import current_candidate
+    return _revision_hash([_active_profile_name(), asdict(current_candidate())])
+
+
+def _live_candidate_revision():
+    from answer_grounding import capture_candidate
+    from hh_client import _load_resume_text
+    return _revision_hash([_active_profile_name(), asdict(capture_candidate(_load_resume_text()))])
+
+
 async def _execute_reply(
     repository, page, chat_id, target, messages, vacancy, resume_text, paths,
     *, dry_run, max_replies=None, repeat_preview=False, answer_kwargs=None, notify=None,
+    draft_revision="", require_draft=False,
 ) -> dict:
     """Claim before model/browser waits; persist only the owning chat's result."""
     chat_id, target_id = str(chat_id), str(target.get("id") or "")
     target_revision = _message_revision(target)
     kind = "preview" if dry_run else "reply"
+    candidate_revision = _candidate_revision()
+    source_revision = _revision_hash([target_revision, messages, vacancy])
+    draft = repository.load().get(chat_id, {}).get("draft")
+    stored = not dry_run and (bool(draft_revision) or (isinstance(draft, dict) and draft.get("message_id") == target_id) or require_draft)
+    def matching_draft(value):
+        return (isinstance(value, dict) and bool(draft_revision) and value.get("revision") == draft_revision
+                and value.get("candidate_revision") == candidate_revision
+                and value.get("source_revision") == source_revision
+                and value.get("answer_hash") == hashlib.sha256(value.get("answer", "").encode()).hexdigest())
+    if stored and not matching_draft(draft):
+        return {"ok": False, "stale": True, "message": "Approved draft missing or changed; create a new preview", "chat_id": chat_id}
     with repository.attempt(chat_id, kind, target_id, max_replies=max_replies,
                             repeat=dry_run and repeat_preview) as owner:
         if not owner:
             return {"ok": False, "blocked": True, "message": "chat attempt blocked; inspect state", "chat_id": chat_id}
-        answer = await generate_answer(messages, vacancy, resume_text, **copy.deepcopy(answer_kwargs or {}))
+        if dry_run:
+            # A new generation invalidates the previous revision immediately.
+            repository.set_draft(chat_id, owner, None)
+        if stored:
+            # Claim excludes concurrent preview generation; re-read under that owner.
+            draft = repository.load().get(chat_id, {}).get("draft")
+            if not matching_draft(draft):
+                return {"ok": False, "stale": True, "chat_id": chat_id}
+            answer = draft["answer"]
+        else:
+            answer = await generate_answer(messages, vacancy, resume_text, **copy.deepcopy(answer_kwargs or {}))
         if not answer:
             return {"ok": False, "message": "LLM did not produce answer", "chat_id": chat_id}
         # The model may have taken minutes. Never answer an obsolete question.
@@ -1006,6 +1053,11 @@ async def _execute_reply(
                 chat["last_previewed_msg_id"] = target_id
                 chat["last_preview_answer_hash"] = hashlib.sha256(answer.encode()).hexdigest()[:16]
                 chat["last_previewed_at"] = time.time()
+            draft = {"message_id": target_id, "answer": answer, "answer_hash": hashlib.sha256(answer.encode()).hexdigest(),
+                     "revision": uuid.uuid4().hex[:12], "candidate_revision": candidate_revision,
+                     "source_revision": source_revision}
+            repository.set_draft(chat_id, owner, draft)
+            detail["draft_revision"] = draft["revision"]
             # Reserve delivery before await. Uncertain notifications are not replayed.
             if notify is not None:
                 repository.mark_acting(chat_id, owner)
@@ -1024,6 +1076,10 @@ async def _execute_reply(
                 latest = (data.get("messages") or [{}])[-1]
                 if _message_revision(latest) != target_revision or latest.get("is_me"):
                     raise RuntimeError("Chat changed before send")
+                if stored:
+                    if (not matching_draft(repository.load().get(chat_id, {}).get("draft"))
+                            or _live_candidate_revision() != candidate_revision):
+                        raise RuntimeError("Approved chat candidate/draft changed before send")
                 # Last synchronous durable check immediately before the click.
                 repository.mark_acting(chat_id, owner)
             ok = await send_message(page, chat_id, answer, runtime_paths=paths, before_send=before_send)
@@ -1060,6 +1116,9 @@ async def process_one(
     """Generate/send one reply for a specific chat message after human approval."""
     paths = runtime_paths or _runtime_paths()
     profile_name = _active_profile_name()
+    message_id, separator, draft_revision = str(message_id).partition("~")
+    if separator and not re.fullmatch(r"[0-9a-f]{12}", draft_revision):
+        return {"ok": False, "message": "Invalid draft revision", "chat_id": chat_id}
     if dry_run is None:
         dry_run = _default_chat_dry_run()
 
@@ -1117,6 +1176,7 @@ async def process_one(
         repository, page, str(chat_id), copy.deepcopy(target), copy.deepcopy(messages),
         copy.deepcopy(vacancy), resume_text, paths, dry_run=dry_run,
         repeat_preview=True, notify=notify_result if notify else None,
+        draft_revision=draft_revision, require_draft=bool(separator),
         answer_kwargs={
             "question_message": target if (is_approved_suspicious or is_manual_any) else None,
             "question_kind": (

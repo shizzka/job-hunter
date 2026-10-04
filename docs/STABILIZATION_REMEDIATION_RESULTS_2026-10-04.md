@@ -55,3 +55,26 @@ Validation: all 10 browser race scenarios passed; 198 combined HH/A1/A2,
 questionnaire, resume picker and modal safety tests passed.
 A browser-blocked action is conservatively uncertain if its command was already
 dispatched; it is never automatically replayed.
+
+## Package 3 — A4/A5
+
+Reproduction: 8 failing / 3 passing package tests before changes. A shown as the
+preview was replaced by generated B at send; same-ID message edits and changed
+candidate/profile data did not invalidate approval. Qualified yes/no replies
+were shortened to a platform shortcut. No draft revision was persisted.
+
+Fix: exact draft text, SHA-256, random revision, message/history/vacancy revision,
+and candidate/profile snapshot hash live in the existing protected chat state.
+A send button carries `message_id~revision` through the existing Telegram/CLI
+route. Approved sends read stored text without generation and recheck inputs
+before the durable action boundary. New/alternative generation invalidates the
+old revision as it starts. Legacy unbound send buttons are rejected. Preview
+shows full outgoing text; oversized notifications fail closed instead of
+allowing Telegram truncation with a send button. Existing autosend/direct
+one-shot generation without a previous preview retains its existing behavior;
+it cannot use an existing same-message preview without its revision.
+
+Quick replies now require a plain full yes/no, with optional terminal punctuation.
+Any qualifiers use the full text input. Validation: 182 targeted chat/state/
+Telegram/Chromium tests passed; actual offline Chromium verifies exact qualified
+text delivery and the plain-yes shortcut. No live chat or Telegram send occurred.
