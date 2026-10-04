@@ -108,14 +108,12 @@ def test_hh_guard_fails_closed_and_preserves_corrupt_state(tmp_path, monkeypatch
     monkeypatch.setattr(config, "HH_ANTI_BOT_COOLDOWN_HOURS", 6)
 
     ok, note = hh_guard.can_auto_apply(now=_dt(8))
-    persisted = json.loads(guard_file.read_text(encoding="utf-8"))
-
     assert ok is False
     assert "state corruption" in note
-    assert persisted["last_kind"] == "state_corruption"
-    backups = list(tmp_path.glob("hh_guard_state.json.corrupt-*"))
-    assert len(backups) == 1
-    assert backups[0].read_text(encoding="utf-8") == "{truncated"
+    assert guard_file.read_text(encoding="utf-8") == "{truncated"
+    assert not hh_guard.can_auto_apply(now=_dt(20))[0]
+    hh_guard.clear_cooldown(now=_dt(20))
+    assert guard_file.read_text(encoding="utf-8") == "{truncated"
 
 
 def _isolate_guard(tmp_path, monkeypatch):

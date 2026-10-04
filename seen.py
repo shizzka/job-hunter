@@ -5,14 +5,23 @@ import logging
 from datetime import datetime
 
 import config
-from state_store.json_store import JsonStore
+from state_store.protected import ProtectedJsonStore
 
 log = logging.getLogger("seen")
 
-def _store(path: str | None = None) -> JsonStore:
-    return JsonStore(
+def _valid_state(state: dict) -> bool:
+    return all(
+        isinstance(key, str) and bool(key) and isinstance(value, dict)
+        and all(isinstance(value.get(field, ""), str) for field in ("title", "company", "action", "date"))
+        for key, value in state.items()
+    )
+
+
+def _store(path: str | None = None) -> ProtectedJsonStore:
+    return ProtectedJsonStore(
         path or config.SEEN_VACANCIES_FILE,
         default_factory=dict,
+        validator=_valid_state,
         logger=log,
         read_error_message="seen state read failed",
     )

@@ -394,8 +394,8 @@ async def generate_answer(
     answer = answer.strip()
     if answer and _looks_like_screening_form_artifact(answer) and not _is_screening_form_question(question):
         log.warning(
-            "LLM chat-answer dropped form artifact for non-form question: %s",
-            question[:160],
+            "LLM chat-answer dropped form artifact for non-form question: chars=%d",
+            len(question),
         )
         return None
     supported = await verify_answers([{'index': 0, 'question': question, 'answer': answer}],
@@ -739,7 +739,7 @@ async def list_reply_candidates(
         except HHUnexpectedUI:
             raise
         except Exception as exc:
-            log.warning("candidate get_messages(%s) failed: %s", chat_id, exc)
+            log.warning("candidate get_messages(%s) failed: %s", chat_id, type(exc).__name__)
             summary["read_failures"] += 1
             continue
 
@@ -942,7 +942,7 @@ async def _prepare_google_form_preview_from_message(
     except HHUnexpectedUI:
         raise
     except Exception as exc:
-        log.warning("google form preview failed for chat %s: %s", chat_id, exc)
+        log.warning("google form preview failed for chat %s: %s", chat_id, type(exc).__name__)
         try:
             from private_artifacts import capture_artifacts
             saved = await capture_artifacts(form_page, paths.hh_state_dir, f"google_form_failed_{chat_id}",
@@ -1286,10 +1286,9 @@ async def process_all(
             raise
         except Exception as exc:
             log.warning(
-                "get_messages(%s) failed: %s; preview=%r",
+                "get_messages(%s) failed: %s",
                 chat_id,
-                exc,
-                (chat.get("preview") or "")[:220],
+                type(exc).__name__,
             )
             summary["read_failures"] += 1
             continue

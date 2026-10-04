@@ -17,7 +17,7 @@ def client_for(*answers):
         answer = answers[min(len(calls) - 1, len(answers) - 1)]
         if isinstance(answer, Exception):
             raise answer
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=answer))])
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content=answer))])
 
     return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)), calls=calls)
 

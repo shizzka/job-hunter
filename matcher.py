@@ -1508,7 +1508,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
             vacancy_summary, client, max_sections=6, limit_chars=12000,
         )
     except Exception as exc:
-        log.warning("filtered KB selection failed, fallback to full: %s", exc)
+        log.warning("filtered KB selection failed, fallback to full: %s", type(exc).__name__)
         knowledge = knowledge_fallback
 
     cover_style = cover_style_for_cluster(classify_vacancy_cluster(vacancy, details))
@@ -1582,6 +1582,12 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
             temperature=0.2,
             max_tokens=2000,
         )
+        if getattr(resp.choices[0], "finish_reason", None) != "stop":
+            log.warning("Cover letter generation incomplete; using fallback")
+            return _remember_cover_letter_meta(
+                _fallback_cover_letter(vacancy, details, cover_style),
+                cover_style=cover_style, fallback=True, grounding_status="incomplete_response",
+            )
         cover = _clean_cover_letter_output(resp.choices[0].message.content or "")
         if not cover:
             log.warning("Cover letter generation returned empty response; using fallback")
@@ -1594,7 +1600,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
             )
         overstatements = _detect_candidate_claim_overstatements(cover)
         if overstatements:
-            log.warning("cover letter overclaim guard triggered: %s", overstatements)
+            log.warning("cover letter overclaim guard triggered: count=%d", len(overstatements))
             fallback_cover = _fallback_cover_letter(vacancy, details, cover_style)
             return _remember_cover_letter_meta(
                 fallback_cover,
@@ -1619,7 +1625,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
         )
 
     except Exception as e:
-        log.error("Cover letter generation failed, using fallback: %s", e)
+        log.error("Cover letter generation failed, using fallback: %s", type(e).__name__)
         fallback_cover = _fallback_cover_letter(vacancy, details, cover_style)
         return _remember_cover_letter_meta(
             fallback_cover,

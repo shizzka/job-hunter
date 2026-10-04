@@ -139,3 +139,26 @@ Validation: 230 targeted native/parser/cookie/auth/A1 tests passed; 11 final
 browser/identity tests passed, including destination changes during login await
 and ID/URL mismatch before navigation. All browser requests were fulfilled with
 synthetic HTML offline. No live native submit or production state was used.
+
+## Local follow-ups — A9/F4/F5/F6
+
+Reproduction: 6 semantic guard corruptions, 3 seen corruptions, 4 incomplete
+cover responses, and 2 operational logging cases failed before fixes. The search
+logging fixture initially used a wrong config name; after correcting that
+fixture, the synthetic dispatch ran and both cover and questionnaire answer
+sentinels appeared in captured logs. This fixture error is not counted as finding
+evidence.
+
+Fix: reuse ProtectedJsonStore with local schema validators for HH guard and seen.
+Damaged bytes stay in place; repeated reads cannot reset cooldown/counts or make
+old vacancies new, including after the nominal cooldown and explicit clear.
+HH guard reports corruption as a current block; seen raises before application.
+Cover generation requires finish_reason=stop before parsing or verification.
+Affected search/chat/form/generation logs use IDs, counts, flags and exception
+classes instead of cover text, answer dictionaries, message authors/bodies or
+transport exception bodies. This is a scoped cleanup, not a global logging audit.
+
+Validation: 191 targeted guard/seen/cover/search/chat/form tests passed.
+Existing tests requiring automatic corrupt-state reset were strengthened to
+require preservation and explicit restoration. Completed-response model fakes
+now declare finish_reason=stop; incomplete-response regressions stay strict.

@@ -1,4 +1,5 @@
 import json
+import pytest
 
 import config
 import seen
@@ -20,17 +21,16 @@ def test_stats_from_data_counts_already_applied_as_skipped():
     assert stats["by_source"]["hh"]["skipped"] == 2
 
 
-def test_mark_seen_preserves_corrupt_file_and_writes_fresh_state(tmp_path, monkeypatch):
+def test_mark_seen_preserves_corrupt_file_and_requires_repair(tmp_path, monkeypatch):
     path = tmp_path / "seen.json"
     path.write_text("{broken", encoding="utf-8")
     monkeypatch.setattr(config, "SEEN_VACANCIES_FILE", str(path))
 
-    seen.mark_seen("hh:123", {"title": "QA", "company": "Example"})
-
-    assert json.loads(path.read_text(encoding="utf-8"))["hh:123"]["action"] == "applied"
-    backups = list(tmp_path.glob("seen.json.corrupt-*"))
-    assert len(backups) == 1
-    assert backups[0].read_text(encoding="utf-8") == "{broken"
+    with pytest.raises(RuntimeError):
+        seen.mark_seen("hh:123", {"title": "QA", "company": "Example"})
+    assert path.read_text(encoding="utf-8") == "{broken"
+    with pytest.raises(RuntimeError):
+        seen.is_seen("hh:123")
 
 
 def test_mark_seen_reloads_state_for_each_atomic_update(tmp_path, monkeypatch):

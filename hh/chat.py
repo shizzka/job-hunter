@@ -482,14 +482,13 @@ async def send_message(
     except HHUnexpectedUI:
         raise
     except Exception as exc:
-        logger.warning("send verification failed to read current chat %s: %s", chat_id, exc)
+        logger.warning("send verification failed to read current chat %s: %s", chat_id, type(exc).__name__)
         return False
 
     logger.warning(
-        "send verification failed for chat %s: last_is_me=%s last_author=%r last_text=%r",
+        "send verification failed for chat %s: last_is_me=%s message_chars=%d",
         chat_id,
         bool(last.get("is_me")),
-        last.get("author") or "",
-        (last.get("text") or "")[:160],
+        len(last.get("text") or ""),
     )
     return False

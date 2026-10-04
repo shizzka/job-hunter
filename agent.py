@@ -728,7 +728,7 @@ async def do_manual_apply_token(token: str) -> dict:
             reason,
             note=f"ИИ-отклик упал: {message}. Открой вручную.",
         )
-        log.exception("Manual AI apply failed for token %s", token)
+        log.warning("Manual AI apply failed for token %s: %s", token, type(exc).__name__)
         print(f"❌ ИИ-отклик упал: {message}")
         return {"ok": False, "message": message}
     finally:
@@ -1522,7 +1522,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     analytics_note=f"{source}:no_cover_letter",
                 )
                 continue
-            log.info("  %s cover letter: %s", source_label, cover[:100] if cover else "(empty)")
+            log.info("  %s cover prepared: vacancy=%s chars=%d", source_label, vid, len(cover or ""))
 
             # 5. Пауза перед откликом
             if source == "hh":
@@ -1627,7 +1627,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     resume_variant=hh_resume_variant,
                     note=f"{source}:{type(e).__name__}" + (f"; {hh_auto_apply_guard_note}" if guard_suffix else ""),
                 )
-                log.exception("  %s apply crashed for %s: %s", source_label, vid, e)
+                log.warning("  %s apply crashed for %s: %s", source_label, vid, type(e).__name__)
                 create_task(
                     f"Ручной отклик: {v['title']} @ {v['company']}",
                     (
@@ -1652,7 +1652,9 @@ async def do_search(dry_run: bool = False) -> dict:
                 )
                 continue
 
-            log.info("  %s apply result: %s", source_label, apply_result)
+            log.info("  %s apply result: vacancy=%s ok=%s uncertain=%s questions=%s", source_label, vid,
+                     bool(apply_result.get("ok")), bool(apply_result.get("uncertain")),
+                     bool(apply_result.get("requires_questions")))
             if source == "hh":
                 _record_hh_questionnaire_analytics(
                     run_id=run_id,
@@ -1761,7 +1763,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     f"Уже откликался {short_label}",
                     "working",
                 )
-                log.info("  %s vacancy already has a response: %s", source_label, apply_result.get("message", "already applied"))
+                log.info("  %s vacancy already has a response: %s", source_label, vid)
                 continue
 
             cover_evaluation["cover_letter_status"] = apply_result.get("cover_letter_status", "unknown")
@@ -1906,7 +1908,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     resume_variant=hh_resume_variant,
                     note=f"{source}:{apply_message}" + (f"; {hh_auto_apply_guard_note}" if guard_suffix else ""),
                 )
-                log.warning("  %s apply failed: %s", source_label, apply_message)
+                log.warning("  %s apply failed: vacancy=%s", source_label, vid)
                 create_task(
                     f"Ручной отклик: {v['title']} @ {v['company']}",
                     (

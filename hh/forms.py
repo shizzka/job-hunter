@@ -410,7 +410,7 @@ async def inspect_employer_questions(page, *, logger) -> dict:
             }"""
         )
     except Exception as exc:
-        logger.warning("Question form inspection failed: %s", exc)
+        logger.warning("Question form inspection failed: %s", type(exc).__name__)
         return {"page_text": "", "fields": [], "unsupported_fields": 0, "unsupported_items": []}
 
     if not isinstance(result, dict):
@@ -575,7 +575,7 @@ async def fill_employer_question_answers(page, answers: list[dict], *, logger) -
             answers,
         )
     except Exception as exc:
-        logger.warning("Question form fill failed: %s", exc)
+        logger.warning("Question form fill failed: %s", type(exc).__name__)
         return {"filled": 0, "errors": [str(exc)]}
 
 
@@ -692,7 +692,7 @@ async def answer_question_with_llm(
         max_chars = min(max_chars, field_max_length)
 
     if is_risky_question(question_text):
-        logger.info("HH auto-answer skipped risky question: %s", truncate_text(question_text, 120))
+        logger.info("HH auto-answer skipped risky question: chars=%d", len(question_text))
         return None
 
     vacancy_block = (

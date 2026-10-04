@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 import config
 from outcome import DECISION_APPLIED_AUTO
-from state_store.json_store import JsonStore
+from state_store.protected import ProtectedJsonStore
 
 log = logging.getLogger("hh_guard")
 
@@ -56,11 +56,25 @@ def _corrupt_state(now: datetime | None = None) -> dict:
     return state
 
 
-def _store(path: str | None = None, *, now: datetime | None = None) -> JsonStore:
-    return JsonStore(
+def _valid_state(state: dict) -> bool:
+    timestamps = state.get("successful_apply_timestamps", [])
+    if not isinstance(timestamps, list) or any(
+        not isinstance(item, str) or not item or _parse_datetime(item) is None
+        for item in timestamps
+    ):
+        return False
+    for key in ("blocked_until", "last_detected_at", "seeded_from_analytics_at"):
+        value = state.get(key, "")
+        if not isinstance(value, str) or (value and _parse_datetime(value) is None):
+            return False
+    return all(isinstance(state.get(key, ""), str) for key in ("last_kind", "last_reason", "last_stage"))
+
+
+def _store(path: str | None = None, *, now: datetime | None = None) -> ProtectedJsonStore:
+    return ProtectedJsonStore(
         path or config.HH_GUARD_STATE_FILE,
         default_factory=_default_state,
-        corrupt_factory=lambda: _corrupt_state(now),
+        validator=_valid_state,
         logger=log,
         read_error_message="HH guard state read failed",
     )
@@ -130,7 +144,12 @@ def _seed_apply_timestamps_from_analytics(now: datetime | None = None) -> list[s
 def _load_state(now: datetime | None = None) -> dict:
     now = now or _now()
     path = config.HH_GUARD_STATE_FILE
-    state = _store(path, now=now).load()
+    try:
+        state = _store(path, now=now).load()
+    except Exception as exc:
+        log.warning("HH guard state unavailable: %s", type(exc).__name__)
+        # Keep damaged bytes: every future attempt remains blocked until repair.
+        return _corrupt_state(now)
 
     normalized = _normalize_state(state, now=now)
     if not normalized["successful_apply_timestamps"] and not normalized["seeded_from_analytics_at"]:
@@ -156,7 +175,7 @@ def _update_state(mutator, *, now: datetime) -> dict:
     try:
         return _store(path, now=now).update(update)
     except Exception as exc:
-        log.warning("Failed to update HH guard state %s: %s", path, exc)
+        log.warning("Failed to update HH guard state %s: %s", path, type(exc).__name__)
         return _corrupt_state(now)
 
 
