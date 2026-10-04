@@ -85,6 +85,8 @@ def _google_form_preview_status(questions: list[dict], fill_result: dict, *, rea
     required_skipped = [q for q in questions or [] if q.get("required") and int(q.get("index", -1)) in skipped_indices]
     if not questions:
         return False, "form questions not found"
+    if any(item.get("blocking") for item in skipped):
+        return False, "actual form values do not equal approved values"
     if required_skipped:
         return False, "required form fields were not filled"
     if filled_count <= 0:
@@ -296,12 +298,8 @@ async def fill_form(page, questions: list[dict], answers: list[dict]) -> dict:
                     skipped.append({"index": idx, "reason": "text field not found", "question": question.get("question", "")})
                     continue
                 await field.fill(value)
-                actual = ""
-                try:
-                    actual = await field.input_value()
-                except Exception:
-                    actual = value
-                if str(actual or "").strip() != value:
+                actual = await field.input_value()
+                if actual != value:
                     skipped.append({"index": idx, "reason": "text field value verification failed", "question": question.get("question", "")})
                     continue
                 filled.append({"index": idx, "type": qtype, "answer": value})
@@ -322,15 +320,17 @@ async def fill_form(page, questions: list[dict], answers: list[dict]) -> dict:
             desired_matches = []
             seen_matches = set()
             for desired in desired_values:
-                match = _best_option_match(options, str(desired))
+                match = next((option for option in options if _norm(option) == _norm(desired)), "")
                 if not match or _is_bare_other_option(match):
-                    continue
+                    raise ValueError("approved option unavailable or unsupported")
                 key = _norm(match)
                 if key not in seen_matches:
                     desired_matches.append(match)
                     seen_matches.add(key)
                 if qtype == "radio":
                     break
+            if qtype == 'radio' and len([value for value in desired_values if value.strip()]) != 1:
+                raise ValueError('radio approval must select exactly one option')
             selected = []
             option_handles = await item.query_selector_all('[role="radio"], [role="checkbox"]')
             if qtype == "checkbox":
@@ -364,13 +364,60 @@ async def fill_form(page, questions: list[dict], answers: list[dict]) -> dict:
                         break
                 if qtype == "radio" and selected:
                     break
-            if selected:
+            if desired_matches and len(selected) == len(desired_matches):
                 filled.append({"index": idx, "type": qtype, "options": selected})
             else:
                 skipped.append({"index": idx, "reason": "option not matched", "question": question.get("question", "")})
         except Exception as exc:
             skipped.append({"index": idx, "reason": str(exc), "question": question.get("question", "")})
-    return {"filled": filled, "skipped": skipped}
+    # Re-fetch the current DOM after the full fill: later fields can change
+    # earlier controls. A cached handle/partial selection is not readback proof.
+    verified = []
+    rows = {row['index']: row for row in filled}
+    current_items = await page.locator('div[role="listitem"]:visible').element_handles()
+    if len(current_items) != len(items):
+        return {'filled': [], 'skipped': skipped + [{'index': -1, 'blocking': True,
+                                                     'reason': 'DOM question count changed'}]}
+    for question in questions:
+        idx = int(question.get('index', -1))
+        row = rows.get(idx)
+        dom_index = int(question.get('dom_index', idx))
+        try:
+            if not 0 <= dom_index < len(current_items):
+                raise ValueError('readback DOM item missing')
+            item = current_items[dom_index]
+            qtype = question.get('type') or 'text'
+            if qtype == 'text':
+                field = await item.query_selector('textarea, input[type="text"], input[type="email"], input[type="number"], input[type="url"], input[type="tel"]')
+                if not field or await field.input_value() != (row['answer'] if row else ''):
+                    raise ValueError('text readback differs from approval')
+            elif qtype in {'radio', 'checkbox'}:
+                handles = await item.query_selector_all('[role="radio"], [role="checkbox"]')
+                actual = []
+                labels = []
+                for handle in handles:
+                    label = (await handle.get_attribute('aria-label')) or (await handle.inner_text())
+                    labels.append(_norm(label))
+                    checked = await handle.get_attribute('aria-checked')
+                    if checked not in {'true', 'false'}:
+                        raise ValueError('option readback unknown')
+                    if checked == 'true': actual.append(_norm(label))
+                desired = [_norm(label) for label in row['options']] if row else []
+                if (not handles or len(labels) != len(set(labels)) or sorted(actual) != sorted(desired)):
+                    raise ValueError('option readback differs from approval')
+            else:
+                raise ValueError('unsupported readback type')
+            if row:
+                verified.append(row)
+        except Exception:
+            skipped = [entry for entry in skipped if entry['index'] != idx]
+            skipped.append({'index': idx, 'reason': 'exact DOM readback failed',
+                            'question': question.get('question', ''), 'blocking': True})
+    # An approved value which could not be filled must block even when optional.
+    for entry in skipped:
+        if not (answer_map.get(entry['index']) or {}).get('skip') and entry['reason'] != 'empty answer':
+            entry['blocking'] = True
+    return {"filled": verified, "skipped": skipped}
 
 
 async def _safe_screenshot(page, path: str) -> None:

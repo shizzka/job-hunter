@@ -78,3 +78,22 @@ Quick replies now require a plain full yes/no, with optional terminal punctuatio
 Any qualifiers use the full text input. Validation: 182 targeted chat/state/
 Telegram/Chromium tests passed; actual offline Chromium verifies exact qualified
 text delivery and the plain-yes shortcut. No live chat or Telegram send occurred.
+
+## Package 4 — A6
+
+Reproduction: 7 failing / 2 passing offline tests before changes. Extra checkbox
+selection survived attempted clearing; a missing/unavailable desired option or
+unknown approved label was accepted as a subset; failed text readback substituted
+the expected string. Chromium demonstrated that filling a later field could
+change a previously accepted checkbox without preventing submit readiness.
+
+Fix: require exact approved option labels and the complete selection set, never
+substitute expected values on readback errors, and re-fetch/read every question
+after all fills. Optional approved fields also block readiness on any mismatch.
+Skipped fields must actually be empty. Unknown states, duplicate labels, or
+changed DOM item count fail closed. No changes to Forms claim, version ownership,
+or durable `submitting -> submit_uncertain` handling.
+
+Validation: 178 targeted Forms/workflow/state tests passed; final exact-option
+checks passed in another 15 package/filling tests. Chromium covered extra,
+missing, mutated text, and exact-success states, with all requests aborted.
