@@ -187,7 +187,17 @@ def importing(tmp_path, monkeypatch):
     class Client:
         async def get_resume_ids(self): return [{"id": "r1", "title": "QA Engineer"}]
         async def download_resume_by_id(self, item): return {"raw": "downloaded resume", "sections": []}
-    return Client(), home, profile
+    from hh.browser import CookieBinding, CookiePaths
+    from state_store.hh_cookies import HHCookieRepository
+    repository = HHCookieRepository(home / "cookies.json")
+    repository.save([{"name": "hhtoken", "value": "synthetic", "domain": ".hh.ru", "path": "/"}])
+    client = Client()
+    async def browser_cookies(): return repository.snapshot()[0]
+    client._context = SimpleNamespace(cookies=browser_cookies)
+    client._cookie_paths = CookiePaths(str(home / "cookies.json"), str(home / "state"))
+    client._cookie_binding = CookieBinding(repository, repository.snapshot()[1], True, client._context)
+    profile.hh = SimpleNamespace(cookies_file=str(home / "cookies.json"))
+    return client, home, profile
 
 
 def test_import_captures_paths_before_first_await(importing, tmp_path, monkeypatch):
@@ -252,7 +262,8 @@ def test_native_import_rejects_changed_cookie_session(importing):
     repository = HHCookieRepository(home / 'cookies.json')
     repository.save([{'name':'hhtoken','value':'original'}])
     revision = repository.snapshot()[1]
-    context = object()
+    async def browser_cookies(): return [{'name':'hhtoken','value':'original'}]
+    context = SimpleNamespace(cookies=browser_cookies)
     client._context = context
     client._cookie_paths = CookiePaths(str(repository.path), str(home/'state'))
     client._cookie_binding = CookieBinding(repository, revision, True, context=context)
@@ -310,7 +321,8 @@ def test_native_import_completes_with_unchanged_cookie_owner(importing):
     repository = HHCookieRepository(home / 'cookies.json')
     repository.save([{'name': 'hhtoken', 'value': 'synthetic'}])
     revision = repository.snapshot()[1]
-    context = object()
+    async def browser_cookies(): return [{'name': 'hhtoken', 'value': 'synthetic'}]
+    context = SimpleNamespace(cookies=browser_cookies)
     client._context = context
     client._cookie_paths = CookiePaths(str(repository.path), str(home / 'state'))
     client._cookie_binding = CookieBinding(repository, revision, True, context=context)

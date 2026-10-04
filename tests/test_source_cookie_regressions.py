@@ -108,6 +108,7 @@ def test_geekjob_http_cookie_read_uses_constructed_profile(tmp_path, monkeypatch
     monkeypatch.setattr(geekjob.config, "GEEKJOB_COOKIES_FILE", str(other))
     captured = []
     class Response:
+        status = 200
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def text(self): return "{}"

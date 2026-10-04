@@ -13,6 +13,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import config
 import profile as profile_mod
@@ -410,18 +411,30 @@ async def _first_visible_locator(page, selectors: tuple[str, ...]):
     return None
 
 
-async def _fill_first_visible(page, selectors: tuple[str, ...], value: str) -> bool:
+async def _mutation_allowed(guard=None, owner_guard=None):
+    if guard is not None and not await guard():
+        return False
+    return owner_guard is None or owner_guard()
+
+
+async def _fill_first_visible(page, selectors: tuple[str, ...], value: str, *, guard=None, owner_guard=None, receipts=None) -> bool:
     item = await _first_visible_locator(page, selectors)
     if not item:
+        return False
+    if not await _mutation_allowed(guard, owner_guard):
         return False
     try:
         await item.fill(value, timeout=5000)
     except TypeError:
+        if not await _mutation_allowed(guard, owner_guard):
+            return False
         await item.fill(value)
+    if receipts is not None:
+        receipts.append((item, value))
     return True
 
 
-async def _fill_hh_auth_login(page, value: str) -> bool:
+async def _fill_hh_auth_login(page, value: str, *, guard=None, owner_guard=None, receipts=None) -> bool:
     phone_input = await _first_visible_locator(
         page,
         (
@@ -433,21 +446,32 @@ async def _fill_hh_auth_login(page, value: str) -> bool:
     if phone_input and digits:
         # HH renders +7 in a separate calling-code input.
         national = digits[1:] if len(digits) == 11 and digits[0] in "78" else digits
+        if not await _mutation_allowed(guard, owner_guard):
+            return False
         try:
             await phone_input.fill(national, timeout=5000)
         except TypeError:
+            if not await _mutation_allowed(guard, owner_guard):
+                return False
             await phone_input.fill(national)
+        if receipts is not None:
+            receipts.append((phone_input, national))
         return True
-    return await _fill_first_visible(page, HH_AUTH_LOGIN_INPUT_SELECTORS, value)
+    return await _fill_first_visible(page, HH_AUTH_LOGIN_INPUT_SELECTORS, value,
+                                    guard=guard, owner_guard=owner_guard, receipts=receipts)
 
 
-async def _click_first_visible(page, selectors: tuple[str, ...]) -> bool:
+async def _click_first_visible(page, selectors: tuple[str, ...], *, guard=None, owner_guard=None) -> bool:
     item = await _first_visible_locator(page, selectors)
     if not item:
+        return False
+    if not await _mutation_allowed(guard, owner_guard):
         return False
     try:
         await item.click(timeout=5000)
     except TypeError:
+        if not await _mutation_allowed(guard, owner_guard):
+            return False
         await item.click()
     except Exception as exc:
         if "captcha" in str(exc).casefold():
@@ -467,6 +491,7 @@ async def _page_has_hh_auth_prompt(page) -> bool:
         return False
     url = str(getattr(page, "url", "") or "")
     text = await _hh_auth_page_text(page)
+
     return (
         _looks_like_hh_auth_login_prompt(text, url)
         or _looks_like_hh_auth_code_prompt(text, url)
@@ -543,9 +568,9 @@ async def _wait_for_hh_auth_progress(page, before_url: str, before_text: str, *,
     }
 
 
-async def _submit_hh_auth_form(page) -> dict:
+async def _submit_hh_auth_form(page, *, guard=None, owner_guard=None) -> dict:
     try:
-        clicked = await _click_first_visible(page, HH_AUTH_CONTINUE_SELECTORS)
+        clicked = await _click_first_visible(page, HH_AUTH_CONTINUE_SELECTORS, guard=guard, owner_guard=owner_guard)
     except RuntimeError as exc:
         if str(exc) == "captcha_intercepted_click":
             return {"status": HH_AUTH_STEP_CAPTCHA, "detail": "Captcha modal перекрыла кнопку отправки."}
@@ -553,17 +578,20 @@ async def _submit_hh_auth_form(page) -> dict:
     if clicked:
         return {"status": HH_AUTH_STEP_SUBMITTED}
     try:
+        if not await _mutation_allowed(guard, owner_guard):
+            return {"status": HH_AUTH_STEP_BLOCKED, "detail": "Попытка входа HH изменилась; форма не отправлена."}
         await page.keyboard.press("Enter")
         return {"status": HH_AUTH_STEP_SUBMITTED}
     except Exception:
         return {"status": HH_AUTH_STEP_IDLE, "detail": "Не удалось отправить форму HH."}
 
 
-async def _fill_hh_auth_code(page, code: str) -> bool:
+async def _fill_hh_auth_code(page, code: str, *, guard=None, owner_guard=None, receipts=None) -> bool:
     digits = _normalize_hh_auth_code(code)
     if not digits:
         return False
-    if await _fill_first_visible(page, HH_AUTH_CODE_INPUT_SELECTORS[:6], digits):
+    if await _fill_first_visible(page, HH_AUTH_CODE_INPUT_SELECTORS[:6], digits,
+                                 guard=guard, owner_guard=owner_guard, receipts=receipts):
         return True
     try:
         locator = page.locator("input[type='text'], input[type='tel'], input[inputmode='numeric']")
@@ -574,11 +602,16 @@ async def _fill_hh_auth_code(page, code: str) -> bool:
                 visible.append(item)
         if len(visible) >= len(digits) >= 4:
             for item, digit in zip(visible, digits):
+                if not await _mutation_allowed(guard, owner_guard):
+                    return False
                 await item.fill(digit)
+                if receipts is not None:
+                    receipts.append((item, digit))
             return True
     except Exception:
         pass
-    return await _fill_first_visible(page, HH_AUTH_CODE_INPUT_SELECTORS, digits)
+    return await _fill_first_visible(page, HH_AUTH_CODE_INPUT_SELECTORS, digits,
+                                    guard=guard, owner_guard=owner_guard, receipts=receipts)
 
 
 async def _notify_hh_auth_warning(profile_name: str, title: str, detail: str, *, page_url: str = "") -> bool:
@@ -660,17 +693,99 @@ async def _drive_hh_auth_step(
     if page is None or page.is_closed():
         return {"status": HH_AUTH_STEP_IDLE, "detail": "Окно HH закрыто."}
 
+    context = getattr(client, "_context", None)
+    binding = getattr(client, "_cookie_binding", None)
+    revision = getattr(binding, "revision", None)
+    write_nonce = getattr(client, "_cookie_write_nonce", None)
+    step_nonce = object()
+    client._auth_step_nonce = step_nonce
+    prompt_identity = None
+    receipts = []
+
+    def same_owner():
+        if (client._page is not page or getattr(client, "_context", None) is not context
+                or page.is_closed() or getattr(client, "_auth_step_nonce", None) is not step_nonce
+                or getattr(client, "_cookie_write_nonce", None) is not write_nonce
+                or getattr(client, "_cookie_binding", None) is not binding):
+            return False
+        if binding is not None:
+            if (binding.context is not context or binding.revoked or binding.closing
+                    or binding.revision != revision):
+                return False
+            try:
+                return binding.repository.snapshot()[1] == revision
+            except Exception:
+                return False
+        return True
+
+    async def current_prompt(kind):
+        if not same_owner():
+            return False
+        current_url = str(getattr(page, "url", "") or "")
+        parsed = urlsplit(current_url)
+        if (parsed.scheme != "https" or parsed.username or parsed.password
+                or not (parsed.hostname == "hh.ru" or (parsed.hostname or "").endswith(".hh.ru"))
+                or not (parsed.path.startswith("/account/login") or parsed.path.startswith("/auth/"))):
+            return False
+        if await _first_visible_locator(page, HH_AUTH_PASSWORD_INPUT_SELECTORS):
+            return False
+        visible_login = (await _first_visible_locator(page, HH_AUTH_LOGIN_INPUT_SELECTORS)
+                         if kind == "login" else None)
+        # No locator await may follow this final challenge/account observation.
+        current_text = await _hh_auth_page_text(page)
+        matches = (_looks_like_hh_auth_code_prompt(current_text, current_url) if kind == "code"
+                   else (_looks_like_hh_auth_login_prompt(current_text, current_url)
+                         or bool(visible_login)))
+        return (same_owner() and current_url == str(getattr(page, "url", "") or "") and matches
+                and (prompt_identity is None or prompt_identity == (current_url, current_text)))
+
+    async def capture_prompt(kind):
+        nonlocal prompt_identity
+        if not await current_prompt(kind):
+            return False
+        captured_url = str(getattr(page, "url", "") or "")
+        captured_text = await _hh_auth_page_text(page)
+        prompt_identity = (captured_url, captured_text)
+        return await current_prompt(kind)
+
+    def mutation_owner():
+        return (same_owner() and prompt_identity is not None
+                and str(getattr(page, "url", "") or "") == prompt_identity[0])
+
+    async def credential_guard(kind):
+        if not await current_prompt(kind):
+            return False
+        try:
+            for item, expected in receipts:
+                if await item.input_value() != expected:
+                    return False
+        except Exception:
+            return False
+        return await current_prompt(kind) and mutation_owner()
+
+    stale = {"status": HH_AUTH_STEP_BLOCKED, "detail": "Окно, аккаунт или попытка входа HH изменились; ответ не отправлен."}
+
     url = str(getattr(page, "url", "") or "")
     text = await _hh_auth_page_text(page)
+
+    async def control_prompt_unchanged():
+        if not same_owner() or str(getattr(page, "url", "") or "") != url:
+            return False
+        fresh_text = await _hh_auth_page_text(page)
+        return same_owner() and str(getattr(page, "url", "") or "") == url and fresh_text == text
 
     # HH can remember the account and open its password form. Switch by
     # the exact secondary button and leave this iteration immediately: no
     # generic submit is allowed until a phone or one-time code was filled.
     code_mode_button = await _first_visible_locator(page, HH_AUTH_CODE_MODE_SELECTORS)
     if code_mode_button:
+        if not await control_prompt_unchanged():
+            return stale
         try:
             await code_mode_button.click(timeout=5000)
         except TypeError:
+            if not await control_prompt_unchanged():
+                return stale
             await code_mode_button.click()
         await page.wait_for_timeout(1000)
         return {
@@ -687,10 +802,24 @@ async def _drive_hh_auth_step(
 
     # The first HH screen only selects applicant/employer. Its submit button
     # is safe without a text value, but only while the applicant radio exists.
-    if await _first_visible_locator(page, HH_AUTH_ROLE_INPUT_SELECTORS):
+    role = await _first_visible_locator(page, HH_AUTH_ROLE_INPUT_SELECTORS)
+    if role:
+        async def selected_role_guard():
+            if not same_owner():
+                return False
+            try:
+                current_role = await _first_visible_locator(page, HH_AUTH_ROLE_INPUT_SELECTORS)
+                if current_role is None or not await current_role.is_checked():
+                    return False
+                if await _first_visible_locator(page, HH_AUTH_PASSWORD_INPUT_SELECTORS):
+                    return False
+            except Exception:
+                return False
+            return await control_prompt_unchanged()
         before_url = str(getattr(page, "url", "") or "")
         before_text = await _hh_auth_page_text(page)
-        if not await _click_first_visible(page, HH_AUTH_ROLE_SUBMIT_SELECTORS):
+        if not await _click_first_visible(page, HH_AUTH_ROLE_SUBMIT_SELECTORS,
+                                          guard=selected_role_guard, owner_guard=same_owner):
             return {
                 "status": HH_AUTH_STEP_BLOCKED,
                 "detail": "На экране выбора роли HH не найдена кнопка «Войти».",
@@ -711,6 +840,8 @@ async def _drive_hh_auth_step(
         return progress
 
     if _looks_like_hh_auth_code_prompt(text, url):
+        if not await capture_prompt("code"):
+            return stale
         wait_s = max(1, min(int(timeout_s or 1), 900))
         code = await _request_hh_auth_value(
             "code",
@@ -723,11 +854,20 @@ async def _drive_hh_auth_step(
         code = _normalize_hh_auth_code(code)
         if not code:
             return {"status": HH_AUTH_STEP_IDLE, "detail": "SMS-код не получен."}
-        if not await _fill_hh_auth_code(page, code):
+        if not await current_prompt("code"):
+            return stale
+        if not await _fill_hh_auth_code(page, code, guard=lambda: credential_guard("code"),
+                                        owner_guard=mutation_owner, receipts=receipts):
             return {"status": HH_AUTH_STEP_BLOCKED, "detail": "Не нашёл поле для ввода SMS-кода."}
         before_url = str(getattr(page, "url", "") or "")
         before_text = await _hh_auth_page_text(page)
-        submit_result = await _submit_hh_auth_form(page)
+        if not await current_prompt("code"):
+            return stale
+        if not receipts:
+            return stale
+        submit_result = await _submit_hh_auth_form(page, guard=lambda: credential_guard("code"), owner_guard=mutation_owner)
+        if submit_result.get("status") == HH_AUTH_STEP_BLOCKED:
+            return stale
         if submit_result.get("status") == HH_AUTH_STEP_CAPTCHA:
             return await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:code_submit")
         progress = await _wait_for_hh_auth_progress(page, before_url, before_text)
@@ -748,6 +888,8 @@ async def _drive_hh_auth_step(
 
     if _looks_like_hh_auth_login_prompt(text, url):
         await _click_first_visible(page, HH_AUTH_PHONE_MODE_SELECTORS)
+        if not await capture_prompt("login"):
+            return stale
         login = auth_login
         if not login:
             wait_s = max(1, min(int(timeout_s or 1), 900))
@@ -759,10 +901,19 @@ async def _drive_hh_auth_step(
                 timeout_s=wait_s,
                 poll_sec=poll_sec,
             )
-        if login and await _fill_hh_auth_login(page, login):
+        if login and not await current_prompt("login"):
+            return stale
+        if login and await _fill_hh_auth_login(page, login, guard=lambda: credential_guard("login"),
+                                               owner_guard=mutation_owner, receipts=receipts):
             before_url = str(getattr(page, "url", "") or "")
             before_text = await _hh_auth_page_text(page)
-            submit_result = await _submit_hh_auth_form(page)
+            if not await current_prompt("login"):
+                return stale
+            if not receipts:
+                return stale
+            submit_result = await _submit_hh_auth_form(page, guard=lambda: credential_guard("login"), owner_guard=mutation_owner)
+            if submit_result.get("status") == HH_AUTH_STEP_BLOCKED:
+                return stale
             if submit_result.get("status") == HH_AUTH_STEP_CAPTCHA:
                 return await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:login_submit")
             progress = await _wait_for_hh_auth_progress(page, before_url, before_text)
@@ -773,6 +924,8 @@ async def _drive_hh_auth_step(
             return progress
 
     if await _first_visible_locator(page, HH_AUTH_LOGIN_INPUT_SELECTORS):
+        if not await capture_prompt("login"):
+            return stale
         login = auth_login
         if not login:
             wait_s = max(1, min(int(timeout_s or 1), 900))
@@ -784,10 +937,19 @@ async def _drive_hh_auth_step(
                 timeout_s=wait_s,
                 poll_sec=poll_sec,
             )
-        if login and await _fill_hh_auth_login(page, login):
+        if login and not await current_prompt("login"):
+            return stale
+        if login and await _fill_hh_auth_login(page, login, guard=lambda: credential_guard("login"),
+                                               owner_guard=mutation_owner, receipts=receipts):
             before_url = str(getattr(page, "url", "") or "")
             before_text = await _hh_auth_page_text(page)
-            submit_result = await _submit_hh_auth_form(page)
+            if not await current_prompt("login"):
+                return stale
+            if not receipts:
+                return stale
+            submit_result = await _submit_hh_auth_form(page, guard=lambda: credential_guard("login"), owner_guard=mutation_owner)
+            if submit_result.get("status") == HH_AUTH_STEP_BLOCKED:
+                return stale
             if submit_result.get("status") == HH_AUTH_STEP_CAPTCHA:
                 return await _solve_hh_auth_captcha(client, profile_name, stage=f"hh_auth:{profile_name}:visible_login_submit")
             progress = await _wait_for_hh_auth_progress(page, before_url, before_text)
@@ -808,7 +970,7 @@ async def import_current_hh_resumes(client: HHClient, profile_name: str) -> dict
     context = getattr(client, "_context", None)
     def verify_cookie_owner(*, locked=False):
         if cookie_paths is None:
-            return  # Compatibility injected clients are not native account proof.
+            raise RuntimeError("HH resume import requires a captured native cookie owner")
         configured = getattr(getattr(profile, "hh", None), "cookies_file", "")
         if not configured or os.path.abspath(configured) != cookie_paths.cookies_file:
             raise RuntimeError("HH import client belongs to another profile")
@@ -820,10 +982,28 @@ async def import_current_hh_resumes(client: HHClient, profile_name: str) -> dict
         if snapshot()[1] != cookie_revision:
             raise RuntimeError("HH import account/session changed")
     verify_cookie_owner()
+    from hh.browser import HH_AUTH_COOKIE_NAMES
+    from state_store.hh_cookies import validate_cookies
+    def auth_fingerprint(cookies):
+        validate_cookies(cookies)
+        items = sorted((item['name'], item['value'], item.get('domain', ''), item.get('path', '/'))
+                       for item in cookies if item['name'].casefold() in HH_AUTH_COOKIE_NAMES)
+        if not any(item[0].casefold() == 'hhtoken' for item in items):
+            raise RuntimeError("HH resume import has no captured browser auth")
+        return items
+    captured_auth = auth_fingerprint(binding.repository.snapshot()[0] or [])
+    async def verify_browser_owner():
+        verify_cookie_owner()
+        current_cookies = await context.cookies()
+        verify_cookie_owner()
+        if auth_fingerprint(current_cookies) != captured_auth:
+            raise RuntimeError("HH resume import browser auth changed; manual review required")
     workflow = HHResumeImport(profile.home_dir, profile.resume_file)
     try:
         workflow.begin()
+        await verify_browser_owner()
         resumes = await client.get_resume_ids()
+        await verify_browser_owner()
         exports: list[dict] = []
         seen_ids = set()
         for item in resumes:
@@ -834,6 +1014,7 @@ async def import_current_hh_resumes(client: HHClient, profile_name: str) -> dict
                 raise ValueError("Ambiguous duplicate HH resume export identity")
             seen_ids.add(resume_id)
             downloaded = await client.download_resume_by_id(item)
+            await verify_browser_owner()
             title = str(downloaded.get("title") or item.get("title") or resume_id)
             path = workflow.exports / f"{resume_id}.md"
             _write_text(str(path), downloaded.get("raw", ""))
@@ -842,6 +1023,7 @@ async def import_current_hh_resumes(client: HHClient, profile_name: str) -> dict
         selected_exports = _select_profile_resumes(profile_name, exports)
         selected = selected_exports[0] if selected_exports else None
         raw = Path(selected["path"]).read_text(encoding="utf-8") if selected else ""
+        await verify_browser_owner()
         def publish():
             workflow.publish(selected_exports, raw, lambda env, expected: _update_profile_resume_ids(
                 profile_name, selected_exports, env_file=env, expected_content=expected))

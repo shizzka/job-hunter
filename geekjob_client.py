@@ -1,11 +1,14 @@
 """Клиент для поиска вакансий и отклика на GeekJob."""
 import asyncio
+import copy
+import hashlib
 import html
 import json
 import logging
 import os
 import re
 import time
+from urllib.parse import urlsplit
 
 import aiohttp
 from playwright.async_api import BrowserContext, Page, async_playwright
@@ -14,6 +17,7 @@ import config
 import proxy_utils
 from browser_cookie_session import BrowserCookieSession
 from state_store.browser_cookies import CookieRepository
+from state_store.geekjob_apply import GeekJobApplyRepository, canonical_vacancy_url
 
 log = logging.getLogger("geekjob_client")
 
@@ -52,28 +56,39 @@ def _save_cookies(cookies: list[dict]):
     CookieRepository(config.GEEKJOB_COOKIES_FILE).save(cookies)
 
 
-def _cookie_header(cookies: list[dict] | None) -> str:
+def _cookie_header(cookies: list[dict] | None, *, url='https://geekjob.ru/json/') -> str:
     if not cookies:
         return ""
 
     now = time.time()
-    parts = []
+    parts = {}
+    target = urlsplit(url)
+    host, request_path = (target.hostname or '').casefold(), target.path or '/'
     for cookie in cookies:
         name = (cookie.get("name") or "").strip()
         value = cookie.get("value")
-        domain = (cookie.get("domain") or "").lstrip(".").lower()
+        raw_domain = (cookie.get('domain') or '').casefold()
+        domain = raw_domain.lstrip('.')
         expires = cookie.get("expires")
 
         if not name or value is None:
             continue
-        if domain and "geekjob.ru" not in domain:
+        if domain and not (host == domain or (raw_domain.startswith('.') and host.endswith('.' + domain))):
+            continue
+        cookie_path = cookie.get('path') or '/'
+        if not (request_path == cookie_path or (request_path.startswith(cookie_path)
+                and (cookie_path.endswith('/') or request_path[len(cookie_path):].startswith('/')))):
+            continue
+        if cookie.get('secure') and target.scheme != 'https':
             continue
         if isinstance(expires, (int, float)) and expires > 0 and expires < now:
             continue
 
-        parts.append(f"{name}={value}")
+        if name in parts and parts[name] != value:
+            raise RuntimeError('Ambiguous GeekJob API cookie identity')
+        parts[name] = value
 
-    return "; ".join(parts)
+    return '; '.join(f'{name}={value}' for name, value in sorted(parts.items()))
 
 
 class GeekJobClient:
@@ -81,6 +96,15 @@ class GeekJobClient:
 
     def __init__(self):
         self._cookie_session = BrowserCookieSession(config.GEEKJOB_COOKIES_FILE, config.HH_STATE_DIR)
+        self._base_url = config.GEEKJOB_BASE_URL.rstrip('/')
+        self._resume_id = config.GEEKJOB_RESUME_ID.strip()
+        self._browser_settings = (config.HEADLESS, config.SLOW_MO, config.BROWSER_PROXY)
+        self._api_cookies = None
+        self._api_revision = None
+        self._api_loaded = False
+        self._api_revoked = False
+        self._api_account = ''
+        self._apply_repository = GeekJobApplyRepository(self._cookie_session.repository.path)
         self._session: aiohttp.ClientSession | None = None
         self._session_uses_env_proxy = True
         self._pw = None
@@ -88,6 +112,67 @@ class GeekJobClient:
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._apply_context_cache: dict[str, dict] = {}
+
+    def _api_cookie_snapshot(self):
+        if self._api_revoked:
+            raise RuntimeError('GeekJob account/session superseded; restart client')
+        cookies, revision = self._cookie_session.repository.snapshot()
+        if self._api_loaded and revision != self._api_revision:
+            self._api_revoked = True
+            self._apply_context_cache.clear()
+            raise RuntimeError('GeekJob account/session changed; restart client')
+        if not self._api_loaded:
+            self._api_cookies, self._api_revision, self._api_loaded = copy.deepcopy(cookies), revision, True
+        return copy.deepcopy(self._api_cookies), self._api_revision
+
+    def _session_identity(self):
+        cookies, revision = self._api_cookie_snapshot()
+        submit_header = _cookie_header(cookies, url=self._base_url + '/json/respond/vacancy')
+        account_header = _cookie_header(cookies, url=self._base_url + '/json/mycvlist')
+        if not submit_header:
+            raise RuntimeError('GeekJob authenticated cookie session unavailable')
+        # Source cookie names are undocumented: conservatively refuse different
+        # effective credentials rather than use GET account A to POST as B.
+        if account_header != submit_header:
+            raise RuntimeError('GeekJob GET/POST effective account cookies differ')
+        return hashlib.sha256(repr(revision).encode()).hexdigest()
+
+    def _bind_account(self, payload):
+        user = payload.get('user')
+        if not isinstance(user, dict):
+            raise RuntimeError('GeekJob account identity unavailable')
+        user_id, email = user.get('id'), user.get('email')
+        if user_id is not None and type(user_id) not in (str, int):
+            raise RuntimeError('GeekJob invalid account identity')
+        if email is not None and not isinstance(email, str):
+            raise RuntimeError('GeekJob invalid account identity')
+        identity = str(user_id or '').strip() or str(email or '').strip().casefold()
+        if not identity:
+            raise RuntimeError('GeekJob account identity unavailable')
+        account = hashlib.sha256(identity.encode()).hexdigest()
+        if self._api_account and self._api_account != account:
+            self._api_revoked = True
+            raise RuntimeError('GeekJob API account changed')
+        self._api_account = account
+        return account
+
+    async def _verify_browser_api_owner(self):
+        cookies, revision = self._api_cookie_snapshot()
+        if self._context is None:
+            if self._page is not None:
+                raise RuntimeError('GeekJob browser ownership unavailable')
+            return
+        context, binding = self._context, self._cookie_session.binding
+        if (binding is None or binding.context is not context or binding.closing
+                or binding.revoked or binding.revision != revision):
+            raise RuntimeError('GeekJob browser/API cookie owner mismatch')
+        captured = await context.cookies()
+        if (context is not self._context or binding is not self._cookie_session.binding
+                or binding.closing or binding.revoked or binding.revision != revision
+                or self._api_cookie_snapshot()[1] != revision
+                or _cookie_header(captured, url=self._base_url + '/json/respond/vacancy') !=
+                   _cookie_header(cookies, url=self._base_url + '/json/respond/vacancy')):
+            raise RuntimeError('GeekJob browser/API account changed')
 
     async def start(self, *, trust_env: bool = True):
         if self._session and not self._session.closed:
@@ -97,6 +182,7 @@ class GeekJobClient:
             self._session = None
 
         self._session = aiohttp.ClientSession(
+            cookie_jar=aiohttp.DummyCookieJar(),  # GET Set-Cookie must not replace frozen API credentials.
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (X11; Linux x86_64) "
@@ -124,10 +210,10 @@ class GeekJobClient:
 
     async def start_browser(self, headless: bool | None = None):
         launch_opts = {
-            "headless": config.HEADLESS if headless is None else headless,
-            "slow_mo": config.SLOW_MO,
+            "headless": self._browser_settings[0] if headless is None else headless,
+            "slow_mo": self._browser_settings[1],
         }
-        proxy_url = os.environ.get("GEEKJOB_PROXY") or os.environ.get("HH_PROXY") or config.BROWSER_PROXY
+        proxy_url = os.environ.get("GEEKJOB_PROXY") or os.environ.get("HH_PROXY") or self._browser_settings[2]
         if proxy_url:
             launch_opts["proxy"] = {"server": proxy_url}
             log.info("Using configured proxy for GeekJob browser")
@@ -144,10 +230,10 @@ class GeekJobClient:
 
     async def _get_text_once(self, url: str) -> str:
         assert self._session is not None
-        async with self._session.get(url, ssl=False) as resp:
+        self._validate_origin(url)
+        async with self._session.get(url, ssl=True, allow_redirects=False) as resp:
             if resp.status != 200:
-                text = await resp.text()
-                raise RuntimeError(f"GeekJob error {resp.status}: {text[:300]}")
+                raise RuntimeError(f'GeekJob unsuccessful public response ({resp.status})')
             return await resp.text()
 
     async def _get_text(self, url: str) -> str:
@@ -168,36 +254,49 @@ class GeekJobClient:
         *,
         payload: dict | None = None,
         referer: str | None = None,
+        before_send=None,
     ) -> dict:
         assert self._session is not None
 
-        full_url = url if url.startswith("http") else f"{config.GEEKJOB_BASE_URL}{url}"
+        full_url = url if url.startswith("http") else f"{self._base_url}{url}"
+        self._validate_origin(full_url)
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
-        cookie_header = _cookie_header(self._cookie_session.repository.snapshot()[0])
+        cookie_header = _cookie_header(self._api_cookie_snapshot()[0], url=full_url)
         if cookie_header:
             headers["Cookie"] = cookie_header
         if referer:
             headers["Referer"] = referer
         if method.upper() != "GET":
-            headers["Origin"] = config.GEEKJOB_BASE_URL
+            headers["Origin"] = self._base_url
+        if before_send is not None:
+            before_send()
 
         async with self._session.request(
             method.upper(),
             full_url,
             headers=headers,
             json=payload,
-            ssl=False,
+            ssl=True,
+            allow_redirects=False,
         ) as resp:
             raw = await resp.text()
             try:
-                return json.loads(raw)
+                value = json.loads(raw)
             except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"GeekJob returned non-JSON for {full_url}: {raw[:300]}"
-                ) from exc
+                raise RuntimeError('GeekJob returned malformed JSON') from exc
+            if resp.status != 200 or not isinstance(value, dict):
+                raise RuntimeError('GeekJob unsuccessful API response')
+            self._api_cookie_snapshot()  # Never adopt cookies changed during GET/POST.
+            return value
+
+    def _validate_origin(self, url):
+        target, origin = urlsplit(url), urlsplit(self._base_url)
+        if (target.scheme != 'https' or target.username is not None or target.password is not None
+                or (target.hostname, target.port or 443) != (origin.hostname, origin.port or 443)):
+            raise RuntimeError('GeekJob authenticated API origin mismatch')
 
     async def _request_json(
         self,
@@ -216,8 +315,8 @@ class GeekJobClient:
                 referer=referer,
             )
         except Exception as exc:
-            if self._session_uses_env_proxy and proxy_utils.is_proxy_error(exc):
-                log.warning("GeekJob proxy failed, retrying direct: %s", exc)
+            if method.upper() == 'GET' and self._session_uses_env_proxy and proxy_utils.is_proxy_error(exc):
+                log.warning("GeekJob GET proxy failed, retrying direct (%s)", type(exc).__name__)
                 await self.start(trust_env=False)
                 return await self._request_json_once(
                     method,
@@ -229,8 +328,8 @@ class GeekJobClient:
 
     def _build_list_url(self, page: int) -> str:
         if page <= 1:
-            return f"{config.GEEKJOB_BASE_URL}/vacancies"
-        return f"{config.GEEKJOB_BASE_URL}/vacancies/{page}"
+            return f"{self._base_url}/vacancies"
+        return f"{self._base_url}/vacancies/{page}"
 
     def _extract_total_pages(self, page_text: str) -> int:
         raw = _first_match(page_text, r"<small>\s*страниц\s+(\d+)\s*</small>")
@@ -300,7 +399,7 @@ class GeekJobClient:
             "title": title or "Без названия",
             "company": company or "—",
             "salary": salary,
-            "url": f"{config.GEEKJOB_BASE_URL}{href}",
+            "url": f"{self._base_url}{href}",
             "snippet": snippet[:1000],
             "details": snippet,
             "location": location,
@@ -401,7 +500,7 @@ class GeekJobClient:
 
         try:
             await self._page.goto(
-                config.GEEKJOB_BASE_URL,
+                self._base_url,
                 wait_until="domcontentloaded",
                 timeout=30000,
             )
@@ -418,16 +517,17 @@ class GeekJobClient:
         return json.loads(payload)
 
     def _select_resume(self, cv_list: list[dict]) -> dict | None:
-        if not cv_list:
+        if not isinstance(cv_list, list) or not cv_list or any(not isinstance(item, dict)
+                or type(item.get('id')) not in (str, int)
+                or not re.fullmatch(r'[A-Za-z0-9_-]+', str(item['id']))
+                or (type(item['id']) is int and item['id'] <= 0) for item in cv_list):
             return None
 
-        preferred_id = config.GEEKJOB_RESUME_ID.strip()
+        preferred_id = self._resume_id
         if preferred_id:
-            for item in cv_list:
-                if str(item.get("id") or "").strip() == preferred_id:
-                    return item
-
-        return cv_list[0]
+            matches = [item for item in cv_list if isinstance(item, dict) and str(item.get('id') or '').strip() == preferred_id]
+            return matches[0] if len(matches) == 1 else None
+        return cv_list[0] if len(cv_list) == 1 and isinstance(cv_list[0], dict) else None
 
     def _build_response_text(
         self,
@@ -446,7 +546,7 @@ class GeekJobClient:
 
         resume_hint = ""
         if cv_id:
-            resume_url = f"{config.GEEKJOB_BASE_URL}/geek/{cv_id}"
+            resume_url = f"{self._base_url}/geek/{cv_id}"
             if lang == "en":
                 if is_public:
                     resume_hint = f"You can see my resume here {resume_url}"
@@ -493,79 +593,128 @@ class GeekJobClient:
     async def _get_apply_context(self, vacancy_url: str, *, refresh: bool = False) -> dict:
         if not vacancy_url:
             raise RuntimeError("GeekJob vacancy URL is missing")
+        vacancy_url = canonical_vacancy_url(vacancy_url)
+        if urlsplit(vacancy_url).hostname != urlsplit(self._base_url).hostname:
+            raise RuntimeError('GeekJob vacancy origin mismatch')
 
-        if not refresh and vacancy_url in self._apply_context_cache:
-            return self._apply_context_cache[vacancy_url]
+        session = self._session_identity()
+        key = (vacancy_url, session, self._api_account)
+        if not refresh and key in self._apply_context_cache:
+            return copy.deepcopy(self._apply_context_cache[key])
 
         page_text = await self._get_text(vacancy_url)
         vacancy_meta = self._extract_vacancy_meta(page_text)
+        if str(vacancy_meta.get('id') or '') != vacancy_url.rsplit('/', 1)[-1]:
+            raise RuntimeError('GeekJob URL/vacancy identity mismatch')
         mycv = await self._request_json(
             "GET",
             f"/json/mycvlist?vid={vacancy_meta['id']}",
             referer=vacancy_url,
         )
+        self._api_cookie_snapshot()
+        if (type(mycv.get('error')) is not bool or
+                (not mycv['error'] and (type(mycv.get('responded')) is not bool or not isinstance(mycv.get('data'), list)))):
+            raise RuntimeError('GeekJob invalid account/resume response schema')
+        if not mycv.get('error'):
+            self._bind_account(mycv)
         context = {
             "vacancy": vacancy_meta,
             "mycv": mycv,
             "vacancy_url": vacancy_url,
+            'session': session, 'account': self._api_account,
         }
-        self._apply_context_cache[vacancy_url] = context
-        return context
+        self._apply_context_cache[(vacancy_url, session, self._api_account)] = copy.deepcopy(context)
+        return copy.deepcopy(context)
 
     async def is_auto_apply_ready(self, vacancy_url: str) -> tuple[bool, str]:
         try:
             context = await self._get_apply_context(vacancy_url)
         except Exception as exc:
-            return False, f"Не удалось проверить GeekJob: {exc}"
+            return False, f"Не удалось проверить сессию GeekJob ({type(exc).__name__}); нужна ручная проверка"
 
         payload = context.get("mycv") or {}
         if payload.get("error"):
-            return False, payload.get("message", "GeekJob не готов к автоотклику")
+            return False, 'GeekJob сессия не подтверждена; нужна ручная проверка'
+        if not self._select_resume(payload.get('data') or []):
+            return False, 'Целевое GeekJob-резюме отсутствует или неоднозначно'
         return True, "ready"
 
     async def apply_to_vacancy(self, vacancy: dict, cover_letter: str = "") -> dict:
-        vacancy_url = vacancy.get("url") or ""
+        original = copy.deepcopy(vacancy)
+        vacancy_url = original.get("url") or ""
         if not vacancy_url:
             return {"ok": False, "message": "Не найден URL вакансии GeekJob"}
 
+        owner, acting = None, False
+        account, cvid = '', ''
+        def finish(status):
+            self._apply_repository.transition(vacancy_url, owner, status, account=account, resume_id=str(cvid or ''))
         try:
+            vacancy_url = canonical_vacancy_url(vacancy_url)
+            expected_id = vacancy_url.rsplit('/', 1)[-1]
+            provided_id = str(original.get('external_id') or original.get('id') or '').removeprefix('geekjob:')
+            if provided_id != expected_id:
+                raise RuntimeError('GeekJob approved vacancy identity mismatch')
+            session = self._session_identity()
+            approval = hashlib.sha256(json.dumps({'vacancy': original, 'cover': cover_letter,
+                'resume_id': self._resume_id}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+            owner = self._apply_repository.claim(vacancy_url, session, approval)
+            if owner is None:
+                return {'ok': False, 'submission_status': self._apply_repository.get(vacancy_url).get('status'),
+                        'message': 'GeekJob отклик уже завершён или требует ручной проверки; автоматического повтора нет'}
             context = await self._get_apply_context(vacancy_url, refresh=True)
-        except Exception as exc:
-            return {"ok": False, "message": f"Не удалось открыть GeekJob: {exc}"}
-
-        vacancy_meta = context.get("vacancy") or {}
-        payload = context.get("mycv") or {}
-
-        if payload.get("error"):
-            return {"ok": False, "message": payload.get("message", "GeekJob отклик недоступен")}
-        if payload.get("responded"):
-            return {"ok": True, "message": "Уже откликались ранее"}
-
-        cv_list = payload.get("data") or []
-        user = payload.get("user") or {}
-        selected_cv = self._select_resume(cv_list)
-        cvid = (selected_cv or {}).get("id")
-        text = self._build_response_text(cover_letter, vacancy_meta, vacancy_url, selected_cv, user)
-
-        response = await self._request_json(
-            "POST",
-            "/json/respond/vacancy",
-            payload={
-                "text": text,
-                "vic": vacancy_meta.get("ic"),
-                "vid": vacancy_meta.get("id"),
-                "vci": vacancy_meta.get("ci"),
-                "cid": cvid,
-            },
-            referer=vacancy_url,
-        )
-
-        if response.get("error"):
-            return {"ok": False, "message": response.get("message", "Не удалось отправить отклик")}
-
-        self._apply_context_cache.pop(vacancy_url, None)
-        return {
-            "ok": True,
-            "message": response.get("message", "Отклик отправлен"),
-            "resume_id": cvid,
-        }
+            vacancy_meta, payload = context.get('vacancy') or {}, context.get('mycv') or {}
+            if payload.get('error'):
+                finish('failed')
+                return {'ok': False, 'message': 'GeekJob отклик недоступен; проверьте сессию вручную'}
+            account = self._bind_account(payload)
+            if payload.get('responded'):
+                finish('completed')
+                return {'ok': True, 'already_applied': True, 'message': 'Уже откликались ранее'}
+            selected_cv = self._select_resume(payload.get('data') or [])
+            if selected_cv is None:
+                finish('failed')
+                return {'ok': False, 'message': 'Целевое GeekJob-резюме отсутствует или неоднозначно'}
+            cvid = selected_cv.get('id')
+            text = self._build_response_text(cover_letter, vacancy_meta, vacancy_url, selected_cv, payload.get('user'))
+            await self.start()
+            transport = self._session
+            await self._verify_browser_api_owner()
+            if (vacancy != original or self._session_identity() != session
+                    or context['account'] != account or context['session'] != session):
+                raise RuntimeError('GeekJob approval/session changed before POST')
+            finish('acting')  # Durable boundary before any possible HTTP delivery.
+            acting = True
+            browser_context, browser_binding = self._context, self._cookie_session.binding
+            browser_nonce = self._cookie_session.nonce
+            def before_send():
+                record = self._apply_repository.get(vacancy_url)
+                if (self._session is not transport or self._context is not browser_context
+                        or self._cookie_session.binding is not browser_binding or self._cookie_session.nonce is not browser_nonce
+                        or (browser_binding is not None and (browser_binding.closing or browser_binding.revoked))
+                        or vacancy != original or self._session_identity() != session
+                        or record.get('owner') != owner or record.get('status') != 'acting'
+                        or record.get('session') != session or record.get('approval') != approval):
+                    raise RuntimeError('GeekJob last-dispatch ownership/approval changed')
+            response = await self._request_json_once('POST', '/json/respond/vacancy',
+                payload={'text': text, 'vic': vacancy_meta.get('ic'), 'vid': vacancy_meta.get('id'),
+                         'vci': vacancy_meta.get('ci'), 'cid': cvid}, referer=vacancy_url, before_send=before_send)
+            if type(response.get('error')) is not bool:
+                raise RuntimeError('GeekJob submit outcome unknown')
+            finish('failed' if response['error'] else 'completed')
+            self._apply_context_cache.clear()
+            return {'ok': not response['error'], 'message': 'GeekJob отклик не принят' if response['error'] else 'Отклик отправлен',
+                    'resume_id': cvid, 'resume_selection_verified': True,
+                    'submission_status': 'failed' if response['error'] else 'completed'}
+        except BaseException as exc:
+            status = 'uncertain' if acting else 'failed'
+            if owner is not None:
+                try:
+                    finish(status)
+                except Exception as persistence_error:
+                    log.warning('GeekJob submit completion unavailable (%s)', type(persistence_error).__name__)
+            if not isinstance(exc, Exception):
+                raise
+            return {'ok': False, 'submission_status': status, 'error_kind': type(exc).__name__,
+                    'message': 'GeekJob результат требует ручной проверки; автоматического повтора нет' if acting else
+                               'GeekJob сессия/резюме/approval не проверены; отклик не отправлен'}

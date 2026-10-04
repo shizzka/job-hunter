@@ -43,6 +43,12 @@ class CookieBinding:
     revoked: bool = False
 
 
+@dataclass(frozen=True)
+class BoundCookieWriter:
+    """Explicit native destination; arbitrary callbacks are not account proof."""
+    repository: HHCookieRepository
+
+
 def _ensure_dirs(paths: CookiePaths | None = None):
     paths = paths or CookiePaths.capture()
     Path(paths.cookies_file).parent.mkdir(parents=True, exist_ok=True)
@@ -64,18 +70,26 @@ def _save_cookies(cookies: list[dict], paths: CookiePaths | None = None):
 def _persist_captured(session, context, binding, nonce, revision, cookies, save_cookies, *, shutdown=False):
     if session._context is not context or getattr(session, "_cookie_write_nonce", None) is not nonce:
         raise HHCookieStateError("HH browser changed during cookie capture")
-    if save_cookies is not _save_cookies:
-        # Injected callbacks remain useful for tests; they own their destination.
-        save_cookies(cookies)
-        return
-    if (binding is None or binding is not getattr(session, "_cookie_binding", None)
-            or binding.context is not context or binding.revoked):
+    if binding is not None and (binding is not getattr(session, "_cookie_binding", None)
+            or binding.context is not context or binding.revoked
+            or (binding.closing and not shutdown)):
         raise HHCookieStateError("HH cookie session ownership unavailable")
     if not isinstance(cookies, list):
         raise HHCookieStateError("Browser returned an invalid HH cookie collection")
     validate_cookies(cookies)
-    if shutdown and binding.had_auth and not any(item.get("name", "").lower() == "hhtoken" for item in cookies):
+    if shutdown and binding is not None and binding.had_auth and not any(item.get("name", "").lower() == "hhtoken" for item in cookies):
         raise HHCookieStateError("Refusing to erase cached HH auth during shutdown")
+    if binding is None:
+        if save_cookies is _save_cookies or isinstance(save_cookies, BoundCookieWriter):
+            raise HHCookieStateError("HH cookie session ownership unavailable")
+        # Unbound synthetic adapters may retain their own in-memory callback.
+        save_cookies(cookies)
+        return
+    if save_cookies is not _save_cookies:
+        if (type(save_cookies) is not BoundCookieWriter
+                or os.path.abspath(os.fspath(save_cookies.repository.path))
+                != os.path.abspath(os.fspath(binding.repository.path))):
+            raise HHCookieStateError("Injected HH writer has no captured native destination")
     try:
         binding.revision = binding.repository.save(cookies, expected_revision=revision)
         binding.had_auth = any(item.get("name", "").lower() == "hhtoken" for item in cookies)
