@@ -26,3 +26,25 @@ Targeted tests: **160 passed**, including R1, A2 auto-wait races, root/control
 review, resume identity, HH client/forms and unexpected-UI guards.
 
 Full isolated offline suite after R1: **2233 passed**, 171.79 seconds.
+
+## R2 / A4 — exact approved composer at actual send event
+
+Before fix: `tests/test_rereview_r2.py` produced **8 failed / 2 passed**.
+During disabled/covered click auto-wait, changed textarea text, replaced editor,
+replaced composer root (preserving the old button), and an added payload control
+all reached the synthetic send handler. The recorded text/root came from the
+current page, not the approved draft.
+
+Fix stays in `hh/chat.py`: bind exact answer/editor, common composer/form root,
+actual send control, control identities, values/FormData and browser URL before
+the final durable callback. A synchronous click/submit capture guard validates
+that binding at dispatch; changed state suppresses page handlers. Persistent
+approved draft/version semantics and plain yes/no shortcut rules are unchanged.
+Browser readback rejects a blocked event before success verification.
+
+Targeted run: 163 passed plus two legacy ordering doubles requiring explicit
+arm/readback support. After accurate mock updates, **26 final targeted tests
+passed**, including all 10 Chromium cases, low-level chat positives and ordering
+checks. No production guard bypass for doubles was added.
+
+Full isolated offline suite after R2: **2243 passed**, 186.99 seconds.

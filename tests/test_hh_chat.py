@@ -400,6 +400,16 @@ def test_fill_and_preview_uses_new_hh_text_input_selector_as_fallback(tmp_path):
 class FakeSendButton:
     def __init__(self):
         self.clicked = False
+        self.value = ""
+        self.approved = None
+
+    async def evaluate(self, script, expected=None):
+        if 'codex:chat-send-arm' in script:
+            self.approved = expected['text'] if self.value == expected['text'] else None
+            return self.approved is not None
+        if 'codex:chat-send-readback' in script:
+            return self.approved is not None
+        raise AssertionError('Unexpected browser script')
 
     async def click(self):
         self.clicked = True
@@ -424,6 +434,7 @@ def test_send_message_clicks_and_verifies_own_message_before_follow_up():
     expected = "Рассматриваю предложения от 80 000 ₽ на руки."
 
     async def fill_preview(*args):
+        page.button.value = args[2]
         return {"filled": True, "screenshot_path": ""}
 
     async def extract_current_messages(current_page):

@@ -84,7 +84,7 @@ def test_operational_search_logs_do_not_dump_cover_or_question_answers(search_ha
 def test_chat_verification_logs_metadata_without_message_text(caplog):
     from hh.chat import send_message
     private = 'SYNTHETIC_PRIVATE_CHAT_BODY'
-    page = SimpleNamespace(query_selector=AsyncMock(return_value=SimpleNamespace(click=AsyncMock())), wait_for_timeout=AsyncMock())
+    page = SimpleNamespace(query_selector=AsyncMock(return_value=SimpleNamespace(click=AsyncMock(), evaluate=AsyncMock(return_value=True))), wait_for_timeout=AsyncMock())
     fill = AsyncMock(return_value={'filled': True})
     extract = AsyncMock(return_value={'messages': [{'is_me': False, 'author': private, 'text': private}]})
     with caplog.at_level(logging.WARNING):

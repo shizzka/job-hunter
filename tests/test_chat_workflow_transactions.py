@@ -349,7 +349,14 @@ def test_low_level_claim_happens_after_ui_wait_before_click(monkeypatch, quick_r
     async def click():
         assert calls[-1] == "claim"
         calls.append("click")
-    button = SimpleNamespace(click=click)
+    async def evaluate(script, expected=None):
+        if 'codex:chat-send-arm' in script:
+            calls.append("arm")
+            return expected['text'] == ("Да" if quick_reply else "Synthetic answer")
+        if 'codex:chat-send-readback' in script:
+            return "click" in calls
+        raise AssertionError("Unexpected browser guard script")
+    button = SimpleNamespace(click=click, evaluate=evaluate)
     async def find(*args):
         calls.append("button")
         return button
@@ -360,6 +367,6 @@ def test_low_level_claim_happens_after_ui_wait_before_click(monkeypatch, quick_r
         return {"messages": [{"is_me": True, "text": "Да" if quick_reply else "Synthetic answer"}]}
     monkeypatch.setattr(low, "ensure_page_ui", ui)
     page = SimpleNamespace(query_selector=find, wait_for_timeout=wait)
-    assert asyncio.run(low.send_message(page, "chat", "Synthetic answer", fill_preview=fill,
+    assert asyncio.run(low.send_message(page, "chat", "Да" if quick_reply else "Synthetic answer", fill_preview=fill,
         find_quick_reply=find, before_send=before_send, extract_current_messages=extract))
-    assert calls.index("fill") < calls.index("button") < calls.index("claim") < calls.index("click")
+    assert calls.index("fill") < calls.index("button") < calls.index("arm") < calls.index("claim") < calls.index("click")

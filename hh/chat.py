@@ -427,6 +427,48 @@ async def fill_and_preview(
     return {"filled": True, "screenshot_path": shot_path}
 
 
+async def arm_send_boundary(button, text, quick_reply="") -> bool:
+    return await button.evaluate(r"""(control, expected) => {
+        /* codex:chat-send-arm */
+        const editor = expected.quick ? null : expected.selectors.map(selector => document.querySelector(selector)).find(Boolean);
+        if (!control.isConnected || (!expected.quick && (!editor || editor.value !== expected.text))) return false;
+        if (expected.quick && control.innerText.trim() !== expected.quick) return false;
+        let root = editor?.form || control.form || editor || control.parentElement;
+        while (root && !root.contains(control) && !(root.tagName === 'FORM' && control.form === root)) root = root.parentElement;
+        if (!root || (editor && !root.contains(editor) && editor.form !== root)) return false;
+        const fields = () => [...new Set([...root.querySelectorAll('input,textarea,select,[contenteditable="true"]'),
+            ...(root.tagName === 'FORM' ? [...root.elements].filter(el => el.matches('input,textarea,select')) : [])])];
+        const originalFields = fields(), url = location.href;
+        const snapshot = () => JSON.stringify([
+            [...root.attributes].map(a => [a.name,a.value]), control.innerText, control.getAttribute('data-qa'),
+            control.name, control.value, control.type,
+            fields().map(el => [el.tagName,el.type,el.name,el.disabled,el.required,el.value ?? el.textContent,el.checked,
+                [...(el.options || [])].map(o => [o.value,o.selected])]),
+            root.tagName === 'FORM' ? [...new FormData(root).entries()] : null]);
+        const approved = snapshot();
+        const valid = () => {
+            const current = fields();
+            return root.isConnected && control.isConnected && location.href === url &&
+                (root.contains(control) || control.form === root) &&
+                (!editor || (editor.isConnected && editor.value === expected.text && (root.contains(editor) || editor.form === root))) &&
+                current.length === originalFields.length && current.every((el,i) => el === originalFields[i]) && snapshot() === approved;
+        };
+        document.__chatSendApproval = {root,control,valid,blocked:false};
+        if (!document.__chatSendBoundary) {
+            document.__chatSendBoundary = true;
+            for (const name of ['click','submit']) document.addEventListener(name, event => {
+                const approval = document.__chatSendApproval;
+                if (!approval || (name === 'click' && !approval.control.contains(event.target))) return;
+                const belongs = name === 'click' || event.target === approval.root;
+                if (belongs && approval.valid()) return;
+                approval.blocked = true;
+                event.preventDefault();event.stopImmediatePropagation();
+            }, true);
+        }
+        return true;
+    }""", {'text': text, 'quick': quick_reply, 'selectors': CHATIK_MESSAGE_INPUT_SELECTORS}) is True
+
+
 async def send_message(
     page,
     chat_id: str,
@@ -458,16 +500,20 @@ async def send_message(
         logger.warning("send button not found (quick_reply=%r)", quick_reply)
         return False
     await ensure_page_ui(page, "chat_send")
+    if not await arm_send_boundary(button, text, quick_reply):
+        return False
     if before_send is not None:
         await before_send()
     try:
         await button.click()
+        if await button.evaluate('/* codex:chat-send-readback */ el => !document.__chatSendApproval?.blocked') is not True:
+            return False
         await page.wait_for_timeout(2500)
         await ensure_page_ui(page, "after_chat_send")
     except HHUnexpectedUI:
         raise
     except Exception as exc:
-        logger.warning("send click failed: %s", exc)
+        logger.warning("send click failed: %s", type(exc).__name__)
         return False
 
     last = {}
