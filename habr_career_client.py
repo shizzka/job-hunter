@@ -149,6 +149,13 @@ class HabrCareerClient:
         login_link = await self._page.query_selector("a[href*='/users/auth/tmid']")
         return login_link is None
 
+    def _destination_matches(self, expected):
+        try:
+            repository = NativeApplyRepository(self._cookie_session.repository.path, 'habr')
+            return repository.key(self._page.url) == repository.key(expected)
+        except (ValueError, TypeError, AttributeError):
+            return False
+
     async def _click_with_fallbacks(self, element, label: str) -> bool:
         if not element:
             return False
@@ -176,6 +183,9 @@ class HabrCareerClient:
         for strategy_name, action in strategies:
             try:
                 log.info("Clicking %s via %s strategy", label, strategy_name)
+                expected = getattr(self, '_apply_destination', '')
+                if expected and not self._destination_matches(expected):
+                    raise RuntimeError('Habr destination changed before action')
                 attempt = getattr(self, "_external_attempt", None)
                 if "submit" in label and attempt is not None:
                     attempt.begin()
@@ -229,15 +239,19 @@ class HabrCareerClient:
                                         lambda: self._apply_to_vacancy(vacancy_url, cover_letter))
 
     async def _apply_to_vacancy(self, vacancy_url: str, cover_letter: str = "") -> dict:
+        self._apply_destination = vacancy_url
         if self._page is None:
             await self.start_browser()
 
         try:
             await self._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=30000)
         except Exception as exc:
-            log.warning("Habr vacancy nav issue: %s", exc)
+            log.warning("Habr vacancy navigation failed: %s", type(exc).__name__)
+            return {'ok': False, 'reason': 'destination_unverified', 'message': 'Навигация Habr не подтверждена'}
 
         await self._page.wait_for_timeout(2500)
+        if not self._destination_matches(vacancy_url):
+            return {'ok': False, 'reason': 'destination_unverified', 'message': 'Открыта другая вакансия Habr'}
 
         if not await self._page_is_logged_in():
             return {"ok": False, "message": "Не залогинен на Хабр Карьере"}

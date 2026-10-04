@@ -120,3 +120,22 @@ package/grounding tests passed, including actual cover generation and preserving
 user confirmations/bans. Browser validation is not applicable to extraction.
 Limitation: old flat facts need explicit user confirmation before becoming
 facts evidence. No production facts were read, migrated, or overwritten.
+
+## Package 6 — A8
+
+Reproduction: 6 failing / 2 passing actual Chromium tests before changes. Habr
+and SuperJob both clicked old controls after `goto(B)` failed on vacancy A,
+when navigation resolved to A, and on a foreign hostname carrying B's path.
+Positive controls reached the expected controls on the correct destination.
+The fixture explicitly declares UTF-8 so Habr's Cyrillic button selectors
+actually match; no failure is hidden behind a missing-control result.
+
+Fix: navigation exceptions stop immediately. A positively verified HTTPS source
+hostname and exact vacancy ID are required before proceeding and again before
+apply/submit actions after browser waits. SuperJob's supplied ID must also match
+its approved URL. Habr uses the same canonical identity as its durable attempt.
+
+Validation: 230 targeted native/parser/cookie/auth/A1 tests passed; 11 final
+browser/identity tests passed, including destination changes during login await
+and ID/URL mismatch before navigation. All browser requests were fulfilled with
+synthetic HTML offline. No live native submit or production state was used.

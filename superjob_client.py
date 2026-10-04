@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+from urllib.parse import urlsplit
 import time
 from datetime import UTC, datetime
 
@@ -64,6 +65,20 @@ def _build_details(item: dict) -> str:
     if item.get("compensation"):
         parts.append(f"Условия:\n{_clean_text(item['compensation'])}")
     return "\n\n".join(part for part in parts if part).strip()
+
+
+def _vacancy_identity(url):
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or '').casefold()
+        match = re.fullmatch(r'/vakansii/(?:[^/]*-)?([0-9]+)\.html/?', parsed.path)
+        if (parsed.scheme != 'https' or not (host == 'superjob.ru' or host.endswith('.superjob.ru'))
+                or parsed.username is not None or parsed.password is not None
+                or parsed.port not in (None, 443) or not match):
+            return ''
+        return match[1]
+    except (ValueError, TypeError, AttributeError):
+        return ''
 
 
 def _resume_title(item: dict) -> str:
@@ -555,14 +570,24 @@ class SuperJobClient:
         if not vacancy_url:
             return {"ok": False, "message": "Не найден URL вакансии SuperJob"}
 
+        expected_id = _vacancy_identity(vacancy_url)
+        supplied_id = str(vacancy.get('external_id') or vacancy.get('id') or '').removeprefix('superjob:')
+        if not expected_id or (supplied_id and supplied_id != expected_id):
+            return {'ok': False, 'reason': 'destination_unverified', 'message': 'ID/URL SuperJob не подтверждён'}
         if self._page is None:
             await self.start_browser()
+
+        def destination_matches():
+            return _vacancy_identity(self._page.url) == expected_id
 
         try:
             await self._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=30000)
         except Exception as exc:
-            log.warning("SuperJob vacancy nav issue: %s", exc)
+            log.warning("SuperJob vacancy navigation failed: %s", type(exc).__name__)
+            return {'ok': False, 'reason': 'destination_unverified', 'message': 'Навигация SuperJob не подтверждена'}
         await self._page.wait_for_timeout(2500)
+        if not destination_matches():
+            return {'ok': False, 'reason': 'destination_unverified', 'message': 'Открыта другая вакансия SuperJob'}
 
         if not await self._page_is_logged_in():
             return {"ok": False, "message": "Не залогинен на SuperJob"}
@@ -583,6 +608,8 @@ class SuperJobClient:
         if await apply_btn.count() == 0:
             return {"ok": False, "message": "Кнопка отклика не найдена"}
 
+        if not destination_matches():
+            return {'ok': False, 'reason': 'destination_unverified', 'message': 'Destination изменилась до apply'}
         await apply_btn.click()
         await self._page.wait_for_timeout(2500)
 
@@ -605,6 +632,8 @@ class SuperJobClient:
         ).first
         try:
             if await submit_btn.count():
+                if not destination_matches():
+                    return {'ok': False, 'reason': 'destination_unverified', 'message': 'Destination изменилась до submit'}
                 await submit_btn.click()
                 await self._page.wait_for_timeout(3000)
         except Exception as exc:
