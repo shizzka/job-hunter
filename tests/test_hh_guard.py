@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -148,7 +149,7 @@ def test_empty_seed_is_persisted_and_not_repeated(tmp_path, monkeypatch, log_con
     hh_guard.clear_cooldown(now=_dt(12))
     assert len(calls) == 1
     persisted = json.loads(guard_file.read_text())
-    assert persisted["seeded_from_analytics_at"] == _dt(12).isoformat(timespec="seconds")
+    assert datetime.fromisoformat(persisted["seeded_from_analytics_at"]) == _dt(12)
 
 
 def test_empty_seed_survives_a_fresh_process(tmp_path, monkeypatch):
@@ -240,7 +241,23 @@ def test_seed_preserves_cooldown_written_between_load_and_update(tmp_path, monke
     assert status["blocked"] is True
     assert status["last_kind"] == "captcha"
     assert status["rolling_apply_count_24h"] == 1
-    assert json.loads(guard_file.read_text())["blocked_until"] == _dt(18).isoformat(timespec="seconds")
+    assert datetime.fromisoformat(json.loads(guard_file.read_text())["blocked_until"]) == _dt(18)
+
+
+@pytest.mark.parametrize('local_timezone', ['UTC', 'Europe/Moscow'])
+def test_persisted_guard_timestamps_preserve_instant_across_local_timezones(tmp_path, monkeypatch, local_timezone):
+    guard_file, _ = _isolate_guard(tmp_path, monkeypatch)
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setenv('TZ', local_timezone)
+            time.tzset()
+            hh_guard.get_status(now=_dt(12))
+            hh_guard.record_soft_cooldown(now=_dt(12), minutes=15)
+            saved = json.loads(guard_file.read_text())
+            assert datetime.fromisoformat(saved['seeded_from_analytics_at']) == _dt(12)
+            assert datetime.fromisoformat(saved['blocked_until']) == _dt(12) + timedelta(minutes=15)
+    finally:
+        time.tzset()
 
 
 def test_seed_skips_non_object_json_lines_but_keeps_valid_events(tmp_path, monkeypatch):
