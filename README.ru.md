@@ -1,488 +1,334 @@
-# Job Hunter v0.7.0
+# Job Hunter
+
+**Текущая версия:** `v0.8.0-rc.1`  
+**Статус:** Open Beta / release candidate после большого стабилизационного спринта.
 
 English version: [README.md](README.md)
 
-`Job Hunter` — Python-инструмент для автоматизации поиска QA/testing вакансий на нескольких job board-платформах, их оценки через LLM и автоотклика там, где площадка это позволяет.
+Job Hunter — система автоматизации поиска работы, которая не пытается выиграть количеством откликов. Она ищет вакансии, отсекает очевидный шум, оценивает соответствие реальному опыту кандидата, проверяет факты и только затем решает, можно ли безопасно откликаться автоматически или нужен человек.
 
-Поддерживает изолированные профили пользователей, LLM-анализ резюме, воронку откликов со staged retry / A/B тестированием резюме, интерактивный мастер настройки, авто-ответ на анкеты работодателя (radio/checkbox/select), решение captcha hh.ru (vision-LLM + TG-bridge), Telegram-подтверждение AI-ответов в HH-чатах, ручной AI-отклик на yellow-zone вакансии, заполнение Google Forms из ссылок рекрутеров и структурированные debug traces для каждого HH-отклика.
+Основной сценарий проекта сегодня — QA / testing-вакансии, но search policy можно переключить на другие направления.
 
-Текущий публичный статус: `OBT` (open beta testing) → freeware. Ожидай дрейф селекторов, captcha-ограничения и платформенные edge case'ы.
+## Зачем он нужен
 
-## Что Он Делает
+Обычный auto-apply выглядит примерно так:
 
-### Поиск и отклик
-- Ищет вакансии из нескольких источников за один прогон
-- Убирает дубли между площадками
-- Применяет быстрый keyword-filter до вызова LLM
-- Оценивает каждую вакансию относительно резюме + базы знаний кандидата (knowledge base) + структурированных фактов (facts.json)
-- Генерирует короткое сопроводительное письмо для релевантных совпадений
-- Отправляет автоотклики там, где это поддерживается
+```text
+vacancy -> rewrite resume -> apply -> apply -> apply
+```
 
-### Анкеты работодателя на hh.ru
-- Авто-ответ на формы с вопросами после отклика: text/textarea/number, **radio/checkbox/select** (включая «Свой вариант» с custom-текстом)
-- Контекст вакансии, structured facts, релевантные секции knowledge base и канонический профиль кандидата подкладываются в LLM-промпт
-- Поля со звёздочкой считаются обязательными. Неизвестные и низкоуверенные ответы остаются видны для проверки, а не заменяются выдуманным шаблоном
-- Авто-ответы транслируются в Telegram-уведомление об отклике вместе с цитатами вопросов
+Job Hunter устроен иначе:
 
-### Google Forms из чатов рекрутеров
-- Находит ссылки на Google Forms в HH-чатах, включая `hh.ru/away?to=...` редиректы и короткие `forms.gle` ссылки
-- Готовит Telegram-preview с найденными полями и предложенными ответами до отправки
-- Заполняет форму по резюме, structured facts, релевантным секциям knowledge base и профилю кандидата; обязательные поля в приоритете
-- Редактор черновика в Telegram (`📝 Анкеты`) позволяет с телефона исправить text, radio и checkbox-ответы; после каждого ответа бот возвращает к списку вопросов
-- Перед `✅ Всё ок, отправить` бот повторно проверяет живую форму; изменившиеся вопросы и неуточнённые ответы блокируют отправку
-- Хранит preview и ручные правки конкретной анкеты вне репозитория. Подробности: [редактирование Google Forms](docs/GOOGLE_FORM_EDITING.md)
+```text
+job boards
+    ↓
+search + dedupe
+    ↓
+deterministic filters
+    ↓
+LLM matcher
+    ↓
+candidate facts / resume / knowledge base
+    ↓
+decision
+   ↙      ↘
+skip    manual review / apply
+               ↓
+        safety guards
+               ↓
+        platform adapter
+               ↓
+            analytics
+```
 
-### Captcha hh.ru (hybrid solver)
-- Этап 0: vision-LLM (`qwen3-vl:235b-instruct`) распознаёт текст с captcha-картинки автоматически
-- Этап 1: если vision не справился — скриншот + inline-кнопка «🔁 Перезапустить поиск» уходят в Telegram, ты вводишь буквы текстом → бот вставляет в форму
-- Soft-cooldown 15 мин вместо 6-часового бана при таймауте человека
+Цель — не максимальное число откликов, а максимальное качество решения об отклике.
 
-### AI и screening-чаты на hh.ru
-- Polling чатов на `chatik.hh.ru` каждые 30 минут (cron), плюс piggyback после поиска
-- Детект официальных ботов hh.ru («ИИ-помощник», «Робот-помощник») по аватарке, автору и самопрезентации в тексте
-- Детект подозрительных scripted HR-сообщений, которые выглядят как AI-скрининг, но приходят от обычного имени рекрутера
-- Telegram умеет показать свежие входящие кандидаты из главного меню (`Ответ ИИ в чат`), сгенерировать one-shot AI-ответ, запросить другую формулировку и отправить выбранный черновик только после подтверждения
-- В строках кандидатов появляются кнопки Google Form, если рекрутер просит заполнить внешнюю анкету
-- Safety: лимит ответов на чат, защита от дублей по message_id, cooldown между ответами и детерминированные безопасные ответы на чувствительные вопросы вроде справки с места учебы
+## Что умеет
 
-### База знаний кандидата
-- `profiles/<name>/knowledge/*.md` — структурированные документы про опыт, навыки, проекты
-- 2-pass LLM-фильтр: для каждой вакансии выбираются 5 самых релевантных секций (например, для Mobile-QA — API/Charles/SQL, без 3D-печати)
-- Используется в cover letter, ответах на анкеты, чатах с AI-помощником
+| Возможность | Статус |
+| --- | --- |
+| Поиск и дедуп вакансий из нескольких источников | ✅ |
+| LLM-оценка релевантности вакансии | ✅ |
+| Фильтры до LLM, чтобы не жечь токены на очевидный мусор | ✅ |
+| Генерация сопроводительного по подтверждённым данным кандидата | ✅ |
+| Точный выбор HH-резюме перед отправкой | ✅ |
+| Анкеты работодателя на hh.ru | ✅ |
+| Google Forms из рекрутерских чатов с preview перед submit | ✅ |
+| Telegram control plane и ручное подтверждение рискованных действий | ✅ |
+| HH chat drafts / screening replies | ✅ |
+| Изолированные профили пользователей | ✅ |
+| Application funnel, A/B резюме и аналитика | ✅ |
+| Structured traces для HH-откликов | ✅ |
+| Multi-provider LLM fallback | ✅ |
+| Controlled Resume Tailoring | 🚧 следующий спринт |
 
-### Анти-бот гигиена
-- Настраиваемая пауза между HH-откликами (`HH_MIN_SECONDS_BETWEEN_APPLICATIONS`, по умолчанию 12 секунд)
-- Rolling guard для HH-автооткликов (`HH_AUTO_APPLY_MAX_PER_24H`, по умолчанию 45 откликов за 24 часа) плюс лимиты за прогон
-- `playwright-stealth` скрывает headless-маркеры от hh.ru anti-bot detection
+## Поддерживаемые площадки
 
-### Прочее
-- Переводит вакансии в manual review и отправляет Telegram-уведомления, если автоотклик невозможен
-- Yellow-zone вакансии можно отправлять из Telegram через кнопку ручного AI-отклика; feedback-кнопки (`норм` / `мимо`) сохраняются для дальнейшей настройки
-- Ведёт воронку откликов: отклик → просмотр → ожидание / отказ / позитив
-- Поддерживает staged retry другим HH-резюме после отказа или долгого молчания, с QA-only guard по title чтобы не уходить в сервис/поддержку/dev-роли
-- Поддерживает A/B тестирование резюме с отдельной статистикой по вариантам
-- История staged retry изолирована по профилям и сохраняется атомарно под межпроцессной блокировкой. При повреждении JSON исходник сохраняется как `.corrupt-*`, а автоматические повторные отклики приостанавливаются до восстановления истории; удалять историю или просто снимать `_recovery_required` небезопасно.
-- Состояние аналитики сохраняется атомарно и проверяется по схеме; отметки приглашений, backfill и статусы восстанавливаются из журнала текущего профиля. Повторно читается только хвост после checkpoint. Битый JSON сохраняется как `.corrupt-*`; если восстановить историю неоткуда, дедупликация не сбрасывается молча — требуется ручное восстановление.
-- Анализирует резюме через LLM и отправляет рекомендации в Telegram
-- Поддерживает изолированные профили пользователей для многопользовательских сценариев
-- Хранит `seen`, cookies, runtime status, knowledge base и debug-артефакты вне репозитория
+| Источник | Поиск | Детали | Auto-apply | Зрелость |
+| --- | --- | --- | --- | --- |
+| hh.ru | ✅ | ✅ | ✅ | основной, live-tested |
+| GeekJob | ✅ | ✅ | ✅ | beta, guarded |
+| SuperJob | ✅ | ✅ | ✅ | beta |
+| Habr Career | ✅ | ✅ | ✅ | beta, зависит от DOM |
 
-## Поддерживаемые Источники
+Внешние сайты меняют DOM, API и антибот-механику без предупреждения. Поэтому наличие адаптера не означает одинаковую зрелость всех площадок.
 
-| Источник | Поиск | Детали | Автоотклик |
-| --- | --- | --- | --- |
-| `hh.ru` | Да | Да | Да |
-| `Habr Career` | Да | Да | Да |
-| `SuperJob` | Да | Да | Да |
-| `GeekJob` | Да | Да | Да |
+## Safety-first поведение
 
-## Как Это Работает
+Job Hunter старается **не делать действие, если не может доказать, что оно безопасно**.
 
-1. Собирает вакансии со всех включённых источников.
-2. Убирает дубли между источниками и повторяющимися поисковыми запросами.
-3. Применяет быстрый keyword-filter, чтобы не тратить LLM на очевидный мусор.
-4. Подтягивает полные детали вакансий.
-5. Просит LLM оценить вакансию относительно твоего резюме и кратко объяснить решение.
-6. Если вакансия релевантна:
-   - делает автоотклик на поддерживаемых площадках;
-   - для retry-кандидатов выбирает следующий staged HH-вариант резюме;
-   - либо создаёт manual-review задачу с Telegram-кнопками для ручного AI-отклика / feedback.
+Ключевые правила:
 
-Подробнее: [Architecture](docs/ARCHITECTURE.md)
+- неизвестный факт о кандидате остаётся неизвестным;
+- требования вакансии не считаются доказательством опыта кандидата;
+- inferred / weak facts не используются как подтверждённый опыт;
+- неподтверждённое или неоднозначное HH-резюме блокирует submit;
+- ошибка или исчерпание LLM-провайдеров даёт `deferred_unscored`, а не fake score=0;
+- изменившийся draft / approval / form revision блокирует отправку;
+- profile state, cookies, resume, facts и analytics изолированы;
+- внешние действия стараются использовать fail-closed guards и manual review;
+- приватные runtime-артефакты хранятся вне репозитория.
 
-## Настройка LLM
+Подробности: [Architecture](docs/ARCHITECTURE.md), [Account & submission safety](docs/ACCOUNT_SUBMISSION_SAFETY.md), [Answer grounding](docs/ANSWER_GROUNDING_AND_ANALYSIS.md).
 
-`Job Hunter` ходит в матчинг через OpenAI-compatible API. Это значит, что можно использовать:
+## Быстрый старт
 
-- OpenAI
-- Ollama Cloud / `ollama.com`
-- локальный `Ollama`, который отдаёт OpenAI-compatible `/v1` endpoint
-
-Через этого провайдера идут и оценка вакансий, и генерация cover letter.
-
-## Установка с помощью AI-ассистента (самый простой способ)
-
-Если у тебя есть AI-ассистент для кода (Claude Code, Cursor, Windsurf и т.д.), просто дай ему этот промпт:
-
-> Склонируй https://github.com/shizzka/job-hunter и следуй инструкции из файла SETUP_AGENT.md — выполни все шаги по порядку, задавая мне вопросы на каждом этапе.
-
-AI сам всё установит, объяснит как работает Job Hunter, поможет выбрать нейросеть, настроит Telegram-уведомления и проведёт через всю конфигурацию в диалоговом режиме.
-
-Подробная инструкция: [SETUP_AGENT.md](SETUP_AGENT.md)
-
-## Быстрый Старт
-
-### Вариант А: Интерактивная настройка (рекомендуется)
+### 1. Установка
 
 ```bash
+git clone https://github.com/shizzka/job-hunter.git
+cd job-hunter
+
 python3 -m venv venv
 source venv/bin/activate
+
 pip install -r requirements.txt
 playwright install chromium
+```
 
+### 2. Конфигурация
+
+```bash
 mkdir -p ~/.job-hunter
 cp job-hunter.env.example ~/.job-hunter/job-hunter.env
-# заполни минимум LLM_BASE_URL, JOB_HUNTER_LLM_KEY, LLM_MODEL
+```
 
-./run.sh setup            # интерактивный мастер: профиль, резюме, площадки
+Минимально нужен OpenAI-compatible LLM provider:
+
+```env
+LLM_BASE_URL=https://your-provider.example/v1
+JOB_HUNTER_LLM_KEY=your-key
+LLM_MODEL=your-model
+```
+
+Telegram и дополнительные площадки опциональны.
+
+### 3. Мастер настройки
+
+```bash
+./run.sh setup
+```
+
+Он создаёт профиль, помогает подключить резюме, площадки и основные параметры.
+
+### 4. Сначала dry-run
+
+```bash
 ./run.sh dry-run
+```
+
+### 5. Реальный поиск
+
+```bash
 ./run.sh search
 ```
 
-Мастер проведёт через настройку поисковых запросов, загрузку резюме, подключение площадок и опциональный LLM-анализ резюме.
+## AI-assisted setup
 
-### Вариант Б: Ручная настройка
+Если используешь coding agent, можно дать ему:
 
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium
+> Clone https://github.com/shizzka/job-hunter and follow SETUP_AGENT.md step by step. Ask before any operation that logs in, submits an application, sends Telegram messages, or changes production configuration.
 
-mkdir -p ~/.job-hunter
-cp job-hunter.env.example ~/.job-hunter/job-hunter.env
+Полный сценарий: [SETUP_AGENT.md](SETUP_AGENT.md).
 
-./run.sh login
-./run.sh habr-login
-./run.sh superjob-login
-./run.sh geekjob-login
-
-./run.sh dry-run
-./run.sh search
-```
-
-## Конфигурация
-
-Во время запуска проект читает переменные окружения:
-
-- из `JOB_HUNTER_ENV_FILE`
-- или по умолчанию из `~/.job-hunter/job-hunter.env`
-
-Ключевые переменные:
-
-- `JOB_HUNTER_LLM_KEY`: API key для OpenAI-compatible LLM-провайдера
-- `LLM_BASE_URL`: base URL провайдера
-- `LLM_MODEL`: модель по умолчанию (используется как fallback)
-- `SUPERJOB_API_KEY`: нужен для поиска на `SuperJob`
-- `HUNTER_BOT_TOKEN`: необязательный Telegram bot token для уведомлений
-- `NOTIFY_CHAT_ID`: необязательный Telegram chat ID для уведомлений
-- `OFFICE_URL`: необязательный base URL AI Office HTTP API
-- `OFFICE_DB`: необязательный путь к AI Office SQLite
-- `JOB_HUNTER_HOME`: директория для cookies, resume, seen state, runtime status и скриншотов
-- `HH_RESUME_PIPELINE_ENABLED`: staged pipeline повторных HH-откликов разными резюме
-- `HH_RESUME_RETRY_ON_SILENCE`: повторять HH-отклики после долгого молчания / просмотра без ответа
-- `HH_RESUME_RETRY_MAX_CANDIDATES_PER_RUN`: лимит retry-кандидатов за один поиск
-
-### Per-task LLM модели (опционально)
-
-Под каждую задачу можно выбирать свою модель — экономия времени и точности. Если переменная пустая, используется `LLM_MODEL`:
-
-- `HH_MATCHER_MODEL`: оценка релевантности вакансии (рекомендуется `cogito-2.1:671b`)
-- `HH_COVER_LETTER_MODEL`: генерация сопроводительного письма
-- `HH_QUESTION_MODEL`: ответы на свободно-текстовые анкеты hh.ru
-- `HH_CHOICE_MODEL`: выбор radio/checkbox/select (рекомендуется `qwen3-coder:480b` — быстрая и точная)
-- `HH_FACTS_EXTRACT_MODEL`: извлечение структурированных фактов из резюме (`./run.sh extract-facts`)
-- `HH_CHAT_RESPONDER_MODEL`: ответы AI-помощнику в чатах
-- `HH_CAPTCHA_VISION_MODEL`: vision-LLM для OCR captcha (по умолчанию `qwen3-vl:235b-instruct`)
-
-См. `scripts/smoke/model_bench.py` для бенчмарка 6 моделей × 4 задач.
-
-### Анти-бот и captcha
-
-- `HH_MIN_SECONDS_BETWEEN_APPLICATIONS=12`: пауза между HH-откликами
-- `HH_AUTO_APPLY_MAX_PER_24H=45`: rolling HH-лимит откликов за 24 часа
-- `HH_ANTI_BOT_COOLDOWN_HOURS=6`: пауза после captcha-блока
-- `HH_CAPTCHA_VISION_RETRIES=2`: попыток vision-OCR перед эскалацией в TG
-- `HH_CAPTCHA_HUMAN_WINDOW_S=300`: окно ожидания ответа человека в TG (потом soft-cooldown 15 мин)
-
-### Авто-ответ на анкеты + чаты
-
-- `HH_AUTO_ANSWER_SIMPLE_QUESTIONS=1`: включить авто-ответ
-- `HH_AUTO_ANSWER_USE_LLM=1`: использовать LLM для свободного текста
-- `HH_AUTO_ANSWER_MAX_QUESTIONS=10`: лимит полей в форме
-- `HH_AUTO_ANSWER_SALARY_BASELINE=80000`: базовая планка зарплаты (₽)
-- `HH_AUTO_ANSWER_SALARY_RULE`: правило корректировки под условия вакансии
-- `HH_AUTO_ANSWER_PROFILE_NOTE`: каноничный профиль кандидата (приоритет в промпте)
-- `HH_CHAT_RESPONDER_ENABLED=1`: включить авто-ответ в чатах с AI-помощниками
-- `HH_CHAT_AUTOSEND=1`: реальная отправка (0 = dry-run + preview в TG)
-- `HH_CHAT_MAX_REPLIES_PER_CHAT=5`: safety-лимит ответов на один чат
-- `HH_CHAT_MAX_SCAN=25`: максимум свежих релевантных чатов за запуск
-- `LLM_PROVIDER_FALLBACK_TTL_SECONDS=300`: повторная проверка основного LLM-провайдера
-- `HH_APPLY_TRACE_ENABLED=1`: структурированный trace каждого HH-отклика
-- `HH_APPLY_TRACE_RETENTION_DAYS=14`: срок хранения trace-каталогов
-- `HH_APPLY_TRACE_MAX_RUNS=100`: максимум сохранённых traces на профиль
-
-Полный шаблон: [job-hunter.env.example](job-hunter.env.example)
-
-Второй резервный аккаунт Groq: добавь `GROQ2_API_KEY` в приватный файл
-`~/.job-hunter/llm-providers.env`. Он идёт после `groq`, использует те же модели
-и `GROQ_BASE_URL`; отдельный адрес можно задать через `GROQ2_BASE_URL`.
-Повтор одного ключа на том же адресе пропускается. Ключи не отправляй в чат и Git.
-
-`LLM_PROVIDER_ORDER=groq,groq2` в окружении запуска или файле провайдеров разрешает
-**только** эти аккаунты, по порядку: остальные провайдеры не вызываются. Ошибка
-конфигурации не включает другую цепочку молча. Без настройки порядок прежний.
-Алиасы Groq по умолчанию: `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, для vision —
-`qwen/qwen3.8-27b`; переопределения — `GROQ_FAST_MODEL`, `GROQ_STRONG_MODEL`,
-`GROQ_VISION_MODEL`. Доступность моделей проверяй в своём аккаунте.
-
-Текстовые алиасы OpenRouter по умолчанию ведут на `openrouter/free` —
-[бесплатный роутер](https://openrouter.ai/docs/guides/routing/routers/free-router),
-подбирающий доступную модель под возможности запроса. Конкретная модель может
-меняться. Переопределения в приватном файле провайдеров: `OPENROUTER_FAST_MODEL`,
-`OPENROUTER_STRONG_MODEL`, `OPENROUTER_CODER_MODEL`, `OPENROUTER_VISION_MODEL`.
-Явные model ID сохраняются; платная модель автоматически не подставляется.
-При Groq-only цепочке OpenRouter по-прежнему не вызывается.
-Для vision по умолчанию выбран `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`:
-общий бесплатный роутер иногда выбирает модель модерации для изображения.
-
-`LLM_PROXY` задаёт отдельный HTTP/SOCKS proxy для LLM; системные proxy-переменные
-игнорируются. SDK-клиенты закрываются при завершении CLI/бота. Скрытые повторы
-SDK отключены: переключением управляет fallback-адаптер.
-
-## Как Менять Направление Поиска
-
-Для профессий вне QA задай `VACANCY_FILTER_POLICY=generic` в `profile.env`.
-Это отключает QA-only keyword-фильтры, кластеры, ограничения уровня и шаблоны
-писем; военный фильтр и LLM-оценка по данным текущего кандидата остаются.
-Свои `VACANCY_RELEVANT_KEYWORDS` / `VACANCY_EXCLUDE_KEYWORDS` задаются через `||`
-и не наследуются от соседнего профиля. По умолчанию политика `qa` не меняется.
-
-Подсказки HH-входа (`HH_AUTH_LOGIN`, phone/email aliases) именованного профиля
-задаются только в его `profile.env` либо вводятся в интерактивном входе.
-Если их нет, глобальный логин другого кандидата не подставляется. Общие подсказки
-действуют только для `default`; сохранённые cookies не меняются.
-
-По умолчанию конфиг ориентирован на `QA`, потому что это исходный use case проекта, но сам проект не ограничен только QA-вакансиями.
-
-Менять цели поиска можно двумя способами:
-
-- править дефолты в [config.py](config.py);
-- или переопределять их через env-файл без правки кода.
-
-Примеры env overrides по площадкам:
-
-```env
-HH_SEARCH_QUERIES=QA engineer||SDET||automation tester
-SUPERJOB_SEARCH_QUERIES=QA||qa engineer||sdet
-HABR_SEARCH_PATHS=/vacancies/testirovschik_qa/remote||/vacancies/devops/remote
-```
-
-Что важно:
-
-- `HH_SEARCH_QUERIES` и `SUPERJOB_SEARCH_QUERIES` это обычные текстовые запросы.
-- `HABR_SEARCH_PATHS` это не текстовый поиск, а список path'ов листинга.
-- Для нескольких значений используется разделитель `||`.
-- `GeekJob` сейчас обходит общий листинг вакансий и опирается на общий filter/LLM pipeline, а не на отдельный список запросов.
-- Для автоотклика в `GeekJob` нужна сохранённая браузерная сессия после `./run.sh geekjob-login`.
-
-### Личный поиск через Telegram
-
-Одобренный пользователь Telegram получает отдельный профиль: в нём изолированы сессия HH, резюме, история просмотренных вакансий, отклики и настройки. Он не видит и не меняет данные других профилей.
-
-В разделе `🎯 Мой поиск` пользователь может с телефона:
-
-- посмотреть и заменить `HH_SEARCH_QUERIES` — один запрос в строке;
-- попросить ИИ подготовить черновик запросов по его резюме и направлению, затем отдельно сохранить или отредактировать его;
-- выбрать основное резюме из импортированного списка HH;
-- запустить тестовый или обычный поиск только для своего профиля;
-- включить повтор. Он запускает отдельный daemon этого профиля, поэтому расписание одного пользователя не меняет расписание другого.
-
-ИИ не сохраняет запросы и не запускает поиск сам: все изменения подтверждает пользователь. Для нового аккаунта последовательность такая: заявка → одобрение → `Вход HH` → импорт резюме → `🎯 Мой поиск` → выбор запросов и резюме → запуск или повтор.
-
-### Пример: Ollama Cloud
-
-```env
-LLM_BASE_URL=https://ollama.com/v1
-JOB_HUNTER_LLM_KEY=your-ollama-cloud-key
-LLM_MODEL=deepseek-v3.1:671b
-```
-
-### Пример: локальный Ollama
-
-1. Установи Ollama на машину.
-2. Подтяни chat-capable модель.
-3. Убедись, что локальный сервер запущен.
-4. Направь `Job Hunter` на локальный OpenAI-compatible endpoint.
+## Основные команды
 
 ```bash
-ollama pull qwen2.5:14b
-ollama serve
-```
+# Профили
+./run.sh setup
+./run.sh profiles
+./run.sh --profile qa dry-run
+./run.sh --profile qa search
 
-```env
-LLM_BASE_URL=http://127.0.0.1:11434/v1
-JOB_HUNTER_LLM_KEY=ollama
-LLM_MODEL=qwen2.5:14b
-```
-
-Для локального `Ollama` API key может быть любым непустым placeholder-значением, потому что локальный сервер обычно не требует hosted-style авторизацию.
-
-## Команды
-
-```bash
-# Управление профилями
-./run.sh setup                  # интерактивный мастер настройки профиля
-./run.sh profiles               # список всех профилей
-./run.sh analyze-resume         # LLM-анализ резюме → файл + Telegram
-./run.sh extract-facts          # LLM извлекает structured facts.json из resume.md
-
-# Логин (интерактивно, открывает браузер)
+# Логин
 ./run.sh login
 ./run.sh superjob-login
 ./run.sh habr-login
 ./run.sh geekjob-login
+
+# Резюме и факты
 ./run.sh grab-resume
+./run.sh analyze-resume
+./run.sh extract-facts
 
-# Поиск и отклик
-./run.sh dry-run
-./run.sh search
-./run.sh --profile qa trace-apply 123456 --confirm-real  # один реальный HH-отклик с изолированным trace
-./run.sh fresh-search          # лёгкий HH-only поиск свежих вакансий
-./run.sh check
-./run.sh daemon
+# Аналитика
 ./run.sh stats
+./run.sh analytics
 ./run.sh digest
-./run.sh analytics-backfill
 
-# AI/screening-чаты hh.ru
-./run.sh chat-respond           # проверить чаты, ответить AI-помощникам или уведомить о подозрительном HR-скрининге
-./run.sh chat-respond-one <chat_id> [message_id]  # подготовить one-shot preview ответа для конкретного чата
-# Google Forms и yellow-zone ручные AI-отклики обычно запускаются из Telegram inline-кнопок
+# HH chats
+./run.sh chat-respond
 
-# Поиск по конкретным площадкам
-./run.sh superjob-dry-run
-./run.sh superjob-search
-./run.sh habr-dry-run
-./run.sh habr-search
-./run.sh geekjob-dry-run
-./run.sh geekjob-search
-
-# Telegram-бот
-./run.sh bot                    # foreground (для отладки)
-./run.sh bot-daemon             # фоном
+# Сервисы
+./run.sh daemon
+./run.sh bot
+./run.sh status
 ```
 
-HH traces сохраняются в
-`~/.job-hunter/profiles/<profile>/traces/YYYY-MM-DD/`. В каждом запуске есть
-машиночитаемый `trace.jsonl`, человекочитаемый `summary.txt` и только ключевые
-HTML/screenshot-артефакты. Секреты и содержимое cookies не записываются,
-файлы создаются с правами `0600`, а история ограничена retention-настройками.
-Скриншоты всё равно могут содержать видимые в браузере персональные данные:
-имя, контакты или текст отклика. Не прикладывайте весь каталог trace к публичным
-issue без предварительной проверки и редактирования. Trace также добавляет
-синхронные записи событий и артефактов; если HH-отклики неожиданно замедлятся,
-для контрольного сравнения запустите тот же сценарий с `HH_APPLY_TRACE_ENABLED=0`.
+Полный список команд и переменных находится в [Operations](docs/OPERATIONS.md) и [job-hunter.env.example](job-hunter.env.example).
 
-### Cron (рекомендуемое расписание)
+## LLM
 
+Job Hunter использует OpenAI-compatible API и умеет работать с несколькими провайдерами через fallback chain.
+
+Основные task-specific модели:
+
+```env
+HH_MATCHER_MODEL=
+HH_COVER_LETTER_MODEL=
+HH_QUESTION_MODEL=
+HH_CHOICE_MODEL=
+HH_FACTS_EXTRACT_MODEL=
+HH_CHAT_RESPONDER_MODEL=
+HH_CAPTCHA_VISION_MODEL=
 ```
-30 07,14 * * * cd /home/q/job-hunter && /usr/bin/flock -n /tmp/job-hunter-search.lock ./run.sh search >> /tmp/job-hunter.log 2>&1
-00 23 * * * cd /home/q/job-hunter && /usr/bin/flock -n /tmp/job-hunter-search.lock ./run.sh search >> /tmp/job-hunter.log 2>&1
-*/30 * * * * cd /home/q/job-hunter && /usr/bin/flock -n /tmp/job-hunter-search.lock ./run.sh chat-respond >> /tmp/job-hunter-chat.log 2>&1
+
+Пустое значение использует `LLM_MODEL`.
+
+Временный LAN Ollama fallback существует как аварийный compatibility path и не является целевой архитектурой проекта. После миграции на общий AI Gateway он должен быть удалён из Job Hunter.
+
+## Профили кандидатов
+
+Каждый профиль получает собственные:
+
+```text
+resume
+facts
+knowledge base
+cookies
+seen history
+manual queues
+analytics
+runtime state
+debug traces
 ```
 
-Search 3 раза в день + chat-respond каждые 30 минут. Один flock на оба — `search` имеет приоритет, `chat-respond` пропускается если search идёт (и сам же дёрнется в конце search-цикла как piggyback).
+По умолчанию состояние находится в:
 
-Для работы с конкретным профилем используй `--profile <name>`:
+```text
+~/.job-hunter/
+~/.job-hunter/profiles/<name>/
+```
+
+Профили не должны наследовать биографию, salary expectations, contacts или resume IDs другого кандидата.
+
+## Candidate knowledge base
+
+В `knowledge/*.md` можно хранить подтверждённые сведения о навыках, проектах и опыте.
+
+Перед генерацией текста Job Hunter выбирает релевантные секции и использует их вместе с резюме и structured facts. Vacancy text используется как контекст требования, но не как источник фактов о кандидате.
+
+## Telegram
+
+Telegram используется как control plane для действий, где полезен человек:
+
+- manual-review вакансии;
+- yellow-zone apply;
+- подтверждение chat replies;
+- редактирование Google Forms;
+- captcha bridge;
+- управление поиском и профилем;
+- мониторинг и аналитика.
+
+Рискованные сценарии по возможности требуют явного подтверждения пользователя.
+
+## Аналитика
+
+Job Hunter пишет локальные события по этапам:
+
+```text
+found
+→ filtered
+→ matched
+→ applied/manual/deferred
+→ viewed
+→ rejected/positive
+→ interview/test task/offer
+```
+
+Также сохраняются requested/selected resume metadata, apply mode, match score, provider/model metadata и локальные resume hashes там, где это возможно.
+
+Это позволяет оценивать не только число откликов, но и качество фильтрации, резюме и стратегии.
+
+## Тесты и CI
+
+Обычный test suite не должен выполнять реальные отклики, Telegram sends или внешние submit.
 
 ```bash
-./run.sh --profile john search
-./run.sh --profile john stats
+python -m pytest -q
 ```
 
-## Профили
+GitHub Actions запускает изолированный offline regression suite. Browser regressions используют синтетические страницы и установленный Chromium.
 
-`Job Hunter` поддерживает изолированные профили пользователей. У каждого профиля своя директория состояния, cookies, seen-вакансии, аналитика и конфигурация.
+Live acceptance checks выполняются отдельно и только явно разрешёнными сценариями.
 
+## Состояние и приватность
+
+Runtime state хранится вне Git:
+
+- cookies и auth state;
+- resume / facts / knowledge;
+- `seen_vacancies.json`;
+- analytics journals;
+- queues и approval state;
+- screenshots / HTML traces;
+- Google Form previews;
+- chat state.
+
+Файлы состояния и диагностические артефакты могут содержать персональные данные. Не прикладывай целые trace-каталоги в публичные issues без ручной проверки и редактирования.
+
+## Ограничения
+
+- DOM hh.ru, Habr Career и других площадок может измениться.
+- CAPTCHA и антибот не гарантируют автоматическое прохождение.
+- LLM grounding снижает риск выдуманных утверждений, но не является математическим доказательством истины.
+- Существующий HH-отклик не всегда позволяет восстановить, каким резюме он был отправлен.
+- Доставка внешнего действия не всегда может быть доказана exactly-once.
+- Другие job boards имеют меньшую live-coverage, чем основной HH workflow.
+- Open Beta означает, что safety и race-condition аудит ещё продолжается.
+
+## Разработка
+
+Цель текущей ветки продукта:
+
+```text
+stable baseline
+→ independent audits
+→ fix confirmed P1/P2 findings
+→ v0.8.0
+→ Controlled Resume Tailoring
 ```
-~/.job-hunter/                  # состояние профиля по умолчанию
-~/.job-hunter/profiles/john/    # именованный профиль: конфиг + состояние
-~/.job-hunter/profiles/anna/    # другой именованный профиль
-```
 
-Профили защищены OS-level file lock — два демона не могут работать с одним профилем одновременно.
-
-## Состояние И Приватность
-
-Runtime state специально хранится вне репозитория, по умолчанию в `~/.job-hunter/`:
-
-- cookies для browser sessions
-- скачанное резюме
-- `seen_vacancies.json`
-- `run_history.jsonl`
-- `analytics_events.jsonl` / `analytics_state.json`
-- `hh_resume_pipeline.json` — состояние A/B тестирования резюме
-- `facts.json` — структурированные факты кандидата (из `./run.sh extract-facts`)
-- `knowledge/*.md` — пользовательская база знаний (about_me, qa_kb, и т.п.)
-- `chat_responder_state.json` — last_replied_msg_id, состояние уведомлений о подозрительных сообщениях и replies_count per чат
-- `manual_apply_queue.json` — очередь Telegram-confirmed yellow-zone AI-откликов
-- `google_form_previews.json` — сохранённые Google Form preview перед Telegram-подтверждением отправки
-- `google_form_edits.json` — ручные ответы для конкретных черновиков, введённые через Telegram
-- `hh_guard_state.json` — счётчик откликов + anti-bot блокировки
-- runtime status
-- Playwright debug screenshots и HTML-dumps (включая `captcha_*.png` и `chat_preview_*.png`)
-
-Это позволяет безопасно публиковать репозиторий, не таща в него персональные данные и рабочее состояние.
-
-## База Знаний Кандидата
-
-В `~/.job-hunter/profiles/<name>/knowledge/` можно класть `.md`/`.txt` файлы со структурированными фактами о кандидате: «о себе», «база технических знаний», «опыт по конкретным инструментам», и т.п.
-
-При генерации cover letter / ответа на анкету / реплики в AI-чат — модуль делает **2-pass LLM-фильтрацию**: первый малый запрос выбирает 5 самых релевантных секций (по заголовкам `## NN. Title` внутри файлов), второй запрос уже использует только эти секции в контексте. Это:
-
-- экономит токены (12 KB полного KB → ~8 KB релевантных);
-- повышает точность (для Mobile-QA вакансии не подкладываем секции про электрику/3D-печать);
-- даёт детальные, фактические ответы вместо общих формулировок.
-
-Файлы можно обновлять в любой момент — следующий run подхватит автоматически.
-
-Черновик сопроводительного проходит дополнительную проверку фактов через
-настроенную цепочку LLM-провайдеров. Проверка получает снимок резюме, подтверждённых
-фактов и базы знаний текущего кандидата, без требований вакансии и стилевых
-примеров. Для каждого фактического предложения нужны подтверждения; дословные
-цитаты проверяются локально. Неподтверждённые утверждения, невалидный ответ или
-таймаут проверки (40 секунд) приводят к нейтральному резервному письму. Для
-фактического черновика это один дополнительный запрос; нейтральное письмо
-проверяется локально. Семантическая проверка моделью уменьшает выдумки, но не
-гарантирует достоверность каждого утверждения. При сбое выбора разделов базы
-знаний используется снимок, прочитанный до ожидания модели, даже если активный
-профиль за это время изменился.
-
-## Необязательные Интеграции
-
-Telegram-уведомления и интеграция с AI Office необязательны. Если оставить их env-переменные пустыми, основной pipeline поиска всё равно будет работать.
-
-## Встроенная Статистика
-
-`./run.sh stats` показывает:
-
-- накопленные счётчики обработанных / откликнутых / ручных / пропущенных вакансий из `seen_vacancies.json`;
-- разбивку по площадкам (`hh.ru`, `Хабр Карьера`, `GeekJob`, `SuperJob`);
-- самые частые действия вроде `applied`, `skipped_low_score`, `manual_*`;
-- несколько последних прогонов поиска из `run_history.jsonl`.
-- скользящую аналитику из `analytics_events.jsonl`: запросы, варианты резюме и исходы переговоров `hh`.
-- воронку откликов: отклик → просмотрено → ожидание / отказ / позитив, с процентами отклика и конверсии.
-- A/B сравнение резюме: по каждому варианту — откликов, просмотрено, позитив, отказ, response rate, conversion rate.
-
-## Известные Ограничения
-
-- DOM у `hh.ru` и `Habr Career` может меняться и ломать селекторы.
-- `hh.ru` может включать captcha после большого числа подряд идущих автооткликов. Hybrid solver (vision-LLM + TG-bridge) обычно справляется, но не гарантия.
-- Автоотклик `GeekJob` зависит от сохранённой specialist-сессии и может ломаться, если сайт меняет JSON/API flow.
-- Дефолтные поисковые наборы ориентированы на `QA`, пока ты не переопределишь их через env или `config.py`.
-- Качество LLM-оценки полностью зависит от выбранного провайдера, модели и качества резюме/базы знаний.
-- Детект подозрительного HR-скрининга эвристический. Такие сообщения специально не автоотправляются от имени обычного рекрутера: перед отправкой нужен Telegram-approval.
-- Заполнение Google Forms — best-effort для обычных рекрутерских анкет; перед submit бот показывает preview ответов.
-- Telegram-редактор поддерживает text, radio и checkbox. Загрузка файлов и «Другое» с дополнительным полем пока требуют открыть форму напрямую.
-- Ollama Cloud имеет недельные лимиты — если упёрся, временно переключайся на другой ключ (см. `~/.job-hunter/llm-providers.env`) или другую модель.
+Не каждое потенциальное улучшение должно становиться новой подсистемой. Новые abstractions оправданы только тогда, когда закрывают реальный повторяющийся failure mode.
 
 ## Документация
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Operations](docs/OPERATIONS.md)
-- [Publication Notes](docs/PUBLICATION.md)
-- [Редактирование Google Forms](docs/GOOGLE_FORM_EDITING.md)
+- [Account & submission safety](docs/ACCOUNT_SUBMISSION_SAFETY.md)
+- [Answer grounding](docs/ANSWER_GROUNDING_AND_ANALYSIS.md)
+- [Google Forms editing](docs/GOOGLE_FORM_EDITING.md)
+- [Publication notes](docs/PUBLICATION.md)
 - [Changelog](CHANGELOG.md)
 
 ## Лицензия
