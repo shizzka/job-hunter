@@ -788,35 +788,30 @@ async def list_reply_candidates(
     return summary
 
 
-async def _notify_one_chat_result(notifier, detail: dict) -> None:
-    if notifier is None:
-        return
+def _chat_result_caption(detail: dict, *, sent=False) -> str:
     vac = detail.get("vacancy") or {}
     title = html.escape((vac.get("title") or "—")[:160])
     company = html.escape((vac.get("company") or "—")[:160])
     question = html.escape((detail.get("question") or "")[:450])
     answer = html.escape(detail.get("answer") or "")
-    raw_chat_id = str(detail.get("chat_id") or "")
-    raw_message_id = str(detail.get("message_id") or "")
-    chat_id = html.escape(raw_chat_id)
-    if detail.get("sent"):
-        caption = (
-            "<b>Ответил в подозрительном HR-чате</b>\n"
-            f"{title} @ {company}\n\n"
-            f"<i>{question}</i>\n\n"
-            f"{answer}\n\n"
-            f"<a href='{CHATIK_ROOT}/chat/{chat_id}'>Открыть чат</a>"
-        )
-        await notifier.send_message_with_markup(caption)
-        return
-    preview = detail.get("preview") or {}
-    caption = (
-        "<b>ИИ подготовил ответ</b>\n"
+    chat_id = html.escape(str(detail.get("chat_id") or ""))
+    heading = "Ответил в подозрительном HR-чате" if sent else "ИИ подготовил ответ"
+    return (
+        f"<b>{heading}</b>\n"
         f"{title} @ {company}\n\n"
         f"<i>{question}</i>\n\n"
         f"{answer}\n\n"
         f"<a href='{CHATIK_ROOT}/chat/{chat_id}'>Открыть чат</a>"
     )
+
+
+def _prepare_one_chat_preview(detail: dict) -> tuple:
+    """Pure local rendering/validation before reserving notifier transport."""
+    caption = _chat_result_caption(detail)
+    if len(caption) > 4000:
+        raise ValueError("Full approved chat preview exceeds Telegram message limit")
+    raw_chat_id = str(detail.get("chat_id") or "")
+    raw_message_id = str(detail.get("message_id") or "")
     markup = (
         build_chat_answer_preview_markup(
             detail.get("profile_name") or _active_profile_name(),
@@ -828,9 +823,17 @@ async def _notify_one_chat_result(notifier, detail: dict) -> None:
         if raw_chat_id and raw_message_id
         else None
     )
-    screenshot_path = preview.get("screenshot_path") or ""
-    if len(caption) > 4000:
-        raise ValueError("Full approved chat preview exceeds Telegram message limit")
+    screenshot_path = (detail.get("preview") or {}).get("screenshot_path") or ""
+    return caption, markup, screenshot_path
+
+
+async def _notify_one_chat_result(notifier, detail: dict) -> None:
+    if notifier is None:
+        return
+    if detail.get("sent"):
+        await notifier.send_message_with_markup(_chat_result_caption(detail, sent=True))
+        return
+    caption, markup, screenshot_path = _prepare_one_chat_preview(detail)
     if screenshot_path and len(caption) <= 1000:
         await notifier.send_photo(screenshot_path, caption=caption, reply_markup=markup)
     else:
@@ -1003,7 +1006,7 @@ def _live_candidate_revision():
 async def _execute_reply(
     repository, page, chat_id, target, messages, vacancy, resume_text, paths,
     *, dry_run, max_replies=None, repeat_preview=False, answer_kwargs=None, notify=None,
-    draft_revision="", require_draft=False,
+    draft_revision="", require_draft=False, notify_preflight=None,
 ) -> dict:
     """Claim before model/browser waits; persist only the owning chat's result."""
     chat_id, target_id = str(chat_id), str(target.get("id") or "")
@@ -1062,6 +1065,16 @@ async def _execute_reply(
             detail["draft_revision"] = draft["revision"]
             # Reserve delivery before await. Uncertain notifications are not replayed.
             if notify is not None:
+                if notify_preflight is not None:
+                    try:
+                        notify_preflight(detail)
+                    except ValueError as exc:
+                        repository.set_draft(chat_id, owner, None)
+                        detail.pop("draft_revision", None)
+                        detail.update(ok=False, notification_rejected=True, message=str(exc))
+                        if not repository.finish(chat_id, owner, "failed"):
+                            raise RuntimeError("Chat preview rejection ownership lost")
+                        return detail
                 repository.mark_acting(chat_id, owner)
                 try:
                     await notify(detail)
@@ -1165,6 +1178,11 @@ async def process_one(
     from answer_grounding import current_candidate
     resume_text = current_candidate().resume
     vacancy = data.get("vacancy", {})
+    def prepare_notification(detail):
+        detail.update(suspicious=is_approved_suspicious, manual_any=is_manual_any,
+                      profile_name=profile_name)
+        return _prepare_one_chat_preview(detail)
+
     async def notify_result(detail):
         detail.update(suspicious=is_approved_suspicious, manual_any=is_manual_any,
                       profile_name=profile_name)
@@ -1179,6 +1197,7 @@ async def process_one(
         repository, page, str(chat_id), copy.deepcopy(target), copy.deepcopy(messages),
         copy.deepcopy(vacancy), resume_text, paths, dry_run=dry_run,
         repeat_preview=True, notify=notify_result if notify else None,
+        notify_preflight=prepare_notification if notify else None,
         draft_revision=draft_revision, require_draft=bool(separator),
         answer_kwargs={
             "question_message": target if (is_approved_suspicious or is_manual_any) else None,

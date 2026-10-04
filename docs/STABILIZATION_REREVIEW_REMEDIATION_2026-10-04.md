@@ -138,3 +138,23 @@ instead of propagating the exception after a positive zero receipt. Corrected
 targeted suite including the prior A8 navigation regressions: **132 passed**.
 
 Full isolated offline suite after N1: **2323 passed**, 303.71 seconds.
+
+## N2 — oversized preview rejection before notifier transport
+
+Before fix: **4 failed / 1 passed**. Raw oversized and HTML-expanded oversized
+answers, with/without a screenshot, made zero notifier calls yet were reported
+as notification_uncertain and blocked a new short alternative. A transport
+exception after a fake notifier call correctly remained uncertain.
+
+Fix stays in the existing chat responder. Pure caption/markup rendering checks
+the full approved preview before mark_acting. Local rejection clears that draft
+and finishes the current owner as failed without preview/reply counters or
+notifier delivery; a new short alternative gets a fresh revision and is shown
+in full. The notifier still performs the same check; no truncation or weakened
+transport guard was introduced. Exceptions after invoking transport keep the
+existing uncertain/no-replay behavior.
+
+Targeted suite: **80 passed**, including all five N2 cases, stored-draft approval,
+quick replies, notification workflow transactions and low-level chat tests.
+
+Full isolated offline suite after N2: **2328 passed**, 301.62 seconds.
