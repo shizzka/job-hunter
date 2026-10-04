@@ -26,8 +26,28 @@ _INSPECT = r"""() => {
                 (root.matches(profileMarker) || !!root.querySelector(profileMarker)));
         const response = !!root.querySelector('form[name="vacancy_response"]') &&
             !!root.querySelector('[data-qa="vacancy-response-submit-popup"], [data-qa="vacancy-response-letter-submit"]');
+        // HH mounts the response resume picker in a portal OUTSIDE its form.
+        // Recognize this exact radio-only surface, not arbitrary drop-base UI.
+        // The shared click/submit barrier rechecks this evidence on every event.
+        const forms = [...document.querySelectorAll('form[name="vacancy_response"]')].filter(visible);
+        const listboxes = root.querySelectorAll('[role="listbox"][data-qa="magritte-select-option-list"]');
+        const options = listboxes.length === 1
+            ? [...listboxes[0].querySelectorAll('label[role="option"][data-magritte-select-option]')] : [];
+        const pickerControls = [...root.querySelectorAll('input,textarea,select,button,[role="button"],[contenteditable="true"]')];
+        const resumePicker = root.matches('div[role="dialog"][data-qa="drop-base"]') && !title &&
+            !root.querySelector(selectors) && forms.length === 1 &&
+            !!forms[0].querySelector('[data-qa="resume-title"]') &&
+            !!forms[0].querySelector('[data-qa="vacancy-response-submit-popup"], [data-qa="vacancy-response-letter-submit"]') &&
+            options.length > 0 && pickerControls.length === options.length &&
+            options.every(option => {
+                const radios = option.querySelectorAll('input[type="radio"]');
+                const id = option.getAttribute('data-magritte-select-option');
+                return radios.length === 1 && id && radios[0].value === id &&
+                    !!option.querySelector('[data-qa="resume-title"]') &&
+                    pickerControls.includes(radios[0]);
+            });
         const captcha = !!root.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], [data-qa="captcha"]');
-        const kind = optional ? 'optional' : response ? 'response' : captcha ? 'captcha' : 'unknown';
+        const kind = optional ? 'optional' : (response || resumePicker) ? 'response' : captcha ? 'captcha' : 'unknown';
         const close = [...root.querySelectorAll('button,[role="button"]')].find(el => {
             const qa = el.getAttribute('data-qa') || '';
             const label = norm(el.getAttribute('aria-label') || el.getAttribute('title'));
