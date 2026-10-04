@@ -263,6 +263,8 @@ class FakeApplyElement:
         return None
 
     async def click(self, timeout: int | None = None, force: bool = False):
+        if self.kind == "submit_button":
+            self.page.external_clicks = getattr(self.page, 'external_clicks', 0) + 1
         if self.next_stage is not None:
             self.page.stage = self.next_stage
         elif self.kind in {"apply_button", "submit_button"}:
@@ -272,6 +274,8 @@ class FakeApplyElement:
         return None
 
     async def evaluate(self, script: str):
+        if 'codex:hh-submit-control' in script:
+            return self.kind == 'submit_button' and bool(getattr(self.page, 'armed_payload', None))
         if 'codex:hh-ui-inspect' in script:
             return []
         return None
@@ -453,6 +457,19 @@ class FakeDirectResponsePage:
         return []
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-submit-arm' in script:
+            from hh.apply import SELECTED_RESUME_SCRIPT
+            from hh.forms import VERIFY_ANSWERS_SCRIPT
+            identity = await self.evaluate(SELECTED_RESUME_SCRIPT)
+            expected_id = arg['resume_id']
+            valid = bool(identity['ids']) and all(value == expected_id for value in identity['ids'])
+            valid = valid and await self.letter.input_value() == arg['cover_letter']
+            if arg.get('answers'):
+                valid = valid and await self.evaluate(VERIFY_ANSWERS_SCRIPT, arg['answers'])
+            self.armed_payload = arg if valid else None
+            return valid
+        if 'codex:hh-submit-readback' in script:
+            return bool(getattr(self, 'armed_payload', None))
         if 'codex:hh-ui-inspect' in script:
             return []
         if 'const root' in script:
@@ -512,6 +529,8 @@ class FakeQuestionResponsePage(FakeDirectResponsePage):
         return await super().query_selector(selector)
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-submit-arm' in script or 'codex:hh-submit-readback' in script:
+            return await super().evaluate(script, arg)
         if 'codex:hh-ui-inspect' in script:
             return []
         if "codex:response-form-signature" in script:
@@ -531,7 +550,7 @@ class FakeQuestionResponsePage(FakeDirectResponsePage):
                 "Для отклика необходимо ответить на несколько вопросов работодателя "
                 "Ответьте на вопросы"
             )
-        return await super().evaluate(script)
+        return await super().evaluate(script, arg)
 
 
 class FakeExpandableCoverLetterPage(FakeDirectResponsePage):
@@ -567,6 +586,8 @@ class FakeExpandableCoverLetterPage(FakeDirectResponsePage):
         return []
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-submit-arm' in script or 'codex:hh-submit-readback' in script:
+            return await super().evaluate(script, arg)
         if 'codex:hh-ui-inspect' in script:
             return []
         if "document.body.innerText.slice(0, 2000)" in script:
@@ -595,6 +616,8 @@ class FakeAutoAnswerQuestionPage(FakeQuestionResponsePage):
         self.filled_answer = ""
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-submit-arm' in script or 'codex:hh-submit-readback' in script:
+            return await super().evaluate(script, arg)
         if 'codex:hh-ui-inspect' in script:
             return []
         if "codex:auto-question-inspect" in script:
@@ -630,6 +653,8 @@ class FakeManyAutoAnswerQuestionPage(FakeAutoAnswerQuestionPage):
         self.filled_answers = []
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-submit-arm' in script or 'codex:hh-submit-readback' in script:
+            return await super().evaluate(script, arg)
         if 'codex:hh-ui-inspect' in script:
             return []
         if "codex:auto-question-inspect" in script:
@@ -698,6 +723,8 @@ class FakeTwoStepAutoAnswerQuestionPage(FakeAutoAnswerQuestionPage):
         return await super().query_selector(selector)
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:hh-submit-arm' in script or 'codex:hh-submit-readback' in script:
+            return await super().evaluate(script, arg)
         if 'codex:hh-ui-inspect' in script:
             return []
         if "codex:response-form-signature" in script:
@@ -944,7 +971,7 @@ def test_apply_to_vacancy_autoanswers_salary_question(monkeypatch):
     assert any("зарплатные ожидания" in note for note in result["notes"])
 
 
-def test_apply_to_vacancy_keeps_filled_letter_across_separate_question_step(monkeypatch):
+def test_apply_to_vacancy_stops_uncertain_after_separate_question_step(monkeypatch):
     client = HHClient()
     client._page = FakeTwoStepAutoAnswerQuestionPage(
         question_text="Ваши зарплатные ожидания?"
@@ -964,10 +991,10 @@ def test_apply_to_vacancy_keeps_filled_letter_across_separate_question_step(monk
         )
     )
 
-    assert result["ok"] is True
-    assert result["cover_letter_status"] == "submitted_with_application"
+    assert result["ok"] is False and result["uncertain"]
     assert client._page.letter.value == "hello from cover letter"
-    assert client._page.filled_answer == "80 000 ₽ на руки"
+    assert client._page.stage != "success"
+    assert client._page.external_clicks == 1
 
 
 def test_apply_to_vacancy_autoanswers_resume_question_with_llm(monkeypatch):
@@ -1196,6 +1223,8 @@ def test_explicit_resume_is_verified_before_submit(monkeypatch):
     client._page = FakeDirectResponsePage()
     original = client._page.evaluate
     async def evaluate(script, arg=None):
+        if 'codex:hh-submit-arm' in script or 'codex:hh-submit-readback' in script:
+            return await original(script, arg)
         if 'codex:hh-ui-inspect' in script:
             return []
         if 'return {ids, titles}' in script:
@@ -1214,6 +1243,8 @@ def test_matching_title_cannot_override_mismatched_explicit_resume_id(monkeypatc
     client._page = FakeDirectResponsePage()
     original = client._page.evaluate
     async def evaluate(script, arg=None):
+        if 'codex:hh-submit-arm' in script or 'codex:hh-submit-readback' in script:
+            return await original(script, arg)
         if 'codex:hh-ui-inspect' in script:
             return []
         if 'return {ids, titles}' in script:

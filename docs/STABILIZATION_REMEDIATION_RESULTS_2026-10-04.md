@@ -179,3 +179,53 @@ erase external/uncertain attempts. Revocation before dispatch still blocks it.
 Validation: 123 targeted HH/manual/browser tests passed, including all four new
 regressions and the disabled/covered auto-wait races. This is an additional local
 review, not the independent freeze-gate re-review required by the contract.
+
+## Finding → reproduction → fix → regression → commit
+
+All listed findings reproduced. Each primary package was committed only after
+its regression and targeted checks passed, before work on the next package.
+The additional boundary-review commit closes edge cases found afterward.
+
+| Finding | Reproduction before fix | Code / resulting invariant | Regression tests | Commit |
+| --- | --- | --- | --- | --- |
+| A1 | HH/Habr retry after lost confirmation or cancellation; another run clicks again | `state_store/native_apply.py`, `hh/apply.py`, `habr_career_client.py`: durable acting/uncertain owner, one dispatch, no uncertain replay | `tests/test_audit_package1.py`: possible-click replay, post-click timeout, Habr response timeout/cancel, offline Chromium | `052e18f` |
+| A3 | Two processes dispatch the same token; revocation during generation ignored | `manual_apply_queue.py`, `agent.py`: atomic owner claim, revocation checks, nonce-bound finalization | `tests/test_audit_package1.py`: two processes, revoked approval, cancellation, stale owner | `052e18f`; terminal-state review `c13d752` |
+| A2 | Resume/letter/answers/fields change during disabled/covered click auto-wait | `hh/submit_boundary.py`, `hh/apply.py`, `hh/forms.py`: expected payload and actual control/root checked at browser events | `tests/test_audit_package2.py`: 10 Chromium races; `tests/test_audit_boundary_review.py`: outside control and replaced root | `5f76a16`; root/control review `c13d752` |
+| A4 | Preview A regenerated as B; edited message/candidate/profile keeps old approval | `state_store/chat_responder.py`, `hh_chat_responder.py`, `telegram_bot_ui.py`: exact persistent text, hash/revision/input binding, no generation on approved send | `tests/test_audit_package3.py`: A/B, alternative revision, input drift, old callback, drift during fill | `26e6414` |
+| A5 | Qualified yes/no becomes a platform shortcut | `hh/chat.py`: only plain full yes/no qualifies; all conditions remain in text | `tests/test_audit_package3.py`: semantic cases and actual offline Chromium sends | `26e6414` |
+| A6 | Extra/missing selected options or failed text readback accepted; later fill mutates earlier field | `google_forms/filling.py`, `hh_chat_responder.py`: exact complete DOM readback after all fills, including optional approved fields | `tests/test_audit_package4.py`: stuck/unknown choices, readback failure, later mutations, exact positive controls | `fef2274` |
+| A7 | Unstated relocation consent extracted then accepted as facts evidence; forged confirmed/flat legacy accepted | `facts.py`, `answer_grounding.py`, `matcher.py`, `agent.py`: extraction stays unconfirmed with provenance; only explicit confirmed facts enter evidence | `tests/test_audit_package5.py`: extraction grounding, forged confirmed, legacy, preserve confirmed/bans, actual cover verifier | `ba5c6e6` |
+| A8 | Failed/wrong/foreign navigation clicks previous vacancy controls | `habr_career_client.py`, `superjob_client.py`: verified HTTPS source+ID after navigation and before actions | `tests/test_audit_package6.py`: offline Chromium failed/wrong/foreign/drifting/correct destination; ID/URL mismatch | `c5f9a12` |
+| A9 | Valid JSON with invalid cooldown/date/timestamp types silently removes limits | `hh_guard.py`: semantic validation and repeated fail-closed block without modifying damaged bytes | `tests/test_audit_followups.py`: 6 corruptions, future read and clear | `8e868f5` |
+| F4 | Broken seen file resets to empty; old vacancy becomes new | `seen.py`: protected validated history; reads/writes require restoration | `tests/test_audit_followups.py`: 3 corruptions, repeated read and write; strengthened `tests/test_seen.py` | `8e868f5` |
+| F5 | Incomplete cover accepted by optimistic verifier | `matcher.py`: finish_reason=stop required before parsing/verifying | `tests/test_audit_followups.py`: length/content_filter/tool_calls/missing reason | `8e868f5` |
+| F6 | Cover, answer dictionary, chat author/text in operational logs | `agent.py`, `matcher.py`, `hh/chat.py`, `hh/forms.py`, `hh_chat_responder.py`: scoped metadata-only logs | `tests/test_audit_followups.py`: synthetic private sentinels in search and chat verification | `8e868f5` |
+
+## Remaining limitations
+
+- Uncertain, interrupted and completed native attempts do not expire into retries.
+  Human reconciliation and verified state restoration are required; no automatic
+  reconciliation command or production-state migration is introduced.
+- Habr's ambiguous initial apply control can open another form or submit directly.
+  Automation records that boundary and stops if another action would be needed.
+- Browser guards cover observable DOM state/events. They do not prove how a
+  third-party backend interprets unchanged fields, and unsupported/dynamic UI can
+  fail closed. No live source compatibility validation was performed.
+- Flat legacy facts require explicit confirmation. Existing structured confirmed
+  facts are treated as user evidence; this pass cannot reconstruct their history.
+- Operational logging cleanup covers the demonstrated paths. Existing private
+  journals and artifacts may contain candidate data under their existing controls.
+- The contract's independent re-review remains outstanding. Phase 3 remains open,
+  no release/tag/version bump is made, and Controlled Resume Tailoring is not begun.
+
+## Full-suite fixture reconciliation
+
+The first full run reported 7 failed / 2210 passed. Existing HH client doubles
+recognized embedded identity/answer scripts inside the new arm script as old
+standalone queries. They now model explicit arm/control/readback operations and
+validate the expected ID, retained letter and answer plan, before interpreting
+other scripts. The old two-step expectation also required a second potentially
+external submit; it now asserts one click, retained letter, uncertain outcome and
+no final submission. Production guards were unchanged. All 37 HH client tests
+passed after reconciliation; the earlier combined browser/HH run passed its
+other 62 cases.
