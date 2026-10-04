@@ -73,3 +73,27 @@ native/custom dispatch, lost bindings and unchanged positive controls. The final
 claim still follows all scroll/bind awaits immediately before click.
 
 Full isolated offline suite after R3: **2263 passed**, 217.03 seconds.
+
+## R4 / A8 — native destination/context at actual external click
+
+Before fix: `tests/test_rereview_r4.py` produced **32 failed / 8 passed**.
+Real ElementHandle and Locator click auto-waits admitted changed URL, vacancy ID,
+hidden vacancy control and replaced root for Habr/SuperJob apply and submit.
+Injection wrappers only introduce the DOM race; dispatch uses real Chromium click.
+All requests are fulfilled with synthetic UTF-8 HTML/response objects.
+An additional **2 failed / 2 passed** demonstrated changed outside form-associated
+vacancy_id in actual FormData after the first event guard implementation.
+
+Fix is local to the existing Habr/SuperJob clients. Bind the actual control/root,
+verified source URL and vacancy ID, observable context metadata, full associated
+controls and FormData/submitter before clicking. A synchronous capture guard
+rechecks that exact binding at click/submit. Known replacement Locator controls
+also hit the guard; they cannot bypass it by differing from the old handle.
+Blocked readback stops the caller before any subsequent action. Habr's existing
+durable no-replay policy is retained; no new state service or framework is added.
+
+Targeted tests: **230 passed** after the primary fix. After the associated-payload
+extension, **67 final targeted tests passed**, including all 44 new Chromium
+cases and the existing destination/no-replay positive and negative controls.
+
+Full isolated offline suite after R4: **2307 passed**, 287.89 seconds.

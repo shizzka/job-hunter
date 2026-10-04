@@ -180,7 +180,9 @@ class SubmitElement:
         self.page = page
         self.attempts = 0
 
-    async def evaluate(self, script):
+    async def evaluate(self, script, expected=None):
+        if 'codex:native-destination-arm' in script:
+            return self.page.url == expected['url']
         if 'codex:hh-submit-control' in script:
             return True
         if 'codex:hh-ui-inspect' in script:
@@ -261,6 +263,8 @@ class ApplyPage:
         return [ResumeOption(self)] if self.target_exists else []
 
     async def evaluate(self, script, expected=None):
+        if 'codex:native-destination-readback' in script:
+            return True
         if 'codex:hh-submit-arm' in script:
             return self.selected == expected['resume_id'] and self.letter.value == expected['cover_letter']
         if 'codex:hh-submit-readback' in script:

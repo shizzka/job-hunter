@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import uuid
 
 import aiohttp
 from playwright.async_api import async_playwright, BrowserContext, Page
@@ -156,6 +157,62 @@ class HabrCareerClient:
         except (ValueError, TypeError, AttributeError):
             return False
 
+    async def _arm_destination_boundary(self, control, expected):
+        self._destination_boundary_id = uuid.uuid4().hex
+        return await control.evaluate(r"""(control,expected) => {
+            /* codex:native-destination-arm */
+            const identity = value => {
+                try {
+                    const url=new URL(value),host=url.hostname.toLowerCase();
+                    const hostOk=expected.source==='habr' ? host==='career.habr.com' : host==='superjob.ru'||host.endsWith('.superjob.ru');
+                    const match=url.pathname.match(expected.source==='habr' ? /^\/vacancies\/(\d+)\/?$/ : /^\/vakansii\/(?:[^/]*-)?(\d+)\.html\/?$/);
+                    return url.protocol==='https:' && !url.username && !url.password && (!url.port||url.port==='443') && hostOk && match ? match[1] : null;
+                } catch {return null;}
+            };
+            const id=identity(expected.url);
+            if (!id || identity(location.href)!==id || !control.isConnected) return false;
+            const root=control.form || control.parentElement?.closest('[data-vacancy-id],form,main,article,section') || control.parentElement;
+            if (!root) return false;
+            const fields=()=>[...new Set([...root.querySelectorAll('input,textarea,select,[contenteditable="true"]'),
+                ...(root.tagName==='FORM'?[...root.elements].filter(el=>el.matches('input,textarea,select')):[])])];
+            const entries=submitter=>root.tagName==='FORM'?[...new FormData(root,submitter?.form===root&&submitter.type==='submit'?submitter:undefined).entries()]:[];
+            const payload=submitter=>JSON.stringify(entries(submitter).map(([key,value])=>[key,typeof value==='string'?value:[value.name,value.size,value.type]]));
+            const contextMatches=(submitter=null)=> {
+                const ids=[root.getAttribute('data-vacancy-id'),...fields().filter(el=>['vacancy_id','vacancyId','vacancy'].includes(el.name))].map(value=>typeof value==='string'||value===null?value:value.value).filter(Boolean);
+                return ids.every(value=>value===id) && entries(submitter).filter(([key])=>['vacancy_id','vacancyId','vacancy'].includes(key)).every(([,value])=>value===id);
+            };
+            if (!contextMatches(control)) return false;
+            const snapshot=()=>JSON.stringify([[...root.attributes].map(a=>[a.name,a.value]),
+                [...document.querySelectorAll('[data-vacancy-id]')].map(el=>el.getAttribute('data-vacancy-id')),
+                [...document.querySelectorAll('h1')].map(el=>el.textContent),
+                [...root.querySelectorAll('a[href]')].map(el=>el.getAttribute('href')),
+                fields().map(el=>[el.tagName,el.type,el.name,el.getAttribute('form'),el.value??el.textContent,el.checked,el.disabled]),payload(control),
+                control.innerText,control.name,control.value,control.type,control.getAttribute('href'),control.getAttribute('formaction')]);
+            const originalFields=fields(),approved=snapshot(),url=location.href;
+            const valid=()=>root.isConnected && control.isConnected && (root.contains(control)||control.form===root) && location.href===url &&
+                identity(location.href)===id && contextMatches(control) && fields().length===originalFields.length &&
+                fields().every((el,i)=>el===originalFields[i]) && snapshot()===approved;
+            document.__nativeDestinationApproval={id:expected.boundary_id,root,control,valid,source:expected.source,blocked:false};
+            if (!document.__nativeDestinationBoundary) {
+                document.__nativeDestinationBoundary=true;
+                for (const name of ['click','submit']) document.addEventListener(name,event=>{
+                    const approval=document.__nativeDestinationApproval;
+                    if (!approval) return;
+                    const target=event.target.closest?.('button,a,[role="button"],input[type="submit"]');
+                    const candidate=target===approval.control || (approval.source==='superjob' ?
+                        target?.matches('button.f-test-vacancy-response-button,button.f-test-button-Otkliknutsya[type="submit"]') :
+                        /^(откликнуться|отправить)/i.test(target?.innerText?.trim()||''));
+                    if (name==='click' && !candidate) return;
+                    if ((name==='click' ? target===approval.control : event.target===approval.root) && approval.valid()) return;
+                    approval.blocked=true;event.preventDefault();event.stopImmediatePropagation();
+                },true);
+            }
+            return true;
+        }""", {'url':expected,'source':'habr','boundary_id':self._destination_boundary_id}) is True
+
+    async def _destination_boundary_passed(self):
+        return await self._page.evaluate('/* codex:native-destination-readback */ id => document.__nativeDestinationApproval?.id === id && !document.__nativeDestinationApproval.blocked', self._destination_boundary_id) is True
+
     async def _click_with_fallbacks(self, element, label: str) -> bool:
         if not element:
             return False
@@ -186,10 +243,14 @@ class HabrCareerClient:
                 expected = getattr(self, '_apply_destination', '')
                 if expected and not self._destination_matches(expected):
                     raise RuntimeError('Habr destination changed before action')
+                if expected and not await self._arm_destination_boundary(element, expected):
+                    return False
                 attempt = getattr(self, "_external_attempt", None)
                 if "submit" in label and attempt is not None:
                     attempt.begin()
                 await action()
+                if expected and not await self._destination_boundary_passed():
+                    return False
             except Exception as exc:
                 log.warning("%s click via %s failed: %s", label, strategy_name, exc)
                 raise
