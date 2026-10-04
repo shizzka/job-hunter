@@ -158,3 +158,43 @@ Targeted suite: **80 passed**, including all five N2 cases, stored-draft approva
 quick replies, notification workflow transactions and low-level chat tests.
 
 Full isolated offline suite after N2: **2328 passed**, 301.62 seconds.
+
+## Final mapping
+
+| Finding | Before-fix reproduction | Local fix | Behavioral regression | Commit |
+| --- | --- | --- | --- | --- |
+| R1 / A2 | 14 associated-control failures, then 3 successful-submitter/disabled-fieldset failures | Complete form.elements/FormData and actual submitter semantic validation | tests/test_rereview_r1.py: 20 Chromium cases | 0fd53be, d4a24a5 |
+| R2 / A4 | 8 auto-wait text/editor/root/control failures | Exact approved composer binding at click/submit | tests/test_rereview_r2.py: 10 Chromium cases | 94c4566 |
+| R3 / A6 | 12 after-readback failures | Approved current/prior values and immutable bindings at submit events | tests/test_rereview_r3.py: 20 Chromium cases | 0dedc06 |
+| R4 / A8 | 32 destination/context failures, then 2 external associated vacancy-ID failures | Actual Habr/SJ action-control, URL, context and payload binding | tests/test_rereview_r4.py: 44 Chromium cases | a826486 |
+| N1 | 5 zero-dispatch sticky-uncertain failures, plus Habr pre-command failure | Owned positive zero receipt; admitted/missing/ambiguous receipts remain uncertain | tests/test_rereview_n1.py: 12 cases, 9 Chromium; existing cancellation/no-replay/owner checks | 14605d4 |
+| N2 | 4 oversized-preview failures with zero notifier calls | Pure local preflight before transport reservation; reject/clear draft under current owner | tests/test_rereview_n2.py: 5 cases; raw/HTML-expanded size, screenshot, alternative and transport uncertainty | e21bcc8 |
+
+All six requested findings reproduced. No speculative fix of a non-reproduced
+finding was made. Each package was committed only after targeted and full offline
+validation. This pass adds 111 regressions, including 103 real offline Chromium
+cases. Final local suite: **2328 passed**. The previous A1/A3/A5/A7 safety
+regressions remain in that suite.
+
+GitHub verification uses the existing `.github/workflows/offline-tests.yml`,
+manual dispatch on this branch and its isolated offline pytest job. The concrete
+final commit/run ID, conclusion and URL are recorded in the final handoff and
+`/tmp/jh-rereview-evidence/github-ci-final.json`; the report is committed before
+that dispatch so CI checks the exact delivered HEAD.
+
+## Remaining limits and stop boundary
+
+- No live platform/application/Form/chat/Telegram action or production state
+  change was used for validation. Synthetic DOM/response evidence does not certify
+  current live selectors, backend semantics or server-side confirmation.
+- Forms whose prior-page bindings become unavailable stop for manual review;
+  unknown or detached prior values are not silently approved again.
+- A lost receipt, timeout/cancellation after possible dispatch, or any admitted
+  event remains uncertain and requires manual reconciliation. A process crash
+  before persisting a positive zero receipt can conservatively remain uncertain.
+- This pass still requires independent review of the delivered HEAD; passing
+  offline tests is not a declaration that Phase 3 or the freeze is closed.
+
+No Tailoring, AI Gateway/new service, main change/merge or version bump.
+Phase 3 is **not declared closed**. STOP after CI and handoff; do not start the
+next phase automatically.
