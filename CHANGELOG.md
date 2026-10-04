@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.8.0-rc.1 — 2026-10-04
+
+Release candidate после большого стабилизационного спринта. Это ещё не финальный
+`v0.8.0`: независимые аудиты продолжаются, подтверждённые P1/P2 findings должны
+быть закрыты до stable release.
+
+### Stabilization baseline
+- Добавлен GitHub Actions offline regression suite и устранены platform/timezone-зависимые тесты.
+- Усилены profile/account/cookie ownership guards и защита от stale state после await.
+- HH resume selection переведён на exact/fail-closed проверки перед submit.
+- LLM provider failures и malformed Matcher output переводятся в `deferred_unscored`,
+  а не в semantic rejection.
+- Добавлены factual grounding для cover letters, анкет и chat drafts.
+- Усилены Google Forms и GeekJob submission ownership / uncertain-result semantics.
+- Добавлены structured HH traces и приватные диагностические артефакты.
+- Добавлен временный emergency LAN Ollama fallback для локального recovery-сценария.
+
+### Release candidate notes
+- `VERSION`, README и changelog синхронизированы на `0.8.0-rc.1`.
+- README переписан как продуктовая витрина: positioning, safety model, maturity
+  площадок, quick start и ссылки на подробную документацию.
+- Финальный `v0.8.0` будет выпущен только после независимого аудита и закрытия
+  подтверждённых блокирующих race/submission findings.
+
 ## v0.7.0 — 2026-10-02
 
 Диагностический и safety-релиз для HH auto-apply, профилей и LLM-интеграций.
