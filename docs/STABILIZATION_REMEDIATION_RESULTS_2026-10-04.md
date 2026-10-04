@@ -229,3 +229,29 @@ external submit; it now asserts one click, retained letter, uncertain outcome an
 no final submission. Production guards were unchanged. All 37 HH client tests
 passed after reconciliation; the earlier combined browser/HH run passed its
 other 62 cases.
+
+## Final local validation
+
+Source/tree commit: `218720e702d04d13b3861246392575ca67c66080`.
+The final report commit adds documentation only.
+
+- Full isolated offline suite: **2217 passed**, 162.39 seconds.
+- Fresh `git archive HEAD` export, separate temporary HOME: **2217 passed**,
+  166.04 seconds. No ignored/local-only files or production configuration included.
+- `git diff --check` and `bash -n run.sh`: passed.
+- Python test environment cleared with `env -i`; only interpreter PATH, locale,
+  synthetic HOME and preinstalled Chromium path were supplied. Existing Python
+  network-denial fixture remains enabled; browser cases use synthetic content
+  and intercepted/aborted requests.
+- GitHub workflow: `.github/workflows/offline-tests.yml` (existing offline-only
+  workflow), dispatched on the final delivered branch HEAD after push. Exact run
+  URL and outcome are reported in the delivery message once GitHub completes.
+
+Local reproduction/validation logs are retained in `/tmp/jh-audit-evidence/`:
+`package*-before.txt`, package targeted/final logs, `followups-before.txt`,
+`followups-f6-before.txt`, `boundary-review-before.txt`, `full-suite.txt` (initial
+fixture failures), `full-suite-final.txt`, and `export-suite-final.txt`.
+Reproduction tests are committed for repeatable verification.
+
+STOP after GitHub CI. No next phase, live action, production mutation, release
+bump, or Phase 3 closure is authorized or performed by this pass.
