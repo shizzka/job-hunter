@@ -48,10 +48,10 @@ def test_hh_possible_click_never_replays_on_this_or_next_run(isolated, failure):
     page = ApplyPage()
     dom_calls = []
     original_evaluate = page.evaluate
-    async def evaluate(script):
+    async def evaluate(script, expected=None):
         if 'form.requestSubmit' in script:
             dom_calls.append('submit')
-        return await original_evaluate(script)
+        return await original_evaluate(script, expected)
     page.evaluate = evaluate
     async def wait(ms):
         if page.sent:

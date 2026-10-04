@@ -8,6 +8,7 @@ import re
 
 from hh.text import compact_text, normalize_text
 from hh.ui import HHUnexpectedUI, ensure_session_ui
+from hh.submit_boundary import arm_submit_boundary, submit_boundary_passed
 
 
 CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS = (
@@ -112,6 +113,8 @@ async def click_with_fallbacks(session, element, label: str, *, logger, before_c
         if before_click is not None and not await before_click():
             logger.warning("%s blocked by fresh pre-submit guard", label)
             return False
+        if external and not await arm_submit_boundary(session):
+            return False
         try:
             logger.info("Clicking %s via %s strategy", label, strategy_name)
             attempt = getattr(session, "_external_attempt", None)
@@ -127,7 +130,7 @@ async def click_with_fallbacks(session, element, label: str, *, logger, before_c
             continue
         await session._page.wait_for_timeout(1000)
         await ensure_session_ui(session, "after_click:" + label, allowed=("response", "captcha"))
-        return True
+        return await submit_boundary_passed(session) if external else True
 
     return False
 
@@ -461,6 +464,8 @@ async def submit_response_form_via_dom(session, *, logger, before_submit=None) -
         return False
     if before_submit is not None and not await before_submit():
         return False
+    if not await arm_submit_boundary(session):
+        return False
     try:
         attempt = getattr(session, "_external_attempt", None)
         if attempt is not None:
@@ -498,7 +503,7 @@ async def submit_response_form_via_dom(session, *, logger, before_submit=None) -
         logger.debug("DOM submit fallback failed: %s", exc)
         raise
     await ensure_session_ui(session, "after_dom_submit", allowed=("response", "captcha"))
-    return bool(result)
+    return bool(result) and await submit_boundary_passed(session)
 
 
 async def save_debug_snapshot(session, prefix: str, *, state_dir: str) -> None:
@@ -731,10 +736,8 @@ async def fill_cover_letter_post_apply(session, cover_letter: str, *, logger):
         logger.warning("Failed to fill cover letter post-apply: %s", e)
 
 
-async def selected_resume_matches(page, resume_id: str, title: str) -> bool:
-    """Read selected controls only; a title elsewhere in the page is not evidence."""
-    try:
-        script = r"""() => {
+
+SELECTED_RESUME_SCRIPT = r"""() => {
             const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
             const forms = Array.from(document.querySelectorAll('form[name="vacancy_response"]')).filter(visible);
             if (forms.length > 1) return {ids: [], titles: []};
@@ -763,6 +766,11 @@ async def selected_resume_matches(page, resume_id: str, title: str) -> bool:
             }
             return {ids, titles};
         }"""
+
+async def selected_resume_matches(page, resume_id: str, title: str) -> bool:
+    """Read selected controls only; a title elsewhere in the page is not evidence."""
+    try:
+        script = SELECTED_RESUME_SCRIPT
         selected = await page.evaluate(script)
         if isinstance(selected, dict) and resume_id and not selected.get('ids'):
             # Open only the response form's resume control, never the submit button.
@@ -792,10 +800,13 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
                 "message": "Exact HH resume ID не задан — отклик не отправлен"}
     url = absolute_hh_url(vacancy_url)
     repository = NativeApplyRepository(session._cookie_paths.cookies_file, "hh")
-    return await run_native_attempt(session, repository, url, lambda: _apply_to_vacancy(
-        session, url, cover_letter, response_url, preferred_resume_title, preferred_resume_id,
-        vacancy_context, trace, absolute_hh_url=absolute_hh_url,
-        anti_bot_message=anti_bot_message, logger=logger))
+    async def operation():
+        session._approved_hh_payload = {"resume_id": str(preferred_resume_id).strip(),
+                                        "cover_letter": cover_letter, "answers": []}
+        return await _apply_to_vacancy(session, url, cover_letter, response_url,
+            preferred_resume_title, preferred_resume_id, vacancy_context, trace,
+            absolute_hh_url=absolute_hh_url, anti_bot_message=anti_bot_message, logger=logger)
+    return await run_native_attempt(session, repository, url, operation)
 
 
 async def _apply_to_vacancy(

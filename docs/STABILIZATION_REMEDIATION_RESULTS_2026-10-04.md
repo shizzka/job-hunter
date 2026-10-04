@@ -33,3 +33,25 @@ reconciliation; there is no automatic expiry/replay. The Habr initial control ma
 itself send a quick response. If it opens a further form, automation stops for
 manual review instead of issuing another action. A form already open can submit
 once. Completed native attempts also remain non-retryable automatically.
+
+## Package 2 — A2
+
+Reproduction: real Chromium with disabled/covered submit controls, a passing final
+identity guard, then changes during Playwright's actual `element.click()` wait.
+Before the fix: 8 failures / 2 passing unchanged controls. Resume, letter,
+questionnaire answer, and added-field changes all reached the synthetic submit
+handler. Every browser request was aborted.
+
+Fix: a capture-phase browser barrier binds the exact expected resume ID and
+cover letter, the questionnaire answer plan, and a snapshot of all form fields.
+It checks them synchronously at both click and submit events, before page
+handlers, including after Playwright auto-wait. Root replacement and payload
+changes block the event. Existing unexpected-UI capture guards remain active.
+Questionnaire readback and resume selection use the same JS classifiers as the
+boundary. An active client cannot be reused concurrently to overwrite its
+approved payload.
+
+Validation: all 10 browser race scenarios passed; 198 combined HH/A1/A2,
+questionnaire, resume picker and modal safety tests passed.
+A browser-blocked action is conservatively uncertain if its command was already
+dispatched; it is never automatically replayed.

@@ -258,7 +258,11 @@ class ApplyPage:
     async def query_selector_all(self, selector):
         return [ResumeOption(self)] if self.target_exists else []
 
-    async def evaluate(self, script):
+    async def evaluate(self, script, expected=None):
+        if 'codex:hh-submit-arm' in script:
+            return self.selected == expected['resume_id'] and self.letter.value == expected['cover_letter']
+        if 'codex:hh-submit-readback' in script:
+            return True
         if 'codex:hh-ui-inspect' in script:
             return []
         if 'const root' in script:

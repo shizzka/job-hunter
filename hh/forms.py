@@ -579,10 +579,8 @@ async def fill_employer_question_answers(page, answers: list[dict], *, logger) -
         return {"filled": 0, "errors": [str(exc)]}
 
 
-async def verify_filled_answers(page, answers: list[dict]) -> bool:
-    """Read back the native DOM, never trust a filled-count as submission proof."""
-    try:
-        return await page.evaluate("""plan => {
+
+VERIFY_ANSWERS_SCRIPT = """plan => {
             /* codex:auto-question-verify */
             const anchors = Array.from(document.querySelectorAll('[data-codex-auto-field-id]'));
             return (plan || []).length > 0 && plan.every(item => {
@@ -620,7 +618,12 @@ async def verify_filled_answers(page, answers: list[dict]) -> bool:
                 }
                 return anchor.value === String(item.answer ?? '');
             });
-        }""", answers) is True
+        }"""
+
+async def verify_filled_answers(page, answers: list[dict]) -> bool:
+    """Read back the native DOM, never trust a filled-count as submission proof."""
+    try:
+        return await page.evaluate(VERIFY_ANSWERS_SCRIPT, answers) is True
     except Exception:
         return False
 
@@ -1201,6 +1204,9 @@ async def try_auto_answer_questions(
     if native and not await unchanged_filled_answers():
         return {'handled': True, 'ok': False, 'message': 'Ответы анкеты изменились — отправка остановлена',
                 'notes': notes, 'question_answers': question_answers}
+    payload = getattr(session, '_approved_hh_payload', None)
+    if payload is not None:
+        payload['answers'] = answers
     submit_extra = {"before_submit": unchanged_filled_answers} if native else (
         {"before_submit": before_submit} if before_submit is not None else {})
     if not await session._submit_employer_questions(**submit_extra):

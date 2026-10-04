@@ -45,6 +45,9 @@ class NativeAttempt:
 
 async def run_native_attempt(client, repository, url, operation):
     """Persist uncertainty before dispatch; cancellation cannot erase ownership."""
+    if getattr(client, '_external_attempt', None) is not None:
+        return {'ok': False, 'uncertain': True, 'reason': 'native_client_busy',
+                'message': 'Browser уже принадлежит активной попытке'}
     owner = repository.claim(url, '', '')
     if not owner:
         return {'ok': False, 'uncertain': True, 'reason': 'native_attempt_not_retryable',

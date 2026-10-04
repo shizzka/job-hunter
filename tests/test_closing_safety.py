@@ -63,10 +63,10 @@ def test_inconclusive_native_apply_never_repeats_submit(change, tmp_path, monkey
     page = ApplyPage()
     page.dom_submits = 0
     original_evaluate = page.evaluate
-    async def evaluate(script):
+    async def evaluate(script, expected=None):
         if 'form.requestSubmit' in script:
             page.dom_submits += 1
-        return await original_evaluate(script)
+        return await original_evaluate(script, expected)
     page.evaluate = evaluate
     state = {'changed': False, 'required': False}
     async def wait(milliseconds):
