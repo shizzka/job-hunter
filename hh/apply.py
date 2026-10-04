@@ -488,6 +488,8 @@ async def submit_response_form_via_dom(session, *, logger, before_submit=None) -
                     if (forms.length !== 1) return false;
                     const form = forms[0];
                     const button = [...form.querySelectorAll(buttonSelector)].find(visible);
+                    const approval = document.__hhSubmitApproval;
+                    if (approval && !approval.bindControl(button || null)) return false;
                     if (form && typeof form.requestSubmit === 'function') {
                         if (button && button.form === form) {
                             form.requestSubmit(button);
