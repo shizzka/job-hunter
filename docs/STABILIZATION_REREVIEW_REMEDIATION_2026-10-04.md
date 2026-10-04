@@ -48,3 +48,28 @@ passed**, including all 10 Chromium cases, low-level chat positives and ordering
 checks. No production guard bypass for doubles was added.
 
 Full isolated offline suite after R2: **2243 passed**, 186.99 seconds.
+
+## R3 / A6 — approved Forms values at actual submit boundary
+
+Before fix: `tests/test_rereview_r3.py` produced **12 failed / 2 passed**.
+Both native form submit and custom role=button handlers dispatched after a
+successful exact readback while a covered click waited. Later text, extra/missing
+checkbox, hidden control, item or root mutations were consumed by the handler.
+
+Fix stays in `google_forms/filling.py`. Successful filling seals an approval
+against the supplied approved rows, actual question/control references, full
+DOM/FormData state and URL. The submit control binds to that sealed approval
+before the durable callback; synchronous click/submit capture revalidates exact
+approved values at dispatch. No fresh snapshot can silently approve a later
+mutation. Prior-page question bindings and unchanged controls are retained;
+mutated hidden prior controls, added controls, or unavailable prior bindings
+block readiness. Lost prior bindings require manual review rather than an
+unverified automatic submit. Existing workflow/version/owner checks remain.
+
+Targeted run: 190 passed plus two ordering doubles needing bind/readback support.
+After accurate mock updates and added prior-page browser regressions, **39 final
+targeted tests passed**. The 20 Chromium cases cover current/prior approved values,
+native/custom dispatch, lost bindings and unchanged positive controls. The final
+claim still follows all scroll/bind awaits immediately before click.
+
+Full isolated offline suite after R3: **2263 passed**, 217.03 seconds.

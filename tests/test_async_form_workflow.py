@@ -188,11 +188,18 @@ def test_submit_button_guard_runs_after_last_scroll_await(monkeypatch, allowed):
     order = []
     async def scroll(**kwargs):
         order.append('scroll')
-    button = SimpleNamespace(scroll_into_view_if_needed=scroll, click=AsyncMock())
+    async def evaluate(script):
+        if 'codex:google-form-bind' in script:
+            assert order == ['scroll']
+            order.append('bind')
+        else:
+            assert 'codex:google-form-readback' in script
+        return True
+    button = SimpleNamespace(scroll_into_view_if_needed=scroll, click=AsyncMock(), evaluate=evaluate)
     page = SimpleNamespace(wait_for_load_state=AsyncMock(), wait_for_timeout=AsyncMock())
     monkeypatch.setattr(filling, '_find_google_form_button', AsyncMock(return_value=button))
     def guard():
-        assert order == ['scroll']
+        assert order == ['scroll', 'bind']
         order.append('claim')
         return allowed
     assert asyncio.run(filling._click_google_form_submit(page, before_click=guard)) is allowed

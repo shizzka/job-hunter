@@ -59,6 +59,21 @@ class FakePage:
         assert selector == 'div[role="listitem"]:visible'
         return FakeLocator(self.items)
 
+    async def evaluate(self, script, expected):
+        assert 'codex:google-form-arm' in script
+        if expected['items'] != self.items:
+            return False
+        rows = {row['index']: row for row in expected['rows']}
+        for q in expected['questions']:
+            item = self.items[q.get('dom_index', q['index'])]
+            row = rows.get(q['index']) or {}
+            if q.get('type', 'text') == 'text':
+                if not item.field or item.field.value != row.get('answer', ''): return False
+            else:
+                selected = sorted(option.label for option in item.options if option.checked)
+                if selected != sorted(row.get('options', [])): return False
+        return True
+
 
 class FakeField:
     def __init__(self):

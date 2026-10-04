@@ -223,6 +223,88 @@ async def _click_google_form_next(page) -> tuple[bool, str]:
     return False, "google form did not advance after next"
 
 
+async def _arm_google_form_submit_boundary(page, questions, rows, items) -> bool:
+    return await page.evaluate(r"""expected => {
+        /* codex:google-form-arm */
+        const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
+        const currentItems = () => [...document.querySelectorAll('div[role="listitem"]')].filter(visible);
+        const items = currentItems();
+        const previous = document.__googleFormApproval;
+        document.__googleFormApproval = null;
+        if (!items.length || items.length !== expected.items.length || items.some((el,i) => el !== expected.items[i])) return false;
+        const root = items[0].closest('form') || document.body;
+        const pageIndex = expected.questions[0]?.page_index || 0;
+        if (pageIndex && (!previous || previous.root !== root || previous.pageIndex < pageIndex - 1)) return false;
+        const byIndex = new Map(expected.rows.map(row => [row.index,row]));
+        const plans = expected.questions.map(q => ({index:q.index,type:q.type || 'text', options:q.options || [],
+            item:items[q.dom_index ?? q.index], row:byIndex.get(q.index)}));
+        const indices = new Set(plans.map(plan => plan.index));
+        const currentPlanItems = new Set(plans.map(plan => plan.item));
+        if (pageIndex) plans.unshift(...previous.plans.filter(plan => !indices.has(plan.index)));
+        const norm = value => String(value || '').replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim().toLowerCase();
+        const valuesMatch = () => plans.every(plan => {
+            if (!plan.item?.isConnected || !root.contains(plan.item)) return false;
+            if (plan.type === 'text') {
+                const fields = [...plan.item.querySelectorAll('textarea,input[type="text"],input[type="email"],input[type="number"],input[type="url"],input[type="tel"]')];
+                return fields.length === 1 && !fields[0].disabled && fields[0].value === (plan.row?.answer || '');
+            }
+            if (!['radio','checkbox'].includes(plan.type)) return false;
+            const options = [...plan.item.querySelectorAll('[role="radio"],[role="checkbox"]')];
+            const labels = options.map(el => norm(el.getAttribute('aria-label') || el.innerText));
+            const allowed = plan.options.map(norm).sort();
+            if (!options.length || new Set(labels).size !== labels.length || JSON.stringify([...labels].sort()) !== JSON.stringify(allowed)) return false;
+            if (options.some(el => !['true','false'].includes(el.getAttribute('aria-checked')))) return false;
+            const selected = options.filter(el => el.getAttribute('aria-checked') === 'true').map(el => norm(el.getAttribute('aria-label') || el.innerText)).sort();
+            return JSON.stringify(selected) === JSON.stringify((plan.row?.options || []).map(norm).sort());
+        });
+        const fields = () => [...new Set([...root.querySelectorAll('input,textarea,select,[role="checkbox"],[role="radio"],[contenteditable="true"]'),
+            ...(root.tagName === 'FORM' ? [...root.elements].filter(el => el.matches('input,textarea,select')) : [])])];
+        const payload = control => root.tagName === 'FORM' ? JSON.stringify([...new FormData(root,
+            control?.form === root && control.type === 'submit' ? control : undefined).entries()].map(([key,value]) =>
+            [key,typeof value === 'string' ? value : [value.name,value.size,value.type,value.size ? value.lastModified : 0]])) : null;
+        const fieldState = el => JSON.stringify([el.tagName,el.type,el.name,el.getAttribute('form'),el.disabled,
+            el.value ?? el.textContent,el.checked,el.getAttribute('aria-label'),el.getAttribute('aria-checked'),
+            [...(el.options || [])].map(o => [o.value,o.selected])]);
+        if (pageIndex) {
+            const current = fields();
+            if (previous.fieldRecords.some(record => !currentPlanItems.has(record.item) &&
+                    (!current.includes(record.el) || fieldState(record.el) !== record.state))) return false;
+            if (current.some(el => !previous.fieldRecords.some(record => record.el === el) &&
+                    ![...currentPlanItems].some(item => item.contains(el)))) return false;
+        }
+        const snapshot = () => JSON.stringify([[...root.attributes].map(a => [a.name,a.value]),payload(null),fields().map(fieldState)]);
+        if (!valuesMatch()) return false;
+        const originalFields = fields(), approved = snapshot(), url = location.href;
+        const valid = () => {
+            const current = fields(), active = currentItems();
+            return root.isConnected && location.href === url && valuesMatch() &&
+                active.length === items.length && active.every((el,i) => el === items[i]) &&
+                current.length === originalFields.length && current.every((el,i) => el === originalFields[i]) && snapshot() === approved;
+        };
+        const controlState = el => JSON.stringify([el.innerText,el.name,el.value,el.type,el.getAttribute('form'),el.getAttribute('formaction')]);
+        const fieldRecords = originalFields.map(el => ({el,item:el.closest('div[role="listitem"]'),state:fieldState(el)}));
+        const approval = {root,plans,pageIndex,fieldRecords,valid,blocked:false};
+        approval.bind = control => {
+            if (!valid() || !control.isConnected || !(root.contains(control) || control.form === root)) return false;
+            approval.control=control;approval.controlState=controlState(control);approval.payload=payload(control);
+            return true;
+        };
+        approval.eventMatches = event => valid() && controlState(approval.control) === approval.controlState &&
+            payload(event.type === 'submit' ? event.submitter : approval.control) === approval.payload;
+        document.__googleFormApproval = approval;
+        if (!document.__googleFormBoundary) {
+            document.__googleFormBoundary = true;
+            for (const name of ['click','submit']) document.addEventListener(name,event => {
+                const approval=document.__googleFormApproval;
+                if (!approval || (name === 'click' && !approval.control?.contains(event.target))) return;
+                if ((name === 'click' || event.target === approval.root) && approval.eventMatches(event)) return;
+                approval.blocked=true;event.preventDefault();event.stopImmediatePropagation();
+            },true);
+        }
+        return true;
+    }""", {'questions': questions, 'rows': rows, 'items': items}) is True
+
+
 async def _click_google_form_submit(page, *, before_click=None) -> bool:
     button = await _find_google_form_button(page, _is_google_form_submit_button_text)
     if not button:
@@ -231,9 +313,16 @@ async def _click_google_form_submit(page, *, before_click=None) -> bool:
         await button.scroll_into_view_if_needed(timeout=5000)
     except Exception:
         pass
+    if await button.evaluate(r"""el => {
+        /* codex:google-form-bind */
+        return !!document.__googleFormApproval && document.__googleFormApproval.bind(el);
+    }""") is not True:
+        return False
     if before_click is not None and not before_click():
         return False
     await button.click(timeout=10000)
+    if await button.evaluate('/* codex:google-form-readback */ el => !document.__googleFormApproval?.blocked') is not True:
+        return False
     with contextlib.suppress(Exception):
         await page.wait_for_load_state("networkidle", timeout=15000)
     await page.wait_for_timeout(1500)
@@ -417,6 +506,13 @@ async def fill_form(page, questions: list[dict], answers: list[dict]) -> dict:
     for entry in skipped:
         if not (answer_map.get(entry['index']) or {}).get('skip') and entry['reason'] != 'empty answer':
             entry['blocking'] = True
+    try:
+        armed = await _arm_google_form_submit_boundary(page, questions, verified, current_items)
+    except Exception as exc:
+        log.warning("Google Forms boundary could not be armed: %s", type(exc).__name__)
+        armed = False
+    if not armed:
+        skipped.append({'index': -1, 'reason': 'approved DOM boundary unavailable', 'blocking': True})
     return {"filled": verified, "skipped": skipped}
 
 
