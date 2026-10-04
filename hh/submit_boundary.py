@@ -37,9 +37,10 @@ async def arm_submit_boundary(session):
                 const approval = document.__hhSubmitApproval;
                 if (!approval) return;
                 const target = event.target.closest?.('button,input[type="submit"],a,[role="button"]');
-                if (name === 'click' && (!target || !approval.root.contains(target))) return;
-                if (name === 'submit' && event.target !== approval.root && !approval.root.contains(event.target)) return;
-                if (approval.root.isConnected && approval.valid() && approval.snapshot() === approval.approved) return;
+                if (name === 'click' && (!target || target !== approval.control)) return;
+                const belongs = name === 'click' ? approval.root.contains(target) :
+                    event.target === approval.root || approval.root.contains(event.target);
+                if (belongs && approval.root.isConnected && approval.valid() && approval.snapshot() === approval.approved) return;
                 approval.blocked = true;
                 event.preventDefault(); event.stopImmediatePropagation();
             }, true);
@@ -47,6 +48,19 @@ async def arm_submit_boundary(session):
         return true;
     }'''.replace('__IDENTITY__', SELECTED_RESUME_SCRIPT).replace('__ANSWERS__', VERIFY_ANSWERS_SCRIPT)
     return await session._page.evaluate(script, expected) is True
+
+
+async def bind_submit_control(session, element):
+    if getattr(session, '_approved_hh_payload', None) is None:
+        return True
+    return await element.evaluate(r"""el => {
+        /* codex:hh-submit-control */
+        const approval = document.__hhSubmitApproval;
+        if (!approval || !el.isConnected || !approval.root.isConnected || !approval.root.contains(el)
+                || !approval.valid() || approval.snapshot() !== approval.approved) return false;
+        approval.control = el;
+        return true;
+    }""") is True
 
 
 async def submit_boundary_passed(session):

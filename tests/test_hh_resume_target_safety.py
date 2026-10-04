@@ -181,6 +181,8 @@ class SubmitElement:
         self.attempts = 0
 
     async def evaluate(self, script):
+        if 'codex:hh-submit-control' in script:
+            return True
         if 'codex:hh-ui-inspect' in script:
             return []
         if 'dataQa:' in script:

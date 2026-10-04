@@ -162,3 +162,20 @@ Validation: 191 targeted guard/seen/cover/search/chat/form tests passed.
 Existing tests requiring automatic corrupt-state reset were strengthened to
 require preservation and explicit restoration. Completed-response model fakes
 now declare finish_reason=stop; incomplete-response regressions stay strict.
+
+## Additional local boundary review — A1/A2/A3
+
+Four added regressions failed after the primary packages: an outside submit
+control could use approval of another form, a replaced form's submit event was
+ignored by the capture barrier, late negative feedback erased a confirmed apply
+outcome, and a generic status update could reopen an uncertain token.
+
+Fix: bind the actual ElementHandle to the approved root before dispatch; capture
+click validation applies to that exact control. Every submit event while armed
+must belong to the original connected approved root. Preserve a confirmed
+external outcome on late revocation; generic UI status changes cannot reopen or
+erase external/uncertain attempts. Revocation before dispatch still blocks it.
+
+Validation: 123 targeted HH/manual/browser tests passed, including all four new
+regressions and the disabled/covered auto-wait races. This is an additional local
+review, not the independent freeze-gate re-review required by the contract.

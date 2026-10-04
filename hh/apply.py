@@ -8,7 +8,7 @@ import re
 
 from hh.text import compact_text, normalize_text
 from hh.ui import HHUnexpectedUI, ensure_session_ui
-from hh.submit_boundary import arm_submit_boundary, submit_boundary_passed
+from hh.submit_boundary import arm_submit_boundary, bind_submit_control, submit_boundary_passed
 
 
 CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS = (
@@ -113,7 +113,7 @@ async def click_with_fallbacks(session, element, label: str, *, logger, before_c
         if before_click is not None and not await before_click():
             logger.warning("%s blocked by fresh pre-submit guard", label)
             return False
-        if external and not await arm_submit_boundary(session):
+        if external and (not await arm_submit_boundary(session) or not await bind_submit_control(session, element)):
             return False
         try:
             logger.info("Clicking %s via %s strategy", label, strategy_name)

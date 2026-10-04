@@ -171,6 +171,8 @@ def mark_candidate(token: str, status: str, message: str = "", *, profile_name: 
             if item.get("status") == "applying":
                 item["revoked"] = True
                 return
+            if item.get("external_started") or item.get("status") == "uncertain":
+                return  # Generic UI updates cannot reopen or erase an external attempt.
             item["status"] = status
             item["updated_at"] = datetime.now().isoformat(timespec="seconds")
             if message:
@@ -222,8 +224,8 @@ def finish_candidate(token, owner, status, message="", *, store=None) -> bool:
         item = data["items"].get(token, {})
         if item.get("owner") != owner or item.get("status") != "applying":
             return
-        if item.get("external_started") and status not in {"applied", "already_applied"}:
-            status_value = "uncertain"
+        if item.get("external_started"):
+            status_value = status if status in {"applied", "already_applied"} else "uncertain"
         elif item.get("revoked") or item.get("feedback") == "bad":
             status_value = "dismissed"
         else:
