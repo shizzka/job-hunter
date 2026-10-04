@@ -592,7 +592,8 @@ async def _submit_claimed_preview(hh_client, token, item, paths, workflow, attem
         ready = False
         validation_message = "Изменился состав страниц формы. Требуется новый preview."
     if ready:
-        submitted = await _click_google_form_submit(page, before_click=lambda: workflow.mark_submitting(token, attempt))
+        submitted = await _click_google_form_submit(page, before_click=lambda: workflow.mark_submitting(token, attempt),
+                                                    on_no_action=lambda: workflow.confirm_no_action(token, attempt))
         if submitted:
             submit_success, submit_page_text = await _wait_google_form_submit_success(page)
     shot_path = os.path.join(paths.hh_state_dir, f"google_form_submit_{token}.png")

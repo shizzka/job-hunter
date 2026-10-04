@@ -192,7 +192,7 @@ class HabrCareerClient:
             const valid=()=>root.isConnected && control.isConnected && (root.contains(control)||control.form===root) && location.href===url &&
                 identity(location.href)===id && contextMatches(control) && fields().length===originalFields.length &&
                 fields().every((el,i)=>el===originalFields[i]) && snapshot()===approved;
-            document.__nativeDestinationApproval={id:expected.boundary_id,root,control,valid,source:expected.source,blocked:false};
+            document.__nativeDestinationApproval={id:expected.boundary_id,root,control,valid,source:expected.source,admitted:false,blocked:false};
             if (!document.__nativeDestinationBoundary) {
                 document.__nativeDestinationBoundary=true;
                 for (const name of ['click','submit']) document.addEventListener(name,event=>{
@@ -203,7 +203,7 @@ class HabrCareerClient:
                         target?.matches('button.f-test-vacancy-response-button,button.f-test-button-Otkliknutsya[type="submit"]') :
                         /^(откликнуться|отправить)/i.test(target?.innerText?.trim()||''));
                     if (name==='click' && !candidate) return;
-                    if ((name==='click' ? target===approval.control : event.target===approval.root) && approval.valid()) return;
+                    if ((name==='click' ? target===approval.control : event.target===approval.root) && approval.valid()) {approval.admitted=true;return;}
                     approval.blocked=true;event.preventDefault();event.stopImmediatePropagation();
                 },true);
             }
@@ -211,7 +211,14 @@ class HabrCareerClient:
         }""", {'url':expected,'source':'habr','boundary_id':self._destination_boundary_id}) is True
 
     async def _destination_boundary_passed(self):
-        return await self._page.evaluate('/* codex:native-destination-readback */ id => document.__nativeDestinationApproval?.id === id && !document.__nativeDestinationApproval.blocked', self._destination_boundary_id) is True
+        boundary_id = self._destination_boundary_id
+        passed = await self._page.evaluate('/* codex:native-destination-readback */ id => document.__nativeDestinationApproval?.id === id && !document.__nativeDestinationApproval.blocked', boundary_id) is True
+        if not passed:
+            zero = await self._page.evaluate('/* codex:native-destination-zero */ id => document.__nativeDestinationApproval?.id === id && document.__nativeDestinationApproval.blocked === true && document.__nativeDestinationApproval.admitted === false', boundary_id) is True
+            attempt = getattr(self, '_external_attempt', None)
+            if zero and attempt is not None:
+                attempt.confirm_no_action()
+        return passed
 
     async def _click_with_fallbacks(self, element, label: str) -> bool:
         if not element:
@@ -240,14 +247,21 @@ class HabrCareerClient:
         for strategy_name, action in strategies:
             try:
                 log.info("Clicking %s via %s strategy", label, strategy_name)
+                attempt = getattr(self, "_external_attempt", None)
                 expected = getattr(self, '_apply_destination', '')
                 if expected and not self._destination_matches(expected):
+                    if attempt is not None and not attempt.command_started:
+                        attempt.confirm_no_action()
+                        return False
                     raise RuntimeError('Habr destination changed before action')
                 if expected and not await self._arm_destination_boundary(element, expected):
+                    if attempt is not None and not attempt.command_started:
+                        attempt.confirm_no_action()
                     return False
-                attempt = getattr(self, "_external_attempt", None)
                 if "submit" in label and attempt is not None:
                     attempt.begin()
+                if attempt is not None:
+                    attempt.command_started = True
                 await action()
                 if expected and not await self._destination_boundary_passed():
                     return False

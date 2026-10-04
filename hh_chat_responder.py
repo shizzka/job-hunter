@@ -525,6 +525,7 @@ async def send_message(
     *,
     runtime_paths: RuntimePaths | None = None,
     before_send=None,
+    on_no_action=None,
 ) -> bool:
     """Полная отправка: перейти, набрать, нажать Send."""
     paths = runtime_paths or _runtime_paths()
@@ -547,6 +548,7 @@ async def send_message(
         messages_contain=_messages_contain_sent_text,
         logger=log,
         **({"before_send": before_send} if before_send is not None else {}),
+        **({"on_no_action": on_no_action} if on_no_action is not None else {}),
     )
 
 
@@ -1082,7 +1084,8 @@ async def _execute_reply(
                         raise RuntimeError("Approved chat candidate/draft changed before send")
                 # Last synchronous durable check immediately before the click.
                 repository.mark_acting(chat_id, owner)
-            ok = await send_message(page, chat_id, answer, runtime_paths=paths, before_send=before_send)
+            ok = await send_message(page, chat_id, answer, runtime_paths=paths, before_send=before_send,
+                                    on_no_action=lambda: repository.confirm_no_action(chat_id, owner))
             detail["sent"] = ok
             if not ok:
                 detail.update(ok=False, message="send failed or uncertain; inspect state")

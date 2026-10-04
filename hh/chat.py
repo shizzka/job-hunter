@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from typing import Any
 
 from chat_screening import classify_message_author
@@ -427,7 +428,7 @@ async def fill_and_preview(
     return {"filled": True, "screenshot_path": shot_path}
 
 
-async def arm_send_boundary(button, text, quick_reply="") -> bool:
+async def arm_send_boundary(button, text, quick_reply="", *, boundary_id="") -> bool:
     return await button.evaluate(r"""(control, expected) => {
         /* codex:chat-send-arm */
         const editor = expected.quick ? null : expected.selectors.map(selector => document.querySelector(selector)).find(Boolean);
@@ -453,20 +454,20 @@ async def arm_send_boundary(button, text, quick_reply="") -> bool:
                 (!editor || (editor.isConnected && editor.value === expected.text && (root.contains(editor) || editor.form === root))) &&
                 current.length === originalFields.length && current.every((el,i) => el === originalFields[i]) && snapshot() === approved;
         };
-        document.__chatSendApproval = {root,control,valid,blocked:false};
+        document.__chatSendApproval = {id:expected.boundary_id,root,control,valid,admitted:false,blocked:false};
         if (!document.__chatSendBoundary) {
             document.__chatSendBoundary = true;
             for (const name of ['click','submit']) document.addEventListener(name, event => {
                 const approval = document.__chatSendApproval;
                 if (!approval || (name === 'click' && !approval.control.contains(event.target))) return;
                 const belongs = name === 'click' || event.target === approval.root;
-                if (belongs && approval.valid()) return;
+                if (belongs && approval.valid()) {approval.admitted=true;return;}
                 approval.blocked = true;
                 event.preventDefault();event.stopImmediatePropagation();
             }, true);
         }
         return true;
-    }""", {'text': text, 'quick': quick_reply, 'selectors': CHATIK_MESSAGE_INPUT_SELECTORS}) is True
+    }""", {'text': text, 'quick': quick_reply, 'selectors': CHATIK_MESSAGE_INPUT_SELECTORS, 'boundary_id': boundary_id}) is True
 
 
 async def send_message(
@@ -480,6 +481,7 @@ async def send_message(
     messages_contain=messages_contain_sent_text,
     logger=log,
     before_send=None,
+    on_no_action=None,
 ) -> bool:
     """Полная отправка: перейти, набрать, нажать Send."""
     result = await fill_preview(page, chat_id, text)
@@ -500,13 +502,17 @@ async def send_message(
         logger.warning("send button not found (quick_reply=%r)", quick_reply)
         return False
     await ensure_page_ui(page, "chat_send")
-    if not await arm_send_boundary(button, text, quick_reply):
+    boundary_id = uuid.uuid4().hex
+    if not await arm_send_boundary(button, text, quick_reply, boundary_id=boundary_id):
         return False
     if before_send is not None:
         await before_send()
     try:
         await button.click()
-        if await button.evaluate('/* codex:chat-send-readback */ el => !document.__chatSendApproval?.blocked') is not True:
+        if await button.evaluate('/* codex:chat-send-readback */ (el,id) => document.__chatSendApproval?.id === id && document.__chatSendApproval.control === el && !document.__chatSendApproval.blocked', boundary_id) is not True:
+            zero = await button.evaluate('/* codex:chat-send-zero */ (el,id) => document.__chatSendApproval?.id === id && document.__chatSendApproval.control === el && document.__chatSendApproval.blocked === true && document.__chatSendApproval.admitted === false', boundary_id) is True
+            if zero and on_no_action is not None:
+                on_no_action()
             return False
         await page.wait_for_timeout(2500)
         await ensure_page_ui(page, "after_chat_send")

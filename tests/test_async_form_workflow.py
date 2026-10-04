@@ -37,7 +37,7 @@ def flow(tmp_path, monkeypatch):
     monkeypatch.setattr(gforms, '_wait_google_form_submit_success', AsyncMock(return_value=(True, 'Synthetic recorded')))
     monkeypatch.setattr(gforms, '_safe_screenshot', AsyncMock())
     clicks = []
-    async def click(page, *, before_click=None):
+    async def click(page, *, before_click=None, on_no_action=None):
         if before_click:
             before_click()
         clicks.append('click')
@@ -92,7 +92,7 @@ def test_cancel_after_possible_click_is_uncertain_and_not_retryable(flow, monkey
 
 def test_click_timeout_is_uncertain(flow, monkeypatch):
     paths, repo, client, _ = flow
-    async def click(page, *, before_click=None):
+    async def click(page, *, before_click=None, on_no_action=None):
         if before_click:
             before_click()
         raise TimeoutError('Synthetic click timeout')
@@ -188,7 +188,7 @@ def test_submit_button_guard_runs_after_last_scroll_await(monkeypatch, allowed):
     order = []
     async def scroll(**kwargs):
         order.append('scroll')
-    async def evaluate(script):
+    async def evaluate(script, boundary_id=None):
         if 'codex:google-form-bind' in script:
             assert order == ['scroll']
             order.append('bind')

@@ -128,9 +128,11 @@ async def click_with_fallbacks(session, element, label: str, *, logger, before_c
                 raise
             logger.warning("%s click via %s failed: %s", label, strategy_name, e)
             continue
+        if external and not await submit_boundary_passed(session):
+            return False
         await session._page.wait_for_timeout(1000)
         await ensure_session_ui(session, "after_click:" + label, allowed=("response", "captcha"))
-        return await submit_boundary_passed(session) if external else True
+        return True
 
     return False
 
@@ -504,8 +506,14 @@ async def submit_response_form_via_dom(session, *, logger, before_submit=None) -
     except Exception as exc:
         logger.debug("DOM submit fallback failed: %s", exc)
         raise
+    if result is False:
+        if attempt is not None:
+            attempt.confirm_no_action()
+        return False
+    if not await submit_boundary_passed(session):
+        return False
     await ensure_session_ui(session, "after_dom_submit", allowed=("response", "captcha"))
-    return bool(result) and await submit_boundary_passed(session)
+    return bool(result)
 
 
 async def save_debug_snapshot(session, prefix: str, *, state_dir: str) -> None:
@@ -1549,7 +1557,7 @@ async def _apply_to_vacancy(
 
         clicked = await session._click_with_fallbacks(submit_btn, "submit_button", before_click=verify_final_submit)
         submit_method = "selector"
-        if not clicked:
+        if not clicked and not getattr(getattr(session, "_external_attempt", None), "acting", False):
             clicked = await session._submit_response_form_via_dom(before_submit=verify_final_submit)
             submit_method = "dom_fallback"
         trace_event(

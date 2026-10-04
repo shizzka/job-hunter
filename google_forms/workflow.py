@@ -119,6 +119,18 @@ class FormWorkflow:
             self.repository._store.update(update)
         return True
 
+    def confirm_no_action(self, token, attempt):
+        """Keep the claim, but record a positively blocked browser dispatch."""
+        with form_state_lock(self.home):
+            def update(state):
+                item = state['items'].get(token, {})
+                claim = item.get('submission', {})
+                if (item.get('status') != SUBMITTING_STATUS or claim.get('attempt_id') != attempt
+                        or claim.get('phase') != 'submitting'):
+                    raise ValueError('Владелец zero-action результата изменился.')
+                claim['phase'] = 'preparing'
+            self.repository._store.update(update)
+
     def finish(self, token, attempt, result=None):
         """Update only this token/result; never replace pre-await whole state."""
         finished = False

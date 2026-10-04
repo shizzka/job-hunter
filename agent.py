@@ -580,6 +580,7 @@ async def do_manual_apply_token(token: str) -> dict:
     vacancy["_analytics_apply_mode"] = "manual"
     hh_client = HHClient()
     hh_client._manual_apply_guard = begin_external
+    hh_client._manual_apply_no_action = lambda: manual_apply_queue.confirm_no_action(token, owner, store=queue_store)
     try:
         await hh_client.start()
         if not await hh_client.is_logged_in():

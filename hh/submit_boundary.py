@@ -4,6 +4,9 @@ async def arm_submit_boundary(session):
     expected = getattr(session, '_approved_hh_payload', None)
     if expected is None:
         return True  # Non-application controls have their existing UI guards.
+    import uuid
+    session._submit_boundary_id = uuid.uuid4().hex
+    expected = {**expected, "boundary_id": session._submit_boundary_id}
     from hh.apply import SELECTED_RESUME_SCRIPT
     from hh.forms import VERIFY_ANSWERS_SCRIPT
     script = r'''expected => {
@@ -55,7 +58,7 @@ async def arm_submit_boundary(session):
         };
         const submitterState = el => el ? JSON.stringify([el.name,el.value,el.type,el.getAttribute('form'),
             el.getAttribute('formaction'),el.getAttribute('formmethod'),el.getAttribute('formenctype'),el.getAttribute('formtarget')]) : null;
-        const approval = {root, valid, snapshot, approved, unchanged, blocked: false, payload: payload(null)};
+        const approval = {root, valid, snapshot, approved, unchanged, id: expected.boundary_id, admitted: false, blocked: false, payload: payload(null)};
         approval.bindControl = el => {
             if (!unchanged() || !valid(el?.form === form && el.type === 'submit' ? el : null) || (el && (!el.isConnected || !(root.contains(el) || (form && el.form === form))))) return false;
             approval.control = el;
@@ -78,7 +81,7 @@ async def arm_submit_boundary(session):
                 if (name === 'click' && (!target || target !== approval.control)) return;
                 const belongs = name === 'click' ? approval.root.contains(target) || target.form === approval.root :
                     event.target === approval.root || approval.root.contains(event.target);
-                if (belongs && approval.eventMatches(name,event,target)) return;
+                if (belongs && approval.eventMatches(name,event,target)) {approval.admitted = true; return;}
                 approval.blocked = true;
                 event.preventDefault(); event.stopImmediatePropagation();
             }, true);
@@ -101,4 +104,11 @@ async def bind_submit_control(session, element):
 async def submit_boundary_passed(session):
     if getattr(session, '_approved_hh_payload', None) is None:
         return True
-    return await session._page.evaluate('/* codex:hh-submit-readback */ () => !document.__hhSubmitApproval?.blocked') is True
+    boundary_id = session._submit_boundary_id
+    passed = await session._page.evaluate('/* codex:hh-submit-readback */ id => document.__hhSubmitApproval?.id === id && !document.__hhSubmitApproval.blocked', boundary_id) is True
+    if not passed:
+        zero = await session._page.evaluate('/* codex:hh-submit-zero */ id => document.__hhSubmitApproval?.id === id && document.__hhSubmitApproval.blocked === true && document.__hhSubmitApproval.admitted === false', boundary_id) is True
+        attempt = getattr(session, '_external_attempt', None)
+        if zero and attempt is not None:
+            attempt.confirm_no_action()
+    return passed

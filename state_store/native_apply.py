@@ -29,10 +29,13 @@ class NativeApplyRepository(GeekJobApplyRepository):
 
 
 class NativeAttempt:
-    def __init__(self, repository, url, owner, approval=None):
+    def __init__(self, repository, url, owner, approval=None, no_action=None):
         self.repository, self.url, self.owner = repository, url, owner
         self.approval = approval
         self.acting = False
+        self.proven_no_action = False
+        self.command_started = False
+        self.no_action = no_action
 
     def begin(self):
         if self.acting:
@@ -41,6 +44,15 @@ class NativeAttempt:
             raise RuntimeError('Manual approval revoked before external action')
         self.repository.transition(self.url, self.owner, 'acting')
         self.acting = True
+
+    def confirm_no_action(self):
+        """Only an owned browser receipt can prove the reserved command did not run."""
+        if not self.acting:
+            return
+        if self.no_action is not None and not self.no_action():
+            raise RuntimeError('Manual no-action receipt ownership lost')
+        self.proven_no_action = True
+        # Keep acting set: no second command is allowed within this attempt.
 
 
 async def run_native_attempt(client, repository, url, operation):
@@ -52,18 +64,21 @@ async def run_native_attempt(client, repository, url, operation):
     if not owner:
         return {'ok': False, 'uncertain': True, 'reason': 'native_attempt_not_retryable',
                 'message': 'Существует активная/завершённая попытка; нужна ручная сверка'}
-    attempt = NativeAttempt(repository, url, owner, getattr(client, '_manual_apply_guard', None))
+    attempt = NativeAttempt(repository, url, owner, getattr(client, '_manual_apply_guard', None),
+                            getattr(client, '_manual_apply_no_action', None))
     client._external_attempt = attempt
     try:
         result = await operation()
-        status = 'completed' if result.get('ok') else ('uncertain' if attempt.acting else 'failed')
+        if attempt.proven_no_action:
+            result = {**result, 'ok': False, 'uncertain': False}
+        status = 'completed' if result.get('ok') else ('uncertain' if attempt.acting and not attempt.proven_no_action else 'failed')
         repository.transition(url, owner, status)
         if status == 'uncertain':
             result = {**result, 'ok': False, 'uncertain': True}
         return result
     except BaseException as exc:
-        repository.transition(url, owner, 'uncertain' if attempt.acting else 'failed')
-        if attempt.acting and isinstance(exc, Exception):
+        repository.transition(url, owner, 'uncertain' if attempt.acting and not attempt.proven_no_action else 'failed')
+        if attempt.acting and not attempt.proven_no_action and isinstance(exc, Exception):
             return {'ok': False, 'uncertain': True, 'message': 'Результат отправки не подтверждён; нужна ручная сверка'}
         raise
     finally:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import time
+import uuid
 
 from google_forms.answering import (
     _answers_by_index,
@@ -283,7 +284,7 @@ async def _arm_google_form_submit_boundary(page, questions, rows, items) -> bool
         };
         const controlState = el => JSON.stringify([el.innerText,el.name,el.value,el.type,el.getAttribute('form'),el.getAttribute('formaction')]);
         const fieldRecords = originalFields.map(el => ({el,item:el.closest('div[role="listitem"]'),state:fieldState(el)}));
-        const approval = {root,plans,pageIndex,fieldRecords,valid,blocked:false};
+        const approval = {root,plans,pageIndex,fieldRecords,valid,admitted:false,blocked:false};
         approval.bind = control => {
             if (!valid() || !control.isConnected || !(root.contains(control) || control.form === root)) return false;
             approval.control=control;approval.controlState=controlState(control);approval.payload=payload(control);
@@ -297,7 +298,7 @@ async def _arm_google_form_submit_boundary(page, questions, rows, items) -> bool
             for (const name of ['click','submit']) document.addEventListener(name,event => {
                 const approval=document.__googleFormApproval;
                 if (!approval || (name === 'click' && !approval.control?.contains(event.target))) return;
-                if ((name === 'click' || event.target === approval.root) && approval.eventMatches(event)) return;
+                if ((name === 'click' || event.target === approval.root) && approval.eventMatches(event)) {approval.admitted=true;return;}
                 approval.blocked=true;event.preventDefault();event.stopImmediatePropagation();
             },true);
         }
@@ -305,7 +306,7 @@ async def _arm_google_form_submit_boundary(page, questions, rows, items) -> bool
     }""", {'questions': questions, 'rows': rows, 'items': items}) is True
 
 
-async def _click_google_form_submit(page, *, before_click=None) -> bool:
+async def _click_google_form_submit(page, *, before_click=None, on_no_action=None) -> bool:
     button = await _find_google_form_button(page, _is_google_form_submit_button_text)
     if not button:
         return False
@@ -313,15 +314,22 @@ async def _click_google_form_submit(page, *, before_click=None) -> bool:
         await button.scroll_into_view_if_needed(timeout=5000)
     except Exception:
         pass
-    if await button.evaluate(r"""el => {
+    boundary_id = uuid.uuid4().hex
+    if await button.evaluate(r"""(el,id) => {
         /* codex:google-form-bind */
-        return !!document.__googleFormApproval && document.__googleFormApproval.bind(el);
-    }""") is not True:
+        const approval = document.__googleFormApproval;
+        if (!approval || !approval.bind(el)) return false;
+        approval.id = id;
+        return true;
+    }""", boundary_id) is not True:
         return False
     if before_click is not None and not before_click():
         return False
     await button.click(timeout=10000)
-    if await button.evaluate('/* codex:google-form-readback */ el => !document.__googleFormApproval?.blocked') is not True:
+    if await button.evaluate('/* codex:google-form-readback */ (el,id) => document.__googleFormApproval?.id === id && document.__googleFormApproval.control === el && !document.__googleFormApproval.blocked', boundary_id) is not True:
+        zero = await button.evaluate('/* codex:google-form-zero */ (el,id) => document.__googleFormApproval?.id === id && document.__googleFormApproval.control === el && document.__googleFormApproval.blocked === true && document.__googleFormApproval.admitted === false', boundary_id) is True
+        if zero and on_no_action is not None:
+            on_no_action()
         return False
     with contextlib.suppress(Exception):
         await page.wait_for_load_state("networkidle", timeout=15000)

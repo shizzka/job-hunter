@@ -109,3 +109,32 @@ dialog validation remains fail closed. No dispatch occurs for those three cases.
 Targeted suite: **69 passed**.
 
 Full isolated offline suite after supplemental R1: **2311 passed**, 310.12 seconds.
+
+## N1 — positively proven zero dispatch remains retryable
+
+Before fix: **5 failed** real Chromium behavioral tests showed zero external
+handlers yet native/chat/Form attempts became sticky uncertain. An additional
+Habr reserved-but-rejected-before-command reproducer failed independently.
+
+Local fix: capture guards track whether any click/submit was admitted and bind
+readback receipts to the action nonce/control. Only an owned, positively blocked
+receipt with no admitted event (or the native DOM command's explicit pre-dispatch
+False) restores preparation/failed status. Habr's pre-command rejection also
+records zero action. Current manual ownership consumes the native receipt without
+allowing a stale owner to clear another claim. The claim remains held until
+finish; native `acting` still forbids a second command in the same attempt.
+Missing/replaced receipts, click timeouts/cancellation and admitted events remain
+uncertain/non-retryable. No automatic uncertain replay or generic false=>failed
+conversion was added.
+
+Targeted final suite: **125 passed**, including 12 new N1 cases, browser zero
+dispatch, lost/stale receipt, admitted click then blocked submit, state ownership,
+and previous no-replay/cancellation/durability checks. Nine old Forms doubles
+needed accurate optional callback/nonce signatures; no guard bypass was added.
+
+First full N1 run: 2322 passed / one Habr pre-command URL-rejection return-path
+failure (zero action was preserved). Restored the ordinary negative result
+instead of propagating the exception after a positive zero receipt. Corrected
+targeted suite including the prior A8 navigation regressions: **132 passed**.
+
+Full isolated offline suite after N1: **2323 passed**, 303.71 seconds.

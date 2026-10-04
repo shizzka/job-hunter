@@ -217,6 +217,19 @@ def begin_external(token, owner, *, store=None) -> bool:
     return started
 
 
+def confirm_no_action(token, owner, *, store=None) -> bool:
+    """Consume only the current native attempt's proven zero-dispatch result."""
+    changed = False
+    def mutate(data):
+        nonlocal changed
+        item = data["items"].get(token, {})
+        if item.get("owner") == owner and item.get("status") == "applying" and item.get("external_started"):
+            item["external_started"] = False
+            changed = True
+    (store or _store()).update(mutate)
+    return changed
+
+
 def finish_candidate(token, owner, status, message="", *, store=None) -> bool:
     changed = False
     def mutate(data):

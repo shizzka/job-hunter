@@ -215,6 +215,16 @@ class ChatResponderStateRepository:
         if not marked:
             raise RuntimeError("Chat attempt ownership lost")
 
+    def confirm_no_action(self, chat_id: str, owner: str) -> None:
+        """Owned positive zero-dispatch receipt; ambiguous outcomes stay acting."""
+        def update(chat):
+            for item in chat.get("attempts", {}).values():
+                if item["owner"] == owner and item["status"] == "acting":
+                    item["status"] = "preparing"
+                    return
+            raise RuntimeError("Chat no-action receipt ownership lost")
+        self.update_chat(chat_id, update)
+
     def finish(self, chat_id: str, owner: str, status: str, mutator=None) -> bool:
         if status not in {"completed", "failed", "uncertain"}:
             raise ValueError("Invalid chat attempt outcome")
