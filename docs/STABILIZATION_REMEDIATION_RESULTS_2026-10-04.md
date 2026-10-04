@@ -97,3 +97,26 @@ or durable `submitting -> submit_uncertain` handling.
 Validation: 178 targeted Forms/workflow/state tests passed; final exact-option
 checks passed in another 15 package/filling tests. Chromium covered extra,
 missing, mutated text, and exact-success states, with all requests aborted.
+
+## Package 5 — A7
+
+Reproduction: all 3 original package tests failed. With a resume containing no
+relocation consent, extraction emitted `willing_relocate=true`; an optimistic
+verifier could certify “Готов к переезду” by citing those saved facts. Extractor
+output containing its own `confirmed` section was also elevated to evidence.
+Flat legacy facts had no confirmed provenance but were trusted.
+
+Fix: the full model output is stored under `unconfirmed`, with model, timestamp,
+source character count and resume SHA-256 provenance. Even an emitted
+`confirmed` object stays inside `unconfirmed`. Extraction cannot erase existing
+user-confirmed facts or bans, and CLI writes remain bound to the original path.
+Both answer and cover grounding expose only explicit `confirmed` facts as
+facts evidence; inferred, weak, extracted and flat legacy values cannot certify
+personal claims. Direct resume evidence and confirmed interview facts still work.
+Incomplete extraction is rejected.
+
+Validation: 224 targeted facts/answer/cover/storage tests passed; another 69
+package/grounding tests passed, including actual cover generation and preserving
+user confirmations/bans. Browser validation is not applicable to extraction.
+Limitation: old flat facts need explicit user confirmation before becoming
+facts evidence. No production facts were read, migrated, or overwritten.

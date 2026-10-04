@@ -1,8 +1,8 @@
 """Структурированные факты кандидата (facts.json) — для авто-ответов на анкеты.
 
-Один раз генерируется LLM из resume.md (`./run.sh extract-facts`), потом подкладывается
-в LLM-промпт ПЕРЕД резюме. LLM сначала смотрит сюда (точный lookup), потом дотягивает
-свободный контекст из резюме.
+LLM extraction из resume.md сохраняется как unconfirmed с provenance.
+Только явно подтверждённые кандидатом сведения могут служить evidence;
+extraction и legacy flat facts остаются подсказками для проверки.
 
 Поля — гибкие, но есть рекомендованный набор (location, willing_remote,
 willing_business_trips, english_level, tools_used, и т.п.). LLM сам решает структуру
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import hashlib
 import logging
 import os
 import re
@@ -92,7 +93,7 @@ def format_facts_for_prompt(facts: dict[str, Any], limit_chars: int = 3000) -> s
     - do_not_claim / forbidden_claims: запреты, нельзя писать как факт;
     - allowed_wording: безопасные формулировки.
 
-    Старые плоские facts.json продолжают работать как список подтвержденных полей.
+    Старые плоские facts.json остаются видимыми, но требуют подтверждения.
     """
     if not facts:
         return ""
@@ -104,15 +105,18 @@ def format_facts_for_prompt(facts: dict[str, Any], limit_chars: int = 3000) -> s
         "do_not_claim",
         "forbidden_claims",
         "allowed_wording",
+        "unconfirmed",
+        "_provenance",
     }
     has_structured_sections = any(key in facts for key in known_sections)
     lines = [
-        "Структурированные факты о кандидате (приоритет над свободным резюме):",
+        "Структурированные сведения о кандидате:",
         "Правило: не расширяй эти факты и не превращай слабые факты в уверенные claims.",
     ]
 
     if has_structured_sections:
         _append_fact_section(lines, "CONFIRMED — можно утверждать прямо:", facts.get("confirmed"))
+        _append_fact_section(lines, "UNCONFIRMED — нужна проверка кандидатом; не использовать как доказательство:", facts.get("unconfirmed"))
         _append_fact_section(lines, "INFERRED — можно использовать аккуратно, без усиления:", facts.get("inferred"))
         _append_fact_section(lines, "WEAK / LIMITED — только мягкие формулировки:", facts.get("weak"))
         _append_fact_section(lines, "ALLOWED WORDING — безопасные формулировки:", facts.get("allowed_wording"))
@@ -122,6 +126,7 @@ def format_facts_for_prompt(facts: dict[str, Any], limit_chars: int = 3000) -> s
         extra = {key: value for key, value in facts.items() if key not in known_sections and not _is_empty_fact(value)}
         _append_fact_section(lines, "OTHER FACTS:", extra)
     else:
+        lines.append("LEGACY UNCONFIRMED — происхождение не подтверждено; не использовать как доказательство:")
         for key, value in facts.items():
             if _is_empty_fact(value):
                 continue
@@ -131,6 +136,15 @@ def format_facts_for_prompt(facts: dict[str, Any], limit_chars: int = 3000) -> s
     if len(block) > limit_chars:
         block = block[:limit_chars - 1] + "…\n\n"
     return block
+
+
+def confirmed_facts_for_prompt(value=None) -> str:
+    """Only explicit confirmation can prove a personal claim; legacy is unknown."""
+    value = load_facts() if value is None else value
+    confirmed = value.get('confirmed') if isinstance(value, dict) else None
+    if not isinstance(confirmed, dict) or not confirmed:
+        return ''
+    return format_facts_for_prompt({'confirmed': confirmed})
 
 
 # ---------- извлечение через LLM ----------
@@ -189,8 +203,9 @@ async def extract_facts_from_resume(resume_text: str) -> dict[str, Any]:
     prompt = _EXTRACT_PROMPT_TEMPLATE.format(resume_text=resume_text[:8000])
 
     client = _get_llm_client()
+    model = config.HH_FACTS_EXTRACT_MODEL or config.LLM_MODEL
     resp = await client.chat.completions.create(
-        model=config.HH_FACTS_EXTRACT_MODEL or config.LLM_MODEL,
+        model=model,
         messages=[
             {"role": "system", "content": "Ты отвечаешь строго в формате JSON. Не пиши никакого текста до или после JSON-объекта."},
             {"role": "user", "content": prompt},
@@ -198,6 +213,8 @@ async def extract_facts_from_resume(resume_text: str) -> dict[str, Any]:
         temperature=0.1,
         max_tokens=1500,
     )
+    if resp.choices[0].finish_reason != "stop":
+        raise ValueError("Incomplete facts extraction")
     raw = (resp.choices[0].message.content or "").strip()
 
     # очистка markdown fence
@@ -214,14 +231,18 @@ async def extract_facts_from_resume(resume_text: str) -> dict[str, Any]:
 
     if not isinstance(parsed, dict):
         raise ValueError(f"LLM returned non-object: {type(parsed).__name__}")
-    return parsed
+    return {'unconfirmed': parsed, '_provenance': {
+        'kind': 'model_extraction', 'scope': 'unconfirmed',
+        'resume_sha256': hashlib.sha256(resume_text.encode()).hexdigest(),
+        'source_chars': min(len(resume_text), 8000), 'model': model, 'extracted_at': int(time.time()),
+    }}
 
 
-def save_facts(value: dict[str, Any]) -> str | None:
+def save_facts(value: dict[str, Any], *, path: str | None = None) -> str | None:
     """Replace candidate facts atomically, retaining the previous valid version."""
     if not isinstance(value, dict):
         raise TypeError("Candidate facts must be a JSON object")
-    path = facts_file_path()
+    path = path or facts_file_path()
     backup = None
 
     def replace(previous):
@@ -229,6 +250,11 @@ def save_facts(value: dict[str, Any]) -> str | None:
         if os.path.exists(path):
             backup = f"{path}.bak.{time.time_ns()}"
             atomic_write_json(backup, previous)
+        if isinstance(value.get('_provenance'), dict) and value['_provenance'].get('kind') == 'model_extraction':
+            # Extraction must not erase confirmed user input or existing bans.
+            retained = {key: previous[key] for key in ('confirmed', 'do_not_claim', 'forbidden_claims')
+                        if key in previous}
+            return {**retained, **value}
         return value
 
     JsonStore(path, logger=log).update(replace)
@@ -245,17 +271,17 @@ async def do_extract_facts() -> None:
         return
     print(f"📄 Резюме: {len(resume_text)} символов; модель: {config.LLM_MODEL}")
     print("🤖 Извлекаю факты через LLM…")
+    path = facts_file_path()
     try:
         facts = await extract_facts_from_resume(resume_text)
     except Exception as exc:
         print(f"❌ Ошибка: {exc}")
         return
 
-    path = facts_file_path()
-    backup = save_facts(facts)
+    backup = save_facts(facts, path=path)
     if backup:
         print(f"💾 Прежний facts.json → {os.path.basename(backup)}")
-    print(f"✅ Сохранено в {path}")
+    print(f"✅ Сохранено в {path}; extraction требует подтверждения кандидатом")
     print(f"📋 Полей: {len(facts)}")
     for k, v in facts.items():
         sample = json.dumps(v, ensure_ascii=False)

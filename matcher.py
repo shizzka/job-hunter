@@ -1493,6 +1493,8 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     )
     profile_note = build_profile_note_block()
     facts = build_facts_block()
+    import facts as candidate_facts
+    evidence_facts = candidate_facts.confirmed_facts_for_prompt()
     knowledge_fallback = build_knowledge_base_block(limit_chars=12000)
     # 2-pass: фильтруем KB-секции под конкретную вакансию через LLM
     vacancy_summary = (
@@ -1516,7 +1518,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     sources = {
         "resume": "" if resume.startswith("(Резюме не найдено") else resume,
         "profile_note": profile_note,
-        "facts": facts,
+        "facts": evidence_facts,
         "knowledge": knowledge,
     }
 

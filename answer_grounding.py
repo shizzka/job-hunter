@@ -47,12 +47,8 @@ def capture_candidate(resume_text, *, settings=config, profile_builder=None,
     confirmed = personal.get('confirmed', {}) if isinstance(personal, dict) else {}
     if not isinstance(confirmed, dict):
         confirmed = {}
-    structured = isinstance(personal, dict) and any(key in personal for key in
-        ('confirmed', 'inferred', 'weak', 'do_not_claim', 'forbidden_claims', 'allowed_wording'))
-    # Inferred/weak/forbidden wording may guide a draft, never serve as literal
-    # proof if an optimistic verifier mistakenly approves its own citation.
-    evidence_facts = facts.format_facts_for_prompt(
-        {'confirmed': personal.get('confirmed')} if structured else personal)
+    # Extracted, inferred and legacy values cannot certify their own claims.
+    evidence_facts = facts.confirmed_facts_for_prompt(personal)
     import candidate_interview
     evidence_facts += candidate_interview.prompt_block()
     return CandidateSnapshot(

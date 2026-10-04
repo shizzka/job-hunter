@@ -413,7 +413,7 @@ def test_confirmed_fact_evidence_remains_usable(blocks, monkeypatch, kind):
     snapshot = capture_candidate('Junior designer')
     payload = evidence(claim)
     payload['answers'][0]['sentences'][0]['evidence'][0]['source'] = 'facts'
-    assert validate_answer_check(payload, [{'index': 0, 'answer': claim}], snapshot.sources) == {0}
+    assert validate_answer_check(payload, [{'index': 0, 'answer': claim}], snapshot.sources) == (set() if kind == 'legacy' else {0})
 
 
 def test_whole_native_google_preview_keeps_original_contacts_after_navigation(blocks, monkeypatch, tmp_path):
