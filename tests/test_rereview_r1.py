@@ -64,3 +64,30 @@ def test_hh_actual_formdata_bound_to_all_associated_controls(mutation, obstacle)
             finally:
                 await browser.close()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('payload', ['submitter_resume', 'submitter_letter', 'disabled_resume', 'none'])
+def test_actual_successful_payload_cannot_introduce_unapproved_submitter(payload):
+    async def run():
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context()
+                await context.route('**/*', lambda route: route.abort())
+                page = await context.new_page()
+                await page.set_content('''<form name="vacancy_response"><fieldset id="resume"><input type="hidden" name="resume_id" value="target"></fieldset>
+                    <textarea name="letter">Approved</textarea><button type="submit">Apply</button></form>
+                    <script>window.sent=[];document.addEventListener('submit',e=>{e.preventDefault();window.sent.push([...new FormData(e.target,e.submitter).entries()])})</script>''')
+                await page.evaluate('''payload => {
+                    if(payload==='disabled_resume') document.querySelector('fieldset').disabled=true;
+                    if(payload.startsWith('submitter_')) {const button=document.querySelector('button');button.name=payload==='submitter_resume'?'resume_id':'letter';button.value='Unapproved';}
+                }''', payload)
+                page.wait_for_timeout = AsyncMock()
+                client = hh_client.HHClient()
+                client._page = page
+                client._approved_hh_payload = {'resume_id':'target','cover_letter':'Approved','answers':[]}
+                await client._click_with_fallbacks(await page.query_selector('button'), 'submit_button')
+                assert len(await page.evaluate('() => window.sent')) == (1 if payload == 'none' else 0)
+            finally:
+                await browser.close()
+    asyncio.run(run())

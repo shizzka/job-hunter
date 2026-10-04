@@ -97,3 +97,15 @@ extension, **67 final targeted tests passed**, including all 44 new Chromium
 cases and the existing destination/no-replay positive and negative controls.
 
 Full isolated offline suite after R4: **2307 passed**, 287.89 seconds.
+
+## R1 supplemental — successful submitter values
+
+A further actual-FormData review reproduced **3 failed / 1 passed**:
+reserved `resume_id`/`letter` names on the submitter introduced unapproved
+values; inherited-disabled resume controls produced a payload without a resume.
+`valid(submitter)` now requires successful resume identity for native forms
+and exact successful letter values, including the actual submitter. DOM-only
+dialog validation remains fail closed. No dispatch occurs for those three cases.
+Targeted suite: **69 passed**.
+
+Full isolated offline suite after supplemental R1: **2311 passed**, 310.12 seconds.

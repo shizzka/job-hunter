@@ -25,14 +25,20 @@ async def arm_submit_boundary(session):
             .map(([key,value]) => [key, typeof value === 'string' ? value :
                 ['file',value.name,value.size,value.type,value.size ? value.lastModified : 0]]) : [];
         const payload = submitter => JSON.stringify(entries(submitter));
-        const valid = () => {
-            const ids = identity().ids.concat(entries(null)
-                .filter(([key]) => ['resume_id','resumeId','resumeHash','resume'].includes(key)).map(([,value]) => value));
+        const valid = (submitter = null) => {
+            const actual = entries(submitter);
+            const successfulIds = actual.filter(([key]) => ['resume_id','resumeId','resumeHash','resume'].includes(key)).map(([,value]) => value);
+            if (form && !successfulIds.length) return false;
+            const ids = identity().ids.concat(successfulIds);
             if (!expected.resume_id || !ids.length || ids.some(id => id !== expected.resume_id)) return false;
             const letters = controls().filter(el => !el.matches(':disabled') && el.matches(
                 '[name="letter"], [data-qa="vacancy-response-popup-form-letter-input"], textarea[data-qa*="letter"]'));
             if (expected.cover_letter && letters.length !== 1) return false;
             if (letters.some(el => el.value !== (expected.cover_letter || ''))) return false;
+            const letterNames = new Set(['letter', ...letters.map(el => el.name).filter(Boolean)]);
+            const successfulLetters = actual.filter(([key]) => letterNames.has(key));
+            if (form && expected.cover_letter && successfulLetters.length !== 1) return false;
+            if (successfulLetters.some(([,value]) => value !== (expected.cover_letter || ''))) return false;
             return !expected.answers?.length || answersMatch(expected.answers);
         };
         const snapshot = () => JSON.stringify([identity(),
@@ -51,13 +57,14 @@ async def arm_submit_boundary(session):
             el.getAttribute('formaction'),el.getAttribute('formmethod'),el.getAttribute('formenctype'),el.getAttribute('formtarget')]) : null;
         const approval = {root, valid, snapshot, approved, unchanged, blocked: false, payload: payload(null)};
         approval.bindControl = el => {
-            if (!unchanged() || (el && (!el.isConnected || !(root.contains(el) || (form && el.form === form))))) return false;
+            if (!unchanged() || !valid(el?.form === form && el.type === 'submit' ? el : null) || (el && (!el.isConnected || !(root.contains(el) || (form && el.form === form))))) return false;
             approval.control = el;
             approval.submitterState = submitterState(el);
             approval.payload = payload(el?.form === form && el.type === 'submit' ? el : null);
             return true;
         };
         approval.eventMatches = (name,event,target) => unchanged() &&
+            valid(name === 'submit' ? event.submitter : target?.form === form && target.type === 'submit' ? target : null) &&
             (name !== 'click' || submitterState(target) === approval.submitterState) &&
             (name !== 'submit' || !approval.control || event.submitter === approval.control) &&
             payload(name === 'submit' ? event.submitter : target?.form === form && target.type === 'submit' ? target : null) === approval.payload;
