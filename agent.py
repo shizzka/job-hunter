@@ -561,10 +561,25 @@ async def do_manual_apply_token(token: str) -> dict:
         print(f"❌ {message}")
         return {"ok": False, "message": message}
 
+    queue_store = manual_apply_queue._store()
+    claimed = manual_apply_queue.claim_candidate(token, store=queue_store)
+    if not claimed:
+        return {"ok": False, "message": "Отклик уже занят, отозван или завершён"}
+    owner = claimed["owner"]
+    dispatch_started = False
+    def finish(status, message=""):
+        return manual_apply_queue.finish_candidate(token, owner, status, message, store=queue_store)
+    def valid():
+        return (manual_apply_queue.approval_valid(token, owner, store=queue_store)
+                and not company_blacklist.is_blocked(vacancy.get("company", "")))
+    def begin_external():
+        return valid() and manual_apply_queue.begin_external(token, owner, store=queue_store)
+
     run_id = analytics.new_run_id("manual-ai-apply")
     vacancy["_analytics_run_id"] = run_id
     vacancy["_analytics_apply_mode"] = "manual"
     hh_client = HHClient()
+    hh_client._manual_apply_guard = begin_external
     try:
         await hh_client.start()
         if not await hh_client.is_logged_in():
@@ -572,7 +587,7 @@ async def do_manual_apply_token(token: str) -> dict:
 
         can_apply, guard_note = hh_guard.can_auto_apply()
         if not can_apply:
-            manual_apply_queue.mark_candidate(token, "deferred", guard_note)
+            finish("deferred", guard_note)
             await notify_needs_manual(
                 vacancy,
                 score,
@@ -588,7 +603,7 @@ async def do_manual_apply_token(token: str) -> dict:
             message = "Вакансия закрыта или в архиве"
             seen.mark_seen(vacancy.get("id", token), vacancy, "manual_ai_archived")
             hh_pipeline.mark_terminal(vacancy.get("id", token), "closed_or_archived")
-            manual_apply_queue.mark_candidate(token, "archived", message)
+            finish("archived", message)
             analytics.record_decision(
                 run_id=run_id,
                 vacancy=vacancy,
@@ -609,7 +624,7 @@ async def do_manual_apply_token(token: str) -> dict:
         cover_evaluation = _evaluation_with_cover_letter(evaluation, cover)
         if not (cover or "").strip():
             message = "ИИ-сопровод не сгенерировался; отклик без текста не отправляю."
-            manual_apply_queue.mark_candidate(token, "failed_no_cover", message)
+            finish("failed_no_cover", message)
             analytics.record_decision(
                 run_id=run_id,
                 vacancy=vacancy,
@@ -630,6 +645,10 @@ async def do_manual_apply_token(token: str) -> dict:
             print(f"❌ {message}")
             return {"ok": False, "message": message, "no_cover": True}
 
+        if not valid():
+            finish("dismissed", "Подтверждение отозвано до отправки")
+            return {"ok": False, "message": "Подтверждение отозвано до отправки"}
+        dispatch_started = True
         apply_result = await apply_orchestrator.dispatch_apply(vacancy, cover, hh_client=hh_client)
         _record_hh_questionnaire_analytics(
             run_id=run_id,
@@ -648,14 +667,14 @@ async def do_manual_apply_token(token: str) -> dict:
         if apply_result.get("closed_or_archived") or _looks_like_closed_or_archived(vacancy, apply_message):
             seen.mark_seen(vacancy.get("id", token), vacancy, "manual_ai_archived")
             hh_pipeline.mark_terminal(vacancy.get("id", token), "closed_or_archived")
-            manual_apply_queue.mark_candidate(token, "archived", apply_message or "closed_or_archived")
+            finish("archived", apply_message or "closed_or_archived")
             print("ℹ️ Вакансия уже закрыта или в архиве")
             return {"ok": False, "message": apply_message, "closed_or_archived": True}
 
         if apply_result.get("already_applied"):
             seen.mark_seen(vacancy.get("id", token), vacancy, "already_applied")
             hh_pipeline.mark_terminal(vacancy.get("id", token), "already_applied")
-            manual_apply_queue.mark_candidate(token, "already_applied", apply_message or "already applied")
+            finish("already_applied", apply_message or "already applied")
             print("ℹ️ Уже откликались ранее")
             if apply_result.get("resume_selection_status") == "unknown_existing_response":
                 await notify_needs_manual(vacancy, score, reason, note=apply_message)
@@ -665,7 +684,7 @@ async def do_manual_apply_token(token: str) -> dict:
             seen.mark_seen(vacancy.get("id", token), vacancy, "manual_ai_applied")
             hh_guard.record_apply_success()
             hh_pipeline.record_successful_apply(vacancy, {"name": "manual_ai", "title": "", "id": ""})
-            manual_apply_queue.mark_candidate(token, "applied", apply_message or "ok")
+            finish("applied", apply_message or "ok")
             analytics.record_decision(
                 run_id=run_id,
                 vacancy=vacancy,
@@ -684,7 +703,7 @@ async def do_manual_apply_token(token: str) -> dict:
             return {"ok": True, "message": apply_message or "ok"}
 
         message = apply_message or "unknown apply failure"
-        manual_apply_queue.mark_candidate(token, "failed", message)
+        finish("uncertain" if apply_result.get("uncertain") else "failed", message)
         await notify_needs_manual(
             vacancy,
             score,
@@ -695,12 +714,14 @@ async def do_manual_apply_token(token: str) -> dict:
         return {"ok": False, "message": message}
 
     except HHUnexpectedUI as exc:
-        # Keep the existing pending candidate available for a manual retry;
-        # the UI guard already delivered/deduped the warning and owns its image.
+        finish("uncertain" if dispatch_started else "pending", str(exc))
         return {"ok": False, "reason": "hh_unexpected_ui", "message": str(exc)}
+    except asyncio.CancelledError:
+        finish("uncertain" if dispatch_started else "pending", "Попытка отменена")
+        raise
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
-        manual_apply_queue.mark_candidate(token, "failed", message)
+        finish("uncertain" if dispatch_started else "failed", message)
         await notify_needs_manual(
             vacancy,
             score,

@@ -58,7 +58,8 @@ def test_ui_await_cannot_change_target_after_last_identity_check(method):
 
 
 @pytest.mark.parametrize('change', ['resume', 'letter', 'required_question', 'unchanged'])
-def test_inconclusive_native_apply_retry_rechecks_full_approval(change):
+def test_inconclusive_native_apply_never_repeats_submit(change, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent.config, "HH_COOKIES_FILE", str(tmp_path / "cookies.json"))
     page = ApplyPage()
     page.dom_submits = 0
     original_evaluate = page.evaluate
@@ -97,8 +98,8 @@ def test_inconclusive_native_apply_retry_rechecks_full_approval(change):
         preferred_resume_id='target', preferred_resume_title='QA',
         absolute_hh_url=lambda value: value, anti_bot_message=lambda *args: '', logger=hh_client.log))
     assert page.submit.attempts == 1  # First attempt; never a real network send.
-    assert page.dom_submits == (1 if change == 'unchanged' else 0)
-    assert result['ok'] is (change == 'unchanged')
+    assert page.dom_submits == 0
+    assert not result['ok'] and result['uncertain']
 
 
 def evaluation_client(payload, finish_reason='stop'):

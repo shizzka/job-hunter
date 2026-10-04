@@ -1,6 +1,8 @@
 """Helpers for the HH vacancy application flow."""
 
 import hashlib
+
+from state_store.native_apply import NativeApplyRepository, run_native_attempt
 import os
 import re
 
@@ -94,6 +96,9 @@ async def click_with_fallbacks(session, element, label: str, *, logger, before_c
         ),
     )
 
+    external = before_click is not None or "submit" in label
+    if external:
+        strategies = strategies[:1]
     for strategy_name, action in strategies:
         if await ensure_session_ui(session, "click:" + label, allowed=("response", "captcha")):
             # Closing can replace the form/selection. Never force an old handle;
@@ -109,14 +114,20 @@ async def click_with_fallbacks(session, element, label: str, *, logger, before_c
             return False
         try:
             logger.info("Clicking %s via %s strategy", label, strategy_name)
+            attempt = getattr(session, "_external_attempt", None)
+            if external and attempt is not None:
+                attempt.begin()
             await action()
-            await session._page.wait_for_timeout(1000)
-            await ensure_session_ui(session, "after_click:" + label, allowed=("response", "captcha"))
-            return True
         except HHUnexpectedUI:
             raise
         except Exception as e:
+            if external:
+                raise
             logger.warning("%s click via %s failed: %s", label, strategy_name, e)
+            continue
+        await session._page.wait_for_timeout(1000)
+        await ensure_session_ui(session, "after_click:" + label, allowed=("response", "captcha"))
+        return True
 
     return False
 
@@ -451,6 +462,9 @@ async def submit_response_form_via_dom(session, *, logger, before_submit=None) -
     if before_submit is not None and not await before_submit():
         return False
     try:
+        attempt = getattr(session, "_external_attempt", None)
+        if attempt is not None:
+            attempt.begin()
         result = await session._page.evaluate(
             """() => {
                     const visible = (element) => {
@@ -482,7 +496,7 @@ async def submit_response_form_via_dom(session, *, logger, before_submit=None) -
         )
     except Exception as exc:
         logger.debug("DOM submit fallback failed: %s", exc)
-        return False
+        raise
     await ensure_session_ui(session, "after_dom_submit", allowed=("response", "captcha"))
     return bool(result)
 
@@ -770,7 +784,21 @@ async def selected_resume_matches(page, resume_id: str, title: str) -> bool:
     )
 
 
-async def apply_to_vacancy(
+async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="",
+                           preferred_resume_title="", preferred_resume_id="", vacancy_context="",
+                           trace=None, *, absolute_hh_url, anti_bot_message, logger):
+    if not str(preferred_resume_id or "").strip():
+        return {"ok": False, "reason": "hh_resume_target_unresolved", "resume_selection_verified": False,
+                "message": "Exact HH resume ID не задан — отклик не отправлен"}
+    url = absolute_hh_url(vacancy_url)
+    repository = NativeApplyRepository(session._cookie_paths.cookies_file, "hh")
+    return await run_native_attempt(session, repository, url, lambda: _apply_to_vacancy(
+        session, url, cover_letter, response_url, preferred_resume_title, preferred_resume_id,
+        vacancy_context, trace, absolute_hh_url=absolute_hh_url,
+        anti_bot_message=anti_bot_message, logger=logger))
+
+
+async def _apply_to_vacancy(
     session,
     vacancy_url: str,
     cover_letter: str = "",
@@ -1557,51 +1585,7 @@ async def apply_to_vacancy(
     if await session._apply_success_detected():
         return await finalize_success("Отклик отправлен", notes=auto_answer_notes)
 
-    (
-        current_url,
-        response_header,
-        questions_required,
-        _,
-        _,
-        submit_btn_retry,
-    ) = await detect_response_controls()
-    if not questions_required and submit_btn_retry is not None:
-        await session._dismiss_magritte_dropdowns()
-        retried = await session._submit_response_form_via_dom(before_submit=verify_final_submit)
-        trace_event("SUBMIT_CLICK", ok=retried, method="dom_retry", selector="", retry=True)
-        if retried:
-            logger.info("Retrying hh submit via active DOM form after inconclusive response state")
-            await session._page.wait_for_timeout(4000)
-            anti_bot_kind = await session._detect_anti_bot_kind()
-            anti_bot_kind = await session._handle_anti_bot_with_solver(anti_bot_kind, stage="apply_submit_retry")
-            if anti_bot_kind:
-                message = anti_bot_message(anti_bot_kind, "после отклика")
-                logger.warning("HH anti-bot (%s) appeared after DOM submit fallback", anti_bot_kind)
-                session._remember_antibot_signal(anti_bot_kind, "apply_submit_retry", message)
-                return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind}
-            if await session._response_requires_questions():
-                logger.info("Vacancy requires employer questions after retry — trying auto-answer")
-                auto_question_result = await answer_questions_with_verified_resume()
-                record_question_result(auto_question_result)
-                auto_answer_notes.extend(auto_question_result.get("notes") or [])
-                auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
-                if auto_question_result.get("ok"):
-                    return await finalize_success(
-                        auto_question_result.get("message", "Отклик отправлен"),
-                        notes=auto_answer_notes,
-                    )
-                return {
-                    "ok": False,
-                    "message": auto_question_result.get(
-                        "message",
-                        "Требуются доп. вопросы работодателя — пропускаем",
-                    ),
-                    "notes": auto_answer_notes,
-                    "question_answers": list(auto_answer_question_answers),
-                    "risky_question": auto_question_result.get("risky_question", ""),
-                }
-            if await session._apply_success_detected():
-                return await finalize_success("Отклик отправлен", notes=auto_answer_notes)
+    submit_btn_retry = None
 
     anti_bot_kind = await session._detect_anti_bot_kind()
     if anti_bot_kind:

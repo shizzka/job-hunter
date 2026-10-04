@@ -30,3 +30,9 @@ def deny_test_network(monkeypatch):
 def isolated_default_analytics_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'ANALYTICS_EVENTS_FILE', str(tmp_path / 'default_events.jsonl'))
     monkeypatch.setattr(config, 'ANALYTICS_STATE_FILE', str(tmp_path / 'default_state.json'))
+
+
+@pytest.fixture(autouse=True)
+def isolated_native_attempt_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, 'HH_COOKIES_FILE', str(tmp_path / 'default_hh_cookies.json'))
+    monkeypatch.setattr(config, 'HABR_COOKIES_FILE', str(tmp_path / 'default_habr_cookies.json'))

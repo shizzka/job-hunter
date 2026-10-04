@@ -13,6 +13,7 @@ import config
 import proxy_utils
 from browser_cookie_session import BrowserCookieSession
 from state_store.browser_cookies import CookieRepository
+from state_store.native_apply import NativeApplyRepository, run_native_attempt
 
 log = logging.getLogger("habr_career_client")
 
@@ -171,14 +172,19 @@ class HabrCareerClient:
             ),
         )
 
+        strategies = strategies[:1]  # A click error may follow delivery; never replay.
         for strategy_name, action in strategies:
             try:
                 log.info("Clicking %s via %s strategy", label, strategy_name)
+                attempt = getattr(self, "_external_attempt", None)
+                if "submit" in label and attempt is not None:
+                    attempt.begin()
                 await action()
-                await self._page.wait_for_timeout(1000)
-                return True
             except Exception as exc:
                 log.warning("%s click via %s failed: %s", label, strategy_name, exc)
+                raise
+            await self._page.wait_for_timeout(1000)
+            return True
 
         return False
 
@@ -218,6 +224,11 @@ class HabrCareerClient:
         return False
 
     async def apply_to_vacancy(self, vacancy_url: str, cover_letter: str = "") -> dict:
+        repository = NativeApplyRepository(self._cookie_session.repository.path, "habr")
+        return await run_native_attempt(self, repository, vacancy_url,
+                                        lambda: self._apply_to_vacancy(vacancy_url, cover_letter))
+
+    async def _apply_to_vacancy(self, vacancy_url: str, cover_letter: str = "") -> dict:
         if self._page is None:
             await self.start_browser()
 
@@ -256,15 +267,21 @@ class HabrCareerClient:
                 return {"ok": True, "message": "Уже откликались ранее"}
             return {"ok": False, "message": "Кнопка отклика на Хабр Карьере не найдена"}
 
-        clicked = await self._click_with_fallbacks(apply_btn, "habr_apply_button")
-        if not clicked:
-            return {"ok": False, "message": "Не удалось нажать кнопку отклика"}
-
-        await self._page.wait_for_timeout(1500)
-
-        letter_field = await self._page.query_selector(
-            "textarea, [contenteditable='true']"
-        )
+        letter_field = await self._page.query_selector("textarea, [contenteditable='true']")
+        if not letter_field:
+            # The first apply control can itself send a quick response. Treat it
+            # as external, even when its result happens to open another form.
+            attempt = getattr(self, "_external_attempt", None)
+            if attempt is not None:
+                attempt.begin()
+            clicked = await self._click_with_fallbacks(apply_btn, "habr_apply_button")
+            if not clicked:
+                return {"ok": False, "message": "Не удалось нажать кнопку отклика"}
+            await self._page.wait_for_timeout(1500)
+            letter_field = await self._page.query_selector("textarea, [contenteditable='true']")
+            if letter_field:
+                return {"ok": False, "uncertain": True,
+                        "message": "После первого действия нужна ручная сверка; второй submit не выполняется"}
         if letter_field and cover_letter:
             try:
                 await letter_field.fill("")
@@ -293,8 +310,7 @@ class HabrCareerClient:
                     if response.status < 400:
                         return {"ok": True, "message": "Отклик отправлен"}
                 except Exception:
-                    if not await self._click_with_fallbacks(submit_btn, "habr_submit_button"):
-                        return {"ok": False, "message": "Не удалось подтвердить отклик"}
+                    return {"ok": False, "message": "Результат отправки не подтверждён", "uncertain": True}
 
         try:
             success = await self._page.query_selector(
@@ -310,7 +326,7 @@ class HabrCareerClient:
         except Exception:
             pass
 
-        return {"ok": True, "message": "Отклик, вероятно, отправлен"}
+        return {"ok": False, "message": "Результат отправки не подтверждён", "uncertain": True}
 
     async def _get_text_once(self, url: str) -> str:
         assert self._session is not None

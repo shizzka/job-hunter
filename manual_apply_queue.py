@@ -6,6 +6,7 @@ import html
 import os
 import re
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -99,7 +100,7 @@ def _prune(data: dict, now: float) -> None:
             created = float(item.get("created_ts") or 0)
         except (TypeError, ValueError):
             created = 0
-        if created and now - created > MAX_AGE_SECONDS:
+        if item.get("status") not in {"applying", "uncertain"} and created and now - created > MAX_AGE_SECONDS:
             stale.append(token)
     for token in stale:
         items.pop(token, None)
@@ -107,7 +108,8 @@ def _prune(data: dict, now: float) -> None:
     if len(items) <= MAX_ITEMS:
         return
     ordered = sorted(items.items(), key=lambda pair: float((pair[1] or {}).get("created_ts") or 0), reverse=True)
-    data["items"] = dict(ordered[:MAX_ITEMS])
+    data["items"] = {token: item for index, (token, item) in enumerate(ordered)
+                     if index < MAX_ITEMS or item.get("status") in {"applying", "uncertain"}}
 
 
 def create_candidate(
@@ -166,6 +168,9 @@ def mark_candidate(token: str, status: str, message: str = "", *, profile_name: 
         nonlocal item
         item = data["items"].get((token or "").strip())
         if item is not None:
+            if item.get("status") == "applying":
+                item["revoked"] = True
+                return
             item["status"] = status
             item["updated_at"] = datetime.now().isoformat(timespec="seconds")
             if message:
@@ -173,6 +178,61 @@ def mark_candidate(token: str, status: str, message: str = "", *, profile_name: 
 
     _store(profile_name).update(mutate)
     return item
+
+
+def claim_candidate(token: str, *, store=None) -> dict | None:
+    claimed = None
+    def mutate(data):
+        nonlocal claimed
+        item = data["items"].get(token)
+        if (not item or item.get("status") != "pending" or not item.get("allow_ai_apply", True)
+                or item.get("feedback") == "bad"):
+            return
+        item.update(status="applying", owner=uuid.uuid4().hex, external_started=False)
+        claimed = dict(item)
+    (store or _store()).update(mutate)
+    return claimed
+
+
+def approval_valid(token, owner, *, store=None) -> bool:
+    item = (store or _store()).load()["items"].get(token, {})
+    return (item.get("owner") == owner and item.get("status") == "applying"
+            and item.get("allow_ai_apply", True) and item.get("feedback") != "bad"
+            and not item.get("revoked"))
+
+
+def begin_external(token, owner, *, store=None) -> bool:
+    started = False
+    def mutate(data):
+        nonlocal started
+        item = data["items"].get(token, {})
+        if (item.get("owner") == owner and item.get("status") == "applying"
+                and item.get("allow_ai_apply", True) and item.get("feedback") != "bad"
+                and not item.get("revoked") and not item.get("external_started")):
+            item["external_started"] = True
+            started = True
+    (store or _store()).update(mutate)
+    return started
+
+
+def finish_candidate(token, owner, status, message="", *, store=None) -> bool:
+    changed = False
+    def mutate(data):
+        nonlocal changed
+        item = data["items"].get(token, {})
+        if item.get("owner") != owner or item.get("status") != "applying":
+            return
+        if item.get("external_started") and status not in {"applied", "already_applied"}:
+            status_value = "uncertain"
+        elif item.get("revoked") or item.get("feedback") == "bad":
+            status_value = "dismissed"
+        else:
+            status_value = status
+        item.update(status=status_value, message=str(message)[:1000],
+                    updated_at=datetime.now().isoformat(timespec="seconds"))
+        changed = True
+    (store or _store()).update(mutate)
+    return changed
 
 
 def feedback_label(value: str) -> str:
@@ -195,6 +255,8 @@ def record_feedback(token: str, value: str, *, user_id: int = 0, profile_name: s
         item["feedback_at"] = datetime.now().isoformat(timespec="seconds")
         if user_id:
             item["feedback_user_id"] = int(user_id)
+        if value == "bad" and item.get("status") == "applying":
+            item["revoked"] = True
         if value == "bad" and item.get("status") == "pending":
             item["status"] = "dismissed"
         item["updated_at"] = item["feedback_at"]
