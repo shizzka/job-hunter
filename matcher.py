@@ -211,7 +211,42 @@ async def _parse_evaluation_json_with_repair(client, raw_text: str, prompt: str,
         temperature=0.1,
         max_tokens=800,
     )
-    return _parse_llm_json(retry.choices[0].message.content or "")
+    return _parse_llm_json(_completed_evaluation_text(retry))
+
+
+def _completed_evaluation_text(response) -> str:
+    choice = response.choices[0]
+    if getattr(choice, "finish_reason", None) != "stop":
+        raise ValueError("Incomplete LLM evaluation")
+    return (choice.message.content or "").strip()
+
+
+def _validate_evaluation_json(result) -> None:
+    """Malformed model output is infrastructure failure, never a semantic reject."""
+    if not isinstance(result, dict):
+        raise ValueError("LLM response JSON is not an object")
+    score = result.get("score")
+    if isinstance(score, bool) or not isinstance(score, (int, float, str)):
+        raise ValueError("LLM evaluation requires a numeric score")
+    if isinstance(score, str):
+        if re.search(r"\b(?:nan|inf(?:inity)?)\b", score, flags=re.IGNORECASE):
+            raise ValueError("LLM evaluation requires a finite score")
+        scientific = re.search(r"[-+]?(?:\d+(?:[.,]\d*)?|[.,]\d+)[eE][-+]?\d+", score)
+        if scientific and not math.isfinite(float(scientific.group(0).replace(",", "."))):
+            raise ValueError("LLM evaluation requires a finite score")
+        match = re.search(r"[-+]?(?:\d+(?:[.,]\d*)?|[.,]\d+)", score)
+        if not match:
+            raise ValueError("LLM evaluation requires a numeric score")
+        score = match.group(0).replace(",", ".")
+    if not math.isfinite(float(score)):
+        raise ValueError("LLM evaluation requires a finite score")
+    if "should_apply" in result and not isinstance(result["should_apply"], bool):
+        raise ValueError("LLM evaluation should_apply must be boolean")
+    if "reason" in result and not isinstance(result["reason"], str):
+        raise ValueError("LLM evaluation reason must be text")
+    flags = result.get("red_flags", [])
+    if not isinstance(flags, list) or any(not isinstance(flag, str) for flag in flags):
+        raise ValueError("LLM evaluation red_flags must be a list of text")
 
 
 def _is_one_year_experience_vacancy(vacancy: dict, details: str = "") -> bool:
@@ -1363,10 +1398,9 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
             temperature=0.3,
             max_tokens=800,
         )
-        text = (resp.choices[0].message.content or "").strip()
+        text = _completed_evaluation_text(resp)
         result = await _parse_evaluation_json_with_repair(client, text, prompt, model)
-        if not isinstance(result, dict):
-            raise ValueError("LLM response JSON is not an object")
+        _validate_evaluation_json(result)
         result["score"] = _coerce_score(result.get("score"), default=50)
         result.setdefault("reason", "")
         result["should_apply"] = bool(result.get("should_apply", result["score"] >= 50))

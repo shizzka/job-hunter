@@ -45,7 +45,7 @@ def test_evaluation_failure_returns_unscored_not_zero(matcher_inputs, monkeypatc
 ])
 def test_actual_provider_fallback_then_exhaustion_or_success(matcher_inputs, monkeypatch, outcomes, expected_score):
     calls = []
-    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+    response = SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content=json.dumps({
         'score': 80, 'reason': 'Synthetic semantic match', 'should_apply': True, 'red_flags': []})))])
 
     class ProviderError(Exception):

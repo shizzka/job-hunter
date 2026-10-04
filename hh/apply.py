@@ -100,10 +100,12 @@ async def click_with_fallbacks(session, element, label: str, *, logger, before_c
             # the caller may refetch through the guarded DOM-submit fallback.
             logger.warning("%s handle invalidated by modal close; refetch required", label)
             return False
+        if await ensure_session_ui(session, "verified_click:" + label, allowed=("response", "captcha")):
+            return False
+        # UI inspection itself awaits: make the identity/approval check last.
+        # The capture barrier still blocks unknown UI appearing during it.
         if before_click is not None and not await before_click():
             logger.warning("%s blocked by fresh pre-submit guard", label)
-            return False
-        if await ensure_session_ui(session, "verified_click:" + label, allowed=("response", "captcha")):
             return False
         try:
             logger.info("Clicking %s via %s strategy", label, strategy_name)
@@ -444,9 +446,9 @@ async def expand_cover_letter_input(session) -> bool:
 
 async def submit_response_form_via_dom(session, *, logger, before_submit=None) -> bool:
     await ensure_session_ui(session, "dom_submit", allowed=("response", "captcha"))
-    if before_submit is not None and not await before_submit():
-        return False
     if await ensure_session_ui(session, "verified_dom_submit", allowed=("response", "captcha")):
+        return False
+    if before_submit is not None and not await before_submit():
         return False
     try:
         result = await session._page.evaluate(
@@ -1450,6 +1452,18 @@ async def apply_to_vacancy(
         )
         return {"ok": False, "message": "Выбранное резюме изменилось — отклик остановлен"}
 
+    async def verify_final_submit():
+        nonlocal resume_verified
+        await session._dismiss_magritte_dropdowns()
+        if cover_letter:
+            current_letter = (await refetch_response_controls())[4]
+            if not current_letter or normalize_text(await current_letter.input_value()) != normalize_text(cover_letter):
+                return False
+        if await count_unanswered_required_questions(session, logger=logger):
+            return False
+        resume_verified = await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title)
+        return resume_verified
+
     if submit_btn:
         (
             _,
@@ -1491,18 +1505,6 @@ async def apply_to_vacancy(
                 "message": f"Остались обязательные вопросы без ответа: {unanswered_required}",
             }
         submit_selector = await describe_submit_control(submit_btn)
-
-        async def verify_final_submit():
-            nonlocal resume_verified
-            await session._dismiss_magritte_dropdowns()
-            if cover_letter:
-                current_letter = (await refetch_response_controls())[4]
-                if not current_letter or normalize_text(await current_letter.input_value()) != normalize_text(cover_letter):
-                    return False
-            if await count_unanswered_required_questions(session, logger=logger):
-                return False
-            resume_verified = await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title)
-            return resume_verified
 
         clicked = await session._click_with_fallbacks(submit_btn, "submit_button", before_click=verify_final_submit)
         submit_method = "selector"
@@ -1565,7 +1567,7 @@ async def apply_to_vacancy(
     ) = await detect_response_controls()
     if not questions_required and submit_btn_retry is not None:
         await session._dismiss_magritte_dropdowns()
-        retried = await session._submit_response_form_via_dom()
+        retried = await session._submit_response_form_via_dom(before_submit=verify_final_submit)
         trace_event("SUBMIT_CLICK", ok=retried, method="dom_retry", selector="", retry=True)
         if retried:
             logger.info("Retrying hh submit via active DOM form after inconclusive response state")

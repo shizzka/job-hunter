@@ -1065,6 +1065,9 @@ async def do_search(dry_run: bool = False) -> dict:
 
             if company_blacklist.is_blocked(v.get("company", "")):
                 log.info("Skipped blacklisted company: %s", v.get("company"))
+                result["skipped"] += 1
+                bucket = search_pipeline.get_source_bucket(result["source_stats"], v)
+                bucket["blacklisted"] = bucket.get("blacklisted", 0) + 1
                 continue
 
             v["_analytics_run_id"] = run_id

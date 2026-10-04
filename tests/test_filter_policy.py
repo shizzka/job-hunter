@@ -77,7 +77,7 @@ def test_generic_matcher_does_not_reject_a_senior_candidate_as_junior_qa(monkeyp
     async def create(**kwargs):
         prompts.append(kwargs["messages"][0]["content"])
         result = {"score": 95, "should_apply": True, "reason": "Опыт подходит", "red_flags": []}
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(result)))])
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content=json.dumps(result)))])
 
     monkeypatch.setattr(matcher, "_get_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
     result = asyncio.run(matcher.evaluate_vacancy({"title": "Senior электрик", "snippet": "10 лет опыта", "salary": "200000"}))

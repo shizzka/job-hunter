@@ -34,7 +34,18 @@ of every workflow or deployment.
 | Native HTML/screenshots, trace summaries and model-bench export | Captured roots, private unique operation directories, private atomic text/bytes and sanitized HTML. Screenshots use private temp capture without global umask over await. Form filenames remain explicit replacements; cancellation cleans only newly owned output. Model bench not executed. Same journal/artifact tests; images/text can still contain personal data. |
 | Agent/bot handlers, subprocess logs, profile PID metadata and shell launch/install | Private reopening append handlers; raw inherited stdout remains best-effort, never truncated on handler failure. PID writes complete/fsync on the held flock inode, never replacement/unlink. Shell umask 077 and atomic rendered unit publication; installer not run. See `PRIVATE_JOURNALS_DIAGNOSTICS.md`. |
 
-## Open follow-ups
+## Subsequent closing reconciliation — 2026-10-04
+
+The native and explicit compatibility workflow review was subsequently completed
+in `aef612b`, including injected-auth/challenge/import boundaries and GeekJob
+account/approval coherence; see `ACCOUNT_SUBMISSION_SAFETY.md` and
+`STABILIZATION_CLOSING_2026-10-04.md`. The inventory below is historical:
+arbitrary callbacks and non-cooperating whole-file replacements are still not
+native account proof, but no longer an unreviewed production workflow group.
+Grounding, advisory analysis, provider fallback and offline CI now have separate
+evidence. Live CAPTCHA and existing-chat original-resume provenance remain open.
+
+## Open follow-ups (original inventory)
 
 | Priority / paths | Remaining work |
 | --- | --- |

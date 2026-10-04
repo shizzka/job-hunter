@@ -5,6 +5,14 @@ HH resume import. Browser cookies have their separate session documents. It is
 not certification of auth freshness, account-wide submission ownership,
 injected callbacks or exactly-once external requests.
 
+## Subsequent compatibility review
+
+`aef612b` adds explicit callback/repository validation, exact challenge guards
+and native import account assertions; see `ACCOUNT_SUBMISSION_SAFETY.md`.
+Unbound synthetic adapters remain supported in isolated tests but cannot publish
+imports into real profiles. This closes the bounded compatibility workflow
+review, not remote identity certification or arbitrary callback provenance.
+
 ## SuperJob tokens
 
 The client captures absolute auth destination and API configuration at creation.
