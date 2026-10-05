@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.0 — 2026-10-05
+
+- Stabilization closed and frozen; independent targeted final review verdict: **READY FOR MERGE/FREEZE**.
+- Audited functional HEAD: `5f6c121eb836fe6bc8a9d88b820a2e655ac1a778` (`5f6c121`).
+- X1 closed: chat FormData approval readback no longer invokes page send handlers or enables unsafe replay.
+- X2 remains a known non-blocking P2 / residual navigation-fence cleanup limitation.
+- Independent final offline suite on the exact audited HEAD: **2418 passed**.
+- Live third-party platform compatibility was not certified by the offline audit.
+- This release commit changes version metadata and release documentation only.
+
 ## v0.8.0-rc.1 — 2026-10-04
 
 Release candidate после большого стабилизационного спринта. Это ещё не финальный

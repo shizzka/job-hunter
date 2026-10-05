@@ -1,7 +1,7 @@
 # Job Hunter
 
-**Текущая версия:** `v0.8.0-rc.1`  
-**Статус:** Open Beta / release candidate после большого стабилизационного спринта.
+**Текущая версия:** `v0.8.0`
+**Статус:** Стабилизация v0.8.0 закрыта и заморожена; реальное soak/E2E наблюдение.
 
 English version: [README.md](README.md)
 
@@ -305,18 +305,15 @@ Runtime state хранится вне Git:
 - Существующий HH-отклик не всегда позволяет восстановить, каким резюме он был отправлен.
 - Доставка внешнего действия не всегда может быть доказана exactly-once.
 - Другие job boards имеют меньшую live-coverage, чем основной HH workflow.
-- Open Beta означает, что safety и race-condition аудит ещё продолжается.
+- Offline-аудит не сертифицировал совместимость с live сторонними площадками.
 
 ## Разработка
 
 Цель текущей ветки продукта:
 
 ```text
-stable baseline
-→ independent audits
-→ fix confirmed P1/P2 findings
-→ v0.8.0
-→ Controlled Resume Tailoring
+v0.8.0 stabilization frozen
+→ real soak / E2E observation
 ```
 
 Не каждое потенциальное улучшение должно становиться новой подсистемой. Новые abstractions оправданы только тогда, когда закрывают реальный повторяющийся failure mode.

@@ -1,7 +1,7 @@
 # Job Hunter
 
-**Current version:** `v0.8.0-rc.1`  
-**Status:** Open Beta / release candidate after a large stabilization sprint.
+**Current version:** `v0.8.0`
+**Status:** v0.8.0 stabilization closed and frozen; real soak/E2E observation.
 
 Русская версия: [README.ru.md](README.ru.md)
 
@@ -303,18 +303,15 @@ Runtime artifacts can contain personal data. Review and redact them before attac
 - Existing HH responses do not always reveal which resume was originally submitted.
 - Exactly-once delivery cannot always be proven for external actions.
 - Non-HH integrations have less live coverage than the primary HH workflow.
-- Open Beta means safety and race-condition auditing is still ongoing.
+- The offline audit did not certify live third-party platform compatibility.
 
 ## Development status
 
 Current release path:
 
 ```text
-stable baseline
-→ independent audits
-→ fix confirmed P1/P2 findings
-→ v0.8.0
-→ Controlled Resume Tailoring
+v0.8.0 stabilization frozen
+→ real soak / E2E observation
 ```
 
 New abstractions should solve repeated real failure modes, not exist merely because another subsystem can be invented.
