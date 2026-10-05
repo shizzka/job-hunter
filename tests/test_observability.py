@@ -547,3 +547,48 @@ def test_new_ui_and_failure_events_do_not_inherit_candidate_private_context():
     assert PRIVATE not in json.dumps(events)
     assert all(event["run_id"] == "run-private" for event in events)
     assert all("requested_resume_title" not in event and "resume_id" not in event for event in events)
+
+
+@pytest.mark.parametrize("log_setting", ["missing", "empty", "explicit"])
+def test_telegram_logging_snapshot_preserves_legacy_optional_search_path(tmp_path, log_setting):
+    import telegram_bot
+    from runtime_context import TelegramRuntimePaths
+    settings = SimpleNamespace(
+        TELEGRAM_BOT_PID_FILE=str(tmp_path / "bot.pid"),
+        TELEGRAM_BOT_STATE_FILE=str(tmp_path / "bot.json"),
+        TELEGRAM_BOT_RUNTIME_FILE=str(tmp_path / "runtime.json"),
+        TELEGRAM_BOT_LOG_FILE=str(tmp_path / "bot.log"),
+        TELEGRAM_BOT_DEBUG_LOG_FILE=str(tmp_path / "debug.jsonl"),
+    )
+    if log_setting != "missing":
+        settings.LOG_FILE = tmp_path / "job-hunter.log" if log_setting == "explicit" else None
+    snapshot = TelegramRuntimePaths.from_config(settings)
+    expected = str(tmp_path / "job-hunter.log") if log_setting == "explicit" else ""
+    assert snapshot.search_log_file == expected
+    settings.LOG_FILE = str(tmp_path / "foreign-profile.log")
+    assert snapshot.search_log_file == expected
+    handlers = telegram_bot._build_logging_handlers(snapshot)
+    try:
+        files = [handler.baseFilename for handler in handlers if isinstance(handler, logging.FileHandler)]
+        assert files == ([str(tmp_path / "bot.log"), expected, chat_log_path(expected)] if expected else [str(tmp_path / "bot.log")])
+    finally:
+        for handler in handlers:
+            handler.close()
+
+
+def test_successful_apply_receipt_survives_protected_state_write_failure(search_home, monkeypatch):
+    trace = configure_synthetic_search(monkeypatch, search_home)
+    original = agent.seen.mark_seen
+    def protected_failure(vacancy_id, vacancy, action):
+        if action == "applied":
+            raise RuntimeError("protected state restore required " + PRIVATE)
+        return original(vacancy_id, vacancy, action)
+    monkeypatch.setattr(agent.seen, "mark_seen", protected_failure)
+    result = asyncio.run(agent.do_search())
+    final = read_json_records(config.RUN_HISTORY_FILE)[-1]
+    assert final["ok"] is False and final["error_kind"] == "RuntimeError"
+    assert [item[:2] for item in trace if item[0] == "apply"] == [["apply", "4"]]
+    assert final["funnel"]["apply_attempt"] == final["funnel"]["applied"] == 1
+    assert "0 откликов" not in ui.format_run_summary(final)
+    assert PRIVATE not in json.dumps(final)
+    assert result["applied"] == 0  # legacy business handling did not complete; no replay/reset

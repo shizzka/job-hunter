@@ -101,6 +101,7 @@ class SearchObservation:
         self.counters = defaultdict(Counter)
         self.reasons = Counter()
         self.candidates, self.decided = {}, set()
+        self.applied_keys = set()
         self.stage = "startup"
         self.ok = False
         self.error_kind = ""
@@ -183,6 +184,16 @@ def count_stage(stage, vacancy):
         observation.counters[vacancy.get("source", "unknown")][stage] += 1
 
 
+@best_effort
+def count_application(vacancy):
+    """Count a successful receipt once, independently of later state handling."""
+    observation = current_search()
+    key = (vacancy.get("source", "unknown"), str(vacancy.get("id")))
+    if observation is not None and key not in observation.applied_keys:
+        observation.applied_keys.add(key)
+        observation.counters[key[0]]["applied"] += 1
+
+
 @contextmanager
 def _diagnostic_context(*, vacancy=True):
     allowed = ("run_id", "source", "vacancy_id") if vacancy else ("run_id", "source")
@@ -256,7 +267,10 @@ async def tracked_call(stage, run_id, vacancy, function, *args, **kwargs):
     with event_context(stage=stage, run_id=run_id,
                        vacancy_id=str(vacancy.get("id") or ""),
                        source=vacancy.get("source", "unknown")):
-        return await function(*args, **kwargs)
+        result = await function(*args, **kwargs)
+        if stage == "apply" and isinstance(result, dict) and result.get("ok") and not result.get("already_applied"):
+            count_application(vacancy)
+        return result
 
 
 def chat_context(function):
@@ -595,7 +609,10 @@ def record_decision(
     key = (vacancy.get("source", "unknown"), str(vacancy.get("id")))
     if observation is not None and run_id == observation.run_id and key not in observation.decided:
         observation.decided.add(key)
-        observation.counters[key[0]][outcome] += 1
+        if outcome == "applied":
+            count_application(vacancy)
+        else:
+            observation.counters[key[0]][outcome] += 1
         observation.reasons[reason_code] += 1
         if reason_code == "guard_stop" and outcome != "guard_stop":
             observation.counters[key[0]]["guard_stop"] += 1

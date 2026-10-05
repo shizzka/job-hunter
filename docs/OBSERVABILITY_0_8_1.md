@@ -69,7 +69,7 @@ keyword-pass compatibility alias, including existing retained staged retries.
 | keyword_pass | Output of the existing keyword stage, counted once in its retained output loop. Existing staged retries bypass filtering but remain eligible output. |
 | matcher_pass | Existing should-apply branch reached after red flags/low-score/manual-yellow handling; existing staged retry approvals also pass this stage. |
 | apply_attempt | Invocation of the existing apply workflow after cover/wait preparation, once before dispatch. This is not a native-submit or successful-receipt count; preflight can stop it. |
-| applied | Existing `applied_auto` terminal decision, once per candidate within a run. |
+| applied | Successful workflow receipt (`ok`, not `already_applied`), counted once by `count_application` per candidate; terminal decision uses the same deduplicated counter. Later protected-state failure cannot erase the receipt. |
 | manual | Existing manual-handling bucket count, once per existing handoff; includes failed applies requiring manual work. |
 | skipped | Terminal keyword/matcher/blacklist/already-applied rejection decision, once per candidate. |
 | failed | Terminal failed-apply decision; can also require manual work. |
@@ -187,3 +187,16 @@ locally. Safe incident metadata is retained separately in task evidence.
   “Новых вакансий нет” note; 69 observability/agent-note/Telegram/analytics tests
   pass after correcting this presentation only. The superseded `287fb567`
   clean-export run was interrupted after 357 passed; it is not final validation.
+
+- Complete clean export on `1807a0ac91dbb1667305b0c4ace6c8f215a5ca52`:
+  2451 passed, 1 failed in 814.86s. The sole failure was the existing runtime
+  snapshot contract with settings lacking optional `LOG_FILE`; capture now
+  defaults to an empty search log path. Three new missing/empty/explicit-path
+  regressions and related suites pass (50 tests).
+- Confirmed-receipt/protected-state-write-failure reproducer: 1 failed before the
+  diagnostic counter fix. The fix counts the successful receipt independently
+  of subsequent durable handling, while preserving failed-run status, original
+  business return and exactly one apply call. No reset/replay is added.
+- Final related runtime/observability/analytics/agent/version suites: 80 passed.
+  A fresh full clean-export run is required on the resulting committed HEAD;
+  the failed `1807a0ac` run is retained as failure evidence, not final validation.
