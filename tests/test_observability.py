@@ -535,3 +535,14 @@ def test_existing_search_notification_has_truthful_keyword_and_dry_run_labels(mo
     text = send.call_args.args[0]
     assert "Keyword pass: 5" in text and "релевант" not in text.casefold()
     assert ("Dry-run matches: 2" if dry_run else "Откликов: 2") in text
+
+
+def test_new_ui_and_failure_events_do_not_inherit_candidate_private_context():
+    with analytics.event_context(run_id="run-private", source="hh", vacancy_id="1", requested_resume_title=PRIVATE,
+                                 resume_id=PRIVATE, matcher_resume_sha256=PRIVATE):
+        analytics.record_unexpected_ui("a" * 64, "apply")
+        analytics.record_failure("apply", TimeoutError(PRIVATE), continued=True)
+    events = read_json_records(config.ANALYTICS_EVENTS_FILE)
+    assert PRIVATE not in json.dumps(events)
+    assert all(event["run_id"] == "run-private" for event in events)
+    assert all("requested_resume_title" not in event and "resume_id" not in event for event in events)

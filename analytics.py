@@ -183,6 +183,16 @@ def count_stage(stage, vacancy):
         observation.counters[vacancy.get("source", "unknown")][stage] += 1
 
 
+@contextmanager
+def _diagnostic_context(*, vacancy=True):
+    allowed = ("run_id", "source", "vacancy_id") if vacancy else ("run_id", "source")
+    token = _event_context.set({key: value for key, value in current_context().items() if key in allowed})
+    try:
+        yield
+    finally:
+        _event_context.reset(token)
+
+
 @best_effort
 def record_failure(stage, error, *, source=None, continued=False):
     context = current_context()
@@ -194,7 +204,8 @@ def record_failure(stage, error, *, source=None, continued=False):
         if not continued:
             observation.failure_stage = stage
     if config.ANALYTICS_ENABLED:
-        _append_event({"event": "stage_failed", **fields})
+        with _diagnostic_context():
+            _append_event({"event": "stage_failed", **fields})
 
 
 @best_effort
@@ -206,7 +217,8 @@ def record_event(payload):
 @best_effort
 def record_unexpected_ui(fingerprint, stage):
     if config.ANALYTICS_ENABLED:
-        _append_event({"event": "unexpected_ui", "fingerprint": fingerprint, "stage": stage, "source": "hh"})
+        with _diagnostic_context(vacancy=False):
+            _append_event({"event": "unexpected_ui", "fingerprint": fingerprint, "stage": stage, "source": "hh"})
 
 
 def zero_apply_diagnosis(run):

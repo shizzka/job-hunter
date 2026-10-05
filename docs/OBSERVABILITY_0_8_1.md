@@ -35,7 +35,9 @@ before creating the separate worktree `/home/q/job-hunter-observability-081`.
 ## Scope and correlation
 
 Reuse `analytics.py`'s existing journal and ContextVar. Additive fields retain
-`schema_version=2`; existing decision/reason/error fields are preserved. No
+`schema_version=2`; existing decision/reason/error fields are preserved. New UI
+and failure events whitelist correlation context and exclude inherited resume
+IDs/titles/version metadata; an exact sentinel regression covers this boundary. No
 analytics or protected-state destructive migration is performed. A single unique
 `run_id` follows start, decisions, stage failures, UI observations, final journal
 summary, run history and Telegram run view. The UUID suffix prevents same-second
@@ -164,3 +166,17 @@ The corrected comparison binds the fixture's actual patched globals and forbids
 IP socket connections; all six cases then pass. Ordinary pytest already has an
 autouse IP network guard, and the Chromium fixtures abort/fulfill every request
 locally. Safe incident metadata is retained separately in task evidence.
+
+### Targeted validation evidence
+
+- Initial related inventory suites: 183 passed.
+- Combined targeted suites with observability/version regressions: 248 passed.
+- Final presentation/observability/version checks: 59 passed.
+- Added private-context reproducer: 1 failed before the context restriction;
+  regression plus related analytics/HH state suites: 59 passed after it.
+- Six immutable-release versus patched-body synthetic decision comparisons pass.
+- `git diff --check` and `bash -n run.sh` pass.
+- The first clean-export run was explicitly interrupted after 359 passed when
+  its HEAD was superseded by the reproduced new-event privacy fix. It is not a
+  completed full-suite result. Full clean-export and exact-head CI results belong
+  to the final patch SHA recorded in the final evidence manifest/report.
