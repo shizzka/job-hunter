@@ -405,6 +405,7 @@ def test_keyword_rejects_are_visible_even_when_legacy_found_is_zero(search_home,
     assert result["found"] == result["applied"] == 0
     assert result["new"] == result["funnel"]["skipped"] == result["reason_breakdown"]["keyword_filter"] == 6
     assert "keyword filter: 6" in ui.format_run_summary(read_json_records(config.RUN_HISTORY_FILE)[-1])
+    assert "Новых вакансий нет" not in ui.format_run_summary(read_json_records(config.RUN_HISTORY_FILE)[-1])
 
 
 def test_correlated_run_ids_are_isolated_under_concurrent_runs(search_home, monkeypatch):

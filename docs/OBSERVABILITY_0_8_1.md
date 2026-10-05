@@ -135,7 +135,9 @@ policy; no reset is introduced.
 Offline fixtures compare immutable `48abf39` search body with patched search
 body on six identical cases: ordinary outcomes, dry-run, guard deferral, manual
 yellow zone, per-run limit, and all-keyword rejects. Matcher/apply call traces,
-legacy business result fields and durable seen actions are identical.
+legacy business counter fields and durable seen actions are identical. The
+all-keyword-reject note is intentionally corrected as presentation: it reports
+filtered new vacancies instead of falsely saying there were no new vacancies.
 
 Regression coverage includes channel isolation/concurrency/rotation, private
 sentinels, provider/journal failures, successful action followed by cancellation
@@ -180,3 +182,8 @@ locally. Safe incident metadata is retained separately in task evidence.
   its HEAD was superseded by the reproduced new-event privacy fix. It is not a
   completed full-suite result. Full clean-export and exact-head CI results belong
   to the final patch SHA recorded in the final evidence manifest/report.
+
+- All-keyword-reject note reproducer: 1 failed with the contradictory legacy
+  “Новых вакансий нет” note; 69 observability/agent-note/Telegram/analytics tests
+  pass after correcting this presentation only. The superseded `287fb567`
+  clean-export run was interrupted after 357 passed; it is not final validation.

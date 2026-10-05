@@ -304,6 +304,8 @@ def _format_no_new_vacancies_note(source_stats: dict | None) -> str:
     if not source_stats:
         return "Новых вакансий нет"
 
+    new_count = sum(int((bucket or {}).get("new", 0) or 0) for bucket in source_stats.values())
+    note = f"Все новые вакансии отсеяны keyword filter ({new_count})" if new_count else "Новых вакансий нет"
     lines = []
     for source in SOURCE_ORDER:
         bucket = (source_stats or {}).get(source)
@@ -319,8 +321,8 @@ def _format_no_new_vacancies_note(source_stats: dict | None) -> str:
             parts.append(f"уже обработано {already_seen}")
         lines.append(", ".join(parts))
     if not lines:
-        return "Новых вакансий нет"
-    return "Новых вакансий нет. По источникам: " + "; ".join(lines)
+        return note
+    return note + ". По источникам: " + "; ".join(lines)
 
 
 def _snapshot_slug(value: object, max_length: int = 80) -> str:
