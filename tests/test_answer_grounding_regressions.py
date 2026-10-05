@@ -432,7 +432,8 @@ def test_whole_native_google_preview_keeps_original_contacts_after_navigation(bl
     page.goto = navigate
     monkeypatch.setattr(gforms, 'generate_form_answers', AsyncMock(return_value=[]))
     filled = []
-    async def fill(page, qs, answers):
+    async def fill(page, qs, answers, *, approval_owner):
+        assert approval_owner
         filled.extend(answers)
         return {'filled': [{'index': 0}], 'skipped': []}
     monkeypatch.setattr(gforms, 'fill_form', fill)
@@ -455,7 +456,8 @@ def test_native_google_preview_does_not_autofill_unverified_cached_experience(bl
     monkeypatch.setattr(gforms, '_reuse_cached_answers', lambda *a: [
         {'index': 0, 'answer': '12 лет Kubernetes', 'confidence': 'high', 'skip': False}])
     filled = []
-    async def fill(page, qs, answers):
+    async def fill(page, qs, answers, *, approval_owner):
+        assert approval_owner
         filled.extend(answers)
         return {'filled': [], 'skipped': [{'index': 0}]}
     monkeypatch.setattr(gforms, 'fill_form', fill)

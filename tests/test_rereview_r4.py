@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from playwright.async_api import async_playwright, ElementHandle, Locator
+from playwright.async_api import async_playwright, ElementHandle
 import config
 from habr_career_client import HabrCareerClient
 from superjob_client import SuperJobClient
@@ -39,9 +39,12 @@ def test_native_actual_action_requires_bound_destination(tmp_path, monkeypatch, 
                 await context.route('**/*',lambda route:route.fulfill(status=200,content_type='text/html',body=html))
                 page=await context.new_page()
                 page.wait_for_timeout=AsyncMock()
-                originals={ElementHandle:ElementHandle.click,Locator:Locator.click}
-                async def click(control,*args,**kwargs):
-                    if await control.evaluate('el=>el.id')==stage:
+                original=ElementHandle.wait_for_element_state
+                scheduled=set()
+                async def wait(control,*args,**kwargs):
+                    control_id=await control.evaluate('el=>el.id')
+                    if control_id==stage and control_id not in scheduled:
+                        scheduled.add(control_id)
                         await control.evaluate('''(button,args)=>{
                             if(args.obstacle==='disabled') button.disabled=true;
                             else {const cover=document.createElement('div');cover.id='cover';cover.style='position:fixed;inset:0;z-index:999;background:white';document.body.append(cover);}
@@ -54,9 +57,8 @@ def test_native_actual_action_requires_bound_destination(tmp_path, monkeypatch, 
                                 button.disabled=false;document.querySelector('#cover')?.remove();
                             },150);
                         }''',{'mutation':mutation,'obstacle':obstacle,'path':old_path})
-                    return await originals[ElementHandle if isinstance(control,ElementHandle) else Locator](control,*args,**kwargs)
-                monkeypatch.setattr(ElementHandle,'click',click)
-                monkeypatch.setattr(Locator,'click',click)
+                    return await original(control,*args,**kwargs)
+                monkeypatch.setattr(ElementHandle,'wait_for_element_state',wait)
                 class Response:
                     async def __aenter__(self):
                         self.value=asyncio.get_running_loop().create_future()

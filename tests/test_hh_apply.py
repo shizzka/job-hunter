@@ -270,13 +270,11 @@ class FakeDomSubmitPage:
         return True
 
 
-def test_submit_response_form_via_dom_returns_page_result():
+def test_submit_response_form_via_dom_requires_approved_binding():
     page = FakeDomSubmitPage()
     session = FakeSession(page)
-
-    assert asyncio.run(
-        hh_apply.submit_response_form_via_dom(session, logger=hh_client.log)
-    ) is True
+    assert asyncio.run(hh_apply.submit_response_form_via_dom(session, logger=hh_client.log)) is False
+    assert page.script == ''
 
 
 class FakeVisibleElement:

@@ -1,4 +1,5 @@
 """Local A9/F4/F5/F6 safety regressions; no network or candidate data."""
+from tests.browser_action_fakes import fake_cdp_context
 import asyncio
 import json
 import logging
@@ -84,7 +85,12 @@ def test_operational_search_logs_do_not_dump_cover_or_question_answers(search_ha
 def test_chat_verification_logs_metadata_without_message_text(caplog):
     from hh.chat import send_message
     private = 'SYNTHETIC_PRIVATE_CHAT_BODY'
-    page = SimpleNamespace(query_selector=AsyncMock(return_value=SimpleNamespace(click=AsyncMock(), evaluate=AsyncMock(return_value=True))), wait_for_timeout=AsyncMock())
+    async def evaluate(script, args=None):
+        if 'codex:action-dispatch' in script:
+            return {'id':args['id'],'dispatched':True,'ok':True}
+        return True
+    button = SimpleNamespace(wait_for_element_state=AsyncMock(), scroll_into_view_if_needed=AsyncMock(), evaluate=evaluate)
+    page = SimpleNamespace(context=fake_cdp_context(), add_init_script=AsyncMock(), evaluate=AsyncMock(), query_selector=AsyncMock(return_value=button), wait_for_timeout=AsyncMock())
     fill = AsyncMock(return_value={'filled': True})
     extract = AsyncMock(return_value={'messages': [{'is_me': False, 'author': private, 'text': private}]})
     with caplog.at_level(logging.WARNING):

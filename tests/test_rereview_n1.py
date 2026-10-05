@@ -134,8 +134,8 @@ def test_forms_owned_zero_submit_does_not_poison_recheck(flow, monkeypatch):
                 await page.set_content('''<form><div role="listitem"><input type="text" name="entry.1"></div><button type="submit">Submit</button></form><script>window.sent=0;document.addEventListener('submit',e=>{e.preventDefault();window.sent++})</script>''')
                 page.goto = AsyncMock(); page.wait_for_timeout = AsyncMock()
                 client._page = page
-                async def fill(page, questions, answers):
-                    result = await filling.fill_form(page,questions,answers)
+                async def fill(page, questions, answers, **kwargs):
+                    result = await filling.fill_form(page,questions,answers, **kwargs)
                     await page.evaluate('''() => {const cover=document.createElement('div');cover.style='position:fixed;inset:0;z-index:999;background:white';document.body.append(cover);
                         setTimeout(()=>{document.querySelector('input').value='Unapproved';cover.remove()},350)}''')
                     return result
@@ -174,19 +174,18 @@ def test_native_without_exclusive_owned_zero_receipt_stays_uncertain(tmp_path,ca
                 repo=NativeApplyRepository(str(tmp_path/'hh.json'),'hh')
                 async def operation():
                     button=await page.query_selector('button')
-                    original_click=button.click
-                    async def click(**kwargs):
-                        if case!='admitted_click':
-                            await page.evaluate('''()=>{const button=document.querySelector('button');button.disabled=true;
-                                setTimeout(()=>{document.querySelector('textarea').value='Unapproved';button.disabled=false},150)}''')
-                        await original_click(**kwargs)
-                        # Lose the readback only after the guard has suppressed dispatch.
-                        await page.evaluate('()=>new Promise(resolve=>setTimeout(resolve,20))')
-                    button.click=click
+                    original_evaluate=button.evaluate
+                    async def evaluate(script,args=None):
+                        receipt = await original_evaluate(script,args)
+                        if 'codex:action-dispatch' in script:
+                            if case=='missing_receipt': return None
+                            if case=='replaced_receipt': return {'id':'foreign','dispatched':False,'ok':False}
+                        return receipt
+                    button.evaluate=evaluate
                     return {'ok':await client._click_with_fallbacks(button,'submit_button')}
                 result=await run_native_attempt(client,repo,'https://hh.ru/vacancy/2',operation)
                 assert await page.evaluate('()=>window.sent')==0
-                assert await page.evaluate('()=>window.clicks')==(1 if case=='admitted_click' else 0)
+                assert await page.evaluate('()=>window.clicks')==1
                 assert result['uncertain'] and repo.get('https://hh.ru/vacancy/2')['status']=='uncertain'
                 assert not repo.claim('https://hh.ru/vacancy/2','','')
             finally:await browser.close()

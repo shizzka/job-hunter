@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 import aiohttp
 from playwright.async_api import async_playwright, BrowserContext, Page
 
+from browser_action_boundary import RUNTIME, install_boundary, dispatch_approved, release_boundary
+
 import config
 import proxy_utils
 from browser_cookie_session import BrowserCookieSession
@@ -567,9 +569,12 @@ class SuperJobClient:
         return vacancies, more
 
     async def _arm_destination_boundary(self, control, expected):
-        self._destination_boundary_id = uuid.uuid4().hex
-        return await control.evaluate(r"""(control,expected) => {
+        boundary_id = uuid.uuid4().hex
+        await install_boundary(self._page, boundary_id)
+        try:
+            ok = await control.evaluate(r"""(control,expected) => {
             /* codex:native-destination-arm */
+            __RUNTIME__
             const identity = value => {
                 try {
                     const url=new URL(value),host=url.hostname.toLowerCase();
@@ -584,7 +589,7 @@ class SuperJobClient:
             if (!root) return false;
             const fields=()=>[...new Set([...root.querySelectorAll('input,textarea,select,[contenteditable="true"]'),
                 ...(root.tagName==='FORM'?[...root.elements].filter(el=>el.matches('input,textarea,select')):[])])];
-            const entries=submitter=>root.tagName==='FORM'?[...new FormData(root,submitter?.form===root&&submitter.type==='submit'?submitter:undefined).entries()]:[];
+            const entries=submitter=>root.tagName==='FORM'?[...window.__jhActionBoundary.formData(root,submitter?.form===root&&submitter.type==='submit'?submitter:undefined).entries()]:[];
             const payload=submitter=>JSON.stringify(entries(submitter).map(([key,value])=>[key,typeof value==='string'?value:[value.name,value.size,value.type]]));
             const contextMatches=(submitter=null)=> {
                 const ids=[root.getAttribute('data-vacancy-id'),...fields().filter(el=>['vacancy_id','vacancyId','vacancy'].includes(el.name))].map(value=>typeof value==='string'||value===null?value:value.value).filter(Boolean);
@@ -601,26 +606,28 @@ class SuperJobClient:
             const valid=()=>root.isConnected && control.isConnected && (root.contains(control)||control.form===root) && location.href===url &&
                 identity(location.href)===id && contextMatches(control) && fields().length===originalFields.length &&
                 fields().every((el,i)=>el===originalFields[i]) && snapshot()===approved;
-            document.__nativeDestinationApproval={id:expected.boundary_id,root,control,valid,source:expected.source,blocked:false};
-            if (!document.__nativeDestinationBoundary) {
-                document.__nativeDestinationBoundary=true;
-                for (const name of ['click','submit']) document.addEventListener(name,event=>{
-                    const approval=document.__nativeDestinationApproval;
-                    if (!approval) return;
-                    const target=event.target.closest?.('button,a,[role="button"],input[type="submit"]');
-                    const candidate=target===approval.control || (approval.source==='superjob' ?
-                        target?.matches('button.f-test-vacancy-response-button,button.f-test-button-Otkliknutsya[type="submit"]') :
-                        /^(откликнуться|отправить)/i.test(target?.innerText?.trim()||''));
-                    if (name==='click' && !candidate) return;
-                    if ((name==='click' ? target===approval.control : event.target===approval.root) && approval.valid()) return;
-                    approval.blocked=true;event.preventDefault();event.stopImmediatePropagation();
-                },true);
-            }
-            return true;
-        }""", {'url':expected,'source':'superjob','boundary_id':self._destination_boundary_id}) is True
+            const approval={id:expected.boundary_id,root,control,valid,blocked:false};
+            const approvedPayload=payload(control);
+            approval.eventMatches=(name,event,target)=>valid() &&
+                (name==='click' ? target===control : event.target===root && event.submitter===control) &&
+                contextMatches(name==='submit' ? event.submitter : control) &&
+                payload(name==='submit' ? event.submitter : control)===approvedPayload;
+            return window.__jhActionBoundary.register(approval);
+        }""".replace("__RUNTIME__", RUNTIME + ";"), {'url':expected,'source':'superjob','boundary_id':boundary_id}) is True
+        except BaseException:
+            await release_boundary(self._page, boundary_id)
+            raise
+        self._destination_boundary_id = boundary_id
+        if not ok:
+            await release_boundary(self._page, boundary_id)
+        return ok
 
     async def _destination_boundary_passed(self):
-        return await self._page.evaluate('/* codex:native-destination-readback */ id => document.__nativeDestinationApproval?.id === id && !document.__nativeDestinationApproval.blocked', self._destination_boundary_id) is True
+        boundary_id = self._destination_boundary_id
+        try:
+            return await self._page.evaluate('/* codex:native-destination-readback */ id => { const approval=window.__jhActionBoundary?.get(id);return !!approval && !approval.blocked; }', boundary_id) is True
+        finally:
+            await release_boundary(self._page, boundary_id)
 
     async def apply_to_vacancy(self, vacancy: dict, cover_letter: str = "") -> dict:
         vacancy_url = vacancy.get("url") or ""
@@ -669,8 +676,7 @@ class SuperJobClient:
             return {'ok': False, 'reason': 'destination_unverified', 'message': 'Destination изменилась до apply'}
         if not await self._arm_destination_boundary(apply_btn, vacancy_url):
             return {'ok': False, 'reason': 'destination_unverified', 'message': 'Apply context не подтверждён'}
-        await apply_btn.click()
-        if not await self._destination_boundary_passed():
+        if not await dispatch_approved(self._page,apply_btn,self._destination_boundary_id):
             return {'ok': False, 'reason': 'destination_unverified', 'message': 'Apply заблокирован browser boundary'}
         await self._page.wait_for_timeout(2500)
 
@@ -697,8 +703,7 @@ class SuperJobClient:
                     return {'ok': False, 'reason': 'destination_unverified', 'message': 'Destination изменилась до submit'}
                 if not await self._arm_destination_boundary(submit_btn, vacancy_url):
                     return {'ok': False, 'reason': 'destination_unverified', 'message': 'Submit context не подтверждён'}
-                await submit_btn.click()
-                if not await self._destination_boundary_passed():
+                if not await dispatch_approved(self._page,submit_btn,self._destination_boundary_id):
                     return {'ok': False, 'reason': 'destination_unverified', 'message': 'Submit заблокирован browser boundary'}
                 await self._page.wait_for_timeout(3000)
         except Exception as exc:

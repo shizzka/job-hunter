@@ -1,3 +1,4 @@
+from tests.browser_action_fakes import fake_cdp_context
 import asyncio
 from pathlib import Path
 
@@ -404,6 +405,13 @@ class FakeSendButton:
         self.approved = None
 
     async def evaluate(self, script, expected=None):
+        if 'codex:action-ready' in script:
+            return True
+        if 'codex:action-dispatch' in script:
+            if self.value != self.approved:
+                return {'id':expected['id'],'dispatched':False,'ok':False}
+            await self.click()
+            return {'id':expected['id'],'dispatched':True,'ok':True}
         if 'codex:chat-send-arm' in script:
             self.approved = expected['text'] if self.value == expected['text'] else None
             return self.approved is not None
@@ -414,8 +422,21 @@ class FakeSendButton:
     async def click(self):
         self.clicked = True
 
+    async def wait_for_element_state(self, state, **kwargs):
+        pass
+
+    async def scroll_into_view_if_needed(self, **kwargs):
+        pass
+
 
 class FakeSendPage:
+    context = fake_cdp_context()
+    async def add_init_script(self, **kwargs):
+        pass
+
+    async def evaluate(self, script, expected=None):
+        assert 'codex:action-disarm' in script
+
     def __init__(self):
         self.button = FakeSendButton()
         self.wait_calls = []

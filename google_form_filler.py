@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -279,6 +280,7 @@ async def preview_form(
 ) -> dict:
     from google_forms.drafts import needs_review, replay_answers
     paths = runtime_paths or _runtime_paths()
+    browser_approval_owner = uuid.uuid4().hex
     original_form_url = form_url
     form_url = await _resolve_google_form_redirect_url(form_url)
     if not form_url:
@@ -381,7 +383,7 @@ async def preview_form(
         answer_map.update({int(a["index"]): a for a in saved_answers})
         answers = [answer_map.get(int(q["index"]), {"index": q["index"], "skip": True, "confidence": "low"}) for q in page_questions]
         safe_answers = [{**a, "skip": True} if needs_review(q, a) else a for q, a in zip(page_questions, answers)]
-        fill_result = await fill_form(page, page_questions, safe_answers)
+        fill_result = await fill_form(page, page_questions, safe_answers, approval_owner=browser_approval_owner)
 
         all_questions.extend(page_questions)
         all_answers.extend(answers)
@@ -448,6 +450,10 @@ async def preview_form(
         "status": "preview" if preview_ok else "needs_input" if review_indices else "preview_failed",
         "profile_name": profile_name,
     }
+    from browser_action_boundary import release_boundary
+    boundary_id = getattr(page, '_jh_form_plans', {}).pop(browser_approval_owner, None)
+    if boundary_id:
+        await release_boundary(page, boundary_id)
     if persist:
         _state_repository(paths).remember(token, detail, trim_expired=True)
     if notify:
@@ -543,6 +549,17 @@ async def _submit_claimed_preview(hh_client, token, item, paths, workflow, attem
     if not hh_client._page:
         await hh_client.start(headless=True)
     page = hh_client._page
+    try:
+        return await _submit_claimed_preview_on_page(page, token, item, paths, workflow, attempt)
+    finally:
+        from browser_action_boundary import release_boundary
+        if page is not None:
+            boundary_id = getattr(page, '_jh_form_plans', {}).pop(attempt, None)
+            if boundary_id:
+                await release_boundary(page, boundary_id)
+
+
+async def _submit_claimed_preview_on_page(page, token, item, paths, workflow, attempt):
     await page.goto(item["form_url"], wait_until="domcontentloaded", timeout=60000)
     await page.wait_for_timeout(2500)
 
@@ -568,7 +585,7 @@ async def _submit_claimed_preview(hh_client, token, item, paths, workflow, attem
             navigation_error = "Вопросы формы изменились. Требуется новый preview."
             break
         all_questions.extend(page_questions)
-        page_fill_result = await fill_form(page, page_questions, saved_answers)
+        page_fill_result = await fill_form(page, page_questions, saved_answers, approval_owner=attempt)
         page_results.append({
             "page_index": page_index,
             "questions": len(page_questions),
@@ -593,7 +610,8 @@ async def _submit_claimed_preview(hh_client, token, item, paths, workflow, attem
         validation_message = "Изменился состав страниц формы. Требуется новый preview."
     if ready:
         submitted = await _click_google_form_submit(page, before_click=lambda: workflow.mark_submitting(token, attempt),
-                                                    on_no_action=lambda: workflow.confirm_no_action(token, attempt))
+                                                    on_no_action=lambda: workflow.confirm_no_action(token, attempt),
+                                                    approval_id=page_results[-1]["fill_result"].get("browser_approval_id"))
         if submitted:
             submit_success, submit_page_text = await _wait_google_form_submit_success(page)
     shot_path = os.path.join(paths.hh_state_dir, f"google_form_submit_{token}.png")

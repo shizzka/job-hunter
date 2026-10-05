@@ -8,7 +8,8 @@ import re
 
 from hh.text import compact_text, normalize_text
 from hh.ui import HHUnexpectedUI, ensure_session_ui
-from hh.submit_boundary import arm_submit_boundary, bind_submit_control, submit_boundary_passed
+from hh.submit_boundary import arm_submit_boundary, bind_submit_control
+from browser_action_boundary import dispatch_approved, release_boundary
 
 
 CLOSED_OR_ARCHIVED_HH_TEXT_MARKERS = (
@@ -113,14 +114,30 @@ async def click_with_fallbacks(session, element, label: str, *, logger, before_c
         if before_click is not None and not await before_click():
             logger.warning("%s blocked by fresh pre-submit guard", label)
             return False
-        if external and (not await arm_submit_boundary(session) or not await bind_submit_control(session, element)):
-            return False
+        boundary_id = None
+        if external:
+            if not await arm_submit_boundary(session):
+                return False
+            boundary_id = getattr(session, '_submit_boundary_id', None)
+            try:
+                bound = await bind_submit_control(session, element, boundary_id)
+            except BaseException:
+                await release_boundary(session._page, boundary_id)
+                raise
+            if not bound:
+                await release_boundary(session._page, boundary_id)
+                return False
         try:
             logger.info("Clicking %s via %s strategy", label, strategy_name)
             attempt = getattr(session, "_external_attempt", None)
             if external and attempt is not None:
                 attempt.begin()
-            await action()
+            if external and boundary_id:
+                if not await dispatch_approved(session._page, element, boundary_id, timeout=5000,
+                        on_no_action=attempt.confirm_no_action if attempt is not None else None):
+                    return False
+            else:
+                await action()
         except HHUnexpectedUI:
             raise
         except Exception as e:
@@ -128,8 +145,9 @@ async def click_with_fallbacks(session, element, label: str, *, logger, before_c
                 raise
             logger.warning("%s click via %s failed: %s", label, strategy_name, e)
             continue
-        if external and not await submit_boundary_passed(session):
-            return False
+        finally:
+            if boundary_id:
+                await release_boundary(session._page, boundary_id)
         await session._page.wait_for_timeout(1000)
         await ensure_session_ui(session, "after_click:" + label, allowed=("response", "captcha"))
         return True
@@ -468,52 +486,23 @@ async def submit_response_form_via_dom(session, *, logger, before_submit=None) -
         return False
     if not await arm_submit_boundary(session):
         return False
+    boundary_id = getattr(session, '_submit_boundary_id', None)
+    if not boundary_id:
+        return False
     try:
-        attempt = getattr(session, "_external_attempt", None)
+        button = await session._page.query_selector("form[name='vacancy_response'] button[type='submit'], form[name='vacancy_response'] input[type='submit']")
+        if button is not None and not await bind_submit_control(session, button, boundary_id):
+            return False
+        if button is None:
+            if await session._page.evaluate("id => window.__jhActionBoundary?.get(id)?.bindControl(null)", boundary_id) is not True:
+                return False
+        attempt = getattr(session, '_external_attempt', None)
         if attempt is not None:
             attempt.begin()
-        result = await session._page.evaluate(
-            """() => {
-                    const visible = (element) => {
-                        if (!element || element.getClientRects().length === 0) {
-                            return false;
-                        }
-                        const style = window.getComputedStyle(element);
-                        return style.visibility !== 'hidden' && style.display !== 'none';
-                    };
-                    const buttonSelector = [
-                        "[data-qa='vacancy-response-submit-popup']",
-                        "[data-qa='vacancy-response-letter-submit']",
-                        "button[type='submit']"
-                    ].join(",");
-                    const forms = [...document.querySelectorAll("form[name='vacancy_response']")].filter(visible);
-                    if (forms.length !== 1) return false;
-                    const form = forms[0];
-                    const button = [...form.querySelectorAll(buttonSelector)].find(visible);
-                    const approval = document.__hhSubmitApproval;
-                    if (approval && !approval.bindControl(button || null)) return false;
-                    if (form && typeof form.requestSubmit === 'function') {
-                        if (button && button.form === form) {
-                            form.requestSubmit(button);
-                        } else {
-                            form.requestSubmit();
-                        }
-                        return true;
-                    }
-                    return false;
-                }"""
-        )
-    except Exception as exc:
-        logger.debug("DOM submit fallback failed: %s", exc)
-        raise
-    if result is False:
-        if attempt is not None:
-            attempt.confirm_no_action()
-        return False
-    if not await submit_boundary_passed(session):
-        return False
-    await ensure_session_ui(session, "after_dom_submit", allowed=("response", "captcha"))
-    return bool(result)
+        return await dispatch_approved(session._page, button, boundary_id, mode='submit',
+                on_no_action=attempt.confirm_no_action if attempt is not None else None)
+    finally:
+        await release_boundary(session._page, boundary_id)
 
 
 async def save_debug_snapshot(session, prefix: str, *, state_dir: str) -> None:

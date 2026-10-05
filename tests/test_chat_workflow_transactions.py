@@ -1,7 +1,9 @@
 """Browser/model/notifier awaits are fakes; runtime data lives in tmp_path."""
+from tests.browser_action_fakes import fake_cdp_context
 import asyncio
 import copy
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -353,10 +355,13 @@ def test_low_level_claim_happens_after_ui_wait_before_click(monkeypatch, quick_r
         if 'codex:chat-send-arm' in script:
             calls.append("arm")
             return expected['text'] == ("Да" if quick_reply else "Synthetic answer")
-        if 'codex:chat-send-readback' in script:
-            return "click" in calls
+        if 'codex:action-ready' in script:
+            return True
+        if 'codex:action-dispatch' in script:
+            await click()
+            return {'id':expected['id'],'dispatched':True,'ok':True}
         raise AssertionError("Unexpected browser guard script")
-    button = SimpleNamespace(click=click, evaluate=evaluate)
+    button = SimpleNamespace(wait_for_element_state=AsyncMock(), scroll_into_view_if_needed=AsyncMock(), evaluate=evaluate)
     async def find(*args):
         calls.append("button")
         return button
@@ -366,7 +371,7 @@ def test_low_level_claim_happens_after_ui_wait_before_click(monkeypatch, quick_r
     async def extract(*args):
         return {"messages": [{"is_me": True, "text": "Да" if quick_reply else "Synthetic answer"}]}
     monkeypatch.setattr(low, "ensure_page_ui", ui)
-    page = SimpleNamespace(query_selector=find, wait_for_timeout=wait)
+    page = SimpleNamespace(context=fake_cdp_context(), add_init_script=AsyncMock(), evaluate=AsyncMock(), query_selector=find, wait_for_timeout=wait)
     assert asyncio.run(low.send_message(page, "chat", "Да" if quick_reply else "Synthetic answer", fill_preview=fill,
         find_quick_reply=find, before_send=before_send, extract_current_messages=extract))
     assert calls.index("fill") < calls.index("button") < calls.index("arm") < calls.index("claim") < calls.index("click")

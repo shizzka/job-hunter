@@ -1,6 +1,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import hh_client
 from hh import browser
@@ -36,7 +37,7 @@ class FakeLifecycleContext:
     def __init__(self, cookies):
         self.loaded_cookies = []
         self.saved_cookies = cookies
-        self.page = object()
+        self.page = SimpleNamespace(add_init_script=AsyncMock())
 
     async def add_cookies(self, cookies):
         self.loaded_cookies.extend(cookies)

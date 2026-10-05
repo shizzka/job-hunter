@@ -1,4 +1,5 @@
 """Synthetic resume identities and submit guards; never contact HH."""
+from tests.browser_action_fakes import fake_cdp_context
 import asyncio
 import json
 from types import SimpleNamespace
@@ -180,7 +181,18 @@ class SubmitElement:
         self.page = page
         self.attempts = 0
 
+    async def wait_for_element_state(self, state, **kwargs):
+        pass
+
+    async def scroll_into_view_if_needed(self, **kwargs):
+        pass
+
     async def evaluate(self, script, expected=None):
+        if 'codex:action-ready' in script:
+            return True
+        if 'codex:action-dispatch' in script:
+            await self.click()
+            return {'id':expected['id'],'dispatched':True,'ok':True}
         if 'codex:native-destination-arm' in script:
             return self.page.url == expected['url']
         if 'codex:hh-submit-control' in script:
@@ -237,6 +249,7 @@ class ResumeOption:
 
 
 class ApplyPage:
+    context = fake_cdp_context()
     def __init__(self, selected='target', target_exists=True):
         self.url = ''
         self.selected = selected
@@ -246,6 +259,9 @@ class ApplyPage:
         self.switch_on_descriptor = False
         self.submit = SubmitElement(self)
         self.letter = LetterElement()
+
+    async def add_init_script(self, **kwargs):
+        pass
 
     async def goto(self, url, **kwargs):
         self.url = url
@@ -263,6 +279,8 @@ class ApplyPage:
         return [ResumeOption(self)] if self.target_exists else []
 
     async def evaluate(self, script, expected=None):
+        if 'codex:action-disarm' in script:
+            return None
         if 'codex:native-destination-readback' in script:
             return True
         if 'codex:hh-submit-arm' in script:
@@ -375,17 +393,21 @@ def test_questionnaire_dom_failure_rechecks_id_before_selector_fallback():
         async def query_selector(self, selector):
             return self.submit
 
-        async def evaluate(self, script):
-            if 'codex:hh-ui-inspect' in script:
-                return []
-            if 'form.requestSubmit' in script:
-                self.selected = 'wrong'
-                return False
-            return await super().evaluate(script)
+        async def evaluate(self, script, arg=None):
+            return await super().evaluate(script, arg)
+
 
     page = Page()
     client = hh_client.HHClient()
     client._page = page
+    client._approved_hh_payload = {'resume_id':'target','cover_letter':'','answers':[]}
+    original = page.submit.evaluate
+    async def evaluate(script, arg=None):
+        if 'codex:action-dispatch' in script:
+            page.selected = 'wrong'
+            return {'id':arg['id'],'dispatched':False,'ok':False}
+        return await original(script, arg)
+    page.submit.evaluate = evaluate
 
     async def guard():
         return await hh_apply.selected_resume_matches(page, 'target', 'QA')

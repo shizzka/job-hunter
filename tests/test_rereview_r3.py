@@ -50,7 +50,7 @@ def test_forms_submit_revalidates_approved_values_after_readback(mutation, dispa
                 }''', mutation)
                 boundary = []
                 def claim(): boundary.append(True); return True
-                submitted = await filling._click_google_form_submit(page, before_click=claim)
+                submitted = await filling._click_google_form_submit(page, before_click=claim, approval_id=readback['browser_approval_id'])
                 assert boundary == [True]
                 sent = await page.evaluate('() => window.sent')
                 assert len(sent) == (1 if mutation == 'none' else 0)
@@ -76,7 +76,7 @@ def test_prior_page_approved_values_remain_bound(mutation):
                     <button type="submit">Submit</button></form><script>window.sent=[];
                     document.addEventListener('submit',e=>{e.preventDefault();window.sent.push([...new FormData(e.target).entries()])})</script>''')
                 page.wait_for_timeout = AsyncMock()
-                first = await filling.fill_form(page, [{'index':0,'dom_index':0,'page_index':0,'type':'text'}], [{'index':0,'answer':'First approved'}])
+                first = await filling.fill_form(page, [{'index':0,'dom_index':0,'page_index':0,'type':'text'}], [{'index':0,'answer':'First approved'}],approval_owner='workflow')
                 assert first['filled'] and not first['skipped']
                 await page.evaluate('''mutation => {
                     document.querySelector('#first').style.display='none';document.querySelector('#last').style.display='block';
@@ -86,7 +86,7 @@ def test_prior_page_approved_values_remain_bound(mutation):
                     if(mutation==='add_prior_control') document.querySelector('form').insertAdjacentHTML('beforeend','<input type=hidden name=new_consent value=Unapproved>');
                 }''', mutation)
                 questions = [{'index':1,'dom_index':0,'page_index':1,'type':'text','required':True}]
-                last = await filling.fill_form(page, questions, [{'index':1,'answer':'Last approved'}])
+                last = await filling.fill_form(page, questions, [{'index':1,'answer':'Last approved'}],approval_owner='workflow')
                 ready = filling._google_form_preview_status(questions, last)[0]
                 assert ready is (mutation in {'during_submit_wait','none'})
                 if ready:
@@ -94,7 +94,7 @@ def test_prior_page_approved_values_remain_bound(mutation):
                         const cover=document.createElement('div');cover.style='position:fixed;inset:0;z-index:999;background:white';document.body.append(cover);
                         setTimeout(()=>{if(mutation==='during_submit_wait') document.querySelector('[name=first]').value='Unapproved';cover.remove()},350);
                     }''', mutation)
-                    assert await filling._click_google_form_submit(page) is (mutation == 'none')
+                    assert await filling._click_google_form_submit(page,approval_id=last['browser_approval_id']) is (mutation == 'none')
                 assert len(await page.evaluate('() => window.sent')) == (1 if mutation == 'none' else 0)
             finally:
                 await browser.close()

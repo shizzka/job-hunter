@@ -1,3 +1,4 @@
+from tests.browser_action_fakes import fake_cdp_context
 import asyncio
 
 import google_form_filler as legacy_google_forms
@@ -52,6 +53,10 @@ class FakeLocator:
 
 
 class FakePage:
+    context = fake_cdp_context()
+    async def add_init_script(self, **kwargs):
+        pass
+
     def __init__(self, items):
         self.items = items
 
@@ -144,7 +149,8 @@ def test_fill_form_fills_text_and_selects_radio_option():
 
     result = asyncio.run(filling.fill_form(page, questions, answers))
 
-    assert result == {
+    assert result["browser_approval_id"]
+    assert {key:value for key,value in result.items() if key != "browser_approval_id"} == {
         "filled": [
             {"index": 0, "type": "text", "answer": "Три года в QA"},
             {"index": 1, "type": "radio", "options": ["Да"]},

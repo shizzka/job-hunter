@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 from chat_screening import classify_message_author
+from browser_action_boundary import RUNTIME, install_boundary, dispatch_approved, release_boundary
 from hh.ui import HHUnexpectedUI, ensure_page_ui
 
 log = logging.getLogger("chat_responder")
@@ -431,6 +432,7 @@ async def fill_and_preview(
 async def arm_send_boundary(button, text, quick_reply="", *, boundary_id="") -> bool:
     return await button.evaluate(r"""(control, expected) => {
         /* codex:chat-send-arm */
+        __RUNTIME__
         const editor = expected.quick ? null : expected.selectors.map(selector => document.querySelector(selector)).find(Boolean);
         if (!control.isConnected || (!expected.quick && (!editor || editor.value !== expected.text))) return false;
         if (expected.quick && control.innerText.trim() !== expected.quick) return false;
@@ -454,20 +456,16 @@ async def arm_send_boundary(button, text, quick_reply="", *, boundary_id="") -> 
                 (!editor || (editor.isConnected && editor.value === expected.text && (root.contains(editor) || editor.form === root))) &&
                 current.length === originalFields.length && current.every((el,i) => el === originalFields[i]) && snapshot() === approved;
         };
-        document.__chatSendApproval = {id:expected.boundary_id,root,control,valid,admitted:false,blocked:false};
-        if (!document.__chatSendBoundary) {
-            document.__chatSendBoundary = true;
-            for (const name of ['click','submit']) document.addEventListener(name, event => {
-                const approval = document.__chatSendApproval;
-                if (!approval || (name === 'click' && !approval.control.contains(event.target))) return;
-                const belongs = name === 'click' || event.target === approval.root;
-                if (belongs && approval.valid()) {approval.admitted=true;return;}
-                approval.blocked = true;
-                event.preventDefault();event.stopImmediatePropagation();
-            }, true);
-        }
-        return true;
-    }""", {'text': text, 'quick': quick_reply, 'selectors': CHATIK_MESSAGE_INPUT_SELECTORS, 'boundary_id': boundary_id}) is True
+        const approval = {id:expected.boundary_id,root,control,valid,admitted:false,blocked:false};
+        const state = JSON.stringify([control.name,control.value,control.type,control.getAttribute('formaction')]);
+        const payload = submitter => root.tagName === 'FORM' ? JSON.stringify([...window.__jhActionBoundary.formData(root,submitter || undefined).entries()]) : null;
+        const approvedPayload = payload(control.form === root && control.type === 'submit' ? control : null);
+        approval.eventMatches = (name,event,target) => valid() &&
+            (name === 'click' ? target === control : event.target === root && event.submitter === control) &&
+            JSON.stringify([control.name,control.value,control.type,control.getAttribute('formaction')]) === state &&
+            payload(name === 'submit' ? event.submitter : control.form === root && control.type === 'submit' ? control : null) === approvedPayload;
+        return window.__jhActionBoundary.register(approval);
+    }""".replace("__RUNTIME__", RUNTIME + ";"), {'text': text, 'quick': quick_reply, 'selectors': CHATIK_MESSAGE_INPUT_SELECTORS, 'boundary_id': boundary_id}) is True
 
 
 async def send_message(
@@ -503,16 +501,22 @@ async def send_message(
         return False
     await ensure_page_ui(page, "chat_send")
     boundary_id = uuid.uuid4().hex
-    if not await arm_send_boundary(button, text, quick_reply, boundary_id=boundary_id):
-        return False
-    if before_send is not None:
-        await before_send()
+    await install_boundary(page, boundary_id)
     try:
-        await button.click()
-        if await button.evaluate('/* codex:chat-send-readback */ (el,id) => document.__chatSendApproval?.id === id && document.__chatSendApproval.control === el && !document.__chatSendApproval.blocked', boundary_id) is not True:
-            zero = await button.evaluate('/* codex:chat-send-zero */ (el,id) => document.__chatSendApproval?.id === id && document.__chatSendApproval.control === el && document.__chatSendApproval.blocked === true && document.__chatSendApproval.admitted === false', boundary_id) is True
-            if zero and on_no_action is not None:
-                on_no_action()
+        if not await arm_send_boundary(button, text, quick_reply, boundary_id=boundary_id):
+            await release_boundary(page, boundary_id)
+            return False
+    except BaseException:
+        await release_boundary(page, boundary_id)
+        raise
+    try:
+        if before_send is not None:
+            await before_send()
+    except BaseException:
+        await release_boundary(page, boundary_id)
+        raise
+    try:
+        if not await dispatch_approved(page,button,boundary_id,on_no_action=on_no_action):
             return False
         await page.wait_for_timeout(2500)
         await ensure_page_ui(page, "after_chat_send")

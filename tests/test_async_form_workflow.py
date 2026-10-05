@@ -37,7 +37,7 @@ def flow(tmp_path, monkeypatch):
     monkeypatch.setattr(gforms, '_wait_google_form_submit_success', AsyncMock(return_value=(True, 'Synthetic recorded')))
     monkeypatch.setattr(gforms, '_safe_screenshot', AsyncMock())
     clicks = []
-    async def click(page, *, before_click=None, on_no_action=None):
+    async def click(page, *, before_click=None, on_no_action=None, approval_id=None):
         if before_click:
             before_click()
         clicks.append('click')
@@ -92,7 +92,7 @@ def test_cancel_after_possible_click_is_uncertain_and_not_retryable(flow, monkey
 
 def test_click_timeout_is_uncertain(flow, monkeypatch):
     paths, repo, client, _ = flow
-    async def click(page, *, before_click=None, on_no_action=None):
+    async def click(page, *, before_click=None, on_no_action=None, approval_id=None):
         if before_click:
             before_click()
         raise TimeoutError('Synthetic click timeout')
@@ -192,18 +192,21 @@ def test_submit_button_guard_runs_after_last_scroll_await(monkeypatch, allowed):
         if 'codex:google-form-bind' in script:
             assert order == ['scroll']
             order.append('bind')
+        elif 'codex:action-dispatch' in script:
+            order.append('dispatch')
+            return {'id':boundary_id['id'],'dispatched':True,'ok':True}
         else:
-            assert 'codex:google-form-readback' in script
+            assert 'codex:action-ready' in script
         return True
-    button = SimpleNamespace(scroll_into_view_if_needed=scroll, click=AsyncMock(), evaluate=evaluate)
-    page = SimpleNamespace(wait_for_load_state=AsyncMock(), wait_for_timeout=AsyncMock())
+    button = SimpleNamespace(scroll_into_view_if_needed=scroll, wait_for_element_state=AsyncMock(), evaluate=evaluate)
+    page = SimpleNamespace(_jh_form_plan_id='owned', evaluate=AsyncMock(), wait_for_load_state=AsyncMock(), wait_for_timeout=AsyncMock())
     monkeypatch.setattr(filling, '_find_google_form_button', AsyncMock(return_value=button))
     def guard():
         assert order == ['scroll', 'bind']
         order.append('claim')
         return allowed
-    assert asyncio.run(filling._click_google_form_submit(page, before_click=guard)) is allowed
-    assert button.click.await_count == int(allowed)
+    assert asyncio.run(filling._click_google_form_submit(page, before_click=guard, approval_id='owned')) is allowed
+    assert order.count('dispatch') == int(allowed)
 
 
 def test_claim_storage_error_never_reaches_browser(flow, monkeypatch):

@@ -5,6 +5,8 @@ import logging
 import time
 import uuid
 
+from browser_action_boundary import RUNTIME, install_boundary, dispatch_approved, release_boundary
+
 from google_forms.answering import (
     _answers_by_index,
     _best_option_match,
@@ -224,14 +226,24 @@ async def _click_google_form_next(page) -> tuple[bool, str]:
     return False, "google form did not advance after next"
 
 
-async def _arm_google_form_submit_boundary(page, questions, rows, items) -> bool:
-    return await page.evaluate(r"""expected => {
+async def _arm_google_form_submit_boundary(page, questions, rows, items, *, approval_owner=None) -> bool:
+    page_index = questions[0].get('page_index', 0) if questions else 0
+    owner = approval_owner or uuid.uuid4().hex
+    plans = getattr(page, '_jh_form_plans', None)
+    if plans is None:
+        plans = {}
+        page._jh_form_plans = plans
+    previous_id = plans.get(owner)
+    boundary_id = uuid.uuid4().hex
+    await install_boundary(page, boundary_id)
+    try:
+        ok = await page.evaluate(r"""expected => {
         /* codex:google-form-arm */
+        __RUNTIME__
         const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
         const currentItems = () => [...document.querySelectorAll('div[role="listitem"]')].filter(visible);
         const items = currentItems();
-        const previous = document.__googleFormApproval;
-        document.__googleFormApproval = null;
+        const previous = window.__jhActionBoundary.get(expected.previous_id);
         if (!items.length || items.length !== expected.items.length || items.some((el,i) => el !== expected.items[i])) return false;
         const root = items[0].closest('form') || document.body;
         const pageIndex = expected.questions[0]?.page_index || 0;
@@ -260,7 +272,7 @@ async def _arm_google_form_submit_boundary(page, questions, rows, items) -> bool
         });
         const fields = () => [...new Set([...root.querySelectorAll('input,textarea,select,[role="checkbox"],[role="radio"],[contenteditable="true"]'),
             ...(root.tagName === 'FORM' ? [...root.elements].filter(el => el.matches('input,textarea,select')) : [])])];
-        const payload = control => root.tagName === 'FORM' ? JSON.stringify([...new FormData(root,
+        const payload = control => root.tagName === 'FORM' ? JSON.stringify([...window.__jhActionBoundary.formData(root,
             control?.form === root && control.type === 'submit' ? control : undefined).entries()].map(([key,value]) =>
             [key,typeof value === 'string' ? value : [value.name,value.size,value.type,value.size ? value.lastModified : 0]])) : null;
         const fieldState = el => JSON.stringify([el.tagName,el.type,el.name,el.getAttribute('form'),el.disabled,
@@ -284,53 +296,56 @@ async def _arm_google_form_submit_boundary(page, questions, rows, items) -> bool
         };
         const controlState = el => JSON.stringify([el.innerText,el.name,el.value,el.type,el.getAttribute('form'),el.getAttribute('formaction')]);
         const fieldRecords = originalFields.map(el => ({el,item:el.closest('div[role="listitem"]'),state:fieldState(el)}));
-        const approval = {root,plans,pageIndex,fieldRecords,valid,admitted:false,blocked:false};
+        const approval = {id:expected.boundary_id,root,plans,pageIndex,fieldRecords,valid,admitted:false,blocked:false};
         approval.bind = control => {
+            if (approval.control) return control === approval.control && valid() &&
+                controlState(control) === approval.controlState && payload(control) === approval.payload;
             if (!valid() || !control.isConnected || !(root.contains(control) || control.form === root)) return false;
             approval.control=control;approval.controlState=controlState(control);approval.payload=payload(control);
             return true;
         };
-        approval.eventMatches = event => valid() && controlState(approval.control) === approval.controlState &&
-            payload(event.type === 'submit' ? event.submitter : approval.control) === approval.payload;
-        document.__googleFormApproval = approval;
-        if (!document.__googleFormBoundary) {
-            document.__googleFormBoundary = true;
-            for (const name of ['click','submit']) document.addEventListener(name,event => {
-                const approval=document.__googleFormApproval;
-                if (!approval || (name === 'click' && !approval.control?.contains(event.target))) return;
-                if ((name === 'click' || event.target === approval.root) && approval.eventMatches(event)) {approval.admitted=true;return;}
-                approval.blocked=true;event.preventDefault();event.stopImmediatePropagation();
-            },true);
-        }
-        return true;
-    }""", {'questions': questions, 'rows': rows, 'items': items}) is True
+        approval.eventMatches = (name,event,target) => valid() &&
+            (name === 'click' ? target === approval.control : event.target === root && event.submitter === approval.control) &&
+            controlState(approval.control) === approval.controlState &&
+            payload(name === 'submit' ? event.submitter : approval.control) === approval.payload;
+        return window.__jhActionBoundary.register(approval);
+    }""".replace("__RUNTIME__", RUNTIME + ";"), {'questions': questions, 'rows': rows, 'items': items,
+        'previous_id': previous_id, 'boundary_id': boundary_id}) is True
+    except BaseException:
+        await release_boundary(page, boundary_id)
+        raise
+    if ok:
+        if previous_id:
+            await release_boundary(page, previous_id)
+        plans[owner] = boundary_id
+        page._jh_form_plans = plans
+    else:
+        await release_boundary(page, boundary_id)
+    return ok
 
 
-async def _click_google_form_submit(page, *, before_click=None, on_no_action=None) -> bool:
-    button = await _find_google_form_button(page, _is_google_form_submit_button_text)
-    if not button:
+async def _click_google_form_submit(page, *, before_click=None, on_no_action=None, approval_id=None) -> bool:
+    boundary_id = approval_id
+    if not boundary_id:
         return False
     try:
-        await button.scroll_into_view_if_needed(timeout=5000)
-    except Exception:
-        pass
-    boundary_id = uuid.uuid4().hex
-    if await button.evaluate(r"""(el,id) => {
-        /* codex:google-form-bind */
-        const approval = document.__googleFormApproval;
-        if (!approval || !approval.bind(el)) return false;
-        approval.id = id;
-        return true;
-    }""", boundary_id) is not True:
-        return False
-    if before_click is not None and not before_click():
-        return False
-    await button.click(timeout=10000)
-    if await button.evaluate('/* codex:google-form-readback */ (el,id) => document.__googleFormApproval?.id === id && document.__googleFormApproval.control === el && !document.__googleFormApproval.blocked', boundary_id) is not True:
-        zero = await button.evaluate('/* codex:google-form-zero */ (el,id) => document.__googleFormApproval?.id === id && document.__googleFormApproval.control === el && document.__googleFormApproval.blocked === true && document.__googleFormApproval.admitted === false', boundary_id) is True
-        if zero and on_no_action is not None:
-            on_no_action()
-        return False
+        button = await _find_google_form_button(page, _is_google_form_submit_button_text)
+        if not button:
+            return False
+        with contextlib.suppress(Exception):
+            await button.scroll_into_view_if_needed(timeout=5000)
+        if await button.evaluate(r"""(el,id) => {
+            /* codex:google-form-bind */
+            const approval = window.__jhActionBoundary?.get(id);
+            return !!approval && approval.bind(el);
+        }""", boundary_id) is not True:
+            return False
+        if before_click is not None and not before_click():
+            return False
+        if not await dispatch_approved(page,button,boundary_id,on_no_action=on_no_action):
+            return False
+    finally:
+        await release_boundary(page, boundary_id)
     with contextlib.suppress(Exception):
         await page.wait_for_load_state("networkidle", timeout=15000)
     await page.wait_for_timeout(1500)
@@ -367,7 +382,8 @@ async def _click_google_form_option(handle) -> None:
                 raise first_exc
 
 
-async def fill_form(page, questions: list[dict], answers: list[dict]) -> dict:
+async def fill_form(page, questions: list[dict], answers: list[dict], *, approval_owner=None) -> dict:
+    approval_owner = approval_owner or uuid.uuid4().hex
     items = await page.locator('div[role="listitem"]:visible').element_handles()
     answer_map = _answers_by_index(answers)
     filled: list[dict] = []
@@ -515,13 +531,13 @@ async def fill_form(page, questions: list[dict], answers: list[dict]) -> dict:
         if not (answer_map.get(entry['index']) or {}).get('skip') and entry['reason'] != 'empty answer':
             entry['blocking'] = True
     try:
-        armed = await _arm_google_form_submit_boundary(page, questions, verified, current_items)
+        armed = await _arm_google_form_submit_boundary(page, questions, verified, current_items, approval_owner=approval_owner)
     except Exception as exc:
         log.warning("Google Forms boundary could not be armed: %s", type(exc).__name__)
         armed = False
     if not armed:
         skipped.append({'index': -1, 'reason': 'approved DOM boundary unavailable', 'blocking': True})
-    return {"filled": verified, "skipped": skipped}
+    return {"filled": verified, "skipped": skipped, "browser_approval_id": getattr(page, '_jh_form_plans', {}).get(approval_owner) if armed else None}
 
 
 async def _safe_screenshot(page, path: str) -> None:

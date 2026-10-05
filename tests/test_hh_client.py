@@ -1,3 +1,4 @@
+from tests.browser_action_fakes import fake_cdp_context
 import asyncio
 
 import config
@@ -259,8 +260,11 @@ class FakeApplyElement:
         self.next_stage = next_stage
         self.text = text
 
-    async def scroll_into_view_if_needed(self):
+    async def scroll_into_view_if_needed(self, **kwargs):
         return None
+
+    async def wait_for_element_state(self, state, **kwargs):
+        pass
 
     async def click(self, timeout: int | None = None, force: bool = False):
         if self.kind == "submit_button":
@@ -273,7 +277,14 @@ class FakeApplyElement:
             self.page.letter_visible = True
         return None
 
-    async def evaluate(self, script: str):
+    async def evaluate(self, script: str, arg=None):
+        if 'codex:action-ready' in script:
+            return True
+        if 'codex:action-dispatch' in script:
+            if not getattr(self.page, 'armed_payload', None):
+                return {'id':arg['id'],'dispatched':False,'ok':False}
+            await self.click()
+            return {'id':arg['id'],'dispatched':True,'ok':True}
         if 'codex:hh-submit-control' in script:
             return self.kind == 'submit_button' and bool(getattr(self.page, 'armed_payload', None))
         if 'codex:hh-ui-inspect' in script:
@@ -397,6 +408,10 @@ class FakeArchivedApplyPage(FakeApplyPage):
 
 
 class FakeDirectResponsePage:
+    context = fake_cdp_context()
+    async def add_init_script(self, **kwargs):
+        pass
+
     def __init__(self):
         self.url = "https://hh.ru/applicant/vacancy_response?vacancyId=1"
         self.stage = "response"
@@ -457,6 +472,8 @@ class FakeDirectResponsePage:
         return []
 
     async def evaluate(self, script: str, arg=None):
+        if 'codex:action-disarm' in script:
+            return None
         if 'codex:hh-submit-arm' in script:
             from hh.apply import SELECTED_RESUME_SCRIPT
             from hh.forms import VERIFY_ANSWERS_SCRIPT

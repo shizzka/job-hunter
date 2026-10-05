@@ -218,7 +218,7 @@ def test_recheck_keeps_manual_answers_and_never_clicks_submit(stored, monkeypatc
     drafts.save_answer(home, TOKEN, 2, "/skip", 7)
     page = browser_stubs(monkeypatch, item["questions"])
     captured = []
-    async def fill(page, qs, answers):
+    async def fill(page, qs, answers, **kwargs):
         captured.extend(answers)
         return {"filled": [{"index": a["index"]} for a in answers if not a.get("skip")],
                 "skipped": [{"index": a["index"]} for a in answers if a.get("skip")]}
@@ -243,7 +243,7 @@ def test_low_confidence_answer_not_filled_and_asks_user(stored, monkeypatch):
     page = browser_stubs(monkeypatch, item["questions"][:1])
     async def generate(*args, **kwargs):
         return [{"index": 0, "answer": "01.01.1990", "confidence": "low"}]
-    async def fill(page, qs, answers):
+    async def fill(page, qs, answers, **kwargs):
         assert answers[0]["skip"]
         return {"filled": [], "skipped": [{"index": 0}]}
     monkeypatch.setattr(gforms, "generate_form_answers", generate)
@@ -311,7 +311,7 @@ def test_multistep_recheck_discovers_new_fields_without_overwriting_manual_answe
     async def generate(qs, **kwargs):
         generated.extend(qs)
         return [{"index": 1, "answer": "", "skip": True, "confidence": "low"}]
-    async def fill(page, qs, answers):
+    async def fill(page, qs, answers, **kwargs):
         if page.step == 0:
             assert answers[0]["answer"] == "29.04.1989"
         return {"filled": [{"index": a["index"]} for a in answers if not a.get("skip")],

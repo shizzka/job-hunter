@@ -160,6 +160,8 @@ async def start_browser(
             await session._context.add_cookies(cookies)
             logger.info("Loaded %d cookies", len(cookies))
         session._page = await session._context.new_page()
+        from browser_action_boundary import bootstrap_boundary
+        await bootstrap_boundary(session._page)
 
         # Anti-bot patches belong to this captured context.
         if stealth_available:

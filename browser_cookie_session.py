@@ -56,6 +56,8 @@ class BrowserCookieSession:
                 await client._context.add_cookies(cookies)
                 logger.info("Loaded %d browser cookies", len(cookies))
             client._page = await client._context.new_page()
+            from browser_action_boundary import bootstrap_boundary
+            await bootstrap_boundary(client._page)
         except BaseException:
             self.starting = False
             try:
