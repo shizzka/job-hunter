@@ -827,19 +827,19 @@ def _prepare_one_chat_preview(detail: dict) -> tuple:
     return caption, markup, screenshot_path
 
 
-async def _notify_one_chat_result(notifier, detail: dict) -> None:
+async def _notify_one_chat_result(notifier, detail: dict) -> bool:
     if notifier is None:
-        return
+        return False
     if detail.get("sent"):
-        await notifier.send_message_with_markup(_chat_result_caption(detail, sent=True))
-        return
+        return await notifier.send_message_with_markup(_chat_result_caption(detail, sent=True))
     caption, markup, screenshot_path = _prepare_one_chat_preview(detail)
     if screenshot_path and len(caption) <= 1000:
-        await notifier.send_photo(screenshot_path, caption=caption, reply_markup=markup)
-    else:
-        if screenshot_path:
-            await notifier.send_photo(screenshot_path, caption="Preview ответа в HH")
-        await notifier.send_message_with_markup(caption, reply_markup=markup)
+        return await notifier.send_photo(screenshot_path, caption=caption, reply_markup=markup)
+    if screenshot_path:
+        delivered = await notifier.send_photo(screenshot_path, caption="Preview ответа в HH")
+        if delivered is not True:
+            return False
+    return await notifier.send_message_with_markup(caption, reply_markup=markup)
 
 
 def _google_form_seen_key(form_url: str, message_id: str = "") -> str:
@@ -1077,7 +1077,8 @@ async def _execute_reply(
                         return detail
                 repository.mark_acting(chat_id, owner)
                 try:
-                    await notify(detail)
+                    if await notify(detail) is False:
+                        raise RuntimeError("Preview delivery not acknowledged")
                 except Exception as exc:
                     log.warning("chat preview notification failed: %s", type(exc).__name__)
                     detail["notification_uncertain"] = True
@@ -1191,7 +1192,7 @@ async def process_one(
                 import notifier
             except Exception:
                 notifier = None
-            await _notify_one_chat_result(notifier, detail)
+            return await _notify_one_chat_result(notifier, detail)
 
     detail = await _execute_reply(
         repository, page, str(chat_id), copy.deepcopy(target), copy.deepcopy(messages),
@@ -1445,11 +1446,11 @@ async def process_all(
                 preview = detail.get("preview") or {}
                 caption = _dry_run_caption(vac, last, detail["answer"])
                 if preview.get("screenshot_path"):
-                    await notifier.send_photo(preview["screenshot_path"], caption=caption)
+                    return await notifier.send_photo(preview["screenshot_path"], caption=caption)
                 else:
-                    await notifier.send_message_with_markup(caption)
+                    return await notifier.send_message_with_markup(caption)
             else:
-                await notifier.send_message_with_markup(_sent_caption(chat_id, vac, last, detail["answer"]))
+                return await notifier.send_message_with_markup(_sent_caption(chat_id, vac, last, detail["answer"]))
 
         detail = await _execute_reply(
             repository, page, chat_id, copy.deepcopy(last), copy.deepcopy(msgs),

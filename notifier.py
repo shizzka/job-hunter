@@ -109,7 +109,8 @@ async def _deliver(url: str, payload: dict, use_proxy: bool, proxy_url: str) -> 
             data = await resp.text()
             log.error("Telegram send failed: %s %s", resp.status, data[:200])
             return False
-    return True
+        data = await resp.json(content_type=None)
+        return isinstance(data, dict) and data.get("ok") is True
 
 
 async def _deliver_multipart(url: str, form: "aiohttp.FormData", use_proxy: bool, proxy_url: str) -> bool:
@@ -120,7 +121,8 @@ async def _deliver_multipart(url: str, form: "aiohttp.FormData", use_proxy: bool
             data = await resp.text()
             log.error("Telegram multipart send failed: %s %s", resp.status, data[:200])
             return False
-    return True
+        data = await resp.json(content_type=None)
+        return isinstance(data, dict) and data.get("ok") is True
 
 
 def capture_delivery_target():
@@ -130,38 +132,28 @@ def capture_delivery_target():
 
 
 async def _send_to_chats(method: str, build_request, *, multipart: bool = False, target=None) -> bool:
-    """Универсальная отправка в Telegram-API с резолвом профиля/токена/чатов и
-    автоматическим proxy→direct retry.
-
-    ``build_request(chat_id)`` возвращает либо dict (json-payload) либо
-    ``aiohttp.FormData`` (multipart). Вызывается заново для каждого chat_id и для
-    каждой попытки (proxy/direct), потому что file-handle в FormData одноразовый.
-    """
+    """One request per recipient. Lost acknowledgment must never cause replay."""
     bot_token, chat_ids, proxy_url = capture_delivery_target() if target is None else target
     if not bot_token or not chat_ids:
         log.warning("Telegram not configured (no token or targets)")
         return False
 
     url = f"https://api.telegram.org/bot{bot_token}/{method}"
-    proxy_modes = [(True, proxy_url)] if proxy_url else []
-    proxy_modes.append((False, ""))  # direct fallback всегда есть
-
-    delivered_any = False
+    use_proxy = bool(proxy_url)
     for chat_id in chat_ids:
-        for use_proxy, proxy_arg in proxy_modes:
-            try:
-                payload = build_request(chat_id)
-                if multipart:
-                    ok = await _deliver_multipart(url, payload, use_proxy=use_proxy, proxy_url=proxy_arg)
-                else:
-                    ok = await _deliver(url, payload, use_proxy=use_proxy, proxy_url=proxy_arg)
-            except Exception as e:
-                log.warning("Telegram %s error (use_proxy=%s) chat=%s: %s", method, use_proxy, chat_id, e)
-                continue
-            if ok:
-                delivered_any = True
-                break  # success — следующий чат
-    return delivered_any
+        try:
+            payload = build_request(chat_id)
+            if multipart:
+                ok = await _deliver_multipart(url, payload, use_proxy=use_proxy, proxy_url=proxy_url)
+            else:
+                ok = await _deliver(url, payload, use_proxy=use_proxy, proxy_url=proxy_url)
+        except Exception as exc:
+            log.warning("Telegram %s delivery unconfirmed (use_proxy=%s): %s",
+                        method, use_proxy, type(exc).__name__)
+            return False
+        if ok is not True:
+            return False
+    return True
 
 
 def _build_text_payload(text: str, parse_mode: str, reply_markup: dict | None):
