@@ -447,7 +447,7 @@ async def arm_send_boundary(button, text, quick_reply="", *, boundary_id="") -> 
             control.name, control.value, control.type,
             fields().map(el => [el.tagName,el.type,el.name,el.disabled,el.required,el.value ?? el.textContent,el.checked,
                 [...(el.options || [])].map(o => [o.value,o.selected])]),
-            root.tagName === 'FORM' ? [...new FormData(root).entries()] : null]);
+            root.tagName === 'FORM' ? [...window.__jhActionBoundary.formData(root).entries()] : null]);
         const approved = snapshot();
         const valid = () => {
             const current = fields();
