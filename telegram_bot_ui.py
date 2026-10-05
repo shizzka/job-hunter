@@ -1,6 +1,8 @@
 """Telegram bot UI text, reply markup, and command parsing helpers."""
 from __future__ import annotations
 
+import analytics
+
 import json
 import os
 import re
@@ -1436,6 +1438,8 @@ def build_schedule_text(
 
 def build_diagnostics_text(*, profile_name: str, generated_at: str, checks: list[dict]) -> str:
     def icon(item: dict) -> str:
+        if item.get("informational"):
+            return "📝"
         if item.get("ok") is True:
             return "✅"
         if item.get("ok") is False:
@@ -1456,7 +1460,7 @@ def build_diagnostics_text(*, profile_name: str, generated_at: str, checks: list
         lines.append(f"• {icon(item)} {name}: {detail}" if detail else f"• {icon(item)} {name}")
 
     failed = [item for item in checks if item.get("ok") is False]
-    warnings = [item for item in checks if item.get("ok") is None]
+    warnings = [item for item in checks if item.get("ok") is None and not item.get("informational")]
     if failed or warnings:
         lines.append("")
         if failed:
@@ -1721,21 +1725,33 @@ def build_stats_text(
 
 
 def format_run_summary(run: dict) -> str:
-    status = "успешно" if run.get("ok") else "с ошибкой"
+    status = "не завершён" if run.get("status") == "incomplete" else ("успешно" if run.get("ok") else "с ошибкой")
+    funnel = run.get("funnel") or {}
     lines = [
-        f"{_ok_icon(run.get('ok', False))} {_pretty_value(run.get('created_at'))} | {_pretty_runtime_mode(run.get('mode', 'search'))} | {status}",
-        f"• Найдено: {run.get('found', 0)} | Отклики: {run.get('applied', 0)} | Пропущено: {run.get('skipped', 0)}",
+        f"{_ok_icon(run.get('ok', False))} {run.get('run_id') or _pretty_value(run.get('created_at'))} | {_pretty_runtime_mode(run.get('mode', 'search'))} | {status}",
     ]
-    source_stats = run.get("source_stats", {}) or {}
-    if source_stats:
-        lines.append("• Источники:")
-        for source, bucket in source_stats.items():
-            lines.append(
-                f"  - {source}: новых {bucket.get('new', 0)} | релевантных {bucket.get('relevant', 0)} | "
-                f"откликов {bucket.get('applied', 0)} | вручную {bucket.get('manual', 0)}"
-            )
-    if run.get("error"):
-        lines.append(f"• Ошибка: {run['error']}")
+    if funnel:
+        lines.extend([
+            f"Новых: {funnel.get('new', 0)} | Keyword pass: {funnel.get('keyword_pass', 0)}",
+            f"Matcher pass: {funnel.get('matcher_pass', 0)} | Попыток отклика: {funnel.get('apply_attempt', 0)}",
+            f"Откликов: {funnel.get('applied', 0)} | Вручную: {funnel.get('manual', 0)}",
+        ])
+        if run.get("mode") == "dry-run":
+            lines.append(f"Dry-run matches: {funnel.get('dry_run_match', 0)}")
+    else:
+        lines.append(f"• Найдено: {run.get('found', 0)} | Отклики: {run.get('applied', 0)} | Пропущено: {run.get('skipped', 0)}")
+    diagnosis = analytics.zero_apply_diagnosis(run)
+    if diagnosis:
+        lines.append(diagnosis)
+    elif run.get("reason_breakdown"):
+        reasons = run["reason_breakdown"]
+        lines.append(f"Причины: keyword filter {reasons.get('keyword_filter', 0)} / matcher {reasons.get('low_score', 0) + reasons.get('red_flags', 0)} / guard {reasons.get('guard_stop', 0)}")
+    for source, bucket in (run.get("source_stats") or {}).items():
+        observed = bucket.get("funnel") or bucket
+        keyword = observed.get("keyword_pass", bucket.get("relevant", "—"))
+        lines.append(f"• {source}: new {observed.get('new', 0)} / keyword {keyword} / matcher {observed.get('matcher_pass', '—')} / applied {observed.get('applied', 0)}")
+    if run.get("error_kind") or run.get("error"):
+        lines.append(f"• Ошибка: {run.get('error_kind') or run.get('error')}")
     elif run.get("note"):
         lines.append(f"• Примечание: {run['note']}")
     return "\n".join(lines)

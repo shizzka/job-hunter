@@ -1,5 +1,6 @@
 """Fail-closed HH dialog handling. Never answer profile/onboarding questions."""
 import hashlib
+import analytics
 import json
 import logging
 import os
@@ -138,8 +139,22 @@ class HHUIGuard:
             return changed
         fingerprint = _fingerprint(dialogs)
         self.blocked = HHUnexpectedUI(stage, fingerprint)
+        context = analytics.current_context()
+        if context.get("channel") == "chat" or "chat" in stage:
+            observation_stage = "chat"
+        elif context.get("stage") == "apply" or stage.startswith(("apply", "response", "resume_preflight", "dom_submit", "verified_dom_submit", "answer_questions", "click:")):
+            observation_stage = "apply"
+        elif context.get("run_id") or stage.startswith(("search", "details", "vacancy_details")):
+            observation_stage = "search"
+        else:
+            observation_stage = "other"
         try:
-            attempt = self.warnings.claim(fingerprint)
+            self.warnings.observe(fingerprint, observation_stage, context.get("run_id", ""))
+        except Exception as exc:
+            log.warning("HH UI observation persistence failed: %s", type(exc).__name__)
+        analytics.record_unexpected_ui(fingerprint, observation_stage)
+        try:
+            attempt = self.warnings.claim_notification(fingerprint)
         except Exception as exc:
             log.warning("HH UI warning persistence failed; delivery suppressed: %s", type(exc).__name__)
             raise self.blocked from None

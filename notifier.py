@@ -107,7 +107,7 @@ async def _deliver(url: str, payload: dict, use_proxy: bool, proxy_url: str) -> 
     async with session.post(url, json=payload) as resp:
         if resp.status != 200:
             data = await resp.text()
-            log.error("Telegram send failed: %s %s", resp.status, data[:200])
+            log.error("Telegram send failed: status=%s", resp.status)
             return False
         data = await resp.json(content_type=None)
         return isinstance(data, dict) and data.get("ok") is True
@@ -119,7 +119,7 @@ async def _deliver_multipart(url: str, form: "aiohttp.FormData", use_proxy: bool
     async with session.post(url, data=form) as resp:
         if resp.status != 200:
             data = await resp.text()
-            log.error("Telegram multipart send failed: %s %s", resp.status, data[:200])
+            log.error("Telegram multipart send failed: status=%s", resp.status)
             return False
         data = await resp.json(content_type=None)
         return isinstance(data, dict) and data.get("ok") is True
@@ -516,15 +516,15 @@ def _format_source_stats(source_stats: dict | None) -> str:
         bucket = source_stats.get(source)
         if not bucket:
             continue
-        if not any(bucket.get(key, 0) for key in ("new", "relevant", "applied", "manual", "rejected")):
+        if not any(bucket.get(key, 0) for key in ("new", "keyword_pass", "applied", "manual", "rejected")):
             continue
         parts = []
         if bucket.get("new"):
             parts.append(f"новых {bucket['new']}")
-        if bucket.get("relevant"):
-            parts.append(f"релевантных {bucket['relevant']}")
+        if bucket.get("keyword_pass"):
+            parts.append(f"keyword pass {bucket['keyword_pass']}")
         if bucket.get("applied"):
-            parts.append(f"к отклику {bucket['applied']}")
+            parts.append(f"откликов {bucket['applied']}")
         if bucket.get("manual"):
             parts.append(f"ручных {bucket['manual']}")
         if bucket.get("rejected"):
@@ -537,15 +537,15 @@ def _format_source_stats(source_stats: dict | None) -> str:
     for source, bucket in source_stats.items():
         if source in order:
             continue
-        if not any(bucket.get(key, 0) for key in ("new", "relevant", "applied", "manual", "rejected")):
+        if not any(bucket.get(key, 0) for key in ("new", "keyword_pass", "applied", "manual", "rejected")):
             continue
         parts = []
         if bucket.get("new"):
             parts.append(f"новых {bucket['new']}")
-        if bucket.get("relevant"):
-            parts.append(f"релевантных {bucket['relevant']}")
+        if bucket.get("keyword_pass"):
+            parts.append(f"keyword pass {bucket['keyword_pass']}")
         if bucket.get("applied"):
-            parts.append(f"к отклику {bucket['applied']}")
+            parts.append(f"откликов {bucket['applied']}")
         if bucket.get("manual"):
             parts.append(f"ручных {bucket['manual']}")
         if bucket.get("rejected"):
@@ -557,7 +557,7 @@ def _format_source_stats(source_stats: dict | None) -> str:
     return "\n\n🌐 <b>По площадкам</b>\n" + "\n".join(lines)
 
 
-async def notify_summary(total_found: int, applied: int, skipped: int, source_stats: dict | None = None):
+async def notify_summary(total_found: int, applied: int, skipped: int, source_stats: dict | None = None, *, dry_run: bool = False):
     """Итог прогона поиска."""
     if not _telegram_flag("TELEGRAM_NOTIFY_SEARCH_SUMMARY", False):
         return
@@ -568,8 +568,8 @@ async def notify_summary(total_found: int, applied: int, skipped: int, source_st
 
     text = (
         f"📋 <b>Итог поиска</b>\n\n"
-        f"🔍 Релевантных вакансий: {total_found}\n"
-        f"📨 К отклику: {applied}\n"
+        f"🔍 Keyword pass: {total_found}\n"
+        f"{'🧪 Dry-run matches' if dry_run else '📨 Откликов'}: {applied}\n"
         f"📝 Ручной разбор: {manual_total}\n"
         f"⏭ Не отправлено автоматически: {skipped}"
     )

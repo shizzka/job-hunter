@@ -24,7 +24,7 @@ import client_hh_auth
 import hh_response_counter
 import manual_apply_queue
 import config
-from private_logging import PrivateFileHandler
+from private_logging import PrivateFileHandler, OperationalFormatter, chat_log_path
 from state_store.private_journal import append_json, read_json_records
 import company_blacklist
 import profile as profile_mod
@@ -72,7 +72,10 @@ def _build_logging_handlers(
         log_dir = os.path.dirname(paths.bot_log_file)
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
-        handlers.append(PrivateFileHandler(paths.bot_log_file))
+        handlers.append(PrivateFileHandler(paths.bot_log_file, channel="bot"))
+    if paths.search_log_file:
+        handlers.append(PrivateFileHandler(paths.search_log_file, channel="search"))
+        handlers.append(PrivateFileHandler(chat_log_path(paths.search_log_file), channel="chat"))
     return handlers
 
 
@@ -82,12 +85,16 @@ def _configure_logging(
 ) -> None:
     if not force and logging.getLogger().handlers:
         return
+    handlers = _build_logging_handlers(runtime_paths)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        handlers=_build_logging_handlers(runtime_paths),
+        handlers=handlers,
         force=force,
     )
+    for handler in handlers:
+        handler.setFormatter(OperationalFormatter())
+    logging.getLogger("chat_responder").propagate = True
 
 
 _configure_logging()
@@ -628,17 +635,8 @@ class TelegramBot(
     def _log_path_candidates(self, profile_name: str, *, kind: str) -> list[str]:
         profile = self._profile(profile_name)
         if kind == "chat_log":
-            profile_dir = os.path.dirname(profile.log_file)
-            return _unique_paths([
-                os.getenv("JOB_HUNTER_CHAT_LOG_FILE", ""),
-                os.path.join(profile_dir, "job-hunter-chat.log") if profile_dir else "",
-                "/tmp/job-hunter-chat.log",
-            ])
-        return _unique_paths([
-            profile.log_file,
-            config.LOG_FILE,
-            "/tmp/job-hunter.log",
-        ])
+            return [chat_log_path(profile.log_file)] if profile.log_file else []
+        return [profile.log_file] if profile.log_file else []
 
     def _log_tail(self, profile_name: str, *, kind: str = "log", lines: int = 80) -> tuple[str, str]:
         candidates = self._log_path_candidates(profile_name, kind=kind)
@@ -1309,12 +1307,13 @@ class TelegramBot(
             expected_log_interval_min = max(1, min(int(search_interval_min), int(invite_check_interval_min)))
             max_log_age = max(3 * 60 * 60, expected_log_interval_min * 3 * 60)
             checks.append({
-                "name": "Daemon log freshness",
-                "ok": age < max_log_age,
+                "name": "Последняя запись в логе",
+                "ok": None,
+                "informational": True,
                 "detail": f"{self._format_age(age)} · порог {self._format_duration(max_log_age)}",
             })
         else:
-            checks.append({"name": "Daemon log freshness", "ok": None, "detail": "лог не найден"})
+            checks.append({"name": "Последняя запись в логе", "ok": None, "informational": True, "detail": "лог не найден"})
 
         latest = self._latest_run(profile_name) or {}
         latest_age = self._age_from_iso(str(latest.get("created_at") or latest.get("finished_at") or ""))
@@ -1323,10 +1322,14 @@ class TelegramBot(
         else:
             max_age = max(6 * 60 * 60, int(search_interval_min) * 3 * 60)
             checks.append({
-                "name": "Last run",
+                "name": "Данные прогона",
                 "ok": latest_age < max_age,
-                "detail": f"{self._format_age(latest_age)} · ok={bool(latest.get('ok', False))}",
+                "detail": self._format_age(latest_age),
             })
+
+            checks.append({"name": "Последний прогон", "ok": bool(latest.get("ok")),
+                "detail": "не завершён" if latest.get("status") == "incomplete" else
+                          ("успешно" if latest.get("ok") else "ошибка")})
 
         bot_log = runtime_control.tail_file(self.runtime_paths.bot_log_file, lines=120, chars=12000)
         recent_poll_errors = self._recent_log_matches(
@@ -1401,7 +1404,7 @@ class TelegramBot(
             items = read_json_records(run_history_file)
         except OSError:
             return []
-        return list(reversed(items[-limit:]))
+        return list(reversed(analytics.latest_run_records(items)[-limit:]))
 
     def _stats_snapshot(self, profile_name: str) -> dict:
         profile = self._profile(profile_name)

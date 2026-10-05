@@ -87,7 +87,8 @@ def _format_run_source_stats(source_stats: dict) -> str:
         parts.append(
             f"{source_label(src, short=True)} "
             f"new {bucket.get('new', 0)}"
-            f"/rel {bucket.get('relevant', 0)}"
+            f"/keyword {bucket.get('keyword_pass', bucket.get('relevant', 0))}"
+            f"/matcher {bucket.get('matcher_pass', '—')}"
             f"/app {bucket.get('applied', 0)}"
             f"/man {bucket.get('manual', 0)}"
         )
@@ -237,12 +238,12 @@ def load_recent_run_history(limit: int = 5) -> list[dict]:
         return []
 
     items = []
-    for line in lines[-limit:]:
+    for line in lines:
         try:
             items.append(json.loads(line))
         except json.JSONDecodeError:
             continue
-    return list(reversed(items))
+    return list(reversed(analytics.latest_run_records(items)[-limit:]))
 
 
 def print_stats(days: int | None = None):

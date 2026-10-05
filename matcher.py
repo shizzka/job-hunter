@@ -1614,7 +1614,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
             cover, sources, client, config.HH_COVER_LETTER_MODEL or config.LLM_MODEL,
         )
         if not grounding.ok:
-            log.warning("Cover letter grounding rejected draft: %s", grounding.reason)
+            log.warning("Cover letter grounding rejected draft")
             return _remember_cover_letter_meta(
                 _fallback_cover_letter(vacancy, details, cover_style),
                 cover_style=cover_style, fallback=True, overclaim_guard=True,

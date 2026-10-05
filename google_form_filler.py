@@ -252,8 +252,7 @@ def _reuse_cached_answers(
     )
     answers = latest.get("answers") or []
     log.warning(
-        "google form LLM returned no answers; reusing cached answers token=%s filled=%d",
-        latest.get("token") or "",
+        "google form LLM returned no answers; reusing cached answers filled=%d",
         len((latest.get("fill_result") or {}).get("filled") or []),
     )
     return answers if isinstance(answers, list) else []

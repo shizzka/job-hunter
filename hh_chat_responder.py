@@ -30,6 +30,7 @@ import uuid
 from dataclasses import asdict
 import html
 import logging
+import analytics
 import os
 import re
 import time
@@ -687,6 +688,7 @@ def _short_chat_text(value: str, limit: int = 220) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
+@analytics.chat_context
 async def list_reply_candidates(
     hh_client,
     *,
@@ -1118,6 +1120,7 @@ from answer_grounding import candidate_operation
 
 
 @candidate_operation(client_factory=lambda: _get_llm_client())
+@analytics.chat_context
 async def process_one(
     hh_client,
     chat_id: str,
@@ -1220,6 +1223,7 @@ async def process_one(
 # ── Main process loop ──────────────────────────────────────────────────────
 
 @candidate_operation(client_factory=lambda: _get_llm_client())
+@analytics.chat_context
 async def process_all(
     hh_client,
     dry_run: bool | None = None,

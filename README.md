@@ -1,7 +1,7 @@
 # Job Hunter
 
-**Current version:** `v0.8.0`
-**Status:** v0.8.0 stabilization closed and frozen; real soak/E2E observation.
+**Current version:** `v0.8.1`
+**Status:** v0.8.1 observability patch awaiting review/merge; v0.8.0 stabilization remains frozen.
 
 Русская версия: [README.ru.md](README.ru.md)
 

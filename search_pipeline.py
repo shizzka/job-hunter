@@ -349,7 +349,7 @@ def keyword_filter(
     for v in vacancies:
         bucket = get_source_bucket(source_stats, v)
         if v.get("_hh_retry"):
-            bucket["relevant"] += 1
+            bucket["relevant"] += 1  # Deprecated compatibility alias for keyword_pass.
             filtered.append(v)
             continue
         reject_reason = filters.check_vacancy(v)
@@ -362,8 +362,13 @@ def keyword_filter(
                 note=reject_reason,
             )
         else:
-            bucket["relevant"] += 1
+            bucket["relevant"] += 1  # Deprecated compatibility alias for keyword_pass.
             filtered.append(v)
+    # One increment point for the retained keyword-stage output, including retries.
+    for vacancy in filtered:
+        bucket = get_source_bucket(source_stats, vacancy)
+        bucket["keyword_pass"] = bucket.get("keyword_pass", 0) + 1
+        analytics.count_stage("keyword_pass", vacancy)
     return filtered
 
 
@@ -402,11 +407,13 @@ async def collect_all(
         if enabled:
             await _status("search_collect", f"Собираю {label}", "working")
         try:
-            return await collector()
+            with analytics.event_context(source=source_key, stage="collection", vacancy_id=""):
+                return await collector()
         except HHUnexpectedUI:
             raise
         except Exception as exc:
-            log.warning("%s collection failed: %s", label, exc, exc_info=True)
+            analytics.record_failure("collection", exc, source=source_key, continued=True)
+            log.warning("source=%s stage=collection error_kind=%s continued=true", source_key, type(exc).__name__)
             await office_log(f"{source_key}_collect_failed", f"{label} пропущен: {exc}", "warning")
             if enabled:
                 await _status("search_collect_error", f"{label}: ошибка, продолжаю без источника", "working")

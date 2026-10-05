@@ -1031,7 +1031,7 @@ class HHClient:
         if not resume_url.startswith("http"):
             resume_url = f"{config.HH_BASE_URL}{resume_url}"
 
-        log.info("Downloading resume: %s (%s)", resume["title"], resume_url)
+        log.info("Downloading selected resume")
 
         try:
             await self._page.goto(resume_url, wait_until="domcontentloaded", timeout=30000)
@@ -1123,5 +1123,5 @@ class HHClient:
         for name, text in sections.items():
             raw += f"## {name}\n{text}\n\n"
 
-        log.info("Downloaded resume: %s (%d sections)", title, len(sections))
+        log.info("Downloaded resume: sections=%d", len(sections))
         return {"title": title, "sections": sections, "raw": raw}

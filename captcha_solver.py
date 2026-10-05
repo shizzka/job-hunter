@@ -254,7 +254,7 @@ async def _try_solve_captcha_interactively(client, llm_client_factory, stage, ma
             log.info("captcha attempt #%d via vision-LLM (%s)", total_attempts, config.HH_CAPTCHA_VISION_MODEL)
             answer = await solve_captcha_with_vision_llm(shot_path, llm_client_factory)
             if answer:
-                log.info("vision-LLM proposed: %r", answer[:80])
+                log.info("vision-LLM proposed captcha response: chars=%d", len(answer))
                 if await _submit_answer(client, answer):
                     kind_after = await client._detect_anti_bot_kind()
                     if kind_after != "captcha":

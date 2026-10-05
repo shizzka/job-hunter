@@ -96,7 +96,8 @@ async def fetch_vacancy_details(
     except HHUnexpectedUI:
         raise
     except Exception as e:
-        log.warning("Failed to get %s details for %s: %s", source, vacancy.get("id"), e)
+        analytics.record_failure("details", e, source=source, continued=True)
+        log.warning("Failed to get %s details for %s: %s", source, vacancy.get("id"), type(e).__name__)
 
     return details
 
@@ -165,11 +166,11 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
         resume_id=kwargs.get("preferred_resume_id", ""),
         **resume_versions.payload(vacancy),
     ):
-        analytics._append_event({"event": "application_attempt"})
+        analytics.record_event({"event": "application_attempt"})
         try:
             result = await _dispatch_apply(vacancy, cover_letter, *args, **kwargs)
         except Exception as exc:
-            analytics._append_event({"event": "application_result", "outcome": "error", "error_kind": type(exc).__name__})
+            analytics.record_event({"event": "application_result", "outcome": "error", "error_kind": type(exc).__name__})
             trace = kwargs.get("trace")
             if trace is not None:
                 failure_stage = trace.last_stage
@@ -185,7 +186,7 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
         outcome = ("already_applied" if result.get("already_applied") else
                    "blocked" if result.get("reason") == "company_blacklisted" else
                    "sent" if result.get("ok") else "failed")
-        analytics._append_event({"event": "application_result", "outcome": outcome,
+        analytics.record_event({"event": "application_result", "outcome": outcome,
                                  "cover_letter_status": result.get("cover_letter_status", "unknown"),
                                  "resume_selection_verified": result.get("resume_selection_verified", False),
                                  "selected_resume_id": result.get("selected_resume_id", "")})

@@ -51,6 +51,7 @@ class TelegramRuntimePaths:
     bot_runtime_file: str
     bot_log_file: str
     bot_debug_log_file: str
+    search_log_file: str = ""
 
     @classmethod
     def from_config(cls, settings: Any) -> TelegramRuntimePaths:
@@ -60,4 +61,5 @@ class TelegramRuntimePaths:
             bot_runtime_file=os.fspath(settings.TELEGRAM_BOT_RUNTIME_FILE),
             bot_log_file=os.fspath(settings.TELEGRAM_BOT_LOG_FILE or ""),
             bot_debug_log_file=os.fspath(settings.TELEGRAM_BOT_DEBUG_LOG_FILE or ""),
+            search_log_file=os.fspath(settings.LOG_FILE or ""),
         )

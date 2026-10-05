@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.1 — unreleased observability patch
+
+- Separate private search/runtime and chat operational logs, with correlation context and safe exception classes.
+- Extend the existing analytics journal with explicit search funnel stages, normalized reasons and correlated stage failures; preserve legacy events.
+- Append run start/final checkpoints, show incomplete/failed runs, and provide deterministic zero-apply diagnostics.
+- Separate Telegram run freshness from result and daemon process health.
+- Count every HH unexpected-UI trigger independently of notification cooldown, with bounded per-fingerprint observations.
+- Search, matcher, apply/chat decisions and action/approval/retry semantics remain unchanged. v0.8.0 stays frozen; this branch is not a deployment or compatibility certification.
+
 ## v0.8.0 — 2026-10-05
 
 - Stabilization closed and frozen; independent targeted final review verdict: **READY FOR MERGE/FREEZE**.

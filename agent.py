@@ -23,6 +23,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
+from functools import wraps
 
 import config
 import company_blacklist
@@ -41,7 +42,7 @@ import invitation_sync
 import manual_apply_queue
 from state_store.json_store import JsonStore, atomic_write_text
 from state_store.private_journal import append_json
-from private_logging import PrivateFileHandler
+from private_logging import PrivateFileHandler, OperationalFormatter, chat_log_path
 from state_store.protected import ProtectedJsonStore
 from state_store.matcher_deferred import MatcherDeferredQueue
 from llm_client import close_llm_client
@@ -127,13 +128,14 @@ def _build_logging_handlers() -> list[logging.Handler]:
         log_dir = os.path.dirname(config.LOG_FILE)
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
-        handlers.append(PrivateFileHandler(config.LOG_FILE))
+        handlers.append(PrivateFileHandler(config.LOG_FILE, channel="search"))
+        handlers.append(PrivateFileHandler(chat_log_path(config.LOG_FILE), channel="chat"))
 
     if config.ERROR_LOG_FILE:
         error_dir = os.path.dirname(config.ERROR_LOG_FILE)
         if error_dir:
             os.makedirs(error_dir, exist_ok=True)
-        error_handler = PrivateFileHandler(config.ERROR_LOG_FILE)
+        error_handler = PrivateFileHandler(config.ERROR_LOG_FILE, channel="search")
         error_handler.setLevel(logging.WARNING)
         handlers.append(error_handler)
 
@@ -143,12 +145,16 @@ def _build_logging_handlers() -> list[logging.Handler]:
 def _configure_logging(force: bool = False) -> None:
     if not force and logging.getLogger().handlers:
         return
+    handlers = _build_logging_handlers()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        handlers=_build_logging_handlers(),
+        handlers=handlers,
         force=force,
     )
+    for handler in handlers:
+        handler.setFormatter(OperationalFormatter())
+    logging.getLogger("chat_responder").propagate = True
 
 
 _configure_logging()
@@ -236,36 +242,61 @@ def _write_runtime_status(
         log.warning("Failed to write runtime status: %s", exc)
 
 
-def _append_run_history(entry: dict) -> None:
+def _append_run_history(entry: dict, *, path: str | None = None) -> None:
     try:
-        append_json(config.RUN_HISTORY_FILE, entry)
+        append_json(path or config.RUN_HISTORY_FILE, entry)
     except Exception as exc:
         log.warning("Failed to append run history: %s", type(exc).__name__)
 
 
 def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -> None:
+    observation = analytics.current_search()
+    if observation is not None:
+        observation.result = result
+        observation.ok = ok
+        observation.error_kind = "HHUnexpectedUI" if error == "hh_unexpected_ui" else error
+        return
+    # Compatibility for callers outside the observed search lifecycle.
     mode = "dry-run" if dry_run else "search"
-    entry = {
-        "kind": "search",
-        "ok": ok,
-        "mode": mode,
-        "found": result.get("found", 0),
-        "applied": result.get("applied", 0),
-        "skipped": result.get("skipped", 0),
-        "deferred": result.get("deferred", 0),
-        "source_stats": result.get("source_stats", {}),
-        "note": result.get("note", ""),
-        "error": error,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-    }
+    entry = {**result, "kind": "search", "run_id": result.get("_run_id", ""),
+             "ok": ok, "mode": mode, "error_kind": error,
+             "created_at": datetime.now().isoformat(timespec="seconds")}
     _append_run_history(entry)
-    analytics.record_search_finished(
-        run_id=result.get("_run_id", ""),
-        mode=mode,
-        result={**result, "ok": ok},
-    )
+    analytics.record_search_finished(run_id=entry["run_id"], mode=mode, result=entry)
 
 
+def _observe_search(function):
+    @wraps(function)
+    async def wrapped(dry_run=False):
+        mode = "dry-run" if dry_run else "search"
+        run_id = analytics.new_run_id(mode)
+        with analytics.observe_search(run_id, mode) as observation:
+            _append_run_history(observation.entry(incomplete=True), path=observation.history_file)
+            enabled = [label for enabled, label in ((config.HH_ENABLED, "hh.ru"),
+                (config.SUPERJOB_ENABLED, "SuperJob"), (config.HABR_ENABLED, "Хабр Карьера"),
+                (config.GEEKJOB_ENABLED, "GeekJob")) if enabled]
+            analytics.record_search_started(run_id=run_id, mode=mode, enabled_sources=enabled)
+            try:
+                return await function(dry_run=dry_run)
+            except BaseException as exc:
+                observation.ok = False
+                observation.error_kind = type(exc).__name__
+                if not isinstance(exc, asyncio.CancelledError) or not observation.failure_stage:
+                    analytics.record_failure(observation.stage, exc, continued=False)
+                raise
+            finally:
+                # Instrumentation never replaces a result/exception from the business coroutine.
+                try:
+                    analytics.finish_unclassified(observation)
+                    entry = observation.entry()
+                    observation.result.update({field: entry[field] for field in
+                        ("run_id", "started_at", "finished_at", "ok", "new", "manual", "funnel",
+                         "reason_breakdown", "failure_stage", "error_kind", "stage_failures", "source_stats")})
+                    _append_run_history(entry, path=observation.history_file)
+                    analytics.record_search_finished(run_id=run_id, mode=mode, result=entry)
+                except Exception as exc:
+                    log.warning("Search diagnostics finalization failed: error_kind=%s", type(exc).__name__)
+    return wrapped
 
 
 
@@ -729,7 +760,7 @@ async def do_manual_apply_token(token: str) -> dict:
             reason,
             note=f"ИИ-отклик упал: {message}. Открой вручную.",
         )
-        log.warning("Manual AI apply failed for token %s: %s", token, type(exc).__name__)
+        log.warning("Manual AI apply failed: error_kind=%s", type(exc).__name__)
         print(f"❌ ИИ-отклик упал: {message}")
         return {"ok": False, "message": message}
     finally:
@@ -871,12 +902,14 @@ def _format_hh_question_answers_for_note(apply_result: dict, *, limit: int = 8) 
     return "\n".join(lines)
 
 
+@_observe_search
 async def do_search(dry_run: bool = False) -> dict:
     """
     Один прогон поиска + откликов.
     Возвращает {"found": int, "applied": int, "skipped": int}
     """
     result: dict = {"found": 0, "applied": 0, "skipped": 0, "deferred": 0, "source_stats": {}, "note": "", "_run_id": ""}
+    analytics.current_search().result = result
     deferred_queue = MatcherDeferredQueue(config.JOB_HUNTER_HOME, cooldown_seconds=config.MATCHER_DEFER_COOLDOWN_SECONDS)
     deferred_seen_path = config.SEEN_VACANCIES_FILE
     deferred_candidates = []
@@ -906,7 +939,7 @@ async def do_search(dry_run: bool = False) -> dict:
                                                ("habr", habr_client), ("geekjob", geekjob_client))}
     last_office_status: tuple[str, str, str] | None = None
     runtime_mode = "dry-run" if dry_run else "search"
-    run_id = analytics.new_run_id(runtime_mode)
+    run_id = analytics.current_context()["run_id"]
     result["_run_id"] = run_id
     last_apply_attempt_started_at_by_source = defaultdict(float)
     hh_retry_vacancies: list[dict] = []
@@ -915,6 +948,7 @@ async def do_search(dry_run: bool = False) -> dict:
 
     async def set_hunter_status(action: str, message: str, status: str) -> None:
         nonlocal last_office_status
+        analytics.search_stage(action)
         payload = (action, message, status)
         if payload == last_office_status:
             return
@@ -984,12 +1018,6 @@ async def do_search(dry_run: bool = False) -> dict:
         if config.GEEKJOB_ENABLED:
             enabled_sources.append("GeekJob")
 
-        analytics.record_search_started(
-            run_id=run_id,
-            mode=runtime_mode,
-            enabled_sources=enabled_sources,
-        )
-
         if not dry_run:
             await notify_search_started(enabled_sources)
 
@@ -1023,6 +1051,7 @@ async def do_search(dry_run: bool = False) -> dict:
         deferred_candidates = [v for v in all_vacancies if v.get("_matcher_deferred_revision")]
         already_processed = acknowledge_processed_deferred()
         all_vacancies = [v for v in all_vacancies if deferred_queue.key(v) not in already_processed]
+        analytics.register_candidates(all_vacancies)
         for vacancy in all_vacancies:
             if not vacancy.get("_hh_retry"):
                 search_pipeline.get_source_bucket(result["source_stats"], vacancy)["new"] += 1
@@ -1039,7 +1068,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 deferred_queue.resolve(vacancy)
         result["found"] = len(all_vacancies)
 
-        log.info("Found %d relevant vacancies", len(all_vacancies))
+        log.info("Keyword pass: %d vacancies", len(all_vacancies))
         relevant_counts = {}
         for source in SOURCE_ORDER:
             enabled = (
@@ -1083,13 +1112,16 @@ async def do_search(dry_run: bool = False) -> dict:
                 and applied_count >= config.MAX_APPLICATIONS_PER_RUN
             ):
                 log.info("Reached max applications limit (%d)", config.MAX_APPLICATIONS_PER_RUN)
+                analytics.current_search().stop_reason = "run_limit"
                 break
 
+            analytics.search_stage("pipeline", v)
             if company_blacklist.is_blocked(v.get("company", "")):
-                log.info("Skipped blacklisted company: %s", v.get("company"))
+                log.info("Skipped vacancy=%s reason=company_blacklisted", v.get("id"))
                 result["skipped"] += 1
                 bucket = search_pipeline.get_source_bucket(result["source_stats"], v)
                 bucket["blacklisted"] = bucket.get("blacklisted", 0) + 1
+                analytics.record_decision(run_id=run_id, vacancy=v, decision="skipped_blacklisted")
                 continue
 
             v["_analytics_run_id"] = run_id
@@ -1101,7 +1133,7 @@ async def do_search(dry_run: bool = False) -> dict:
             source_index = processed_by_source[source]
             source_total = relevant_counts.get(source, 0)
 
-            log.info("Evaluating [%s]: %s @ %s", source, v["title"], v["company"])
+            log.info("Evaluating source=%s vacancy=%s", source, vid)
             if source_index == 1 or source_index == source_total or source_index % 5 == 0:
                 await set_hunter_status(
                     "search_evaluate",
@@ -1110,7 +1142,8 @@ async def do_search(dry_run: bool = False) -> dict:
                 )
 
             # Получаем детали
-            details = await apply_orchestrator.fetch_vacancy_details(
+            details = await analytics.tracked_call("details", run_id, v,
+                apply_orchestrator.fetch_vacancy_details,
                 v, hh_client, superjob_client, habr_client, geekjob_client,
             )
 
@@ -1176,10 +1209,10 @@ async def do_search(dry_run: bool = False) -> dict:
             reason = evaluation.get("reason", "")
             red_flags = evaluation.get("red_flags", [])
 
-            log.info("  Score: %d | %s | Flags: %s", score, reason, red_flags)
+            log.info("  Score: %d | red_flag_count=%d", score, len(red_flags))
 
             if red_flags:
-                log.warning("  Red flags: %s", red_flags)
+                log.warning("  Matcher rejected: reason=red_flags count=%d", len(red_flags))
                 seen.mark_seen(vid, v, "skipped_red_flags")
                 result["skipped"] += 1
                 bucket["rejected"] += 1
@@ -1215,7 +1248,7 @@ async def do_search(dry_run: bool = False) -> dict:
                             "Желтая зона: вакансия не прошла автоотклик, но score достаточно высокий для ручного решения. "
                             "Для этого источника оставляю ссылку на ручную проверку."
                         )
-                    log.info("  Manual review yellow-zone: token=%s", token)
+                    log.info("  Manual review: reason=yellow_zone")
                     await _mark_manual(
                         f"Ручной {_source_label(source, short=True)}: yellow-zone",
                         f"manual_yellow_{source}",
@@ -1249,6 +1282,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 )
                 continue
 
+            analytics.count_stage("matcher_pass", v)
             hh_resume_variant = None
             if source == "hh" and hh_pipeline.enabled():
                 if v.get("_hh_resume_variant"):
@@ -1257,10 +1291,10 @@ async def do_search(dry_run: bool = False) -> dict:
                     hh_resume_variant = hh_pipeline.get_next_variant(vid, evaluation.get("cluster"))
 
             if dry_run:
-                log.info("  [DRY RUN] Would handle: %s @ %s (score=%d)", v["title"], v["company"], score)
+                log.info("  [DRY RUN] Matched vacancy=%s score=%d", vid, score)
                 seen.mark_seen(vid, v, f"dry_run_{source}")
                 result["applied"] += 1
-                bucket["applied"] += 1
+                bucket["dry_run_match"] = bucket.get("dry_run_match", 0) + 1
                 analytics.record_decision(
                     run_id=run_id,
                     vacancy=v,
@@ -1339,12 +1373,11 @@ async def do_search(dry_run: bool = False) -> dict:
                     # hh на anti-bot/rolling-limit guard: тихо откладываем без manual-задачи и notify.
                     # Не помечаем seen → вакансия подхватится на следующем прогоне после паузы.
                     log.info(
-                        "  hh deferred (%s): %s @ %s",
-                        hh_auto_apply_guard_note,
-                        v.get("title", ""), v.get("company", ""),
+                        "  hh deferred: vacancy=%s reason=guard_stop", vid,
                     )
                     result["skipped"] += 1
                     bucket["deferred"] = bucket.get("deferred", 0) + 1
+                    analytics.record_decision(run_id=run_id, vacancy=v, decision="guard_stop")
                     continue
 
             if source_client is None or not auto_apply_enabled:
@@ -1431,11 +1464,11 @@ async def do_search(dry_run: bool = False) -> dict:
                             "Остальные отложены до следующего прогона."
                         )
                     log.info(
-                        "  hh deferred (per-run limit): %s @ %s",
-                        v.get("title", ""), v.get("company", ""),
+                        "  hh deferred (per-run limit): vacancy=%s", vid,
                     )
                     result["skipped"] += 1
                     bucket["deferred"] = bucket.get("deferred", 0) + 1
+                    analytics.record_decision(run_id=run_id, vacancy=v, decision="guard_stop")
                     continue
                 await _mark_manual(
                     f"Ручной {short_label}: лимит",
@@ -1535,8 +1568,9 @@ async def do_search(dry_run: bool = False) -> dict:
 
             # 6. Отправляем отклик
             try:
-                apply_result = await apply_orchestrator.dispatch_apply(
-                    v, cover,
+                analytics.count_stage("apply_attempt", v)
+                apply_result = await analytics.tracked_call("apply", run_id, v,
+                    apply_orchestrator.dispatch_apply, v, cover,
                     hh_client, superjob_client, habr_client, geekjob_client,
                     preferred_resume_title=(hh_resume_variant or {}).get("title", ""),
                     preferred_resume_id=(hh_resume_variant or {}).get("id", ""),
@@ -1545,6 +1579,7 @@ async def do_search(dry_run: bool = False) -> dict:
             except HHUnexpectedUI:
                 raise
             except Exception as e:
+                analytics.record_failure("apply", e, source=source, continued=True)
                 snapshot = await _save_autoapply_failure_snapshot(
                     source,
                     vid,
@@ -1602,11 +1637,11 @@ async def do_search(dry_run: bool = False) -> dict:
                     # Guard откладывает следующие HH-вакансии, но текущая ошибка
                     # не должна исчезать молча: отправляем причину и снимок страницы.
                     log.info(
-                        "  hh deferred (captcha during apply): %s @ %s",
-                        v.get("title", ""), v.get("company", ""),
+                        "  hh deferred (captcha during apply): vacancy=%s", vid,
                     )
                     result["skipped"] += 1
                     bucket["deferred"] = bucket.get("deferred", 0) + 1
+                    analytics.record_decision(run_id=run_id, vacancy=v, decision="guard_stop")
                     await notify_needs_manual(
                         v,
                         score,
@@ -1816,9 +1851,8 @@ async def do_search(dry_run: bool = False) -> dict:
                 )
                 if source == "hh" and "не удалось подтвердить отклик" in str(apply_message).casefold():
                     log.warning(
-                        "  hh apply unconfirmed; escalating to manual task for %s: %s",
+                        "  hh apply unconfirmed; escalating to manual task for %s",
                         vid,
-                        apply_message,
                     )
                 snapshot = await _save_autoapply_failure_snapshot(
                     source,
@@ -1882,11 +1916,11 @@ async def do_search(dry_run: bool = False) -> dict:
 
                 if source == "hh" and anti_bot_kind:
                     log.info(
-                        "  hh deferred (captcha at apply): %s @ %s",
-                        v.get("title", ""), v.get("company", ""),
+                        "  hh deferred (captcha at apply): vacancy=%s", vid,
                     )
                     result["skipped"] += 1
                     bucket["deferred"] = bucket.get("deferred", 0) + 1
+                    analytics.record_decision(run_id=run_id, vacancy=v, decision="guard_stop")
                     await notify_needs_manual(
                         v,
                         score,
@@ -1945,6 +1979,7 @@ async def do_search(dry_run: bool = False) -> dict:
             result["applied"],
             result["skipped"],
             result["source_stats"],
+            dry_run=dry_run,
         )
         if not dry_run and result["applied"] > 0 and config.TELEGRAM_NOTIFY_AUTO_DIGEST:
             await notify_digest(analytics.summarize())
@@ -1956,7 +1991,7 @@ async def do_search(dry_run: bool = False) -> dict:
             try:
                 import hh_chat_responder as cr
                 chat_summary = await cr.process_all(hh_client)
-                log.info(
+                logging.getLogger("chat_responder").info(
                     "chat-respond piggyback: scanned=%d with_ai=%d sent=%d skipped=%d read_failed=%d",
                     chat_summary.get("chats_scanned", 0),
                     chat_summary.get("with_ai", 0),
@@ -1967,17 +2002,23 @@ async def do_search(dry_run: bool = False) -> dict:
             except HHUnexpectedUI:
                 raise
             except Exception as exc:
-                log.warning("chat-responder failed: %s", exc)
+                logging.getLogger("chat_responder").warning("chat-responder failed: %s", type(exc).__name__)
 
+    except asyncio.CancelledError as exc:
+        analytics.record_failure(analytics.current_search().stage, exc, continued=False)
+        raise
     except HHUnexpectedUI as exc:
+        analytics.record_failure(exc.stage, exc, source="hh", continued=False)
         result["note"] = str(exc)
         await set_hunter_status("hh_ui_blocked", str(exc), "busy")
         _record_search_run(result, dry_run=dry_run, ok=False, error="hh_unexpected_ui")
     except Exception as e:
-        log.error("Search failed: %s", e, exc_info=True)
+        analytics.record_failure(analytics.current_search().stage, e, continued=False)
+        log.error("Search failed: %s", type(e).__name__)
         await set_hunter_status("error", f"Ошибка поиска: {e}", "idle")
-        _record_search_run(result, dry_run=dry_run, ok=False, error=str(e))
+        _record_search_run(result, dry_run=dry_run, ok=False, error=type(e).__name__)
     finally:
+        analytics.search_stage("cleanup")
         try:
             acknowledge_processed_deferred()
         except Exception as exc:
