@@ -7,7 +7,7 @@ import os
 import re
 
 from hh.text import compact_text, normalize_text
-from hh.ui import HHUnexpectedUI, ensure_session_ui
+from hh.ui import HHUnexpectedUI, ensure_session_ui, leave_known_response_ui
 from hh.submit_boundary import arm_submit_boundary, bind_submit_control
 from browser_action_boundary import dispatch_approved, release_boundary
 
@@ -802,9 +802,16 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
     async def operation():
         session._approved_hh_payload = {"resume_id": str(preferred_resume_id).strip(),
                                         "cover_letter": cover_letter, "answers": []}
-        return await _apply_to_vacancy(session, url, cover_letter, response_url,
+        result = await _apply_to_vacancy(session, url, cover_letter, response_url,
             preferred_resume_title, preferred_resume_id, vacancy_context, trace,
             absolute_hh_url=absolute_hh_url, anti_bot_message=anti_bot_message, logger=logger)
+        # Manual/unsent exits can leave the response picker open. Never discard
+        # a dispatched or uncertain submit, nor clean up an unexpected-UI stop.
+        if not result.get("ok") and not session._external_attempt.acting:
+            match = re.search(r"/vacancy/(\d+)", url)
+            if match:
+                await leave_known_response_ui(session, match.group(1))
+        return result
     return await run_native_attempt(session, repository, url, operation)
 
 
