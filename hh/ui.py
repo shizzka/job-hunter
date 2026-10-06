@@ -80,6 +80,46 @@ INSPECT_SCRIPT = "/* codex:hh-ui-inspect */ () => { const inspect = (" + _INSPEC
 CLOSE_SCRIPT = "/* codex:hh-ui-close */ expected => { const item = (" + _INSPECT + ")()[expected.index]; " + "if (!item || item.descriptor.shape !== expected.shape || item.descriptor.kind !== 'optional' || !item.close) return false; item.close.click(); return true; }"
 
 
+# Cleanup is navigation, never a click on a close/submit control. Inspect and
+# leave in one browser task so an awaited check cannot authorize changed DOM.
+LEAVE_RESPONSE_SCRIPT = "/* codex:hh-response-leave */ vacancyId => { const inspect = (" + _INSPECT + r""");
+    const visible = el => [...el.getClientRects()].some(box => box.width > 0 && box.height > 0) &&
+        getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+    const url = new URL(location.href);
+    if (!/^[0-9]+$/.test(vacancyId) || url.origin !== 'https://hh.ru' ||
+        !['/applicant/vacancy_response', '/applicant/vacancy_response_question'].includes(url.pathname) ||
+        url.searchParams.getAll('vacancyId').length !== 1 || url.searchParams.get('vacancyId') !== vacancyId) return false;
+    const forms = [...document.querySelectorAll('form[name="vacancy_response"]')].filter(visible);
+    if (forms.length !== 1 || !forms[0].querySelector('[data-qa="resume-title"]') ||
+        !forms[0].querySelector('[data-qa="vacancy-response-submit-popup"], [data-qa="vacancy-response-letter-submit"]')) return false;
+    const profiles = '[data-qa="applicant-profile-onboarding-modal"], [data-qa="applicant-profile-completion-modal"]';
+    if ([...document.querySelectorAll(profiles)].some(visible)) return false;
+    // Preserve every challenge cue recognized by HHClient, including inline
+    // SmartCaptcha and challenges inside an otherwise known response form.
+    if (document.querySelector('[data-qa="captcha"], iframe[src*="captcha" i], [class*="captcha" i], [id*="captcha" i]')) return false;
+    const body = (document.body.innerText || '').slice(0, 3000).toLowerCase();
+    if (['ddos-guard', 'проверка браузера перед переходом на hh.ru',
+        'не удалось проверить ваш браузер автоматически', 'checking your browser before accessing',
+        'подтвердите, что вы не робот', 'текст с картинки', "i'm not a robot", 'verify you are human',
+        'проверка браузера', 'checking your browser', 'verify your browser'].some(text => body.includes(text))) return false;
+    const dialogs = inspect();
+    if (dialogs.some(item => item.descriptor.kind !== 'response')) return false;
+    const modal = '[role="dialog"], dialog[open], [aria-modal="true"], [data-qa="modal-overlay"], [data-qa="whats-new-modal"]';
+    for (const item of dialogs) {
+        if (item.root.contains(forms[0])) {
+            if (!item.root.matches('[data-qa="modal-overlay"], [data-qa="vacancy-response-popup"], [data-qa="vacancy-response-popup-form"]')) return false;
+            if ([...item.root.querySelectorAll(modal)].some(el => visible(el) && !el.contains(forms[0]))) return false;
+        } else if (!item.root.matches('div[role="dialog"][data-qa="drop-base"]')) return false;
+    }
+    // Only the shared classifier's exact radio-only portal is a known picker.
+    const lists = [...document.querySelectorAll('[role="listbox"]')].filter(visible);
+    if (lists.some(list => !dialogs.some(item => !item.root.contains(forms[0]) &&
+        item.root.matches('div[role="dialog"][data-qa="drop-base"]') && item.root.contains(list)))) return false;
+    location.replace('about:blank');
+    return true;
+}"""
+
+
 class HHUnexpectedUI(RuntimeError):
     def __init__(self, stage, fingerprint):
         self.stage, self.fingerprint = stage, fingerprint
@@ -193,3 +233,24 @@ async def ensure_page_ui(page, stage):
     guard = getattr(page, "_hh_ui_guard", None)
     if guard is not None:
         await guard.ensure(page, stage, allowed=("captcha",))
+
+
+async def leave_known_response_ui(session, vacancy_id: str) -> bool:
+    """Leave an owned, unsent response only; preserve all other UI and latches."""
+    guard = getattr(session, "_ui_guard", None)
+    page = getattr(session, "_page", None)
+    attempt = getattr(session, "_external_attempt", None)
+    if attempt is None or attempt.acting:
+        return False
+    if not isinstance(guard, HHUIGuard) or page is None:
+        return False
+    if guard.blocked is not None:
+        raise guard.blocked
+    try:
+        if await page.evaluate(LEAVE_RESPONSE_SCRIPT, vacancy_id) is not True:
+            return False
+        await page.wait_for_url("about:blank", wait_until="domcontentloaded", timeout=5000)
+        return True
+    except Exception as exc:
+        log.warning("HH response cleanup not confirmed: %s", type(exc).__name__)
+        return False
