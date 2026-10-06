@@ -1715,7 +1715,7 @@ def build_stats_text(
             "🕓 Последний прогон:",
             (
                 f"• {_pretty_value(last_run.get('created_at'))} | {_pretty_runtime_mode(last_run.get('mode', 'search'))} | "
-                f"найдено {last_run.get('found', 0)} | откликов {last_run.get('applied', 0)} | "
+                f"найдено {last_run.get('found', 0)} | откликов {analytics.format_run_count(last_run)} | "
                 f"пропущено {last_run.get('skipped', 0)}"
             ),
         ])
@@ -1733,13 +1733,13 @@ def format_run_summary(run: dict) -> str:
     if funnel:
         lines.extend([
             f"Новых: {funnel.get('new', 0)} | Keyword pass: {funnel.get('keyword_pass', 0)}",
-            f"Matcher pass: {funnel.get('matcher_pass', 0)} | Попыток отклика: {funnel.get('apply_attempt', 0)}",
-            f"Откликов: {funnel.get('applied', 0)} | Вручную: {funnel.get('manual', 0)}",
+            f"Matcher pass: {funnel.get('matcher_pass', 0)} | Попыток отклика: {analytics.format_run_count(run, 'apply_attempt')}",
+            f"Откликов: {analytics.format_run_count(run)} | Вручную: {analytics.format_run_count(run, 'manual')}",
         ])
         if run.get("mode") == "dry-run":
             lines.append(f"Dry-run matches: {funnel.get('dry_run_match', 0)}")
     else:
-        lines.append(f"• Найдено: {run.get('found', 0)} | Отклики: {run.get('applied', 0)} | Пропущено: {run.get('skipped', 0)}")
+        lines.append(f"• Найдено: {run.get('found', 0)} | Отклики: {analytics.format_run_count(run)} | Пропущено: {run.get('skipped', 0)}")
     diagnosis = analytics.zero_apply_diagnosis(run)
     if diagnosis:
         lines.append(diagnosis)
@@ -1749,7 +1749,7 @@ def format_run_summary(run: dict) -> str:
     for source, bucket in (run.get("source_stats") or {}).items():
         observed = bucket.get("funnel") or bucket
         keyword = observed.get("keyword_pass", bucket.get("relevant", "—"))
-        lines.append(f"• {source}: new {observed.get('new', 0)} / keyword {keyword} / matcher {observed.get('matcher_pass', '—')} / applied {observed.get('applied', 0)}")
+        lines.append(f"• {source}: new {observed.get('new', 0)} / keyword {keyword} / matcher {observed.get('matcher_pass', '—')} / applied {analytics.format_run_count(bucket, incomplete=run.get('status') == 'incomplete')}")
     if run.get("error_kind") or run.get("error"):
         lines.append(f"• Ошибка: {run.get('error_kind') or run.get('error')}")
     elif run.get("note"):

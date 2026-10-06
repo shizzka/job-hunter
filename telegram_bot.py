@@ -1397,14 +1397,15 @@ class TelegramBot(
             self._append_debug_log("health_alert_sent", profile_name=self.profile_name, failed=len(failed), recipients=sent)
 
     def _recent_runs(self, profile_name: str, limit: int = 5) -> list[dict]:
-        run_history_file = self._profile(profile_name).run_history_file
+        profile = self._profile(profile_name)
+        run_history_file = profile.run_history_file
         if limit <= 0 or not os.path.exists(run_history_file):
             return []
         try:
             items = read_json_records(run_history_file)
         except OSError:
             return []
-        return list(reversed(analytics.latest_run_records(items)[-limit:]))
+        return list(reversed(analytics.reconcile_run_records(items, events_file=profile.analytics_events_file)[-limit:]))
 
     def _stats_snapshot(self, profile_name: str) -> dict:
         profile = self._profile(profile_name)

@@ -243,7 +243,7 @@ def load_recent_run_history(limit: int = 5) -> list[dict]:
             items.append(json.loads(line))
         except json.JSONDecodeError:
             continue
-    return list(reversed(analytics.latest_run_records(items)[-limit:]))
+    return list(reversed(analytics.reconcile_run_records(items, events_file=config.ANALYTICS_EVENTS_FILE)[-limit:]))
 
 
 def print_stats(days: int | None = None):
@@ -284,7 +284,7 @@ def print_stats(days: int | None = None):
         created_at = run.get("created_at", "—")
         mode = run.get("mode", "search")
         found = run.get("found", 0)
-        applied = run.get("applied", 0)
+        applied = analytics.format_run_count(run)
         skipped = run.get("skipped", 0)
         print(
             f"  {created_at} | {mode:<7} | {status:<3} | "

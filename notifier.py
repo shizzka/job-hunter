@@ -516,13 +516,14 @@ def _format_source_stats(source_stats: dict | None) -> str:
         bucket = source_stats.get(source)
         if not bucket:
             continue
-        if not any(bucket.get(key, 0) for key in ("new", "keyword_pass", "applied", "manual", "rejected")):
+        keyword_pass = bucket.get("keyword_pass", bucket.get("relevant", 0))
+        if not keyword_pass and not any(bucket.get(key, 0) for key in ("new", "applied", "manual", "rejected")):
             continue
         parts = []
         if bucket.get("new"):
             parts.append(f"новых {bucket['new']}")
-        if bucket.get("keyword_pass"):
-            parts.append(f"keyword pass {bucket['keyword_pass']}")
+        if keyword_pass:
+            parts.append(f"keyword pass {keyword_pass}")
         if bucket.get("applied"):
             parts.append(f"откликов {bucket['applied']}")
         if bucket.get("manual"):
@@ -537,13 +538,14 @@ def _format_source_stats(source_stats: dict | None) -> str:
     for source, bucket in source_stats.items():
         if source in order:
             continue
-        if not any(bucket.get(key, 0) for key in ("new", "keyword_pass", "applied", "manual", "rejected")):
+        keyword_pass = bucket.get("keyword_pass", bucket.get("relevant", 0))
+        if not keyword_pass and not any(bucket.get(key, 0) for key in ("new", "applied", "manual", "rejected")):
             continue
         parts = []
         if bucket.get("new"):
             parts.append(f"новых {bucket['new']}")
-        if bucket.get("keyword_pass"):
-            parts.append(f"keyword pass {bucket['keyword_pass']}")
+        if keyword_pass:
+            parts.append(f"keyword pass {keyword_pass}")
         if bucket.get("applied"):
             parts.append(f"откликов {bucket['applied']}")
         if bucket.get("manual"):

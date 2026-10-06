@@ -127,7 +127,7 @@ class SearchObservation:
             sources[source] = bucket
             totals.update(funnel)
         now = _now().isoformat(timespec="seconds")
-        return {"kind": "search", "run_id": self.run_id, "mode": self.mode,
+        entry = {"kind": "search", "run_id": self.run_id, "mode": self.mode,
                 "started_at": self.started_at, "finished_at": None if incomplete else now,
                 "created_at": now, "status": "incomplete" if incomplete else "finished",
                 "ok": False if incomplete else self.ok, "found": self.result.get("found", 0),
@@ -137,6 +137,10 @@ class SearchObservation:
                 "failure_stage": (self.failure_stage or self.stage) if incomplete or not self.ok else "",
                 "error_kind": self.error_kind, "error": "hh_unexpected_ui" if self.error_kind == "HHUnexpectedUI" else self.error_kind,
                 "note": self.result.get("note", ""), "stage_failures": list(self.failures)}
+        if incomplete:
+            return incomplete_run_counts(entry, totals["applied"],
+                {source: bucket["funnel"]["applied"] for source, bucket in sources.items()})
+        return entry
 
 
 @contextmanager
@@ -233,12 +237,14 @@ def record_unexpected_ui(fingerprint, stage):
 
 
 def zero_apply_diagnosis(run):
+    if run.get("status") == "incomplete" and run.get("applied_count_status") != "exact":
+        return ""
     funnel = run.get("funnel") or {}
     new = funnel.get("new", run.get("new"))
     found = run.get("found", 0)
     retries = funnel.get("retry_existing", 0)
-    applied = funnel.get("applied", run.get("applied", 0))
-    if not (new or found or retries) or applied or run.get("mode") == "dry-run":
+    applied = funnel.get("applied", run.get("applied"))
+    if applied is None or not (new or found or retries) or applied or run.get("mode") == "dry-run":
         return ""
     reasons = run.get("reason_breakdown") or {}
     lines = [f"0 откликов: новых {new}" if new is not None else f"0 откликов: найдено {found}"]
@@ -293,6 +299,8 @@ def latest_run_records(records):
     """Fold append-only start/finish checkpoints by ID; preserve legacy records."""
     seen, result = set(), []
     for record in reversed(records):
+        if not isinstance(record, dict):
+            continue
         key = record.get("run_id")
         if key and key in seen:
             continue
@@ -300,6 +308,96 @@ def latest_run_records(records):
             seen.add(key)
         result.append(record)
     return list(reversed(result))
+
+
+def incomplete_run_counts(record, minimum=0, source_minimum=None, *, zero_proven=False):
+    """Annotate a surviving checkpoint; never treat absence of receipts as zero."""
+    result = dict(record)
+    result["applied_count_status"] = "exact" if zero_proven else ("minimum" if minimum else "unknown")
+    result["applied"] = minimum if minimum or zero_proven else None
+    result["funnel"] = {**(record.get("funnel") or {}), "applied": result["applied"]}
+    for field in ("apply_attempt", "manual"):
+        result["funnel"][field] = result["funnel"].get(field) or None
+        if field in result:
+            result[field] = result[field] or None
+    source_minimum = source_minimum or {}
+    sources = {}
+    for source in sorted(set(record.get("source_stats") or {}) | set(source_minimum)):
+        bucket = dict((record.get("source_stats") or {}).get(source, {}))
+        count = source_minimum.get(source, 0)
+        bucket["applied_count_status"] = "exact" if zero_proven else ("minimum" if count else "unknown")
+        bucket["applied"] = count if count or zero_proven else None
+        bucket["funnel"] = {**(bucket.get("funnel") or {}), "applied": bucket["applied"]}
+        for field in ("apply_attempt", "manual"):
+            bucket["funnel"][field] = bucket["funnel"].get(field) or None
+            if field in bucket:
+                bucket[field] = bucket[field] or None
+        sources[source] = bucket
+    result["source_stats"] = sources
+    return result
+
+
+def format_run_count(run, field="applied", *, incomplete=None):
+    """A display value, not a business counter: exact, lower bound, or unknown."""
+    value = (run.get("funnel") or {}).get(field, run.get(field, None if field == "applied" else 0))
+    incomplete = run.get("status") == "incomplete" if incomplete is None else incomplete
+    if incomplete:
+        if field == "applied" and run.get("applied_count_status") == "exact":
+            return str(value) if value is not None else "неизвестно"
+        return f">={value}" if isinstance(value, int) and value > 0 else "неизвестно"
+    return str(value) if value is not None else "неизвестно"
+
+
+def reconcile_run_records(records, *, events_file=None):
+    """Read-only reconciliation of missing finals using the existing run journal."""
+    records = latest_run_records(records)
+    pending = {record.get("run_id") for record in records if record.get("status") == "incomplete" and record.get("run_id")}
+    if not pending:
+        return records
+    events = [event for event in _iter_events(events_file) if event.get("run_id") in pending]
+    receipts = [event for event in events if event.get("mode") != "dry-run" and not event.get("dry_run") and (
+        (event.get("event") == "application_result" and event.get("outcome") == "sent") or
+        (event.get("event") == "decision" and event.get("decision") == "applied_auto"))]
+    # Both the workflow receipt and its terminal decision describe the same action.
+    aliases = {(event["run_id"], event["application_id"]): (event.get("source", ""), str(event["vacancy_id"]))
+        for event in receipts if event.get("application_id") and event.get("vacancy_id")}
+    keys = defaultdict(set)
+    unidentified = defaultdict(set)
+    for event in receipts:
+        run_id, source = event["run_id"], event.get("source", "")
+        if event.get("vacancy_id"):
+            key = (source, str(event["vacancy_id"]))
+        elif event.get("application_id"):
+            key = aliases.get((run_id, event["application_id"]), (source, "application:" + event["application_id"]))
+        else:
+            unidentified[run_id].add(source)
+            continue
+        keys[run_id].add(key)
+    result = []
+    for record in records:
+        if record.get("status") != "incomplete":
+            result.append(record)
+            continue
+        run_id = record.get("run_id")
+        counts = Counter(source for source, key in keys[run_id] if source)
+        for source in unidentified[run_id]:
+            if source:
+                counts[source] = max(counts[source], 1)
+        minimum = max(sum(counts.values()), len(keys[run_id]), int(bool(unidentified[run_id])),
+            record.get("applied") or 0)
+        zero_proven = False
+        for event in events:
+            if event.get("run_id") != run_id or event.get("event") != "search_finished":
+                continue
+            funnel = event.get("funnel") or {}
+            count = funnel.get("applied", event.get("applied"))
+            if type(count) is int and event.get("mode") != "dry-run":
+                minimum = max(minimum, count)
+            if (event.get("status") == "finished" and type(count) is int and count == 0
+                    and type(funnel.get("apply_attempt")) is int and funnel["apply_attempt"] == 0):
+                zero_proven = True
+        result.append(incomplete_run_counts(record, minimum, counts, zero_proven=zero_proven and minimum == 0))
+    return result
 
 
 
