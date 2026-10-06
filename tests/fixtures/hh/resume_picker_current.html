@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru"><meta charset="utf-8"><body>
+<!-- Sanitized 2026-10-06 HH structure: collapsed cell and a dynamic Magritte portal.
+     All titles, identities and amounts below are synthetic. No private HTML copied. -->
+<form name="vacancy_response">
+  <h1>Отклик на вакансию</h1>
+  <div id="picker-toggle" role="button" tabindex="0">
+    <div data-qa="cell"><div data-qa="cell-left-side">
+      <div data-qa="resume-title">Техник-электрик</div>
+      <div data-qa="resume-detail">100000 ₽</div>
+    </div></div>
+  </div>
+  <textarea name="letter"></textarea>
+  <button type="submit" data-qa="vacancy-response-submit-popup">Откликнуться</button>
+</form>
+<script>
+window.submitCalls = 0;
+window.toggleCalls = 0;
+window.selectedId = 'electrician-id';
+window.options = [
+  {id: 'electrician-id', title: 'Техник-электрик'},
+  {id: 'qa-target', title: 'Synthetic QA'},
+  {id: 'qa-other', title: 'Synthetic QA'}
+];
+window.mode = '';
+function togglePicker() {
+  window.toggleCalls++;
+  const old = document.querySelector('[data-qa="drop-base"]');
+  if (old) {old.remove(); return;}
+  const portal = document.createElement('div');
+  portal.setAttribute('role', 'dialog');
+  portal.dataset.qa = 'drop-base';
+  portal.innerHTML = '<div data-qa="drop"><div role="listbox" data-qa="magritte-select-option-list"></div></div>';
+  const list = portal.querySelector('[role="listbox"]');
+  for (const option of window.options) {
+    const label = document.createElement('label');
+    label.setAttribute('role', 'option');
+    label.setAttribute('data-magritte-select-option', option.id);
+    label.dataset.qa = 'magritte-select-option-' + option.id;
+    label.setAttribute('aria-selected', String(option.id === window.selectedId));
+    const radio = document.createElement('input');
+    radio.type = 'radio'; radio.value = option.id;
+    radio.checked = option.id === window.selectedId;
+    const title = document.createElement('div');
+    title.dataset.qa = 'resume-title'; title.textContent = option.title;
+    const detail = document.createElement('div');
+    detail.dataset.qa = 'resume-detail'; detail.textContent = '100000 ₽';
+    label.append(radio, title, detail);
+    label.addEventListener('click', event => {
+      event.preventDefault();
+      window.selectedId = option.id;
+      document.querySelector('form [data-qa="resume-title"]').textContent = option.title;
+      portal.remove();
+      if (window.mode === 'remove-after-click') {
+        window.options = window.options.filter(item => item.id !== option.id);
+        window.selectedId = 'electrician-id';
+      }
+    });
+    list.append(label);
+  }
+  document.body.append(portal);
+}
+document.querySelector('#picker-toggle').addEventListener('click', togglePicker);
+document.querySelector('form').addEventListener('submit', event => {
+  event.preventDefault(); window.submitCalls++;
+});
+</script>
+</body></html>

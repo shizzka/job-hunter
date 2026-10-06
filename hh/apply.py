@@ -1043,10 +1043,12 @@ async def _apply_to_vacancy(
             await session._click_with_fallbacks(resume_select, "resume_select")
             await session._page.wait_for_timeout(1000)
 
-        resume_items = await collect_resume_items()
-
         if await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
             return True
+
+        # Exact readback can open HH's portalled picker. Refetch its current
+        # options before matching; a stale collapsed list would toggle it shut.
+        resume_items = await collect_resume_items()
 
         if not title_norm and not id_norm:
             if resume_items:
@@ -1082,9 +1084,16 @@ async def _apply_to_vacancy(
 
         if best_item is None:
             return False
-        if not await session._click_with_fallbacks(best_item, "resume_item_preferred"):
+        # A detached/failed picker option must not be clicked via a JS fallback.
+        # Keep the existing UI guard and require fresh exact-ID readback below.
+        if await ensure_session_ui(session, "resume_item_preferred", allowed=("response", "captcha")):
+            return False
+        try:
+            await best_item.click(timeout=5000)
+        except Exception:
             return False
         await session._page.wait_for_timeout(500)
+        await ensure_session_ui(session, "resume_item_selected", allowed=("response", "captcha"))
         return await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title)
 
     try:
