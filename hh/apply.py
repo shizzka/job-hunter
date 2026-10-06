@@ -807,7 +807,7 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
             absolute_hh_url=absolute_hh_url, anti_bot_message=anti_bot_message, logger=logger)
         # Manual/unsent exits can leave the response picker open. Never discard
         # a dispatched or uncertain submit, nor clean up an unexpected-UI stop.
-        if not result.get("ok") and not session._external_attempt.acting:
+        if not result.get("ok") and not result.get("uncertain") and not session._external_attempt.acting:
             match = re.search(r"/vacancy/(\d+)", url)
             if match:
                 await leave_known_response_ui(session, match.group(1))
