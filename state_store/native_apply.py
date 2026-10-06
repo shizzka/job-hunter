@@ -33,6 +33,7 @@ class NativeAttempt:
         self.repository, self.url, self.owner = repository, url, owner
         self.approval = approval
         self.acting = False
+        self.uncertain = False
         self.proven_no_action = False
         self.command_started = False
         self.no_action = no_action
@@ -71,14 +72,22 @@ async def run_native_attempt(client, repository, url, operation):
         result = await operation()
         if attempt.proven_no_action:
             result = {**result, 'ok': False, 'uncertain': False}
-        status = 'completed' if result.get('ok') else ('uncertain' if attempt.acting and not attempt.proven_no_action else 'failed')
-        repository.transition(url, owner, status)
+        state = repository.get(url)
+        uncertain = attempt.uncertain or result.get('uncertain') is True or state.get('status') == 'uncertain'
+        status = 'uncertain' if uncertain else ('completed' if result.get('ok') else ('uncertain' if attempt.acting and not attempt.proven_no_action else 'failed'))
+        # Cleanup can observe a durable uncertain receipt after operation began.
+        # A terminal uncertain owner must never be rewritten as failed/completed.
+        if state.get('status') != 'uncertain' or state.get('owner') != owner:
+            repository.transition(url, owner, status)
         if status == 'uncertain':
             result = {**result, 'ok': False, 'uncertain': True}
         return result
     except BaseException as exc:
-        repository.transition(url, owner, 'uncertain' if attempt.acting and not attempt.proven_no_action else 'failed')
-        if attempt.acting and not attempt.proven_no_action and isinstance(exc, Exception):
+        state = repository.get(url)
+        uncertain = attempt.uncertain or state.get('status') == 'uncertain' or (attempt.acting and not attempt.proven_no_action)
+        if state.get('status') != 'uncertain' or state.get('owner') != owner:
+            repository.transition(url, owner, 'uncertain' if uncertain else 'failed')
+        if uncertain and isinstance(exc, Exception):
             return {'ok': False, 'uncertain': True, 'message': 'Результат отправки не подтверждён; нужна ручная сверка'}
         raise
     finally:
