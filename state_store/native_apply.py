@@ -179,9 +179,15 @@ async def run_native_attempt(client, repository, url, operation):
                             getattr(client, '_manual_apply_no_action', None), client)
     client._external_attempt = attempt
     monitor = getattr(attempt.page, '_hh_action_monitor', None)
-    if monitor is not None:
-        monitor.last_attempt = attempt
     try:
+        if monitor is not None and repository.source == 'hh':
+            # Retain every exact owned receipt before browser callbacks can
+            # arrive, rather than replacing the only evidence on this Page.
+            try:
+                monitor.register(attempt)
+            except Exception:
+                attempt.uncertain = True
+                raise
         result = await operation()
         monitor = getattr(attempt.page, '_hh_action_monitor', None)
         watch = getattr(attempt.context, '_hh_action_watch', None)

@@ -45,18 +45,29 @@ class PageActions:
     unknown: bool = False
     owners: set[str] = field(default_factory=set)
     last_attempt: object = None
+    attempts: dict[str, object] = field(default_factory=dict)
+
+    def register(self, attempt):
+        watch = getattr(self.page.context, '_hh_action_watch', None)
+        if (attempt.client is not self.session or attempt.page is not self.page
+                or attempt.context is not self.page.context or attempt.repository.source != 'hh'
+                or not attempt.owner or watch is None or watch.session is not self.session
+                or watch.context is not attempt.context or watch.pages.get(self.page) is not self
+                or (attempt.owner in self.attempts and self.attempts[attempt.owner] is not attempt)):
+            attempt.uncertain = True
+            raise RuntimeError('HH native action monitor ownership changed')
+        self.attempts[attempt.owner] = attempt
+        self.last_attempt = attempt
 
     def mark_unknown(self):
         self.unknown = True
         self.session._hh_recovery_stop_reason = 'possible_external_action'
         self.session._hh_recovery_uncertain = True
-        live = getattr(self.session, '_external_attempt', None)
-        observed = live if live is not None and live.page is self.page else self.last_attempt
-        _preserve_unknown_attempt(observed)
-        if getattr(self.session, '_page', None) is not self.page:
-            watch = getattr(self.page.context, '_hh_action_watch', None)
-            if watch is not None:
-                watch.mark_unknown()
+        # A callback on the current document may name an earlier vacancy or
+        # one formerly shown on another Page in this same authenticated context.
+        watch = getattr(self.page.context, '_hh_action_watch', None)
+        if watch is not None and watch.session is self.session and watch.context is self.page.context:
+            watch.mark_unknown()
 
     def observe(self, request):
         attempt = getattr(self.session, '_external_attempt', None)
@@ -74,6 +85,7 @@ class PageActions:
 @dataclass
 class ContextActions:
     session: object
+    context: object
     pages: dict = field(default_factory=dict)
     unknown: bool = False
 
@@ -81,17 +93,15 @@ class ContextActions:
         self.unknown = True
         self.session._hh_recovery_stop_reason = 'possible_external_action'
         self.session._hh_recovery_uncertain = True
-        attempt = getattr(self.session, '_external_attempt', None)
-        if attempt is None:
-            page = getattr(self.session, '_page', None)
-            monitor = self.pages.get(page)
-            attempt = monitor.last_attempt if monitor is not None else None
-        candidates = [attempt, *(monitor.last_attempt for monitor in self.pages.values())]
-        observed = set()
-        for candidate in candidates:
-            if candidate is not None and candidate.owner not in observed:
-                observed.add(candidate.owner)
-                _preserve_unknown_attempt(candidate)
+        for page, monitor in self.pages.items():
+            if (monitor.session is not self.session or monitor.page is not page
+                    or page.context is not self.context):
+                continue
+            for owner, attempt in monitor.attempts.items():
+                if (attempt.owner == owner and attempt.client is self.session
+                        and attempt.page is page and attempt.context is self.context
+                        and attempt.repository.source == 'hh'):
+                    _preserve_unknown_attempt(attempt)
 
 
 def _preserve_unknown_attempt(attempt):
@@ -143,7 +153,7 @@ def monitor_page(session, page):
     context = page.context
     watch = getattr(context, '_hh_action_watch', None)
     if watch is None:
-        watch = ContextActions(session)
+        watch = ContextActions(session, context)
         context._hh_action_watch = watch
         def request_seen(request):
             try:

@@ -158,7 +158,7 @@ def run_case(monkeypatch, home, point, stop_outcome='success'):
     vacancy = {'id': '4', 'source': 'hh', 'title': 'Synthetic', 'company': 'Synthetic', 'url': URL}
     candidates = [vacancy]
     if point not in {'known_questions', 'known_guard'} and not point.endswith('_cleanup'):
-        candidates.append({**vacancy, 'id': '5', 'url': 'https://hh.ru/vacancy/5'})
+        candidates.append({**vacancy, 'id': '5', 'title': 'Synthetic next vacancy', 'url': 'https://hh.ru/vacancy/5'})
     monkeypatch.setattr(agent, 'HHClient', lambda: client)
     monkeypatch.setattr(agent.search_pipeline, 'collect_all', AsyncMock(return_value=candidates))
     monkeypatch.setattr(apply_orchestrator, 'dispatch_apply', DISPATCH)

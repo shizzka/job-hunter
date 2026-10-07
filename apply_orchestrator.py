@@ -126,12 +126,55 @@ def apply_result_with_current_uncertainty(vacancy: dict, hh_client, result: dict
         context = getattr(hh_client, "_context", None)
         monitor = getattr(page, "_hh_action_monitor", None)
         watch = getattr(context, "_hh_action_watch", None)
-        if monitor is not None and (monitor.session is not hh_client or monitor.unknown or monitor.owners):
+        if monitor is not None and (monitor.session is not hh_client or monitor.unknown):
             return uncertain()
         if watch is not None and (watch.session is not hh_client or watch.unknown):
             return uncertain()
         active = getattr(hh_client, "_external_attempt", None)
+        active_owner = None
+        earlier_monitor = None
+        if owned_attempt is not None:
+            earlier_monitor = getattr(owned_attempt.page, "_hh_action_monitor", None)
+            earlier_watch = getattr(owned_attempt.context, "_hh_action_watch", None)
+            if owned_attempt.page is not None and (
+                    earlier_monitor is None or (context is not None and (
+                        page is None or monitor is None or monitor.page is not page or page.context is not context
+                        or watch is None or watch.context is not context or watch.pages.get(page) is not monitor))):
+                return uncertain()
+            if earlier_monitor is not None and (
+                    earlier_monitor.session is not hh_client or earlier_monitor.page is not owned_attempt.page
+                    or owned_attempt.page.context is not owned_attempt.context or earlier_monitor.unknown
+                    or earlier_watch is None or earlier_watch.session is not hh_client
+                    or earlier_watch.context is not owned_attempt.context
+                    or earlier_watch.pages.get(owned_attempt.page) is not earlier_monitor
+                    or earlier_monitor.attempts.get(owned_attempt.owner) is not owned_attempt
+                    or (earlier_monitor is not monitor and earlier_monitor.owners)):
+                return uncertain()
         if owned_attempt is not None and active is not None and active is not owned_attempt:
+            # A later legitimate attempt does not invalidate this earlier
+            # receipt. Both identities must be retained by the same context's
+            # exact owned registry, including the earlier Page after recovery.
+            if (active.client is not hh_client or active.context is not context or active.page is not page
+                    or active.repository.source != "hh" or not active.owner or active.uncertain
+                    or watch is None or watch.session is not hh_client or watch.context is not context
+                    or monitor is None or monitor.page is not page or page.context is not context
+                    or watch.pages.get(page) is not monitor
+                    or monitor.attempts.get(active.owner) is not active
+                    or owned_attempt.client is not hh_client or owned_attempt.context is not context
+                    or owned_attempt.repository.source != "hh" or not owned_attempt.owner
+                    or earlier_monitor is None or earlier_monitor.session is not hh_client
+                    or earlier_monitor.page is not owned_attempt.page or owned_attempt.page.context is not context
+                    or earlier_monitor.unknown or earlier_monitor.owners - {active.owner}
+                    or watch.pages.get(owned_attempt.page) is not earlier_monitor
+                    or earlier_monitor.attempts.get(owned_attempt.owner) is not owned_attempt):
+                return uncertain()
+            active_state = active.repository.get(active.url)
+            if (active_state.get("owner") != active.owner or active_state.get("status") not in {"preparing", "acting"}
+                    or (active_state.get("status") == "acting") != bool(active.acting)
+                    or (monitor.owners and not active.acting)):
+                return uncertain()
+            active_owner = active.owner
+        if monitor is not None and monitor.owners and (active_owner is None or monitor.owners - {active_owner}):
             return uncertain()
         attempt = owned_attempt if owned_attempt is not None else active
         if attempt is None and monitor is not None:
