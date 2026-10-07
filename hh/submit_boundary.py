@@ -10,10 +10,18 @@ async def arm_submit_boundary(session):
     await install_boundary(session._page, expected['boundary_id'])
     from hh.apply import SELECTED_RESUME_SCRIPT
     from hh.forms import VERIFY_ANSWERS_SCRIPT
+    from hh.ui import _INSPECT
+    from hh.recovery import CHALLENGE_SELECTOR, CHALLENGE_TEXT
+    import json
     script = r'''expected => {
         /* codex:hh-submit-arm */
         const identity = (__IDENTITY__);
         const answersMatch = (__ANSWERS__);
+        const inspectUI = (__UI__);
+        const challengeTexts = __CHALLENGE_TEXT__;
+        const uiAdmissible = () => !document.querySelector(__CHALLENGE_SELECTOR__) &&
+            !challengeTexts.some(text => (document.body?.innerText || '').slice(0, 3000).toLowerCase().includes(text)) &&
+            inspectUI().every(item => item.descriptor.kind === 'response');
         const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
         const forms = [...document.querySelectorAll('form[name="vacancy_response"]')].filter(visible);
         const dialogs = [...document.querySelectorAll('[role="dialog"]')].filter(el => visible(el) &&
@@ -58,7 +66,7 @@ async def arm_submit_boundary(session):
         const unchanged = () => {
             const current = controls();
             return root.isConnected && location.href === url && current.length === approvedControls.length &&
-                current.every((el,index) => el === approvedControls[index]) && valid() && snapshot() === approved;
+                current.every((el,index) => el === approvedControls[index]) && valid() && snapshot() === approved && uiAdmissible();
         };
         const submitterState = el => el ? JSON.stringify([el.name,el.value,el.type,el.getAttribute('form'),
             el.getAttribute('formaction'),el.getAttribute('formmethod'),el.getAttribute('formenctype'),el.getAttribute('formtarget')]) : null;
@@ -81,7 +89,7 @@ async def arm_submit_boundary(session):
             (name !== 'submit' || event.target === form && event.submitter === approval.control) &&
             payload(name === 'submit' ? event.submitter : target?.form === form && target.type === 'submit' ? target : null) === approval.payload;
         return window.__jhActionBoundary.register(approval);
-    }'''.replace('__IDENTITY__', SELECTED_RESUME_SCRIPT).replace('__ANSWERS__', VERIFY_ANSWERS_SCRIPT)
+    }'''.replace('__IDENTITY__', SELECTED_RESUME_SCRIPT).replace('__ANSWERS__', VERIFY_ANSWERS_SCRIPT).replace('__UI__', _INSPECT).replace('__CHALLENGE_SELECTOR__', json.dumps(CHALLENGE_SELECTOR)).replace('__CHALLENGE_TEXT__', json.dumps(CHALLENGE_TEXT))
     script = script.replace('/* codex:hh-submit-arm */', '/* codex:hh-submit-arm */' + RUNTIME + ';')
     try:
         ok = await session._page.evaluate(script, expected) is True
@@ -97,12 +105,35 @@ async def arm_submit_boundary(session):
 async def bind_submit_control(session, element, boundary_id=None):
     if getattr(session, '_approved_hh_payload', None) is None:
         return True
+    page = session._page
+    attempt = getattr(session, '_external_attempt', None)
     boundary_id = boundary_id or session._submit_boundary_id
-    return await element.evaluate(r"""(el,id) => {
+    script = r"""(el,id) => {
         /* codex:hh-submit-control */
         const approval = window.__jhActionBoundary?.get(id);
-        return !!approval && approval.bindControl(el);
-    }""", boundary_id) is True
+        if (!approval || !approval.bindControl(el)) return false;
+        const form = approval.form;
+        const submitter = el?.form === form && el.type === 'submit' ? el : null;
+        return {bound:true, request:form ? {
+            id,
+            url:submitter?.hasAttribute('formaction') ? submitter.formAction : form.action,
+            method:(submitter?.hasAttribute('formmethod') ? submitter.formMethod : form.method).toUpperCase(),
+            enctype:submitter?.hasAttribute('formenctype') ? submitter.formEnctype : form.enctype,
+            entries:JSON.parse(approval.payload)
+        } : null};
+    }"""
+    receipt = (await element.evaluate(script, boundary_id) if element is not None else
+               await page.evaluate('id => (' + script + ')(null,id)', boundary_id))
+    if page is not session._page or getattr(session, '_external_attempt', None) is not attempt:
+        return False
+    if isinstance(receipt, dict) and receipt.get('bound') is True:
+        descriptor = receipt.get('request')
+        if isinstance(descriptor, dict) and descriptor.get('id') == boundary_id and attempt is not None:
+            page._hh_request_approval = {**descriptor, 'owner': attempt.owner, 'used': False}
+        return True
+    # Old synthetic adapters may model admission as a boolean; no request
+    # proof is installed, so any real mutation still fails closed.
+    return receipt is True
 
 
 async def submit_boundary_passed(session):

@@ -17,7 +17,7 @@ import config
 import resume_versions
 from state_store.json_store import JsonStore
 from state_store.private_journal import append_json, read_json_records
-from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket
+from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket, apply_result_is_uncertain
 
 log = logging.getLogger("analytics")
 
@@ -283,7 +283,8 @@ async def tracked_call(stage, run_id, vacancy, function, *args, **kwargs):
                        vacancy_id=str(vacancy.get("id") or ""),
                        source=vacancy.get("source", "unknown")):
         result = await function(*args, **kwargs)
-        if stage == "apply" and isinstance(result, dict) and result.get("ok") and not result.get("already_applied"):
+        if (stage == "apply" and isinstance(result, dict) and result.get("ok")
+                and not result.get("already_applied") and not apply_result_is_uncertain(result)):
             count_application(vacancy)
         return result
 

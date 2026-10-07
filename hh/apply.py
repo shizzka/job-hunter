@@ -7,7 +7,7 @@ import os
 import re
 
 from hh.text import compact_text, normalize_text
-from hh.ui import HHUnexpectedUI, ensure_session_ui, leave_known_response_ui
+from hh.ui import HHUnexpectedUI, ensure_session_ui
 from hh.submit_boundary import arm_submit_boundary, bind_submit_control
 from browser_action_boundary import dispatch_approved, release_boundary
 
@@ -102,12 +102,12 @@ async def click_with_fallbacks(session, element, label: str, *, logger, before_c
     if external:
         strategies = strategies[:1]
     for strategy_name, action in strategies:
-        if await ensure_session_ui(session, "click:" + label, allowed=("response", "captcha")):
+        if await ensure_session_ui(session, "click:" + label, allowed=("response",)):
             # Closing can replace the form/selection. Never force an old handle;
             # the caller may refetch through the guarded DOM-submit fallback.
             logger.warning("%s handle invalidated by modal close; refetch required", label)
             return False
-        if await ensure_session_ui(session, "verified_click:" + label, allowed=("response", "captcha")):
+        if await ensure_session_ui(session, "verified_click:" + label, allowed=("response",)):
             return False
         # UI inspection itself awaits: make the identity/approval check last.
         # The capture barrier still blocks unknown UI appearing during it.
@@ -149,7 +149,7 @@ async def click_with_fallbacks(session, element, label: str, *, logger, before_c
             if boundary_id:
                 await release_boundary(session._page, boundary_id)
         await session._page.wait_for_timeout(1000)
-        await ensure_session_ui(session, "after_click:" + label, allowed=("response", "captcha"))
+        await ensure_session_ui(session, "after_click:" + label, allowed=("response",))
         return True
 
     return False
@@ -479,8 +479,8 @@ async def expand_cover_letter_input(session) -> bool:
 
 
 async def submit_response_form_via_dom(session, *, logger, before_submit=None) -> bool:
-    await ensure_session_ui(session, "dom_submit", allowed=("response", "captcha"))
-    if await ensure_session_ui(session, "verified_dom_submit", allowed=("response", "captcha")):
+    await ensure_session_ui(session, "dom_submit", allowed=("response",))
+    if await ensure_session_ui(session, "verified_dom_submit", allowed=("response",)):
         return False
     if before_submit is not None and not await before_submit():
         return False
@@ -494,7 +494,7 @@ async def submit_response_form_via_dom(session, *, logger, before_submit=None) -
         if button is not None and not await bind_submit_control(session, button, boundary_id):
             return False
         if button is None:
-            if await session._page.evaluate("id => window.__jhActionBoundary?.get(id)?.bindControl(null)", boundary_id) is not True:
+            if not await bind_submit_control(session, None, boundary_id):
                 return False
         attempt = getattr(session, '_external_attempt', None)
         if attempt is not None:
@@ -802,17 +802,54 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
     async def operation():
         session._approved_hh_payload = {"resume_id": str(preferred_resume_id).strip(),
                                         "cover_letter": cover_letter, "answers": []}
-        result = await _apply_to_vacancy(session, url, cover_letter, response_url,
-            preferred_resume_title, preferred_resume_id, vacancy_context, trace,
-            absolute_hh_url=absolute_hh_url, anti_bot_message=anti_bot_message, logger=logger)
-        # Manual/unsent exits can leave the response picker open. Never discard
-        # a dispatched or uncertain submit, nor clean up an unexpected-UI stop.
-        if not result.get("ok") and not result.get("uncertain") and not session._external_attempt.acting:
-            match = re.search(r"/vacancy/(\d+)", url)
-            if match:
-                await leave_known_response_ui(session, match.group(1))
+        from hh.recovery import abandon_page, recover_unexpected_ui
+        attempt = session._external_attempt
+        try:
+            result = await _apply_to_vacancy(session, url, cover_letter, response_url,
+                preferred_resume_title, preferred_resume_id, vacancy_context, trace,
+                absolute_hh_url=absolute_hh_url, anti_bot_message=anti_bot_message, logger=logger)
+        except HHUnexpectedUI as exc:
+            await recover_unexpected_ui(session, exc, attempt=attempt)
+            raise
+        except Exception as exc:
+            # A preparation exception can leave the same stale response DOM
+            # as a normal manual exit. Resolve ownership before NativeAttempt
+            # finally clears it, and never navigate that old page afterward.
+            recovered = await abandon_page(session, attempt=attempt)
+            exc.hh_recovered = recovered.recovered
+            exc.hh_stop_reason = recovered.reason
+            exc.hh_uncertain = recovered.uncertain
+            if recovered.recovered:
+                raise
+            return {"ok": False, "uncertain": recovered.uncertain,
+                    "hh_hard_stop": True, "hh_recovery_reason": recovered.reason,
+                    "message": "Подготовка HH остановлена; нужна ручная проверка"}
+        explicit_uncertain = bool(result.get("uncertain")) or result.get("submission_status") in {"uncertain", "preparing", "acting"}
+        if explicit_uncertain:
+            result = {**result, "ok": False, "uncertain": True, "hh_hard_stop": True}
+        elif result.get("anti_bot_kind"):
+            # Captcha/auth challenges require intervention. Do not even begin
+            # a page-replacement recovery after detecting one.
+            result = {**result, "ok": False, "hh_hard_stop": True,
+                      "hh_recovery_reason": "captcha_or_antibot"}
+        elif not result.get("ok"):
+            if attempt.acting or attempt.command_started or attempt.uncertain:
+                # Even an owned zero-dispatch receipt must not cause recovery
+                # while a NativeAttempt is acting. Final receipt handles it.
+                result = {**result, "hh_hard_stop": True,
+                          "hh_recovery_reason": "native_attempt_already_acting"}
+            else:
+                recovered = await abandon_page(session, attempt=attempt)
+                result = {**result, "hh_page_recovered": recovered.recovered}
+                if not recovered.recovered:
+                    result.update(hh_hard_stop=True, hh_recovery_reason=recovered.reason)
+                    if recovered.uncertain:
+                        result.update(ok=False, uncertain=True)
         return result
-    return await run_native_attempt(session, repository, url, operation)
+    result = await run_native_attempt(session, repository, url, operation)
+    if bool(result.get('uncertain')) or result.get('submission_status') in {'uncertain', 'preparing', 'acting'}:
+        return {**result, 'ok': False, 'uncertain': True, 'hh_hard_stop': True}
+    return result
 
 
 async def _apply_to_vacancy(
@@ -915,7 +952,7 @@ async def _apply_to_vacancy(
 
     async def answer_questions_with_verified_resume():
         nonlocal cover_letter_filled
-        await ensure_session_ui(session, "answer_questions", allowed=("response", "captcha"))
+        await ensure_session_ui(session, "answer_questions", allowed=("response",))
         if wants_specific_resume and not await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
             return {"ok": False, "message": "Резюме в анкете не подтверждено — нужна ручная проверка"}
         if cover_letter:
@@ -1093,18 +1130,18 @@ async def _apply_to_vacancy(
             return False
         # A detached/failed picker option must not be clicked via a JS fallback.
         # Keep the existing UI guard and require fresh exact-ID readback below.
-        if await ensure_session_ui(session, "resume_item_preferred", allowed=("response", "captcha")):
+        if await ensure_session_ui(session, "resume_item_preferred", allowed=("response",)):
             return False
         try:
             await best_item.click(timeout=5000)
         except Exception:
             return False
         await session._page.wait_for_timeout(500)
-        await ensure_session_ui(session, "resume_item_selected", allowed=("response", "captcha"))
+        await ensure_session_ui(session, "resume_item_selected", allowed=("response",))
         return await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title)
 
     try:
-        await ensure_session_ui(session, "apply_before_navigation", allowed=("response", "captcha"))
+        await ensure_session_ui(session, "apply_before_navigation", allowed=("response",))
         await session._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=30000)
         trace_event(
             "VACANCY_NAVIGATION",
@@ -1125,32 +1162,16 @@ async def _apply_to_vacancy(
         )
 
     await session._page.wait_for_timeout(3000)
-    await ensure_session_ui(session, "vacancy_open", allowed=("response", "captcha"))
+    await ensure_session_ui(session, "vacancy_open", allowed=("response",))
     await save_debug_snapshot("debug_apply_page")
 
     anti_bot_kind = await session._detect_anti_bot_kind()
     if anti_bot_kind:
         logger.warning("hh.ru anti-bot (%s) encountered on vacancy page: %s", anti_bot_kind, session._page.url)
-        if response_url and response_url != vacancy_url:
-            logger.info("Retrying apply flow via direct response URL: %s", response_url)
-            try:
-                await session._page.goto(
-                    response_url,
-                    wait_until="domcontentloaded",
-                    timeout=30000,
-                )
-            except Exception as e:
-                logger.warning("Direct response page nav issue: %s", e)
-            await session._page.wait_for_timeout(3000)
-            await ensure_session_ui(session, "response_open", allowed=("response", "captcha"))
-            await save_debug_snapshot("debug_apply_response_page")
-    anti_bot_kind = await session._detect_anti_bot_kind()
-    anti_bot_kind = await session._handle_anti_bot_with_solver(anti_bot_kind, stage="vacancy_page")
-    if anti_bot_kind:
         message = anti_bot_message(anti_bot_kind, "на странице вакансии")
         session._remember_antibot_signal(anti_bot_kind, "vacancy_page", message)
         trace_event("HH_ANTIBOT", ok=False, kind=anti_bot_kind, antibot_stage="vacancy_page")
-        return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind}
+        return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind, "hh_hard_stop": True}
 
     vacancy_id_match = re.search(r"/vacancy/(\d+)", vacancy_url)
     expected_vacancy_id = vacancy_id_match.group(1) if vacancy_id_match else ""
@@ -1215,6 +1236,9 @@ async def _apply_to_vacancy(
         if not target_url:
             trace_event("RESUME_SELECTED", ok=False, expected=True, reason="vacancy_id_missing")
             return {"ok": False, "message": "Не удалось открыть форму для проверки резюме"}
+        # The awaited existing-response check can reveal a new dialog or an
+        # unknown action. Recheck before navigation, outside its error handler.
+        await ensure_session_ui(session, "response_fallback_before_navigation", allowed=("response",))
         try:
             try:
                 await session._page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
@@ -1225,7 +1249,7 @@ async def _apply_to_vacancy(
             if not re.search(rf"[?&]vacancyId={re.escape(expected_vacancy_id)}(?:[&#]|$)", str(session._page.url)):
                 raise RuntimeError("Target vacancy response URL not confirmed")
             await session._page.wait_for_timeout(1000)
-            await ensure_session_ui(session, "resume_preflight", allowed=("response", "captcha"))
+            await ensure_session_ui(session, "resume_preflight", allowed=("response",))
             current_url, response_header, questions_required, resume_select, letter_field, submit_btn = await detect_response_controls()
             if await session._apply_success_detected():
                 return await finalize_success("Уже откликались ранее", already_applied=True)
@@ -1578,13 +1602,12 @@ async def _apply_to_vacancy(
     await save_debug_snapshot("debug_apply_after_submit")
 
     anti_bot_kind = await session._detect_anti_bot_kind()
-    anti_bot_kind = await session._handle_anti_bot_with_solver(anti_bot_kind, stage="apply_submit")
     if anti_bot_kind:
         message = anti_bot_message(anti_bot_kind, "после отклика")
         logger.warning("HH anti-bot (%s) appeared after apply submit", anti_bot_kind)
         session._remember_antibot_signal(anti_bot_kind, "apply_submit", message)
         trace_event("RESULT_CHECK", ok=False, reason="anti_bot", anti_bot_kind=anti_bot_kind)
-        return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind}
+        return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind, "uncertain": True, "hh_hard_stop": True}
 
     if await session._response_requires_questions():
         logger.info("Vacancy requires employer questions after submit — trying auto-answer")
@@ -1619,7 +1642,7 @@ async def _apply_to_vacancy(
         logger.warning("HH anti-bot (%s) detected while verifying apply", anti_bot_kind)
         session._remember_antibot_signal(anti_bot_kind, "apply_verify", message)
         trace_event("RESULT_CHECK", ok=False, reason="anti_bot", anti_bot_kind=anti_bot_kind)
-        return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind}
+        return {"ok": False, "message": message, "anti_bot_kind": anti_bot_kind, "uncertain": True, "hh_hard_stop": True}
 
     if await response_error_detected(session, logger=logger):
         logger.warning("hh.ru error page after apply. URL: %s", session._page.url)

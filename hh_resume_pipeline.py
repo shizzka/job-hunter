@@ -625,7 +625,7 @@ def _sync_negotiation_statuses(state: dict, items: list[dict]) -> None:
         entry["company"] = item.get("company", entry.get("company", ""))
         entry["url"] = item.get("url", entry.get("url", ""))
 
-        if entry.get("completed_reason") in {"apply_uncertain", "guard_stop"}:
+        if entry.get("completed_reason") in {"apply_uncertain", "guard_stop", "manual_hh_guard_stop"}:
             entry["next_retry_at"] = ""
             entry["retry_reason"] = ""
             continue

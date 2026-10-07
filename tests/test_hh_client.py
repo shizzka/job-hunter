@@ -114,7 +114,7 @@ def test_is_logged_in_true_on_empty_authenticated_resume_page():
     assert asyncio.run(client.is_logged_in()) is True
 
 
-def test_search_escalates_text_captcha_to_solver(monkeypatch):
+def test_automatic_search_escalates_text_captcha_without_solver(monkeypatch):
     client = HHClient()
     client._page = FakePage(url="https://hh.ru/search/vacancy", html="<html></html>")
     solver_calls = []
@@ -130,7 +130,7 @@ def test_search_escalates_text_captcha_to_solver(monkeypatch):
     monkeypatch.setattr(client, "_handle_anti_bot_with_solver", solve)
 
     assert asyncio.run(client.search_vacancies("QA engineer")) == []
-    assert solver_calls == [("captcha", "search_vacancies")]
+    assert solver_calls == []
 
 
 def test_search_link_fallback_disposes_parent_handle(monkeypatch):
@@ -1349,7 +1349,12 @@ def test_apply_trace_blocks_real_unanswered_required_questions(monkeypatch):
 
     result = asyncio.run(client.apply_to_vacancy("https://hh.ru/vacancy/1", trace=trace, preferred_resume_id="synthetic-resume"))
 
-    assert result == {"ok": False, "message": "Остались обязательные вопросы без ответа: 2"}
+    assert result["ok"] is False
+    assert result["message"] == "Остались обязательные вопросы без ответа: 2"
+    # This synthetic adapter has no authenticated BrowserContext/binding.
+    # Recovery must stop rather than assume session/action ownership.
+    assert result["hh_hard_stop"] and result["uncertain"]
+    assert result["hh_recovery_reason"] == "cookie_session_ownership_unproven"
     verify = _trace_event(trace, "PRE_SUBMIT_VERIFY")
     assert verify["ok"] is False
     assert verify["unanswered_required"] == 2

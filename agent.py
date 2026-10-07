@@ -13,6 +13,7 @@ Job Hunter Agent — автоматический поиск и отклик н�
 """
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -80,6 +81,35 @@ from commands.resume import (
     do_hh_resume_boost,
     do_hh_resume_boost_status,
 )
+
+
+class HHRecoveryBreaker:
+    """Per-search HH recovery budget; never affects other sources."""
+    def __init__(self):
+        self.incidents = 0
+        self.fingerprints = set()
+        self.stopped = False
+        self.reason = ""
+
+    def hard_stop(self, reason: str) -> None:
+        self.stopped = True
+        self.reason = reason
+
+    def recovered_incident(self, fingerprint: str) -> None:
+        self.incidents += 1
+        if fingerprint:
+            self.fingerprints.add(fingerprint)
+        if self.incidents >= 5:
+            self.hard_stop("пятый восстанавливаемый нестандартный UI")
+        elif len(self.fingerprints) >= 3:
+            self.hard_stop("три различных fingerprint нестандартного UI")
+
+    def snapshot(self) -> dict:
+        return {"incidents": self.incidents,
+                "fingerprints": sorted(self.fingerprints),
+                "distinct": len(self.fingerprints),
+                "stopped": self.stopped,
+                "reason": self.reason}
 
 
 @contextmanager
@@ -616,6 +646,14 @@ async def do_manual_apply_token(token: str) -> dict:
     hh_client = HHClient()
     hh_client._manual_apply_guard = begin_external
     hh_client._manual_apply_no_action = lambda: manual_apply_queue.confirm_no_action(token, owner, store=queue_store)
+    def record_manual_uncertain():
+        note = "Исход отклика не подтверждён. Отклик мог быть отправлен; проверьте историю вручную. Автоматического повтора нет."
+        seen.mark_seen(vacancy.get("id", token), vacancy, "apply_uncertain")
+        hh_pipeline.mark_terminal(vacancy.get("id", token), "apply_uncertain")
+        finish("uncertain", note)
+        analytics.record_decision(run_id=run_id, vacancy=vacancy, decision=DECISION_APPLY_UNCERTAIN,
+                                  evaluation=evaluation, details=details, note="manual_ai:apply_uncertain")
+        return note
     try:
         await hh_client.start()
         if not await hh_client.is_logged_in():
@@ -688,9 +726,8 @@ async def do_manual_apply_token(token: str) -> dict:
         apply_result = await apply_orchestrator.dispatch_apply(vacancy, cover, hh_client=hh_client)
         if apply_result_is_uncertain(apply_result):
             apply_result = {**apply_result, "ok": False, "uncertain": True}
-            message = str(apply_result.get("message") or "Исход отклика не подтверждён")
             manual_note = (
-                f"{message}. Отклик мог быть отправлен; проверьте историю откликов вручную. "
+                "Исход отклика не подтверждён. Отклик мог быть отправлен; проверьте историю откликов вручную. "
                 "Автоматического повтора нет."
             )
             seen.mark_seen(vacancy.get("id", token), vacancy, "apply_uncertain")
@@ -762,22 +799,39 @@ async def do_manual_apply_token(token: str) -> dict:
             note=f"ИИ-отклик не завершился: {message}. Открой вручную.",
         )
         print(f"❌ ИИ-отклик не завершился: {message}")
-        return {"ok": False, "uncertain": bool(dispatch_started), "message": message}
+        return {"ok": False, "uncertain": False, "message": message}
 
     except HHUnexpectedUI as exc:
-        finish("uncertain" if dispatch_started else "pending", str(exc))
-        return {"ok": False, "uncertain": bool(dispatch_started), "reason": "hh_unexpected_ui", "message": str(exc)}
+        uncertain = bool(getattr(exc, "hh_uncertain", False) or
+                         (dispatch_started and getattr(exc, "hh_recovered", None) is not True))
+        if uncertain:
+            message = record_manual_uncertain()
+            await notify_needs_manual(vacancy, score, reason, note=message)
+        else:
+            message = "Нестандартный UI: вакансия оставлена для ручной проверки."
+            seen.mark_seen(vacancy.get("id", token), vacancy, "manual_hh_guard_stop")
+            hh_pipeline.mark_terminal(vacancy.get("id", token), "manual_hh_guard_stop")
+            finish("dismissed", message)
+            analytics.record_decision(run_id=run_id, vacancy=vacancy, decision="guard_stop", note="manual_ai:hh_ui")
+            await notify_needs_manual(vacancy, score, reason, note=message)
+        return {"ok": False, "uncertain": uncertain, "reason": "hh_unexpected_ui", "message": message}
     except asyncio.CancelledError:
-        finish("uncertain" if dispatch_started else "pending", "Попытка отменена")
+        if dispatch_started:
+            record_manual_uncertain()
+        else:
+            finish("pending", "Попытка отменена")
         raise
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
-        finish("uncertain" if dispatch_started else "failed", message)
+        if dispatch_started:
+            message = record_manual_uncertain()
+        else:
+            finish("failed", message)
         await notify_needs_manual(
             vacancy,
             score,
             reason,
-            note=f"ИИ-отклик упал: {message}. Открой вручную.",
+            note=message if dispatch_started else f"ИИ-отклик упал: {message}. Открой вручную.",
         )
         log.warning("Manual AI apply failed: error_kind=%s", type(exc).__name__)
         print(f"❌ ИИ-отклик упал: {message}")
@@ -807,12 +861,12 @@ async def _mark_manual(
     resume_variant: dict | None = None,
     analytics_note: str = "",
     reply_markup: dict | None = None,
+    before_notify=None,
     **extra_analytics,
 ) -> None:
     """Общий хелпер для пометки вакансии как manual (ручной разбор)."""
     source = v.get("source", "unknown")
     source_label = v.get("source_label") or _source_label(source)
-    await set_hunter_status("search_manual", status_msg, "busy")
     seen.mark_seen(vid, v, seen_action)
     result["skipped"] += 1
     bucket["manual"] += 1
@@ -826,6 +880,9 @@ async def _mark_manual(
         note=analytics_note,
         **extra_analytics,
     )
+    if before_notify is not None:
+        await before_notify()
+    await set_hunter_status("search_manual", status_msg, "busy")
     create_task(
         f"Ручной отклик: {v['title']} @ {v['company']}",
         (
@@ -927,11 +984,13 @@ async def do_search(dry_run: bool = False) -> dict:
     Один прогон поиска + откликов.
     Возвращает {"found": int, "applied": int, "skipped": int}
     """
-    result: dict = {"found": 0, "applied": 0, "skipped": 0, "deferred": 0, "source_stats": {}, "note": "", "_run_id": ""}
+    result: dict = {"found": 0, "applied": 0, "skipped": 0, "deferred": 0, "source_stats": {}, "note": "", "_run_id": "",
+                    "hh_recovery": {"incidents": 0, "fingerprints": [], "distinct": 0, "stopped": False, "reason": ""}}
     analytics.current_search().result = result
     deferred_queue = MatcherDeferredQueue(config.JOB_HUNTER_HOME, cooldown_seconds=config.MATCHER_DEFER_COOLDOWN_SECONDS)
     deferred_seen_path = config.SEEN_VACANCIES_FILE
     deferred_candidates = []
+    hh_breaker = HHRecoveryBreaker()
 
     def acknowledge_processed_deferred():
         # A successful score alone is not durable handling: downstream guards,
@@ -1001,11 +1060,20 @@ async def do_search(dry_run: bool = False) -> dict:
         )
         await asyncio.sleep(remaining)
 
+    async def halt_hh_browser():
+        terminate = getattr(hh_client, "hard_stop_browser", None)
+        if terminate is not None:
+            if await terminate() is not True:
+                raise RuntimeError("HH: завершение браузера не подтверждено; поиск остановлен")
+
     try:
+        hh_startup_error = None
         if hh_client is not None:
-            await hh_client.start()
             try:
+                await hh_client.start()
                 hh_logged_in = bool(await hh_client.is_logged_in())
+                if not hh_logged_in:
+                    hh_breaker.hard_stop("HH authentication was not proven")
                 if hh_logged_in:
                     negotiation_statuses = await hh_client.get_negotiation_statuses()
                     analytics.record_negotiation_statuses(negotiation_statuses)
@@ -1016,15 +1084,41 @@ async def do_search(dry_run: bool = False) -> dict:
                         )
                         hh_pipeline.sync_negotiation_statuses(negotiation_statuses)
                         hh_retry_vacancies = hh_pipeline.get_retry_candidates()
+                        blocked_retry_ids = {
+                            str(key).split(":", 1)[-1]
+                            for key, item in seen.all_entries().items()
+                            if (item or {}).get("action") in {"apply_uncertain", "manual_hh_guard_stop"}
+                        }
+                        hh_retry_vacancies = [
+                            vacancy for vacancy in hh_retry_vacancies
+                            if str(vacancy.get("id", "")) not in blocked_retry_ids
+                        ]
                         if hh_retry_vacancies:
                             log.info(
                                 "Prepared %d hh retry candidates for staged resumes",
                                 len(hh_retry_vacancies),
                             )
-            except HHUnexpectedUI:
-                raise
+            except HHUnexpectedUI as exc:
+                hh_startup_error = exc
+                hh_breaker.hard_stop("HH UI/authentication state could not be proven")
+                log.warning("HH startup blocked by unexpected UI: %s", getattr(exc, "fingerprint", ""))
             except Exception as e:
+                hh_breaker.hard_stop("HH: состояние сессии не подтверждено")
                 log.warning("Failed to prepare hh staged resume pipeline: %s", e)
+
+        if hh_breaker.stopped:
+            result["hh_recovery"] = hh_breaker.snapshot()
+            await halt_hh_browser()
+
+        if (hh_startup_error is not None and not any((config.SUPERJOB_ENABLED,
+                config.HABR_ENABLED, config.GEEKJOB_ENABLED))):
+            result["hh_recovery"] = hh_breaker.snapshot()
+            result["note"] = str(hh_startup_error)
+            result["source_stats"].setdefault("hh", {})["stop_reason"] = hh_breaker.reason
+            await set_hunter_status("hh_ui_blocked", str(hh_startup_error), "busy")
+            await notify_summary(0, 0, 0, result["source_stats"], dry_run=dry_run)
+            _record_search_run(result, dry_run=dry_run, ok=False, error="hh_unexpected_ui")
+            return result
 
         await set_hunter_status("search_start", "Старт поиска", "working")
         enabled_sources = []
@@ -1045,7 +1139,14 @@ async def do_search(dry_run: bool = False) -> dict:
             hh_retry_vacancies=hh_retry_vacancies,
             source_stats=result["source_stats"],
             status_callback=set_hunter_status,
+            **({"hh_stop_reason": hh_breaker.reason} if hh_breaker.stopped else {}),
         )
+        hh_collection_stop = result["source_stats"].get("hh", {}).get("stop_reason")
+        if hh_collection_stop:
+            hh_breaker.hard_stop(hh_collection_stop)
+            result["hh_recovery"] = hh_breaker.snapshot()
+            await halt_hh_browser()
+        result["hh_recovery"] = hh_breaker.snapshot()
 
         if not config.HH_ENABLED and not config.SUPERJOB_ENABLED and not config.HABR_ENABLED and not config.GEEKJOB_ENABLED:
             await set_hunter_status("search_done", "Все источники отключены", "idle")
@@ -1071,6 +1172,16 @@ async def do_search(dry_run: bool = False) -> dict:
         already_processed = acknowledge_processed_deferred()
         all_vacancies = [v for v in all_vacancies if deferred_queue.key(v) not in already_processed]
         analytics.register_candidates(all_vacancies)
+        safety_entries = seen.all_entries()
+        unblocked_vacancies = []
+        for vacancy in all_vacancies:
+            if safety_entries.get(str(vacancy.get("id", "")), {}).get("action") in {
+                    "apply_uncertain", "manual_hh_guard_stop"}:
+                analytics.record_decision(run_id=run_id, vacancy=vacancy, decision="not_processed",
+                                          note="manual_verification_required")
+            else:
+                unblocked_vacancies.append(vacancy)
+        all_vacancies = unblocked_vacancies
         for vacancy in all_vacancies:
             if not vacancy.get("_hh_retry"):
                 search_pipeline.get_source_bucket(result["source_stats"], vacancy)["new"] += 1
@@ -1107,6 +1218,8 @@ async def do_search(dry_run: bool = False) -> dict:
         if not all_vacancies:
             result["note"] = _format_no_new_vacancies_note(result["source_stats"])
             await set_hunter_status("search_done", result["note"], "idle")
+            if hh_breaker.stopped:
+                await notify_summary(0, 0, 0, result["source_stats"], dry_run=dry_run)
             _record_search_run(result, dry_run=dry_run, ok=True)
             return result
 
@@ -1124,6 +1237,66 @@ async def do_search(dry_run: bool = False) -> dict:
         superjob_ready: bool | None = None
         geekjob_ready: bool | None = None
         geekjob_ready_message = ""
+        async def record_hh_ui_incident(v, vid, bucket, score=0, reason="", evaluation=None,
+                                        details="", fingerprint="", recovered=False, message=""):
+            if recovered:
+                hh_breaker.recovered_incident(fingerprint)
+            else:
+                hh_breaker.hard_stop(message or "HH UI recovery was not proven")
+            result["hh_recovery"] = hh_breaker.snapshot()
+            if hh_breaker.stopped:
+                bucket["stop_reason"] = hh_breaker.reason
+            bucket["guard_stop"] = bucket.get("guard_stop", 0) + 1
+            hh_pipeline.mark_terminal(vid, "manual_hh_guard_stop")
+            analytics.record_event({"event": "hh_ui_isolation", "source": "hh", "vacancy_id": str(vid),
+                                    "fingerprint": fingerprint, "recovered": recovered,
+                                    **hh_breaker.snapshot()})
+            message = message or "Вакансия оставлена без дальнейших действий; нужна ручная проверка."
+            if hh_breaker.stopped:
+                message += (f" HH остановлен: {hh_breaker.reason}. Восстановлений: {hh_breaker.incidents}; "
+                            f"различных fingerprint: {len(hh_breaker.fingerprints)}.")
+            await _mark_manual(
+                "Ручная проверка HH: нестандартный UI",
+                "manual_hh_guard_stop",
+                "guard_stop",
+                message,
+                v, vid, score, reason, evaluation or {}, details,
+                result, bucket, run_id, set_hunter_status,
+                analytics_note=("hh:recovered_ui" if recovered else "hh:ui_hard_stop"),
+                before_notify=halt_hh_browser if hh_breaker.stopped else None,
+            )
+            if hh_breaker.stopped:
+                await set_hunter_status("hh_ui_blocked", hh_breaker.reason, "busy")
+
+        async def handle_hh_unexpected(exc, v, vid, bucket, *, score=0, reason="", evaluation=None, details=""):
+            if v.get("source", "hh") != "hh":
+                raise exc
+            if getattr(exc, "hh_uncertain", False):
+                hh_breaker.hard_stop("HH: возможный отклик требует ручной сверки")
+                result["hh_recovery"] = hh_breaker.snapshot()
+                bucket["stop_reason"] = hh_breaker.reason
+                bucket["uncertain"] = bucket.get("uncertain", 0) + 1
+                hh_pipeline.mark_terminal(vid, "apply_uncertain")
+                await _mark_manual(
+                    "Ручная сверка: исход отклика неизвестен", "apply_uncertain", DECISION_APPLY_UNCERTAIN,
+                    "Отклик мог быть отправлен. Проверьте историю вручную; автоматического повтора нет. HH остановлен.",
+                    v, vid, score, reason, evaluation or {}, details, result, bucket, run_id, set_hunter_status,
+                    analytics_note="hh:apply_uncertain", before_notify=halt_hh_browser)
+                return
+            recovered = getattr(exc, "hh_recovered", None)
+            if recovered is None:
+                recover = getattr(hh_client, "recover_unexpected_ui", None)
+                recovered = await recover(exc) if recover is not None else False
+            if getattr(exc, "hh_uncertain", False):
+                # Recovery may discover a request or ownership loss. Re-enter
+                # only the uncertainty branch; never attempt another recovery.
+                await handle_hh_unexpected(exc, v, vid, bucket, score=score, reason=reason,
+                                           evaluation=evaluation, details=details)
+                return
+            await record_hh_ui_incident(
+                v, vid, bucket, score=score, reason=reason, evaluation=evaluation, details=details,
+                fingerprint=getattr(exc, "fingerprint", ""), recovered=recovered is True,
+                message=getattr(exc, "hh_stop_reason", "") or "Нестандартный UI: вакансия оставлена для ручной проверки.")
 
         for v in all_vacancies:
             if (
@@ -1148,6 +1321,14 @@ async def do_search(dry_run: bool = False) -> dict:
             vid = v["id"]
             source = v.get("source", "hh")
             bucket = search_pipeline.get_source_bucket(result["source_stats"], v)
+            if source == "hh" and hh_breaker.stopped:
+                result["hh_recovery"] = hh_breaker.snapshot()
+                bucket["stop_reason"] = hh_breaker.reason
+                result["skipped"] += 1
+                bucket["guard_stop"] = bucket.get("guard_stop", 0) + 1
+                analytics.record_decision(run_id=run_id, vacancy=v, decision="not_processed",
+                                          note="hh_recovery_breaker")
+                continue
             processed_by_source[source] += 1
             source_index = processed_by_source[source]
             source_total = relevant_counts.get(source, 0)
@@ -1161,10 +1342,14 @@ async def do_search(dry_run: bool = False) -> dict:
                 )
 
             # Получаем детали
-            details = await analytics.tracked_call("details", run_id, v,
-                apply_orchestrator.fetch_vacancy_details,
-                v, hh_client, superjob_client, habr_client, geekjob_client,
-            )
+            try:
+                details = await analytics.tracked_call("details", run_id, v,
+                    apply_orchestrator.fetch_vacancy_details,
+                    v, hh_client, superjob_client, habr_client, geekjob_client,
+                )
+            except HHUnexpectedUI as exc:
+                await handle_hh_unexpected(exc, v, vid, bucket)
+                continue
 
             if _looks_like_closed_or_archived(v, details):
                 log.info("  Skipped (closed/archived vacancy)")
@@ -1595,9 +1780,19 @@ async def do_search(dry_run: bool = False) -> dict:
                     preferred_resume_id=(hh_resume_variant or {}).get("id", ""),
                     trace=apply_trace,
                 )
-            except HHUnexpectedUI:
-                raise
+            except HHUnexpectedUI as exc:
+                await handle_hh_unexpected(exc, v, vid, bucket, score=score, reason=reason,
+                                           evaluation=cover_evaluation, details=details)
+                continue
             except Exception as e:
+                if source == "hh" and hasattr(e, "hh_recovered"):
+                    incident = HHUnexpectedUI("apply_exception", hashlib.sha256(type(e).__name__.encode()).hexdigest())
+                    incident.hh_recovered = e.hh_recovered
+                    incident.hh_uncertain = getattr(e, "hh_uncertain", False)
+                    incident.hh_stop_reason = getattr(e, "hh_stop_reason", "")
+                    await handle_hh_unexpected(incident, v, vid, bucket, score=score, reason=reason,
+                                               evaluation=cover_evaluation, details=details)
+                    continue
                 analytics.record_failure("apply", e, source=source, continued=True)
                 snapshot = await _save_autoapply_failure_snapshot(
                     source,
@@ -1653,20 +1848,10 @@ async def do_search(dry_run: bool = False) -> dict:
                         hh_auto_apply_guard_note = hh_guard.format_block_note(hh_status)
                         guard_suffix = f"\n{hh_auto_apply_guard_note}"
                 if source == "hh" and anti_bot_kind:
-                    # Guard откладывает следующие HH-вакансии, но текущая ошибка
-                    # не должна исчезать молча: отправляем причину и снимок страницы.
-                    log.info(
-                        "  hh deferred (captcha during apply): vacancy=%s", vid,
-                    )
-                    result["skipped"] += 1
-                    bucket["deferred"] = bucket.get("deferred", 0) + 1
-                    analytics.record_decision(run_id=run_id, vacancy=v, decision="guard_stop")
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note=f"Автоотклик HH остановлен: {hh_auto_apply_guard_note}",
-                        screenshot_path=snapshot.get("screenshot"),
+                    await record_hh_ui_incident(
+                        v, vid, bucket, score=score, reason=reason,
+                        evaluation=cover_evaluation, details=details,
+                        message=f"HH остановлен: {anti_bot_kind}; нужна ручная проверка.",
                     )
                     continue
                 await set_hunter_status("search_manual", f"Ручной {short_label}: ошибка", "busy")
@@ -1714,11 +1899,14 @@ async def do_search(dry_run: bool = False) -> dict:
                 apply_result = {**apply_result, "ok": False, "uncertain": True}
                 bucket["uncertain"] = bucket.get("uncertain", 0) + 1
                 uncertainty_note = (
-                    str(apply_result.get("message") or "Исход отклика не подтверждён")
-                    + ". Отклик мог быть отправлен; проверьте историю откликов вручную. Автоматического повтора нет."
+                    "Исход отклика не подтверждён. Отклик мог быть отправлен; проверьте историю откликов вручную. Автоматического повтора нет."
                 )
                 if source == "hh":
                     hh_pipeline.mark_terminal(vid, "apply_uncertain")
+                    hh_breaker.hard_stop("HH: исход отклика неизвестен; требуется ручная сверка")
+                    result["hh_recovery"] = hh_breaker.snapshot()
+                    bucket["stop_reason"] = hh_breaker.reason
+                    uncertainty_note += " HH остановлен."
                 await _mark_manual(
                     "Ручная сверка: исход отклика неизвестен",
                     "apply_uncertain",
@@ -1728,7 +1916,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     result, bucket, run_id, set_hunter_status,
                     resume_variant=hh_resume_variant,
                     analytics_note=f"{source}:apply_uncertain",
+                    before_notify=halt_hh_browser if source == "hh" else None,
                 )
+                continue
+            if source == "hh" and apply_result.get("hh_hard_stop"):
+                await record_hh_ui_incident(
+                    v, vid, bucket, score=score, reason=reason, evaluation=cover_evaluation, details=details,
+                    message=apply_result.get("hh_recovery_reason") or "HH: безопасное восстановление не доказано")
                 continue
             if source == "hh":
                 _record_hh_questionnaire_analytics(
@@ -1954,18 +2148,10 @@ async def do_search(dry_run: bool = False) -> dict:
                     geekjob_ready_message = apply_message
 
                 if source == "hh" and anti_bot_kind:
-                    log.info(
-                        "  hh deferred (captcha at apply): vacancy=%s", vid,
-                    )
-                    result["skipped"] += 1
-                    bucket["deferred"] = bucket.get("deferred", 0) + 1
-                    analytics.record_decision(run_id=run_id, vacancy=v, decision="guard_stop")
-                    await notify_needs_manual(
-                        v,
-                        score,
-                        reason,
-                        note=f"Автоотклик HH остановлен: {hh_auto_apply_guard_note}",
-                        screenshot_path=snapshot.get("screenshot"),
+                    await record_hh_ui_incident(
+                        v, vid, bucket, score=score, reason=reason,
+                        evaluation=cover_evaluation, details=details,
+                        message=f"HH остановлен: {anti_bot_kind}; нужна ручная проверка.",
                     )
                     continue
 
@@ -2026,7 +2212,8 @@ async def do_search(dry_run: bool = False) -> dict:
 
         # После поиска — заодно отвечаем в hh-чатах AI-помощникам,
         # пока браузер уже открыт. Включается флагом HH_CHAT_RESPONDER_ENABLED.
-        if not dry_run and config.HH_CHAT_RESPONDER_ENABLED and hh_client is not None:
+        if (not dry_run and config.HH_CHAT_RESPONDER_ENABLED and hh_client is not None
+                and not hh_breaker.stopped):
             try:
                 import hh_chat_responder as cr
                 chat_summary = await cr.process_all(hh_client)

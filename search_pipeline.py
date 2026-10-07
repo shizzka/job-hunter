@@ -82,11 +82,15 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
         return []
     can_collect, collect_note = hh_guard.can_collect()
     if not can_collect:
+        if scan_stats is not None:
+            scan_stats.setdefault("hh", {})["stop_reason"] = collect_note
         log.warning("Skipping hh.ru collection during cooldown: %s", collect_note)
         await office_log("hh_skipped", collect_note, "thinking")
         return []
 
     if not await client.is_logged_in():
+        if scan_stats is not None:
+            scan_stats.setdefault("hh", {})["stop_reason"] = "HH: авторизация потеряна; источник остановлен"
         log.warning("hh.ru is not logged in, skipping hh source")
         await office_log("hh_skipped", "hh.ru пропущен: нет авторизации", "thinking")
         await _notify_hh_auth_required_once("is_logged_in() returned false before HH collection")
@@ -129,6 +133,8 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
                         stage=anti_bot_signal.get("stage", "search"),
                     )
                     collect_note = hh_guard.format_block_note(status)
+                    if bucket is not None:
+                        bucket["stop_reason"] = collect_note
                     log.warning("Stopping hh.ru collection after anti-bot signal: %s", collect_note)
                     await office_log("hh_skipped", collect_note, "thinking")
                     return all_vacancies
@@ -322,6 +328,8 @@ def get_source_bucket(stats: dict, vacancy: dict) -> dict:
     )
     if not bucket.get("label"):
         bucket["label"] = label
+    for counter in ("fetched", "already_seen", "new", "relevant", "applied", "manual", "rejected"):
+        bucket.setdefault(counter, 0)
     return bucket
 
 
@@ -380,6 +388,7 @@ async def collect_all(
     hh_retry_vacancies: list[dict] | None = None,
     source_stats: dict | None = None,
     status_callback: Callable[[str, str, str], Awaitable[None]] | None = None,
+    hh_stop_reason: str = "",
 ) -> list[dict]:
     """Собрать вакансии из всех включённых источников."""
     scan_stats = source_stats if source_stats is not None else {}
@@ -404,13 +413,22 @@ async def collect_all(
         label: str,
         collector,
     ) -> list[dict]:
+        if source_key == "hh" and hh_stop_reason:
+            scan_stats.setdefault("hh", {})["stop_reason"] = hh_stop_reason
+            return []
         if enabled:
             await _status("search_collect", f"Собираю {label}", "working")
         try:
             with analytics.event_context(source=source_key, stage="collection", vacancy_id=""):
                 return await collector()
-        except HHUnexpectedUI:
-            raise
+        except HHUnexpectedUI as exc:
+            if source_key != "hh":
+                raise
+            bucket = scan_stats.setdefault("hh", {})
+            bucket["stop_reason"] = "HH: нестандартный UI при сборе вакансий; источник остановлен"
+            bucket["stop_fingerprint"] = getattr(exc, "fingerprint", "")
+            analytics.record_failure("collection", exc, source="hh", continued=True)
+            return []
         except Exception as exc:
             analytics.record_failure("collection", exc, source=source_key, continued=True)
             log.warning("source=%s stage=collection error_kind=%s continued=true", source_key, type(exc).__name__)

@@ -174,15 +174,18 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
             analytics.record_event({"event": "application_result", "outcome": "error", "error_kind": type(exc).__name__})
             trace = kwargs.get("trace")
             if trace is not None:
-                failure_stage = trace.last_stage
-                hh_client = kwargs.get("hh_client") or (args[0] if args else None)
-                if not isinstance(exc, HHUnexpectedUI) and getattr(hh_client, "_page", None) is not None:
-                    await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
-                trace.finish(
-                    ok=False,
-                    message=f"{type(exc).__name__}: {exc}",
-                    failure_stage=failure_stage,
-                )
+                try:
+                    failure_stage = trace.last_stage
+                    hh_client = kwargs.get("hh_client") or (args[0] if args else None)
+                    if not isinstance(exc, HHUnexpectedUI) and getattr(hh_client, "_page", None) is not None:
+                        await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
+                    trace.finish(
+                        ok=False,
+                        message=f"{type(exc).__name__}: {exc}",
+                        failure_stage=failure_stage,
+                    )
+                except Exception as trace_error:
+                    log.warning("HH apply trace unavailable: error_kind=%s", type(trace_error).__name__)
             raise
         if apply_result_is_uncertain(result):
             result = {**result, "ok": False, "uncertain": True}
@@ -196,20 +199,22 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
                                  "selected_resume_id": result.get("selected_resume_id", "")})
         trace = kwargs.get("trace")
         if trace is not None:
-            result_ok = bool(result.get("ok"))
-            failure_stage = trace.last_stage
-            if not result_ok:
-                hh_client = kwargs.get("hh_client") or (args[0] if args else None)
-                if getattr(hh_client, "_page", None) is not None:
-                    await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
-            trace.finish(
-                ok=result_ok,
-                message=str(result.get("message") or outcome),
-                failure_stage=failure_stage,
-            )
-            result = dict(result)
-            result["trace_id"] = trace.trace_id
-            result["trace_dir"] = os.fspath(trace.trace_dir)
+            try:
+                result_ok = bool(result.get("ok"))
+                failure_stage = trace.last_stage
+                if not result_ok:
+                    hh_client = kwargs.get("hh_client") or (args[0] if args else None)
+                    if getattr(hh_client, "_page", None) is not None:
+                        await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
+                trace.finish(
+                    ok=result_ok,
+                    message=str(result.get("message") or outcome),
+                    failure_stage=failure_stage,
+                )
+                result = {**result, "trace_id": trace.trace_id, "trace_dir": os.fspath(trace.trace_dir)}
+            except Exception as trace_error:
+                # Diagnostics cannot erase a receipt or turn uncertainty into a retry.
+                log.warning("HH apply trace completion unavailable: error_kind=%s", type(trace_error).__name__)
         return result
 
 

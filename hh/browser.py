@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -112,10 +113,14 @@ async def start_browser(
     ensure_dirs=_ensure_dirs,
     load_cookies=_load_cookies,
     logger=log,
+    terminate=None,
 ):
     if getattr(session, "_starting", False) or any(getattr(session, field, None) is not None
             for field in ("_pw", "_browser", "_context")):
         raise RuntimeError("HH browser is already active or starting")
+    if terminate is None:
+        from hh.termination import require_termination_capability
+        require_termination_capability()
     paths = getattr(session, "_cookie_paths", None) or CookiePaths.capture(settings)
     session._cookie_paths = paths
     if ensure_dirs is _ensure_dirs:
@@ -146,7 +151,9 @@ async def start_browser(
     try:
         session._pw = await playwright_factory().start()
         session._browser = await session._pw.chromium.launch(**launch_opts)
+        session._browser._hh_owner_session = session
         session._context = await session._browser.new_context(
+            service_workers="block",
             viewport={"width": 1280, "height": 900},
             user_agent=(
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -154,12 +161,21 @@ async def start_browser(
             ),
             locale="ru-RU",
         )
+        from hh.recovery import BLOCK_WORKER_CONSTRUCTORS
+        await session._context.add_init_script(script=BLOCK_WORKER_CONSTRUCTORS)
+        session._hh_blocked_worker_context = session._context
+        session._context._hh_workers_owner = session
         if binding is not None:
             binding.context = session._context
         if cookies:
             await session._context.add_cookies(cookies)
             logger.info("Loaded %d cookies", len(cookies))
         session._page = await session._context.new_page()
+        session._recovering = False
+        session._hh_recovery_stop_reason = ""
+        session._hh_recovery_uncertain = False
+        from hh.recovery import monitor_page
+        monitor_page(session, session._page)
         from browser_action_boundary import bootstrap_boundary
         await bootstrap_boundary(session._page)
 
@@ -173,24 +189,36 @@ async def start_browser(
                 logger.warning("playwright-stealth failed: %s", type(exc).__name__)
     except BaseException:
         session._starting = False
-        await stop_browser(session, save_cookies=None)
+        await stop_browser(session, save_cookies=None, terminate=terminate)
         raise
     finally:
         session._starting = False
 
 
-async def stop_browser(session, *, save_cookies=_save_cookies):
+async def stop_browser(session, *, save_cookies=_save_cookies, terminate=None):
+    """Every caller awaits the complete shutdown of the same captured browser."""
     if getattr(session, "_starting", False):
         raise RuntimeError("HH browser startup is still in progress")
-    context = getattr(session, "_context", None)
-    browser = getattr(session, "_browser", None)
-    playwright = getattr(session, "_pw", None)
-    page = getattr(session, "_page", None)
-    binding = getattr(session, "_cookie_binding", None)
-    if binding is not None:
-        if binding.closing:
-            return
-        binding.closing = True
+    context, browser = getattr(session, '_context', None), getattr(session, '_browser', None)
+    pending = getattr(session, '_hh_shutdown_operation', None)
+    if pending is None or pending[0] is not context or pending[1] is not browser:
+        binding = getattr(session, '_cookie_binding', None)
+        if binding is not None:
+            binding.closing = True
+        captured = (context, browser, getattr(session, '_pw', None), getattr(session, '_page', None), binding)
+        operation = asyncio.create_task(_stop_browser_owned(session, captured, save_cookies=save_cookies, terminate=terminate))
+        pending = (context, browser, operation)
+        session._hh_shutdown_operation = pending
+    from hh.termination import await_owned_completion
+    return await await_owned_completion(pending[2])
+
+
+async def _stop_browser_owned(session, captured, *, save_cookies, terminate):
+    context, browser, playwright, page, binding = captured
+    if browser is not None and terminate is None:
+        if (getattr(browser, '_hh_owner_session', None) is not session
+                or (context is not None and context.browser is not browser)):
+            raise RuntimeError('HH captured browser ownership is unproven')
     nonce = object()
     session._cookie_write_nonce = nonce
     revision = binding.revision if binding is not None else None
@@ -198,7 +226,7 @@ async def stop_browser(session, *, save_cookies=_save_cookies):
         if context:
             try:
                 if save_cookies is not None:
-                    cookies = await context.cookies()
+                    cookies = await asyncio.wait_for(context.cookies(), 5)
                     _persist_captured(session, context, binding, nonce, revision, cookies,
                                       save_cookies, shutdown=True)
             except Exception as exc:
@@ -206,18 +234,21 @@ async def stop_browser(session, *, save_cookies=_save_cookies):
                 # Playwright context before the owning task reaches cleanup.
                 log.debug("skip HH cookie save during browser shutdown: %s", type(exc).__name__)
     finally:
+        # Graceful Browser.close also runs OOPIF unload/pagehide handlers.
+        # Crash only the captured local browser and prove process death before
+        # stopping its driver or releasing the session's resource ownership.
+        if browser:
+            from hh.termination import terminate_browser
+            if await (terminate or terminate_browser)(browser) is not True:
+                raise RuntimeError("HH browser termination was not proven")
         try:
-            if browser:
-                await browser.close()
+            if playwright:
+                await asyncio.wait_for(playwright.stop(), 5)
         finally:
-            try:
-                if playwright:
-                    await playwright.stop()
-            finally:
-                for field, captured in (("_context", context), ("_browser", browser),
-                                        ("_pw", playwright), ("_page", page), ("_cookie_binding", binding)):
-                    if getattr(session, field, None) is captured:
-                        setattr(session, field, None)
+            for field, captured in (("_context", context), ("_browser", browser),
+                                    ("_pw", playwright), ("_page", page), ("_cookie_binding", binding)):
+                if getattr(session, field, None) is captured:
+                    setattr(session, field, None)
 
 
 async def save_session(session, *, save_cookies=_save_cookies, logger=log):

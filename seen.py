@@ -49,8 +49,9 @@ def is_seen(vacancy_id: str) -> bool:
 def mark_seen(vacancy_id: str, vacancy: dict, action: str = "applied"):
     """Отметить вакансию как обработанную."""
     def remember(data: dict) -> None:
-        if data.get(vacancy_id, {}).get("action") == "apply_uncertain" and action != "apply_uncertain":
-            raise RuntimeError("Uncertain apply requires manual verification before changing its outcome")
+        prior = data.get(vacancy_id, {}).get("action")
+        if prior in {"apply_uncertain", "manual_hh_guard_stop"} and action != prior:
+            raise RuntimeError("HH outcome requires manual verification before changing its outcome")
         data[vacancy_id] = {
             "title": vacancy.get("title", ""),
             "company": vacancy.get("company", ""),
