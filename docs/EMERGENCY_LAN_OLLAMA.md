@@ -1,7 +1,7 @@
 # Temporary emergency LAN Ollama fallback
 
 Remote LAN Ollama fallback is an emergency temporary compatibility path.
-The intended future is **Job Hunter → AI Gateway**, not another router or service.
+The intended future is **Job Hunter → [AI Gateway](https://github.com/shizzka/ai-gateway)**, not another router or service. Product requirements and migration planning are owned by that repository.
 
 The existing `ProviderSpec` / `FallbackLLMClient` chain is reused. Nothing changes
 without opting in to Ollama slots. No LAN address is shipped in defaults.
@@ -96,15 +96,10 @@ writes, uses no cloud provider, and reports only safe model/timing/status metada
 Both replies must be nonempty, finish normally, identify the expected actual model,
 and equal the synthetic requested answer. No retries or production actions occur.
 
-## Remove after Gateway migration
+## Gateway migration
 
-Delete the emergency `ProviderSpec.text_fallback_model` / `timeout_seconds` fields,
-`_is_vision_model`, `_has_multimodal_input`, `_ollama_timeout`, their slot wiring,
-model-aware dedupe, direct bounded transport and guarded completion branches in
-`llm_client.py`, once Gateway owns mapping/capability/timeouts. Keep legacy aliases,
-cloud fallback/error policy, usage analytics and Matcher deferred semantics until
-their replacement is verified. Remove this document, the emergency env example
-block, `tests/test_emergency_ollama.py`, and `scripts/smoke/lan_ollama.py` together.
-Also remove `ollama_quality_log.py`, `tests/test_ollama_quality_log.py`, the
-`quality_log_file` field/slot wiring/call hooks and `*_QUALITY_LOG_FILE` examples
-when Gateway replaces this temporary path.
+The Gateway migration backlog no longer lives in Job Hunter. It has moved to
+[AI Gateway: Migration from Job Hunter](https://github.com/shizzka/ai-gateway/blob/main/docs/MIGRATION_FROM_JOB_HUNTER.md).
+
+Keep this emergency path intact until the external Gateway replacement is verified.
+Job Hunter-specific cleanup happens only after the migration acceptance criteria are met.
