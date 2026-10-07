@@ -203,7 +203,7 @@ HH_CAPTCHA_VISION_MODEL=
 
 Empty values fall back to `LLM_MODEL`.
 
-The temporary LAN Ollama path is an emergency compatibility mechanism, not the target architecture. It is expected to disappear after Job Hunter migrates to the shared AI Gateway.
+The temporary LAN Ollama path is an emergency compatibility mechanism, not the target architecture. Gateway product requirements and migration ownership now live in [AI Gateway](https://github.com/shizzka/ai-gateway); Job Hunter keeps its current fallback behavior until that migration is verified.
 
 ## Candidate profiles
 
