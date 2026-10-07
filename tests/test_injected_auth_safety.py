@@ -9,6 +9,7 @@ import client_hh_auth as auth
 from hh import browser
 from state_store.hh_cookies import HHCookieStateError
 from tests.test_hh_cookie_ownership import lifecycle, cookies
+from tests.test_hh_browser import terminate_fake_browser
 from tests.test_auth_state_ownership import importing
 
 
@@ -31,9 +32,12 @@ def test_injected_shutdown_writer_cannot_erase_original_native_auth(lifecycle):
     asyncio.run(lifecycle.start())
     called = []
     lifecycle.context.cookies = AsyncMock(return_value=[])
-    asyncio.run(browser.stop_browser(lifecycle.session, save_cookies=called.append))
+    asyncio.run(browser.stop_browser(lifecycle.session, save_cookies=called.append,
+                                    terminate=terminate_fake_browser))
+    lifecycle.context.cookies.assert_awaited_once()
     assert called == []
     assert lifecycle.repo.snapshot()[0] == cookies('original')
+    assert lifecycle.instance.closed and lifecycle.pw.stopped
 
 
 def test_unowned_compat_resume_import_does_not_write_profile(importing):
