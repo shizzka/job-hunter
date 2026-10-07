@@ -517,7 +517,7 @@ def _format_source_stats(source_stats: dict | None) -> str:
         if not bucket:
             continue
         keyword_pass = bucket.get("keyword_pass", bucket.get("relevant", 0))
-        if not keyword_pass and not any(bucket.get(key, 0) for key in ("new", "applied", "manual", "rejected")):
+        if not keyword_pass and not any(bucket.get(key, 0) for key in ("new", "applied", "manual", "rejected")) and not bucket.get("stop_reason"):
             continue
         parts = []
         if bucket.get("new"):
@@ -528,10 +528,14 @@ def _format_source_stats(source_stats: dict | None) -> str:
             parts.append(f"откликов {bucket['applied']}")
         if bucket.get("manual"):
             parts.append(f"ручных {bucket['manual']}")
+        if bucket.get("uncertain"):
+            parts.append(f"исход не подтверждён {bucket['uncertain']}")
         if bucket.get("rejected"):
             parts.append(f"отсеяно {bucket['rejected']}")
         if bucket.get("deferred_unscored"):
             parts.append(f"оценка отложена {bucket['deferred_unscored']}")
+        if bucket.get("stop_reason"):
+            parts.append(f"остановлен: {html.escape(str(bucket['stop_reason']))}")
         lines.append(f"• <b>{bucket.get('label', source)}</b>: " + ", ".join(parts))
 
     # На случай новых источников вне явного порядка
@@ -539,7 +543,7 @@ def _format_source_stats(source_stats: dict | None) -> str:
         if source in order:
             continue
         keyword_pass = bucket.get("keyword_pass", bucket.get("relevant", 0))
-        if not keyword_pass and not any(bucket.get(key, 0) for key in ("new", "applied", "manual", "rejected")):
+        if not keyword_pass and not any(bucket.get(key, 0) for key in ("new", "applied", "manual", "rejected")) and not bucket.get("stop_reason"):
             continue
         parts = []
         if bucket.get("new"):
@@ -550,8 +554,12 @@ def _format_source_stats(source_stats: dict | None) -> str:
             parts.append(f"откликов {bucket['applied']}")
         if bucket.get("manual"):
             parts.append(f"ручных {bucket['manual']}")
+        if bucket.get("uncertain"):
+            parts.append(f"исход не подтверждён {bucket['uncertain']}")
         if bucket.get("rejected"):
             parts.append(f"отсеяно {bucket['rejected']}")
+        if bucket.get("stop_reason"):
+            parts.append(f"остановлен: {html.escape(str(bucket['stop_reason']))}")
         lines.append(f"• <b>{bucket.get('label', source)}</b>: " + ", ".join(parts))
 
     if not lines:
@@ -563,18 +571,23 @@ async def notify_summary(total_found: int, applied: int, skipped: int, source_st
     """Итог прогона поиска."""
     if not _telegram_flag("TELEGRAM_NOTIFY_SEARCH_SUMMARY", False):
         return
-    if total_found == 0 and applied == 0:
+    has_source_stop = any((bucket or {}).get("stop_reason") for bucket in (source_stats or {}).values())
+    if total_found == 0 and applied == 0 and not has_source_stop:
         return  # не спамить если ничего нового
 
     manual_total = sum((bucket or {}).get("manual", 0) for bucket in (source_stats or {}).values())
+    uncertain_total = sum((bucket or {}).get("uncertain", 0) for bucket in (source_stats or {}).values())
+    apply_label = "🧪 Dry-run matches" if dry_run else ("📨 Подтверждённых откликов" if uncertain_total else "📨 Откликов")
 
     text = (
         f"📋 <b>Итог поиска</b>\n\n"
         f"🔍 Keyword pass: {total_found}\n"
-        f"{'🧪 Dry-run matches' if dry_run else '📨 Откликов'}: {applied}\n"
+        f"{apply_label}: {applied}\n"
         f"📝 Ручной разбор: {manual_total}\n"
-        f"⏭ Не отправлено автоматически: {skipped}"
+        f"⏭ Не отправлено автоматически: {max(0, skipped - uncertain_total)}"
     )
+    if uncertain_total:
+        text += f"\n⚠️ Исход отклика не подтверждён: {uncertain_total}; нужна ручная сверка, автоматического повтора нет."
     text += _format_source_stats(source_stats)
     await send_message(text)
 
@@ -657,6 +670,8 @@ async def notify_digest(analytics_summary: dict):
         f"best_guess: {analytics_summary.get('questionnaire_best_guess', 0)}"
     )
 
+    if analytics_summary.get("uncertain"):
+        text += f"\nИсход отклика не подтверждён: {analytics_summary['uncertain']}; нужна ручная сверка."
     funnel = analytics_summary.get("funnel", {})
     text += _format_funnel(funnel)
     text += _format_conversion_group("🔁 Повторные отклики", analytics_summary.get("by_retry_reason", {}))

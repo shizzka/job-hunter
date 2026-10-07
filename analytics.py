@@ -48,7 +48,7 @@ def current_context():
 
 _run_observation = ContextVar("search_observation", default=None)
 FUNNEL_FIELDS = ("fetched", "already_seen", "new", "keyword_pass", "matcher_pass",
-                 "apply_attempt", "applied", "manual", "skipped", "failed", "guard_stop",
+                 "apply_attempt", "applied", "manual", "uncertain", "skipped", "failed", "guard_stop",
                  "deferred_unscored", "dry_run_match", "not_processed", "retry_existing")
 
 
@@ -83,6 +83,8 @@ def decision_outcome(decision, evaluation=None, note=""):
         return "guard_stop", "guard_stop"
     if decision == "not_processed":
         return "not_processed", note if note in {"run_limit", "run_incomplete"} else "unclassified"
+    if decision == "apply_uncertain":
+        return "manual", "apply_uncertain"
     if decision.startswith("apply_failed"):
         return "failed", "guard_stop" if "no_cover_letter" in evaluation.get("guard_flags", []) else "apply_failed"
     if decision.startswith("manual_") or decision == "questions_required":
@@ -137,6 +139,8 @@ class SearchObservation:
                 "failure_stage": (self.failure_stage or self.stage) if incomplete or not self.ok else "",
                 "error_kind": self.error_kind, "error": "hh_unexpected_ui" if self.error_kind == "HHUnexpectedUI" else self.error_kind,
                 "note": self.result.get("note", ""), "stage_failures": list(self.failures)}
+        if self.result.get("hh_recovery"):
+            entry["hh_recovery"] = dict(self.result["hh_recovery"])
         if incomplete:
             return incomplete_run_counts(entry, totals["applied"],
                 {source: bucket["funnel"]["applied"] for source, bucket in sources.items()})
@@ -247,12 +251,17 @@ def zero_apply_diagnosis(run):
     if applied is None or not (new or found or retries) or applied or run.get("mode") == "dry-run":
         return ""
     reasons = run.get("reason_breakdown") or {}
-    lines = [f"0 откликов: новых {new}" if new is not None else f"0 откликов: найдено {found}"]
+    uncertain = funnel.get("uncertain", run.get("uncertain", 0)) or reasons.get("apply_uncertain", 0)
+    if uncertain:
+        lines = [f"Подтверждено откликов: 0; требуется ручная сверка: {uncertain}"]
+    else:
+        lines = [f"0 откликов: новых {new}" if new is not None else f"0 откликов: найдено {found}"]
     if retries:
         lines.append(f"• повторных кандидатов: {retries}")
     labels = (("keyword_filter", "keyword filter"), ("low_score", "matcher: low score"),
               ("red_flags", "matcher: red flags"), ("manual_required", "manual"),
               ("guard_stop", "guard stop"), ("apply_failed", "apply failed"),
+              ("apply_uncertain", "исход отклика не подтверждён"),
               ("already_applied", "already applied"), ("company_blacklisted", "blacklist"),
               ("closed_or_archived", "closed/archived"), ("deferred_unscored", "оценка отложена"),
               ("run_limit", "лимит прогона"), ("run_incomplete", "прогон прерван"))
@@ -341,6 +350,11 @@ def format_run_count(run, field="applied", *, incomplete=None):
     """A display value, not a business counter: exact, lower bound, or unknown."""
     value = (run.get("funnel") or {}).get(field, run.get(field, None if field == "applied" else 0))
     incomplete = run.get("status") == "incomplete" if incomplete is None else incomplete
+    uncertain = (run.get("funnel") or {}).get("uncertain", run.get("uncertain", 0))
+    uncertain = uncertain or (run.get("reason_breakdown") or {}).get("apply_uncertain", 0)
+    if field == "applied" and uncertain and not incomplete:
+        confirmed = str(value) if value is not None else "неизвестно"
+        return f"{confirmed} подтверждено; {uncertain} требуют сверки"
     if incomplete:
         if field == "applied" and run.get("applied_count_status") == "exact":
             return str(value) if value is not None else "неизвестно"
@@ -686,7 +700,7 @@ def record_search_finished(
         "source_stats": result.get("source_stats", {}),
         "ok": result.get("ok", True),
         **{field: result.get(field) for field in ("started_at", "finished_at", "status", "new",
-            "funnel", "reason_breakdown", "failure_stage", "error_kind", "stage_failures") if field in result},
+            "funnel", "reason_breakdown", "failure_stage", "error_kind", "stage_failures", "hh_recovery") if field in result},
     })
 
 
@@ -712,6 +726,8 @@ def record_decision(
         else:
             observation.counters[key[0]][outcome] += 1
         observation.reasons[reason_code] += 1
+        if decision == "apply_uncertain":
+            observation.counters[key[0]]["uncertain"] += 1
         if reason_code == "guard_stop" and outcome != "guard_stop":
             observation.counters[key[0]]["guard_stop"] += 1
     log.info("decision=%s reason=%s", outcome, reason_code,
@@ -935,6 +951,8 @@ def _record_invitations(state: dict, items: list[dict]) -> None:
 def _map_historical_action(action: str) -> tuple[str, str]:
     if action == "applied":
         return "applied_auto", "historical_seen"
+    if action == "apply_uncertain":
+        return "apply_uncertain", "historical_seen"
     if action == "skipped_questions":
         return "questions_required", "historical_seen"
     if action.startswith("apply_failed_exception:"):
@@ -1038,6 +1056,7 @@ FILTER_AUDIT_ALLOWED_DECISIONS = {
     "applied_auto",
     "already_applied",
     "questions_required",
+    "apply_uncertain",
     "apply_failed",
     "apply_failed_exception",
     "manual_review",
@@ -1178,6 +1197,7 @@ def summarize(
         "search_runs": 0,
         "decisions": 0,
         "auto_applied": 0,
+        "uncertain": 0,
         "dry_run_matched": 0,
         "manual": 0,
         "keyword_filtered": 0,
@@ -1302,12 +1322,16 @@ def summarize(
                 cluster_bucket["rejected"] += 1
             elif decision.startswith("manual_") or decision in {
                 "questions_required",
+                "apply_uncertain",
                 "apply_failed",
                 "apply_failed_exception",
             }:
                 summary["manual"] += 1
                 source_bucket["manual"] += 1
                 cluster_bucket["manual"] += 1
+                if decision == "apply_uncertain":
+                    summary["uncertain"] += 1
+                    source_bucket["uncertain"] = source_bucket.get("uncertain", 0) + 1
 
             if query:
                 query_bucket = summary["by_query"].setdefault(

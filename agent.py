@@ -49,6 +49,7 @@ from llm_client import close_llm_client
 from outcome import (
     DECISION_APPLIED_AUTO,
     DECISION_ALREADY_APPLIED,
+    DECISION_APPLY_UNCERTAIN,
     DECISION_APPLY_FAILED,
     DECISION_APPLY_FAILED_EXCEPTION,
     DECISION_DRY_RUN_MATCH,
@@ -57,6 +58,7 @@ from outcome import (
     DECISION_DEFERRED_UNSCORED,
     DECISION_SKIPPED_LOW_SCORE,
     DECISION_SKIPPED_RED_FLAGS,
+    apply_result_is_uncertain,
 )
 from geekjob_client import GeekJobClient
 from habr_career_client import HabrCareerClient
@@ -684,6 +686,21 @@ async def do_manual_apply_token(token: str) -> dict:
             return {"ok": False, "message": "Подтверждение отозвано до отправки"}
         dispatch_started = True
         apply_result = await apply_orchestrator.dispatch_apply(vacancy, cover, hh_client=hh_client)
+        if apply_result_is_uncertain(apply_result):
+            apply_result = {**apply_result, "ok": False, "uncertain": True}
+            message = str(apply_result.get("message") or "Исход отклика не подтверждён")
+            manual_note = (
+                f"{message}. Отклик мог быть отправлен; проверьте историю откликов вручную. "
+                "Автоматического повтора нет."
+            )
+            seen.mark_seen(vacancy.get("id", token), vacancy, "apply_uncertain")
+            finish("uncertain", manual_note)
+            analytics.record_decision(
+                run_id=run_id, vacancy=vacancy, decision=DECISION_APPLY_UNCERTAIN,
+                evaluation=cover_evaluation, details=details, note="manual_ai:apply_uncertain",
+            )
+            await notify_needs_manual(vacancy, score, reason, note=manual_note)
+            return {**apply_result, "ok": False, "uncertain": True, "message": manual_note}
         _record_hh_questionnaire_analytics(
             run_id=run_id,
             vacancy=vacancy,
@@ -745,11 +762,11 @@ async def do_manual_apply_token(token: str) -> dict:
             note=f"ИИ-отклик не завершился: {message}. Открой вручную.",
         )
         print(f"❌ ИИ-отклик не завершился: {message}")
-        return {"ok": False, "message": message}
+        return {"ok": False, "uncertain": bool(dispatch_started), "message": message}
 
     except HHUnexpectedUI as exc:
         finish("uncertain" if dispatch_started else "pending", str(exc))
-        return {"ok": False, "reason": "hh_unexpected_ui", "message": str(exc)}
+        return {"ok": False, "uncertain": bool(dispatch_started), "reason": "hh_unexpected_ui", "message": str(exc)}
     except asyncio.CancelledError:
         finish("uncertain" if dispatch_started else "pending", "Попытка отменена")
         raise
@@ -764,7 +781,7 @@ async def do_manual_apply_token(token: str) -> dict:
         )
         log.warning("Manual AI apply failed: error_kind=%s", type(exc).__name__)
         print(f"❌ ИИ-отклик упал: {message}")
-        return {"ok": False, "message": message}
+        return {"ok": False, "uncertain": bool(dispatch_started), "message": message}
     finally:
         try:
             await hh_client.stop()
@@ -1693,6 +1710,26 @@ async def do_search(dry_run: bool = False) -> dict:
             log.info("  %s apply result: vacancy=%s ok=%s uncertain=%s questions=%s", source_label, vid,
                      bool(apply_result.get("ok")), bool(apply_result.get("uncertain")),
                      bool(apply_result.get("requires_questions")))
+            if apply_result_is_uncertain(apply_result):
+                apply_result = {**apply_result, "ok": False, "uncertain": True}
+                bucket["uncertain"] = bucket.get("uncertain", 0) + 1
+                uncertainty_note = (
+                    str(apply_result.get("message") or "Исход отклика не подтверждён")
+                    + ". Отклик мог быть отправлен; проверьте историю откликов вручную. Автоматического повтора нет."
+                )
+                if source == "hh":
+                    hh_pipeline.mark_terminal(vid, "apply_uncertain")
+                await _mark_manual(
+                    "Ручная сверка: исход отклика неизвестен",
+                    "apply_uncertain",
+                    DECISION_APPLY_UNCERTAIN,
+                    uncertainty_note,
+                    v, vid, score, reason, cover_evaluation, details,
+                    result, bucket, run_id, set_hunter_status,
+                    resume_variant=hh_resume_variant,
+                    analytics_note=f"{source}:apply_uncertain",
+                )
+                continue
             if source == "hh":
                 _record_hh_questionnaire_analytics(
                     run_id=run_id,

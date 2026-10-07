@@ -49,6 +49,8 @@ def is_seen(vacancy_id: str) -> bool:
 def mark_seen(vacancy_id: str, vacancy: dict, action: str = "applied"):
     """Отметить вакансию как обработанную."""
     def remember(data: dict) -> None:
+        if data.get(vacancy_id, {}).get("action") == "apply_uncertain" and action != "apply_uncertain":
+            raise RuntimeError("Uncertain apply requires manual verification before changing its outcome")
         data[vacancy_id] = {
             "title": vacancy.get("title", ""),
             "company": vacancy.get("company", ""),
@@ -111,7 +113,7 @@ def stats_from_data(data: dict) -> dict:
         if action == "applied":
             summary["applied"] += 1
             bucket["applied"] += 1
-        elif action.startswith("manual_"):
+        elif action.startswith("manual_") or action == "apply_uncertain":
             summary["manual"] += 1
             summary["skipped"] += 1
             bucket["manual"] += 1

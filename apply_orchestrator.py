@@ -16,6 +16,7 @@ from debug_trace import ApplyTrace
 from hh_client import HHClient
 from hh.resume_target import exact_title_resume_id
 from hh.ui import HHUnexpectedUI
+from outcome import apply_result_is_uncertain
 from superjob_client import SuperJobClient
 from habr_career_client import HabrCareerClient
 from geekjob_client import GeekJobClient
@@ -183,7 +184,10 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
                     failure_stage=failure_stage,
                 )
             raise
-        outcome = ("already_applied" if result.get("already_applied") else
+        if apply_result_is_uncertain(result):
+            result = {**result, "ok": False, "uncertain": True}
+        outcome = ("uncertain" if result.get("uncertain") else
+                   "already_applied" if result.get("already_applied") else
                    "blocked" if result.get("reason") == "company_blacklisted" else
                    "sent" if result.get("ok") else "failed")
         analytics.record_event({"event": "application_result", "outcome": outcome,
