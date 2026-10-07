@@ -429,6 +429,8 @@ def record_successful_apply(vacancy: dict, variant: dict) -> None:
 
 def _record_successful_apply(state: dict, vacancy: dict, variant: dict) -> None:
     entry = _ensure_entry(vacancy, state)
+    if entry.get("completed_reason") == "apply_uncertain":
+        return
     attempts = entry.setdefault("attempts", [])
     retry_payload = _retry_attempt_payload(vacancy)
     if attempts and attempts[-1].get("variant") == variant["name"]:
@@ -454,6 +456,8 @@ def mark_terminal(vacancy_id: str, reason: str) -> None:
     def mark(state: dict) -> None:
         entry = state.get(vacancy_id)
         if not entry:
+            return
+        if entry.get("completed_reason") == "apply_uncertain" and reason != "apply_uncertain":
             return
         entry["completed_reason"] = reason
         entry["next_retry_at"] = ""

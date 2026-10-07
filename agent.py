@@ -632,6 +632,9 @@ async def do_manual_apply_token(token: str) -> dict:
         return {"ok": False, "message": "Отклик уже занят, отозван или завершён"}
     owner = claimed["owner"]
     dispatch_started = False
+    shutdown_started = False
+    manual_result = None
+    owned_attempt = None
     def finish(status, message=""):
         return manual_apply_queue.finish_candidate(token, owner, status, message, store=queue_store)
     def valid():
@@ -646,14 +649,28 @@ async def do_manual_apply_token(token: str) -> dict:
     hh_client = HHClient()
     hh_client._manual_apply_guard = begin_external
     hh_client._manual_apply_no_action = lambda: manual_apply_queue.confirm_no_action(token, owner, store=queue_store)
+    manual_uncertainty_note = None
     def record_manual_uncertain():
+        nonlocal manual_uncertainty_note
+        if manual_uncertainty_note is not None:
+            return manual_uncertainty_note
         note = "Исход отклика не подтверждён. Отклик мог быть отправлен; проверьте историю вручную. Автоматического повтора нет."
         seen.mark_seen(vacancy.get("id", token), vacancy, "apply_uncertain")
         hh_pipeline.mark_terminal(vacancy.get("id", token), "apply_uncertain")
         finish("uncertain", note)
         analytics.record_decision(run_id=run_id, vacancy=vacancy, decision=DECISION_APPLY_UNCERTAIN,
                                   evaluation=evaluation, details=details, note="manual_ai:apply_uncertain")
+        manual_uncertainty_note = note
         return note
+
+    def reconcile_manual_result():
+        nonlocal manual_result
+        if manual_result is None:
+            return
+        manual_result = apply_orchestrator.apply_result_with_current_uncertainty(
+            vacancy, hh_client, manual_result, owned_attempt=owned_attempt)
+        if apply_result_is_uncertain(manual_result):
+            manual_result["message"] = record_manual_uncertain()
     try:
         await hh_client.start()
         if not await hh_client.is_logged_in():
@@ -724,18 +741,23 @@ async def do_manual_apply_token(token: str) -> dict:
             return {"ok": False, "message": "Подтверждение отозвано до отправки"}
         dispatch_started = True
         apply_result = await apply_orchestrator.dispatch_apply(vacancy, cover, hh_client=hh_client)
+        owned_attempt = getattr(hh_client, "_external_attempt", None)
+        if owned_attempt is None:
+            monitor = getattr(getattr(hh_client, "_page", None), "_hh_action_monitor", None)
+            owned_attempt = getattr(monitor, "last_attempt", None)
+        manual_result = apply_result
+        reconcile_manual_result()
+        # This command has only one vacancy. Seal browser activity before its
+        # final queue/seen classification or any success notification.
+        shutdown_started = True
+        try:
+            await hh_client.stop()
+        finally:
+            reconcile_manual_result()
+        apply_result = manual_result
         if apply_result_is_uncertain(apply_result):
             apply_result = {**apply_result, "ok": False, "uncertain": True}
-            manual_note = (
-                "Исход отклика не подтверждён. Отклик мог быть отправлен; проверьте историю откликов вручную. "
-                "Автоматического повтора нет."
-            )
-            seen.mark_seen(vacancy.get("id", token), vacancy, "apply_uncertain")
-            finish("uncertain", manual_note)
-            analytics.record_decision(
-                run_id=run_id, vacancy=vacancy, decision=DECISION_APPLY_UNCERTAIN,
-                evaluation=cover_evaluation, details=details, note="manual_ai:apply_uncertain",
-            )
+            manual_note = record_manual_uncertain()
             await notify_needs_manual(vacancy, score, reason, note=manual_note)
             return {**apply_result, "ok": False, "uncertain": True, "message": manual_note}
         _record_hh_questionnaire_analytics(
@@ -837,10 +859,73 @@ async def do_manual_apply_token(token: str) -> dict:
         print(f"❌ ИИ-отклик упал: {message}")
         return {"ok": False, "uncertain": bool(dispatch_started), "message": message}
     finally:
+        if not shutdown_started:
+            try:
+                await hh_client.stop()
+            except Exception:
+                pass
+            finally:
+                reconcile_manual_result()
+
+
+class _HHApplyUncertain(Exception):
+    """Stop consuming a preliminary HH result after its receipt changes."""
+
+
+class _HHApplyReceipt:
+    """Pin one apply attempt and recheck it after consumer awaits."""
+
+    def __init__(self, vacancy, client, promote):
+        self.vacancy, self.client, self.promote = vacancy, client, promote
+        self.result = None
+        self.owned_attempt = None
+        self.classification = None
+        self.promoted = False
+
+    def capture(self, result):
+        self.result = result
+        if self.vacancy.get("source", "hh") == "hh":
+            self.owned_attempt = getattr(self.client, "_external_attempt", None)
+            if self.owned_attempt is None:
+                page = getattr(self.client, "_page", None)
+                monitor = getattr(page, "_hh_action_monitor", None)
+                self.owned_attempt = getattr(monitor, "last_attempt", None)
+        self.reconcile()
+
+    def account(self, classification):
+        self.classification = classification
+
+    def reconcile(self):
+        if self.result is None or self.vacancy.get("source", "hh") != "hh":
+            return False
+        self.result = apply_orchestrator.apply_result_with_current_uncertainty(
+            self.vacancy, self.client, self.result, owned_attempt=self.owned_attempt)
+        if apply_result_is_uncertain(self.result):
+            if not self.promoted:
+                self.promote(self.classification)
+                self.promoted = True
+            return True
+        return False
+
+    def check(self):
+        if self.reconcile():
+            raise _HHApplyUncertain()
+
+    async def wait(self, operation):
+        if self.reconcile():
+            # The caller constructed a coroutine but it has not started.
+            # Do not execute its side effect after an already-sticky receipt.
+            if hasattr(operation, "close"):
+                operation.close()
+            raise _HHApplyUncertain()
         try:
-            await hh_client.stop()
-        except Exception:
-            pass
+            value = await operation
+        finally:
+            # Persist the upgrade even when diagnostics or shutdown fails or
+            # the caller is cancelled. It must precede exception propagation.
+            self.reconcile()
+        self.check()
+        return value
 
 
 async def _mark_manual(
@@ -862,6 +947,8 @@ async def _mark_manual(
     analytics_note: str = "",
     reply_markup: dict | None = None,
     before_notify=None,
+    receipt=None,
+    receipt_classification="manual",
     **extra_analytics,
 ) -> None:
     """Общий хелпер для пометки вакансии как manual (ручной разбор)."""
@@ -880,9 +967,17 @@ async def _mark_manual(
         note=analytics_note,
         **extra_analytics,
     )
+    if receipt is not None:
+        receipt.account(receipt_classification)
     if before_notify is not None:
-        await before_notify()
-    await set_hunter_status("search_manual", status_msg, "busy")
+        if receipt is not None:
+            await receipt.wait(before_notify())
+        else:
+            await before_notify()
+    if receipt is not None:
+        await receipt.wait(set_hunter_status("search_manual", status_msg, "busy"))
+    else:
+        await set_hunter_status("search_manual", status_msg, "busy")
     create_task(
         f"Ручной отклик: {v['title']} @ {v['company']}",
         (
@@ -894,7 +989,10 @@ async def _mark_manual(
         ),
         "medium",
     )
-    await notify_needs_manual(v, score, reason, note=manual_note, reply_markup=reply_markup)
+    if receipt is not None:
+        await receipt.wait(notify_needs_manual(v, score, reason, note=manual_note, reply_markup=reply_markup))
+    else:
+        await notify_needs_manual(v, score, reason, note=manual_note, reply_markup=reply_markup)
 
 
 def _build_hh_retry_cover_letter(v: dict, resume_variant: dict | None = None) -> str:
@@ -1023,6 +1121,8 @@ async def do_search(dry_run: bool = False) -> dict:
     hh_retry_vacancies: list[dict] = []
     hh_auto_apply_guard_note = ""
     hh_logged_in = False
+    last_hh_receipt = None
+    hh_shutdown_started = False
 
     async def set_hunter_status(action: str, message: str, status: str) -> None:
         nonlocal last_office_status
@@ -1237,8 +1337,57 @@ async def do_search(dry_run: bool = False) -> dict:
         superjob_ready: bool | None = None
         geekjob_ready: bool | None = None
         geekjob_ready_message = ""
+        def consumer_receipt(v, vid, bucket, evaluation, details, resume_variant):
+            def promote(classification):
+                nonlocal applied_count
+                # Withdraw this vacancy's prior classification exactly once.
+                # Manual/skipped counters already written before a shutdown
+                # await remain in place when guard_stop becomes uncertain.
+                if classification == "applied":
+                    result["applied"] -= 1
+                    bucket["applied"] -= 1
+                    applied_count -= 1
+                    auto_applied_count_by_source["hh"] -= 1
+                elif classification == "rejected":
+                    bucket["rejected"] -= 1
+                elif classification == "guard":
+                    bucket["guard_stop"] -= 1
+                if classification not in {"manual", "guard", "rejected"}:
+                    result["skipped"] += 1
+                if classification not in {"manual", "guard"}:
+                    bucket["manual"] += 1
+                bucket["uncertain"] = bucket.get("uncertain", 0) + 1
+                seen.mark_seen(vid, v, "apply_uncertain")
+                hh_pipeline.mark_terminal(vid, "apply_uncertain")
+                hh_breaker.hard_stop("HH: исход отклика неизвестен; требуется ручная сверка")
+                result["hh_recovery"] = hh_breaker.snapshot()
+                bucket["stop_reason"] = hh_breaker.reason
+                analytics.record_decision(
+                    run_id=run_id, vacancy=v, decision=DECISION_APPLY_UNCERTAIN,
+                    evaluation=evaluation, details=details, resume_variant=resume_variant,
+                    note="hh:apply_uncertain")
+            return _HHApplyReceipt(v, hh_client, promote)
+
+        async def notify_hh_uncertain(receipt, v, score, reason):
+            note = ("Исход отклика не подтверждён. Отклик мог быть отправлен; "
+                    "проверьте историю откликов вручную. Автоматического повтора нет. HH остановлен.")
+            try:
+                await halt_hh_browser()
+            finally:
+                receipt.reconcile()
+            try:
+                await set_hunter_status("search_manual", "Ручная сверка: исход отклика неизвестен", "busy")
+            finally:
+                receipt.reconcile()
+            create_task(f"Ручная сверка: {v['title']} @ {v['company']}",
+                        f"URL: {v.get('url', '')}\n{note}", "medium")
+            try:
+                await notify_needs_manual(v, score, reason, note=note)
+            finally:
+                receipt.reconcile()
+
         async def record_hh_ui_incident(v, vid, bucket, score=0, reason="", evaluation=None,
-                                        details="", fingerprint="", recovered=False, message=""):
+                                        details="", fingerprint="", recovered=False, message="", receipt=None):
             if recovered:
                 hh_breaker.recovered_incident(fingerprint)
             else:
@@ -1264,14 +1413,18 @@ async def do_search(dry_run: bool = False) -> dict:
                 result, bucket, run_id, set_hunter_status,
                 analytics_note=("hh:recovered_ui" if recovered else "hh:ui_hard_stop"),
                 before_notify=halt_hh_browser if hh_breaker.stopped else None,
+                receipt=receipt, receipt_classification="guard",
             )
             if hh_breaker.stopped:
                 await set_hunter_status("hh_ui_blocked", hh_breaker.reason, "busy")
 
-        async def handle_hh_unexpected(exc, v, vid, bucket, *, score=0, reason="", evaluation=None, details=""):
+        async def handle_hh_unexpected(exc, v, vid, bucket, *, score=0, reason="", evaluation=None, details="", receipt=None):
             if v.get("source", "hh") != "hh":
                 raise exc
             if getattr(exc, "hh_uncertain", False):
+                if receipt is not None:
+                    receipt.result = {**receipt.result, "ok": False, "uncertain": True}
+                    receipt.check()
                 hh_breaker.hard_stop("HH: возможный отклик требует ручной сверки")
                 result["hh_recovery"] = hh_breaker.snapshot()
                 bucket["stop_reason"] = hh_breaker.reason
@@ -1291,12 +1444,13 @@ async def do_search(dry_run: bool = False) -> dict:
                 # Recovery may discover a request or ownership loss. Re-enter
                 # only the uncertainty branch; never attempt another recovery.
                 await handle_hh_unexpected(exc, v, vid, bucket, score=score, reason=reason,
-                                           evaluation=evaluation, details=details)
+                                           evaluation=evaluation, details=details, receipt=receipt)
                 return
             await record_hh_ui_incident(
                 v, vid, bucket, score=score, reason=reason, evaluation=evaluation, details=details,
                 fingerprint=getattr(exc, "fingerprint", ""), recovered=recovered is True,
-                message=getattr(exc, "hh_stop_reason", "") or "Нестандартный UI: вакансия оставлена для ручной проверки.")
+                message=getattr(exc, "hh_stop_reason", "") or "Нестандартный UI: вакансия оставлена для ручной проверки.",
+                receipt=receipt)
 
         for v in all_vacancies:
             if (
@@ -1770,344 +1924,200 @@ async def do_search(dry_run: bool = False) -> dict:
                 await wait_before_auto_apply(source, config.HABR_MIN_SECONDS_BETWEEN_APPLICATIONS)
                 last_apply_attempt_started_at_by_source[source] = asyncio.get_running_loop().time()
 
-            # 6. Отправляем отклик
-            try:
-                analytics.count_stage("apply_attempt", v)
-                apply_result = await analytics.tracked_call("apply", run_id, v,
-                    apply_orchestrator.dispatch_apply, v, cover,
-                    hh_client, superjob_client, habr_client, geekjob_client,
-                    preferred_resume_title=(hh_resume_variant or {}).get("title", ""),
-                    preferred_resume_id=(hh_resume_variant or {}).get("id", ""),
-                    trace=apply_trace,
-                )
-            except HHUnexpectedUI as exc:
-                await handle_hh_unexpected(exc, v, vid, bucket, score=score, reason=reason,
-                                           evaluation=cover_evaluation, details=details)
-                continue
-            except Exception as e:
-                if source == "hh" and hasattr(e, "hh_recovered"):
-                    incident = HHUnexpectedUI("apply_exception", hashlib.sha256(type(e).__name__.encode()).hexdigest())
-                    incident.hh_recovered = e.hh_recovered
-                    incident.hh_uncertain = getattr(e, "hh_uncertain", False)
-                    incident.hh_stop_reason = getattr(e, "hh_stop_reason", "")
-                    await handle_hh_unexpected(incident, v, vid, bucket, score=score, reason=reason,
-                                               evaluation=cover_evaluation, details=details)
-                    continue
-                analytics.record_failure("apply", e, source=source, continued=True)
-                snapshot = await _save_autoapply_failure_snapshot(
-                    source,
-                    vid,
-                    _autoapply_page_for_source(
-                        source,
-                        hh_client,
-                        superjob_client,
-                        habr_client,
-                        geekjob_client,
-                    ),
-                    state_dir=diagnostic_roots[source],
-                )
-                snapshot_hint = (
-                    f"\nСнимок: {snapshot['screenshot']}"
-                    if snapshot.get("screenshot")
-                    else ""
-                )
-                if source == "hh" and _snapshot_looks_like_closed_or_archived(
-                    v,
-                    snapshot,
-                    f"{details}\n{type(e).__name__}: {e}",
-                ):
-                    _mark_closed_or_archived_after_apply_attempt(
-                        vid=vid,
-                        vacancy=v,
-                        source=source,
-                        evaluation=cover_evaluation,
-                        details=details,
-                        resume_variant=hh_resume_variant,
-                        result=result,
-                        bucket=bucket,
-                        run_id=run_id,
-                        note=f"hh:closed_or_archived_after_exception:{type(e).__name__}",
-                    )
-                    await set_hunter_status(
-                        "search_skip_existing",
-                        "HH вакансия в архиве, ручную задачу не создаю",
-                        "working",
-                    )
-                    log.info("  hh skipped closed/archived vacancy after apply exception for %s", vid)
-                    continue
-                guard_suffix = ""
-                anti_bot_kind = None
-                if source == "hh":
-                    anti_bot_kind = hh_guard.detect_antibot_kind(f"{type(e).__name__}: {e}")
-                    if anti_bot_kind:
-                        hh_status = hh_guard.record_antibot(
-                            kind=anti_bot_kind,
-                            raw_message=f"{type(e).__name__}: {e}",
-                            stage="apply_exception",
-                        )
-                        hh_auto_apply_guard_note = hh_guard.format_block_note(hh_status)
-                        guard_suffix = f"\n{hh_auto_apply_guard_note}"
-                if source == "hh" and anti_bot_kind:
-                    await record_hh_ui_incident(
-                        v, vid, bucket, score=score, reason=reason,
-                        evaluation=cover_evaluation, details=details,
-                        message=f"HH остановлен: {anti_bot_kind}; нужна ручная проверка.",
-                    )
-                    continue
-                await set_hunter_status("search_manual", f"Ручной {short_label}: ошибка", "busy")
-                seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
-                result["skipped"] += 1
-                bucket["manual"] += 1
-                analytics.record_decision(
-                    run_id=run_id,
-                    vacancy=v,
-                    decision=DECISION_APPLY_FAILED_EXCEPTION,
-                    evaluation=cover_evaluation,
-                    details=details,
-                    resume_variant=hh_resume_variant,
-                    note=f"{source}:{type(e).__name__}" + (f"; {hh_auto_apply_guard_note}" if guard_suffix else ""),
-                )
-                log.warning("  %s apply crashed for %s: %s", source_label, vid, type(e).__name__)
-                create_task(
-                    f"Ручной отклик: {v['title']} @ {v['company']}",
-                    (
-                        f"Источник: {source_label}\n"
-                        f"Score: {score}/100\n"
-                        f"{reason}\n"
-                        f"URL: {v.get('url', '')}\n"
-                        f"Автоотклик упал: {type(e).__name__}: {e}"
-                        f"{snapshot_hint}"
-                        f"{guard_suffix}"
-                    ),
-                    "medium",
-                )
-                await notify_needs_manual(
-                    v, score, reason,
-                    note=(
-                        f"Автоотклик {source_label} упал: {type(e).__name__}. Проверь вручную."
-                        + (f" {hh_auto_apply_guard_note}" if guard_suffix else "")
-                        + (f" Снимок: {snapshot['screenshot']}" if snapshot.get("screenshot") else "")
-                    ),
-                    screenshot_path=snapshot.get("screenshot"),
-                )
-                continue
-
-            log.info("  %s apply result: vacancy=%s ok=%s uncertain=%s questions=%s", source_label, vid,
-                     bool(apply_result.get("ok")), bool(apply_result.get("uncertain")),
-                     bool(apply_result.get("requires_questions")))
-            if apply_result_is_uncertain(apply_result):
-                apply_result = {**apply_result, "ok": False, "uncertain": True}
-                bucket["uncertain"] = bucket.get("uncertain", 0) + 1
-                uncertainty_note = (
-                    "Исход отклика не подтверждён. Отклик мог быть отправлен; проверьте историю откликов вручную. Автоматического повтора нет."
-                )
-                if source == "hh":
-                    hh_pipeline.mark_terminal(vid, "apply_uncertain")
-                    hh_breaker.hard_stop("HH: исход отклика неизвестен; требуется ручная сверка")
-                    result["hh_recovery"] = hh_breaker.snapshot()
-                    bucket["stop_reason"] = hh_breaker.reason
-                    uncertainty_note += " HH остановлен."
-                await _mark_manual(
-                    "Ручная сверка: исход отклика неизвестен",
-                    "apply_uncertain",
-                    DECISION_APPLY_UNCERTAIN,
-                    uncertainty_note,
-                    v, vid, score, reason, cover_evaluation, details,
-                    result, bucket, run_id, set_hunter_status,
-                    resume_variant=hh_resume_variant,
-                    analytics_note=f"{source}:apply_uncertain",
-                    before_notify=halt_hh_browser if source == "hh" else None,
-                )
-                continue
-            if source == "hh" and apply_result.get("hh_hard_stop"):
-                await record_hh_ui_incident(
-                    v, vid, bucket, score=score, reason=reason, evaluation=cover_evaluation, details=details,
-                    message=apply_result.get("hh_recovery_reason") or "HH: безопасное восстановление не доказано")
-                continue
+            receipt = consumer_receipt(v, vid, bucket, cover_evaluation, details, hh_resume_variant)
             if source == "hh":
-                _record_hh_questionnaire_analytics(
-                    run_id=run_id,
-                    vacancy=v,
-                    apply_result=apply_result,
-                    success=bool(apply_result.get("ok")),
-                )
-            apply_notes = apply_result.get("notes") or []
-            apply_note_text = "; ".join(str(item) for item in apply_notes if item)
-            question_answer_note = _format_hh_question_answers_for_note(apply_result)
-            if question_answer_note:
-                apply_note_text = (apply_note_text + "\n\n" + question_answer_note).strip()
-            if source == "hh" and v.get("_hh_retry"):
-                retry_note = f"Повторный отклик: {v.get('_hh_retry_reason') or 'retry'}"
-                if v.get("_hh_last_status"):
-                    retry_note += f"; статус: {v.get('_hh_last_status')}"
-                if hh_resume_variant and hh_resume_variant.get("title"):
-                    retry_note += f"; резюме: {hh_resume_variant.get('title')}"
-                apply_note_text = (apply_note_text + "\n" + retry_note).strip()
-            apply_message_text = str(apply_result.get("message", ""))
-
-            if source == "hh" and (
-                apply_result.get("closed_or_archived")
-                or _looks_like_closed_or_archived(v, apply_message_text)
-            ):
-                _mark_closed_or_archived_after_apply_attempt(
-                    vid=vid,
-                    vacancy=v,
-                    source=source,
-                    evaluation=cover_evaluation,
-                    details=details,
-                    resume_variant=hh_resume_variant,
-                    result=result,
-                    bucket=bucket,
-                    run_id=run_id,
-                    note=f"hh:closed_or_archived_after_apply_result:{apply_message_text or 'closed_or_archived'}",
-                )
-                await set_hunter_status(
-                    "search_skip_existing",
-                    "HH вакансия в архиве, ручную задачу не создаю",
-                    "working",
-                )
-                log.info("  hh skipped closed/archived vacancy after apply result for %s", vid)
-                continue
-
-            # 7. hh-специфика: вопросы работодателя
-            if source == "hh" and "пропускаем" in apply_result.get("message", "").lower():
-                snapshot = await _save_autoapply_failure_snapshot(
-                    source,
-                    vid,
-                    _autoapply_page_for_source(
-                        source,
-                        hh_client,
-                        superjob_client,
-                        habr_client,
-                        geekjob_client,
-                    ),
-                    state_dir=diagnostic_roots[source],
-                )
-                await set_hunter_status("search_manual", "Ручной hh: вопросы", "busy")
-                seen.mark_seen(vid, v, "skipped_questions")
-                result["skipped"] += 1
-                bucket["manual"] += 1
-                analytics.record_decision(
-                    run_id=run_id,
-                    vacancy=v,
-                    decision=DECISION_QUESTIONS_REQUIRED,
-                    evaluation=cover_evaluation,
-                    details=details,
-                    resume_variant=hh_resume_variant,
-                )
-                log.info("  Skipped: employer requires extra questions")
-                await notify_needs_manual(
-                    v,
-                    score,
-                    reason,
-                    note=(
-                        f"Нужен ручной отклик: работодатель добавил вопросы."
-                        + (f" {apply_note_text}." if apply_note_text else "")
-                        + (f" Снимок: {snapshot['screenshot']}" if snapshot.get("screenshot") else "")
-                    ),
-                    screenshot_path=snapshot.get("screenshot"),
-                )
-                continue
-
-            # 8. Обработка результата
-            if apply_result.get("already_applied"):
-                if apply_result.get("resume_selection_status") == "unknown_existing_response":
-                    await notify_needs_manual(v, score, reason, note=str(apply_result.get("message") or "Исходное HH-резюме не подтверждено"))
-                seen.mark_seen(vid, v, "already_applied")
-                if source == "hh":
-                    hh_pipeline.mark_terminal(vid, "already_applied")
-                result["skipped"] += 1
-                bucket["rejected"] += 1
-                analytics.record_decision(
-                    run_id=run_id,
-                    vacancy=v,
-                    decision=DECISION_ALREADY_APPLIED,
-                    evaluation=cover_evaluation,
-                    details=details,
-                    resume_variant=hh_resume_variant,
-                    note=f"{source}:{apply_result.get('message', 'already applied')}",
-                )
-                await set_hunter_status(
-                    "search_skip_existing",
-                    f"Уже откликался {short_label}",
-                    "working",
-                )
-                log.info("  %s vacancy already has a response: %s", source_label, vid)
-                continue
-
-            cover_evaluation["cover_letter_status"] = apply_result.get("cover_letter_status", "unknown")
-            if apply_result.get("ok"):
-                seen.mark_seen(vid, v, "applied")
-                if source == "hh" and hh_resume_variant is not None:
-                    hh_pipeline.record_successful_apply(v, hh_resume_variant)
-                if source == "hh":
-                    hh_guard.record_apply_success()
-                result["applied"] += 1
-                applied_count += 1
-                bucket["applied"] += 1
-                auto_applied_count_by_source[source] += 1
-                analytics.record_decision(
-                    run_id=run_id,
-                    vacancy=v,
-                    decision=DECISION_APPLIED_AUTO,
-                    evaluation=cover_evaluation,
-                    details=details,
-                    resume_variant=hh_resume_variant,
-                    note=f"{source}:{apply_note_text}" if apply_note_text else "",
-                )
-                await set_hunter_status(
-                    "search_apply_done",
-                    f"Отправил {short_label} {auto_applied_count_by_source[source]}",
-                    "working",
-                )
-
-                task_id = create_task(
-                    f"Отклик: {v['title']} @ {v['company']}",
-                    (
-                        f"Источник: {source_label}\n"
-                        f"Score: {score}/100\n"
-                        f"{reason}\n"
-                        f"URL: {v.get('url', '')}\n"
-                        f"Cover: {cover}"
-                        + (f"\nAuto-answer: {apply_note_text}" if apply_note_text else "")
-                    ),
-                    "low",
-                )
-                if task_id:
-                    await task_complete(task_id, f"Отклик {source_label} отправлен (score {score})")
-
-                await notify_application(v, score, cover, note=apply_note_text or None)
-            else:
-                apply_message = str(
-                    apply_result.get("message")
-                    or "HH не подтвердил отправку отклика после нажатия кнопки"
-                )
-                if source == "hh" and "не удалось подтвердить отклик" in str(apply_message).casefold():
-                    log.warning(
-                        "  hh apply unconfirmed; escalating to manual task for %s",
-                        vid,
+                last_hh_receipt = receipt
+            try:
+                # 6. Отправляем отклик
+                try:
+                    analytics.count_stage("apply_attempt", v)
+                    apply_result = await analytics.tracked_call("apply", run_id, v,
+                        apply_orchestrator.dispatch_apply, v, cover,
+                        hh_client, superjob_client, habr_client, geekjob_client,
+                        preferred_resume_title=(hh_resume_variant or {}).get("title", ""),
+                        preferred_resume_id=(hh_resume_variant or {}).get("id", ""),
+                        trace=apply_trace,
                     )
-                snapshot = await _save_autoapply_failure_snapshot(
-                    source,
-                    vid,
-                    _autoapply_page_for_source(
+                except asyncio.CancelledError:
+                    receipt.capture({"ok": False})
+                    raise
+                except HHUnexpectedUI as exc:
+                    receipt.capture({"ok": False, "uncertain": bool(getattr(exc, "hh_uncertain", False))})
+                    receipt.check()
+                    await receipt.wait(handle_hh_unexpected(exc, v, vid, bucket, score=score, reason=reason,
+                                               evaluation=cover_evaluation, details=details, receipt=receipt))
+                    continue
+                except Exception as e:
+                    receipt.capture({"ok": False, "uncertain": bool(getattr(e, "hh_uncertain", False))})
+                    receipt.check()
+                    if source == "hh" and hasattr(e, "hh_recovered"):
+                        incident = HHUnexpectedUI("apply_exception", hashlib.sha256(type(e).__name__.encode()).hexdigest())
+                        incident.hh_recovered = e.hh_recovered
+                        incident.hh_uncertain = getattr(e, "hh_uncertain", False)
+                        incident.hh_stop_reason = getattr(e, "hh_stop_reason", "")
+                        await receipt.wait(handle_hh_unexpected(incident, v, vid, bucket, score=score, reason=reason,
+                                                   evaluation=cover_evaluation, details=details, receipt=receipt))
+                        continue
+                    analytics.record_failure("apply", e, source=source, continued=True)
+                    snapshot = await receipt.wait(_save_autoapply_failure_snapshot(
                         source,
-                        hh_client,
-                        superjob_client,
-                        habr_client,
-                        geekjob_client,
-                    ),
-                    state_dir=diagnostic_roots[source],
-                )
-                snapshot_hint = (
-                    f"\nСнимок: {snapshot['screenshot']}"
-                    if snapshot.get("screenshot")
-                    else ""
-                )
-                if source == "hh" and _snapshot_looks_like_closed_or_archived(
-                    v,
-                    snapshot,
-                    f"{details}\n{apply_message}",
+                        vid,
+                        _autoapply_page_for_source(
+                            source,
+                            hh_client,
+                            superjob_client,
+                            habr_client,
+                            geekjob_client,
+                        ),
+                        state_dir=diagnostic_roots[source],
+                    ))
+                    snapshot_hint = (
+                        f"\nСнимок: {snapshot['screenshot']}"
+                        if snapshot.get("screenshot")
+                        else ""
+                    )
+                    if source == "hh" and _snapshot_looks_like_closed_or_archived(
+                        v,
+                        snapshot,
+                        f"{details}\n{type(e).__name__}: {e}",
+                    ):
+                        _mark_closed_or_archived_after_apply_attempt(
+                            vid=vid,
+                            vacancy=v,
+                            source=source,
+                            evaluation=cover_evaluation,
+                            details=details,
+                            resume_variant=hh_resume_variant,
+                            result=result,
+                            bucket=bucket,
+                            run_id=run_id,
+                            note=f"hh:closed_or_archived_after_exception:{type(e).__name__}",
+                        )
+                        receipt.account("rejected")
+                        await receipt.wait(set_hunter_status(
+                            "search_skip_existing",
+                            "HH вакансия в архиве, ручную задачу не создаю",
+                            "working",
+                        ))
+                        log.info("  hh skipped closed/archived vacancy after apply exception for %s", vid)
+                        continue
+                    guard_suffix = ""
+                    anti_bot_kind = None
+                    if source == "hh":
+                        anti_bot_kind = hh_guard.detect_antibot_kind(f"{type(e).__name__}: {e}")
+                        if anti_bot_kind:
+                            hh_status = hh_guard.record_antibot(
+                                kind=anti_bot_kind,
+                                raw_message=f"{type(e).__name__}: {e}",
+                                stage="apply_exception",
+                            )
+                            hh_auto_apply_guard_note = hh_guard.format_block_note(hh_status)
+                            guard_suffix = f"\n{hh_auto_apply_guard_note}"
+                    if source == "hh" and anti_bot_kind:
+                        await receipt.wait(record_hh_ui_incident(
+                            v, vid, bucket, score=score, reason=reason,
+                            evaluation=cover_evaluation, details=details,
+                            message=f"HH остановлен: {anti_bot_kind}; нужна ручная проверка.", receipt=receipt,
+                        ))
+                        continue
+                    await receipt.wait(set_hunter_status("search_manual", f"Ручной {short_label}: ошибка", "busy"))
+                    seen.mark_seen(vid, v, f"apply_failed_exception:{type(e).__name__}")
+                    result["skipped"] += 1
+                    bucket["manual"] += 1
+                    receipt.account("manual")
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision=DECISION_APPLY_FAILED_EXCEPTION,
+                        evaluation=cover_evaluation,
+                        details=details,
+                        resume_variant=hh_resume_variant,
+                        note=f"{source}:{type(e).__name__}" + (f"; {hh_auto_apply_guard_note}" if guard_suffix else ""),
+                    )
+                    log.warning("  %s apply crashed for %s: %s", source_label, vid, type(e).__name__)
+                    create_task(
+                        f"Ручной отклик: {v['title']} @ {v['company']}",
+                        (
+                            f"Источник: {source_label}\n"
+                            f"Score: {score}/100\n"
+                            f"{reason}\n"
+                            f"URL: {v.get('url', '')}\n"
+                            f"Автоотклик упал: {type(e).__name__}: {e}"
+                            f"{snapshot_hint}"
+                            f"{guard_suffix}"
+                        ),
+                        "medium",
+                    )
+                    await receipt.wait(notify_needs_manual(
+                        v, score, reason,
+                        note=(
+                            f"Автоотклик {source_label} упал: {type(e).__name__}. Проверь вручную."
+                            + (f" {hh_auto_apply_guard_note}" if guard_suffix else "")
+                            + (f" Снимок: {snapshot['screenshot']}" if snapshot.get("screenshot") else "")
+                        ),
+                        screenshot_path=snapshot.get("screenshot"),
+                    ))
+                    continue
+
+                receipt.capture(apply_result)
+                receipt.check()
+
+                log.info("  %s apply result: vacancy=%s ok=%s uncertain=%s questions=%s", source_label, vid,
+                         bool(apply_result.get("ok")), bool(apply_result.get("uncertain")),
+                         bool(apply_result.get("requires_questions")))
+                if apply_result_is_uncertain(apply_result):
+                    apply_result = {**apply_result, "ok": False, "uncertain": True}
+                    bucket["uncertain"] = bucket.get("uncertain", 0) + 1
+                    uncertainty_note = (
+                        "Исход отклика не подтверждён. Отклик мог быть отправлен; проверьте историю откликов вручную. Автоматического повтора нет."
+                    )
+                    if source == "hh":
+                        hh_pipeline.mark_terminal(vid, "apply_uncertain")
+                        hh_breaker.hard_stop("HH: исход отклика неизвестен; требуется ручная сверка")
+                        result["hh_recovery"] = hh_breaker.snapshot()
+                        bucket["stop_reason"] = hh_breaker.reason
+                        uncertainty_note += " HH остановлен."
+                    await receipt.wait(_mark_manual(
+                        "Ручная сверка: исход отклика неизвестен",
+                        "apply_uncertain",
+                        DECISION_APPLY_UNCERTAIN,
+                        uncertainty_note,
+                        v, vid, score, reason, cover_evaluation, details,
+                        result, bucket, run_id, set_hunter_status,
+                        resume_variant=hh_resume_variant,
+                        analytics_note=f"{source}:apply_uncertain",
+                        before_notify=halt_hh_browser if source == "hh" else None,
+                    ))
+                    continue
+                if source == "hh" and apply_result.get("hh_hard_stop"):
+                    await receipt.wait(record_hh_ui_incident(
+                        v, vid, bucket, score=score, reason=reason, evaluation=cover_evaluation, details=details,
+                        message=apply_result.get("hh_recovery_reason") or "HH: безопасное восстановление не доказано", receipt=receipt))
+                    continue
+                if source == "hh":
+                    _record_hh_questionnaire_analytics(
+                        run_id=run_id,
+                        vacancy=v,
+                        apply_result=apply_result,
+                        success=bool(apply_result.get("ok")),
+                    )
+                apply_notes = apply_result.get("notes") or []
+                apply_note_text = "; ".join(str(item) for item in apply_notes if item)
+                question_answer_note = _format_hh_question_answers_for_note(apply_result)
+                if question_answer_note:
+                    apply_note_text = (apply_note_text + "\n\n" + question_answer_note).strip()
+                if source == "hh" and v.get("_hh_retry"):
+                    retry_note = f"Повторный отклик: {v.get('_hh_retry_reason') or 'retry'}"
+                    if v.get("_hh_last_status"):
+                        retry_note += f"; статус: {v.get('_hh_last_status')}"
+                    if hh_resume_variant and hh_resume_variant.get("title"):
+                        retry_note += f"; резюме: {hh_resume_variant.get('title')}"
+                    apply_note_text = (apply_note_text + "\n" + retry_note).strip()
+                apply_message_text = str(apply_result.get("message", ""))
+
+                if source == "hh" and (
+                    apply_result.get("closed_or_archived")
+                    or _looks_like_closed_or_archived(v, apply_message_text)
                 ):
                     _mark_closed_or_archived_after_apply_attempt(
                         vid=vid,
@@ -2119,96 +2129,250 @@ async def do_search(dry_run: bool = False) -> dict:
                         result=result,
                         bucket=bucket,
                         run_id=run_id,
-                        note=f"hh:closed_or_archived_after_apply_failure_snapshot:{apply_message}",
+                        note=f"hh:closed_or_archived_after_apply_result:{apply_message_text or 'closed_or_archived'}",
                     )
-                    await set_hunter_status(
+                    receipt.account("rejected")
+                    await receipt.wait(set_hunter_status(
                         "search_skip_existing",
                         "HH вакансия в архиве, ручную задачу не создаю",
                         "working",
-                    )
-                    log.info("  hh skipped closed/archived vacancy after apply failure snapshot for %s", vid)
+                    ))
+                    log.info("  hh skipped closed/archived vacancy after apply result for %s", vid)
                     continue
-                guard_suffix = ""
-                anti_bot_kind = None
-                if source == "hh":
-                    anti_bot_kind = apply_result.get("anti_bot_kind") or hh_guard.detect_antibot_kind(apply_message)
-                    if anti_bot_kind:
-                        hh_status = hh_guard.record_antibot(
-                            kind=anti_bot_kind,
-                            raw_message=apply_message,
-                            stage="apply_result",
+
+                # 7. hh-специфика: вопросы работодателя
+                if source == "hh" and "пропускаем" in apply_result.get("message", "").lower():
+                    snapshot = await receipt.wait(_save_autoapply_failure_snapshot(
+                        source,
+                        vid,
+                        _autoapply_page_for_source(
+                            source,
+                            hh_client,
+                            superjob_client,
+                            habr_client,
+                            geekjob_client,
+                        ),
+                        state_dir=diagnostic_roots[source],
+                    ))
+                    await receipt.wait(set_hunter_status("search_manual", "Ручной hh: вопросы", "busy"))
+                    seen.mark_seen(vid, v, "skipped_questions")
+                    result["skipped"] += 1
+                    bucket["manual"] += 1
+                    receipt.account("manual")
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision=DECISION_QUESTIONS_REQUIRED,
+                        evaluation=cover_evaluation,
+                        details=details,
+                        resume_variant=hh_resume_variant,
+                    )
+                    log.info("  Skipped: employer requires extra questions")
+                    await receipt.wait(notify_needs_manual(
+                        v,
+                        score,
+                        reason,
+                        note=(
+                            f"Нужен ручной отклик: работодатель добавил вопросы."
+                            + (f" {apply_note_text}." if apply_note_text else "")
+                            + (f" Снимок: {snapshot['screenshot']}" if snapshot.get("screenshot") else "")
+                        ),
+                        screenshot_path=snapshot.get("screenshot"),
+                    ))
+                    continue
+
+                # 8. Обработка результата
+                if apply_result.get("already_applied"):
+                    if apply_result.get("resume_selection_status") == "unknown_existing_response":
+                        await receipt.wait(notify_needs_manual(v, score, reason, note=str(apply_result.get("message") or "Исходное HH-резюме не подтверждено")))
+                    seen.mark_seen(vid, v, "already_applied")
+                    if source == "hh":
+                        hh_pipeline.mark_terminal(vid, "already_applied")
+                    result["skipped"] += 1
+                    bucket["rejected"] += 1
+                    receipt.account("rejected")
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision=DECISION_ALREADY_APPLIED,
+                        evaluation=cover_evaluation,
+                        details=details,
+                        resume_variant=hh_resume_variant,
+                        note=f"{source}:{apply_result.get('message', 'already applied')}",
+                    )
+                    await receipt.wait(set_hunter_status(
+                        "search_skip_existing",
+                        f"Уже откликался {short_label}",
+                        "working",
+                    ))
+                    log.info("  %s vacancy already has a response: %s", source_label, vid)
+                    continue
+
+                cover_evaluation["cover_letter_status"] = apply_result.get("cover_letter_status", "unknown")
+                if apply_result.get("ok"):
+                    seen.mark_seen(vid, v, "applied")
+                    if source == "hh" and hh_resume_variant is not None:
+                        hh_pipeline.record_successful_apply(v, hh_resume_variant)
+                    if source == "hh":
+                        hh_guard.record_apply_success()
+                    result["applied"] += 1
+                    applied_count += 1
+                    bucket["applied"] += 1
+                    auto_applied_count_by_source[source] += 1
+                    receipt.account("applied")
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision=DECISION_APPLIED_AUTO,
+                        evaluation=cover_evaluation,
+                        details=details,
+                        resume_variant=hh_resume_variant,
+                        note=f"{source}:{apply_note_text}" if apply_note_text else "",
+                    )
+                    await receipt.wait(set_hunter_status(
+                        "search_apply_done",
+                        f"Отправил {short_label} {auto_applied_count_by_source[source]}",
+                        "working",
+                    ))
+
+                    task_id = create_task(
+                        f"Отклик: {v['title']} @ {v['company']}",
+                        (
+                            f"Источник: {source_label}\n"
+                            f"Score: {score}/100\n"
+                            f"{reason}\n"
+                            f"URL: {v.get('url', '')}\n"
+                            f"Cover: {cover}"
+                            + (f"\nAuto-answer: {apply_note_text}" if apply_note_text else "")
+                        ),
+                        "low",
+                    )
+                    if task_id:
+                        await receipt.wait(task_complete(task_id, f"Отклик {source_label} отправлен (score {score})"))
+
+                    await receipt.wait(notify_application(v, score, cover, note=apply_note_text or None))
+                else:
+                    apply_message = str(
+                        apply_result.get("message")
+                        or "HH не подтвердил отправку отклика после нажатия кнопки"
+                    )
+                    if source == "hh" and "не удалось подтвердить отклик" in str(apply_message).casefold():
+                        log.warning(
+                            "  hh apply unconfirmed; escalating to manual task for %s",
+                            vid,
                         )
-                        hh_auto_apply_guard_note = hh_guard.format_block_note(hh_status)
-                        guard_suffix = f"\n{hh_auto_apply_guard_note}"
-                # geekjob-специфика: сброс готовности при ошибке авторизации
-                if source == "geekjob" and (
-                    "не авториз" in apply_message.lower() or "не гик" in apply_message.lower()
-                ):
-                    geekjob_ready = False
-                    geekjob_ready_message = apply_message
-
-                if source == "hh" and anti_bot_kind:
-                    await record_hh_ui_incident(
-                        v, vid, bucket, score=score, reason=reason,
-                        evaluation=cover_evaluation, details=details,
-                        message=f"HH остановлен: {anti_bot_kind}; нужна ручная проверка.",
+                    snapshot = await receipt.wait(_save_autoapply_failure_snapshot(
+                        source,
+                        vid,
+                        _autoapply_page_for_source(
+                            source,
+                            hh_client,
+                            superjob_client,
+                            habr_client,
+                            geekjob_client,
+                        ),
+                        state_dir=diagnostic_roots[source],
+                    ))
+                    snapshot_hint = (
+                        f"\nСнимок: {snapshot['screenshot']}"
+                        if snapshot.get("screenshot")
+                        else ""
                     )
-                    continue
+                    if source == "hh" and _snapshot_looks_like_closed_or_archived(
+                        v,
+                        snapshot,
+                        f"{details}\n{apply_message}",
+                    ):
+                        _mark_closed_or_archived_after_apply_attempt(
+                            vid=vid,
+                            vacancy=v,
+                            source=source,
+                            evaluation=cover_evaluation,
+                            details=details,
+                            resume_variant=hh_resume_variant,
+                            result=result,
+                            bucket=bucket,
+                            run_id=run_id,
+                            note=f"hh:closed_or_archived_after_apply_failure_snapshot:{apply_message}",
+                        )
+                        receipt.account("rejected")
+                        await receipt.wait(set_hunter_status(
+                            "search_skip_existing",
+                            "HH вакансия в архиве, ручную задачу не создаю",
+                            "working",
+                        ))
+                        log.info("  hh skipped closed/archived vacancy after apply failure snapshot for %s", vid)
+                        continue
+                    guard_suffix = ""
+                    anti_bot_kind = None
+                    if source == "hh":
+                        anti_bot_kind = apply_result.get("anti_bot_kind") or hh_guard.detect_antibot_kind(apply_message)
+                        if anti_bot_kind:
+                            hh_status = hh_guard.record_antibot(
+                                kind=anti_bot_kind,
+                                raw_message=apply_message,
+                                stage="apply_result",
+                            )
+                            hh_auto_apply_guard_note = hh_guard.format_block_note(hh_status)
+                            guard_suffix = f"\n{hh_auto_apply_guard_note}"
+                    # geekjob-специфика: сброс готовности при ошибке авторизации
+                    if source == "geekjob" and (
+                        "не авториз" in apply_message.lower() or "не гик" in apply_message.lower()
+                    ):
+                        geekjob_ready = False
+                        geekjob_ready_message = apply_message
 
-                await set_hunter_status("search_manual", f"Ручной {short_label}: не ушёл", "busy")
-                seen.mark_seen(vid, v, f"apply_failed:{apply_message}")
-                result["skipped"] += 1
-                bucket["manual"] += 1
-                analytics.record_decision(
-                    run_id=run_id,
-                    vacancy=v,
-                    decision=DECISION_APPLY_FAILED,
-                    evaluation=cover_evaluation,
-                    details=details,
-                    resume_variant=hh_resume_variant,
-                    note=f"{source}:{apply_message}" + (f"; {hh_auto_apply_guard_note}" if guard_suffix else ""),
-                )
-                log.warning("  %s apply failed: vacancy=%s", source_label, vid)
-                create_task(
-                    f"Ручной отклик: {v['title']} @ {v['company']}",
-                    (
-                        f"Источник: {source_label}\n"
-                        f"Score: {score}/100\n"
-                        f"{reason}\n"
-                        f"URL: {v.get('url', '')}\n"
-                        f"Автоотклик не завершился: {apply_message}"
-                        f"{snapshot_hint}"
-                        f"{guard_suffix}"
-                    ),
-                    "medium",
-                )
-                await notify_needs_manual(
-                    v, score, reason,
-                    note=(
-                        f"Автоотклик {source_label} не завершился: {apply_message}"
-                        + (f" {hh_auto_apply_guard_note}" if guard_suffix else "")
-                        + (" Ниже — снимок страницы после сбоя." if snapshot.get("screenshot") else "")
-                    ),
-                    screenshot_path=snapshot.get("screenshot"),
-                )
+                    if source == "hh" and anti_bot_kind:
+                        await receipt.wait(record_hh_ui_incident(
+                            v, vid, bucket, score=score, reason=reason,
+                            evaluation=cover_evaluation, details=details,
+                            message=f"HH остановлен: {anti_bot_kind}; нужна ручная проверка.", receipt=receipt,
+                        ))
+                        continue
 
-            # Пауза между откликами
-            await asyncio.sleep(3)
+                    await receipt.wait(set_hunter_status("search_manual", f"Ручной {short_label}: не ушёл", "busy"))
+                    seen.mark_seen(vid, v, f"apply_failed:{apply_message}")
+                    result["skipped"] += 1
+                    bucket["manual"] += 1
+                    receipt.account("manual")
+                    analytics.record_decision(
+                        run_id=run_id,
+                        vacancy=v,
+                        decision=DECISION_APPLY_FAILED,
+                        evaluation=cover_evaluation,
+                        details=details,
+                        resume_variant=hh_resume_variant,
+                        note=f"{source}:{apply_message}" + (f"; {hh_auto_apply_guard_note}" if guard_suffix else ""),
+                    )
+                    log.warning("  %s apply failed: vacancy=%s", source_label, vid)
+                    create_task(
+                        f"Ручной отклик: {v['title']} @ {v['company']}",
+                        (
+                            f"Источник: {source_label}\n"
+                            f"Score: {score}/100\n"
+                            f"{reason}\n"
+                            f"URL: {v.get('url', '')}\n"
+                            f"Автоотклик не завершился: {apply_message}"
+                            f"{snapshot_hint}"
+                            f"{guard_suffix}"
+                        ),
+                        "medium",
+                    )
+                    await receipt.wait(notify_needs_manual(
+                        v, score, reason,
+                        note=(
+                            f"Автоотклик {source_label} не завершился: {apply_message}"
+                            + (f" {hh_auto_apply_guard_note}" if guard_suffix else "")
+                            + (" Ниже — снимок страницы после сбоя." if snapshot.get("screenshot") else "")
+                        ),
+                        screenshot_path=snapshot.get("screenshot"),
+                    ))
 
-        status_msg = f"Поиск завершён: найдено {result['found']}, откликов {result['applied']}, пропущено {result['skipped']}"
-        if result["deferred"]:
-            status_msg += f"; оценка отложена (LLM quota/rate-limit/provider): {result['deferred']}"
-        await set_hunter_status("search_done", status_msg, "idle")
-        await notify_summary(
-            result["found"],
-            result["applied"],
-            result["skipped"],
-            result["source_stats"],
-            dry_run=dry_run,
-        )
-        if not dry_run and result["applied"] > 0 and config.TELEGRAM_NOTIFY_AUTO_DIGEST:
-            await notify_digest(analytics.summarize())
-        _record_search_run(result, dry_run=dry_run, ok=True)
+                # Пауза между откликами
+                await receipt.wait(asyncio.sleep(3))
+            except _HHApplyUncertain:
+                await notify_hh_uncertain(receipt, v, score, reason)
+                continue
 
         # После поиска — заодно отвечаем в hh-чатах AI-помощникам,
         # пока браузер уже открыт. Включается флагом HH_CHAT_RESPONDER_ENABLED.
@@ -2230,6 +2394,29 @@ async def do_search(dry_run: bool = False) -> dict:
             except Exception as exc:
                 logging.getLogger("chat_responder").warning("chat-responder failed: %s", type(exc).__name__)
 
+        if hh_client:
+            hh_shutdown_started = True
+            try:
+                await hh_client.stop()
+            finally:
+                if last_hh_receipt is not None:
+                    last_hh_receipt.reconcile()
+
+        status_msg = f"Поиск завершён: найдено {result['found']}, откликов {result['applied']}, пропущено {result['skipped']}"
+        if result["deferred"]:
+            status_msg += f"; оценка отложена (LLM quota/rate-limit/provider): {result['deferred']}"
+        await set_hunter_status("search_done", status_msg, "idle")
+        await notify_summary(
+            result["found"],
+            result["applied"],
+            result["skipped"],
+            result["source_stats"],
+            dry_run=dry_run,
+        )
+        if not dry_run and result["applied"] > 0 and config.TELEGRAM_NOTIFY_AUTO_DIGEST:
+            await notify_digest(analytics.summarize())
+        _record_search_run(result, dry_run=dry_run, ok=True)
+
     except asyncio.CancelledError as exc:
         analytics.record_failure(analytics.current_search().stage, exc, continued=False)
         raise
@@ -2249,8 +2436,12 @@ async def do_search(dry_run: bool = False) -> dict:
             acknowledge_processed_deferred()
         except Exception as exc:
             log.warning("Deferred queue acknowledgement failed; records retained: %s", type(exc).__name__)
-        if hh_client:
-            await hh_client.stop()
+        if hh_client and not hh_shutdown_started:
+            try:
+                await hh_client.stop()
+            finally:
+                if last_hh_receipt is not None:
+                    last_hh_receipt.reconcile()
         if superjob_client:
             await superjob_client.stop()
         if habr_client:

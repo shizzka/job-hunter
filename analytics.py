@@ -103,6 +103,7 @@ class SearchObservation:
         self.counters = defaultdict(Counter)
         self.reasons = Counter()
         self.candidates, self.decided = {}, set()
+        self.decision_states = {}
         self.applied_keys = set()
         self.stage = "startup"
         self.ok = False
@@ -197,6 +198,8 @@ def count_application(vacancy):
     """Count a successful receipt once, independently of later state handling."""
     observation = current_search()
     key = (vacancy.get("source", "unknown"), str(vacancy.get("id")))
+    if observation is not None and observation.decision_states.get(key, (None,))[0] == "apply_uncertain":
+        return
     if observation is not None and key not in observation.applied_keys:
         observation.applied_keys.add(key)
         observation.counters[key[0]]["applied"] += 1
@@ -720,8 +723,24 @@ def record_decision(
     outcome, reason_code = decision_outcome(decision, evaluation, note)
     observation = current_search()
     key = (vacancy.get("source", "unknown"), str(vacancy.get("id")))
+    if observation is not None and run_id == observation.run_id:
+        previous = observation.decision_states.get(key)
+        if previous is not None and previous[0] == "apply_uncertain" and decision != "apply_uncertain":
+            return
+        if decision == "apply_uncertain" and previous is not None and previous[0] != decision:
+            _, prior_outcome, prior_reason = previous
+            observation.counters[key[0]][prior_outcome] -= 1
+            observation.reasons[prior_reason] -= 1
+            if not observation.reasons[prior_reason]:
+                del observation.reasons[prior_reason]
+            if prior_outcome == "applied":
+                observation.applied_keys.discard(key)
+            if prior_reason == "guard_stop" and prior_outcome != "guard_stop":
+                observation.counters[key[0]]["guard_stop"] -= 1
+            observation.decided.discard(key)
     if observation is not None and run_id == observation.run_id and key not in observation.decided:
         observation.decided.add(key)
+        observation.decision_states[key] = (decision, outcome, reason_code)
         if outcome == "applied":
             count_application(vacancy)
         else:
@@ -1190,6 +1209,21 @@ def summarize(
         if end_at is not None and created_at >= end_at:
             continue
         events.append(event)
+
+    # A late owned receipt may promote a decision already recorded by this
+    # run. Preserve the journal, but report only its sticky uncertainty for
+    # that vacancy/run rather than counting an obsolete failed/sent decision.
+    def decision_key(event):
+        return (event.get("run_id"), event.get("source"), event.get("vacancy_id"))
+
+    uncertain_decisions = {
+        decision_key(event): index for index, event in enumerate(events)
+        if event.get("event") == "decision" and event.get("decision") == "apply_uncertain"
+        and event.get("run_id") and event.get("vacancy_id")
+    }
+    events = [event for index, event in enumerate(events)
+              if event.get("event") != "decision" or decision_key(event) not in uncertain_decisions
+              or uncertain_decisions[decision_key(event)] == index]
 
     summary = {
         "days": days,
