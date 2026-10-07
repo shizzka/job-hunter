@@ -205,7 +205,7 @@ HH_CAPTCHA_VISION_MODEL=
 
 Пустое значение использует `LLM_MODEL`.
 
-Временный LAN Ollama fallback существует как аварийный compatibility path и не является целевой архитектурой проекта. После миграции на общий AI Gateway он должен быть удалён из Job Hunter.
+Временный LAN Ollama fallback существует как аварийный compatibility path и не является целевой архитектурой проекта. Требования и план миграции вынесены в отдельный [AI Gateway](https://github.com/shizzka/ai-gateway); текущий fallback Job Hunter остаётся рабочим до проверенной миграции.
 
 ## Профили кандидатов
 
