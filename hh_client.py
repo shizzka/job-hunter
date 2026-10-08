@@ -1068,6 +1068,14 @@ class HHClient:
             return {"title": "", "sections": {}, "raw": ""}
         return await self.download_resume_by_id(resumes[0])
 
+    async def get_resume_ids_readonly(self) -> list[dict]:
+        from hh.resume_refresh import get_resume_ids_readonly
+        return await get_resume_ids_readonly(self)
+
+    async def download_resume_readonly(self, resume: dict) -> dict:
+        from hh.resume_refresh import download_resume_readonly
+        return await download_resume_readonly(self, resume)
+
     async def download_resume_by_id(self, resume: dict, *, strict: bool = False) -> dict:
         """
         Скачать конкретное резюме.

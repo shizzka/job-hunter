@@ -49,13 +49,11 @@ async def do_hh_resume_refresh() -> bool:
         client = HHClient()
         try:
             await client.start()
-            if not await client.is_logged_in():
-                raise RuntimeError("Сессия HH недоступна. Выполните «Вход HH» и повторите обновление.")
-            resumes = await client.get_resume_ids()
+            resumes = await client.get_resume_ids_readonly()
             matches = [item for item in resumes if item.get("id") == resume_id]
             if len(matches) != 1:
                 raise ValueError(f"Выбранное резюме с ID {resume_id} не найдено однозначно на HH. Проверьте ID и вход HH.")
-            result = await client.download_resume_by_id(matches[0], strict=True)
+            result = await client.download_resume_readonly(matches[0])
             if (not isinstance(result, dict) or result.get("ok") is False
                     or not isinstance(result.get("raw"), str) or not result["raw"].strip()
                     or not isinstance(result.get("title"), str) or not result["title"].strip()):
@@ -68,7 +66,8 @@ async def do_hh_resume_refresh() -> bool:
             raise RuntimeError("Выбранное резюме изменилось во время загрузки; повторите обновление.")
         _publish_refreshed_resume(resume_path, result["raw"], original)
     except Exception as exc:
-        log.warning("HH resume refresh failed: %s", exc)
+        log.warning("HH resume refresh failed: kind=%s stage=%s reason=%s", type(exc).__name__,
+                    getattr(exc, "stage", "resume_refresh"), getattr(exc, "hh_stop_reason", ""))
         print(f"❌ Резюме не обновлено: {exc}\nПрежний локальный файл сохранён.")
         return False
     print(f"✅ Резюме обновлено из HH\nНазвание: {result['title']}\nID: {resume_id}")

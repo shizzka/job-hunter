@@ -35,13 +35,15 @@ def refresh(tmp_path, monkeypatch):
             pass
 
         async def is_logged_in(self):
-            return self.logged_in
+            pytest.fail("refresh must not navigate an HH document for login")
 
-        async def get_resume_ids(self):
+        async def get_resume_ids_readonly(self):
+            if not self.logged_in:
+                raise RuntimeError("Сессия HH недоступна")
             return self.catalog
 
-        async def download_resume_by_id(self, selected, *, strict):
-            self.downloads.append((selected, strict))
+        async def download_resume_readonly(self, selected):
+            self.downloads.append(selected)
             if self.failure:
                 raise self.failure
             return self.result
@@ -71,7 +73,7 @@ def test_refresh_downloads_only_exact_id_and_atomically_replaces(refresh, monkey
 
     monkeypatch.setattr(resume.os, "replace", checked_replace)
     assert asyncio.run(resume.do_hh_resume_refresh()) is True
-    assert client.downloads == [(client.catalog[1], True)]
+    assert client.downloads == [client.catalog[1]]
     assert client.stopped and commits == [path]
     assert path.read_text() == client.result["raw"] + "\n"
     assert env.read_bytes() == before_env
