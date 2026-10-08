@@ -633,6 +633,7 @@ async def do_manual_apply_token(token: str) -> dict:
     owner = claimed["owner"]
     dispatch_started = False
     shutdown_started = False
+    shutdown_failed = False
     manual_result = None
     owned_attempt = None
     def finish(status, message=""):
@@ -671,6 +672,30 @@ async def do_manual_apply_token(token: str) -> dict:
             vacancy, hh_client, manual_result, owned_attempt=owned_attempt)
         if apply_result_is_uncertain(manual_result):
             manual_result["message"] = record_manual_uncertain()
+
+    async def stop_manual_result(result, *, raise_on_uncertain=False):
+        nonlocal manual_result, owned_attempt, shutdown_started, shutdown_failed
+        if owned_attempt is None:
+            owned_attempt = getattr(hh_client, "_external_attempt", None)
+            if owned_attempt is None:
+                monitor = getattr(getattr(hh_client, "_page", None), "_hh_action_monitor", None)
+                owned_attempt = getattr(monitor, "last_attempt", None)
+        manual_result = result
+        reconcile_manual_result()
+        if not shutdown_started:
+            shutdown_started = True
+            try:
+                await hh_client.stop()
+            except BaseException:
+                shutdown_failed = True
+                manual_result = {**manual_result, "ok": False, "uncertain": True}
+                raise
+            finally:
+                reconcile_manual_result()
+        if raise_on_uncertain and apply_result_is_uncertain(manual_result):
+            raise _HHApplyUncertain()
+        return manual_result
+
     try:
         await hh_client.start()
         if not await hh_client.is_logged_in():
@@ -678,6 +703,7 @@ async def do_manual_apply_token(token: str) -> dict:
 
         can_apply, guard_note = hh_guard.can_auto_apply()
         if not can_apply:
+            await stop_manual_result({"ok": False, "message": guard_note}, raise_on_uncertain=True)
             finish("deferred", guard_note)
             await notify_needs_manual(
                 vacancy,
@@ -692,6 +718,7 @@ async def do_manual_apply_token(token: str) -> dict:
             details = await apply_orchestrator.fetch_vacancy_details(vacancy, hh_client=hh_client)
         if _looks_like_closed_or_archived(vacancy, details):
             message = "Вакансия закрыта или в архиве"
+            await stop_manual_result({"ok": False, "message": message}, raise_on_uncertain=True)
             seen.mark_seen(vacancy.get("id", token), vacancy, "manual_ai_archived")
             hh_pipeline.mark_terminal(vacancy.get("id", token), "closed_or_archived")
             finish("archived", message)
@@ -715,6 +742,7 @@ async def do_manual_apply_token(token: str) -> dict:
         cover_evaluation = _evaluation_with_cover_letter(evaluation, cover)
         if not (cover or "").strip():
             message = "ИИ-сопровод не сгенерировался; отклик без текста не отправляю."
+            await stop_manual_result({"ok": False, "message": message}, raise_on_uncertain=True)
             finish("failed_no_cover", message)
             analytics.record_decision(
                 run_id=run_id,
@@ -737,24 +765,15 @@ async def do_manual_apply_token(token: str) -> dict:
             return {"ok": False, "message": message, "no_cover": True}
 
         if not valid():
+            await stop_manual_result({"ok": False, "message": "Подтверждение отозвано до отправки"},
+                                     raise_on_uncertain=True)
             finish("dismissed", "Подтверждение отозвано до отправки")
             return {"ok": False, "message": "Подтверждение отозвано до отправки"}
         dispatch_started = True
         apply_result = await apply_orchestrator.dispatch_apply(vacancy, cover, hh_client=hh_client)
-        owned_attempt = getattr(hh_client, "_external_attempt", None)
-        if owned_attempt is None:
-            monitor = getattr(getattr(hh_client, "_page", None), "_hh_action_monitor", None)
-            owned_attempt = getattr(monitor, "last_attempt", None)
-        manual_result = apply_result
-        reconcile_manual_result()
         # This command has only one vacancy. Seal browser activity before its
         # final queue/seen classification or any success notification.
-        shutdown_started = True
-        try:
-            await hh_client.stop()
-        finally:
-            reconcile_manual_result()
-        apply_result = manual_result
+        apply_result = await stop_manual_result(apply_result)
         if apply_result_is_uncertain(apply_result):
             apply_result = {**apply_result, "ok": False, "uncertain": True}
             manual_note = record_manual_uncertain()
@@ -823,25 +842,14 @@ async def do_manual_apply_token(token: str) -> dict:
         print(f"❌ ИИ-отклик не завершился: {message}")
         return {"ok": False, "uncertain": False, "message": message}
 
+    except _HHApplyUncertain:
+        message = record_manual_uncertain()
+        await notify_needs_manual(vacancy, score, reason, note=message)
+        return {**manual_result, "ok": False, "uncertain": True, "message": message}
     except HHUnexpectedUI as exc:
         uncertain = bool(getattr(exc, "hh_uncertain", False) or
                          (dispatch_started and getattr(exc, "hh_recovered", None) is not True))
-        owned_attempt = getattr(hh_client, "_external_attempt", None)
-        if owned_attempt is None:
-            monitor = getattr(getattr(hh_client, "_page", None), "_hh_action_monitor", None)
-            owned_attempt = getattr(monitor, "last_attempt", None)
-        manual_result = {"ok": False, "uncertain": uncertain, "reason": "hh_unexpected_ui"}
-        reconcile_manual_result()
-        # An exception has no normal dispatch result to pin. Keep its queue
-        # owner applying until shutdown has exposed any late action evidence.
-        shutdown_started = True
-        try:
-            await hh_client.stop()
-        except BaseException:
-            manual_result = {**manual_result, "ok": False, "uncertain": True}
-            raise
-        finally:
-            reconcile_manual_result()
+        await stop_manual_result({"ok": False, "uncertain": uncertain, "reason": "hh_unexpected_ui"})
         uncertain = apply_result_is_uncertain(manual_result)
         if uncertain:
             message = record_manual_uncertain()
@@ -855,14 +863,21 @@ async def do_manual_apply_token(token: str) -> dict:
             await notify_needs_manual(vacancy, score, reason, note=message)
         return {**manual_result, "ok": False, "uncertain": uncertain, "message": message}
     except asyncio.CancelledError:
-        if dispatch_started:
+        if shutdown_failed:
             record_manual_uncertain()
-        else:
+            raise
+        result = await stop_manual_result({"ok": False, "uncertain": dispatch_started})
+        if not apply_result_is_uncertain(result):
             finish("pending", "Попытка отменена")
         raise
     except Exception as exc:
+        if shutdown_failed:
+            record_manual_uncertain()
+            raise
         message = f"{type(exc).__name__}: {exc}"
-        if dispatch_started:
+        result = await stop_manual_result({"ok": False, "uncertain": dispatch_started, "message": message})
+        uncertain = apply_result_is_uncertain(result)
+        if uncertain:
             message = record_manual_uncertain()
         else:
             finish("failed", message)
@@ -870,19 +885,14 @@ async def do_manual_apply_token(token: str) -> dict:
             vacancy,
             score,
             reason,
-            note=message if dispatch_started else f"ИИ-отклик упал: {message}. Открой вручную.",
+            note=message if uncertain else f"ИИ-отклик упал: {message}. Открой вручную.",
         )
         log.warning("Manual AI apply failed: error_kind=%s", type(exc).__name__)
         print(f"❌ ИИ-отклик упал: {message}")
-        return {"ok": False, "uncertain": bool(dispatch_started), "message": message}
+        return {**result, "ok": False, "uncertain": uncertain, "message": message}
     finally:
         if not shutdown_started:
-            try:
-                await hh_client.stop()
-            except Exception:
-                pass
-            finally:
-                reconcile_manual_result()
+            await stop_manual_result({"ok": False, "uncertain": dispatch_started})
 
 
 class _HHApplyUncertain(Exception):

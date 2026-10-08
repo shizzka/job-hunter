@@ -20,7 +20,7 @@ from tests.test_hh_late_outcome_adversarial_e import DISPATCH, Emitter
 URL = 'https://hh.ru/vacancy/4'
 
 
-def run_exception(monkeypatch, tmp_path, *, phase='apply', late=False, recovered=True, termination='success'):
+def run_exception(monkeypatch, tmp_path, *, phase='apply', late=False, recovered=True, termination='success', operation_raises=True):
     for key, name in {'JOB_HUNTER_HOME': '', 'SEEN_VACANCIES_FILE': 'seen.json',
         'ANALYTICS_EVENTS_FILE': 'events.jsonl', 'ANALYTICS_STATE_FILE': 'analytics.json',
         'HH_STATE_DIR': 'hh', 'HH_GUARD_STATE_FILE': 'guard.json',
@@ -50,6 +50,8 @@ def run_exception(monkeypatch, tmp_path, *, phase='apply', late=False, recovered
     queue_at_capture, notices, lower_calls = [], [], []
 
     async def ui_exception():
+        if not operation_raises:
+            return {'ok': False, 'message': 'Synthetic known no-action refusal'}
         exc = apply_orchestrator.HHUnexpectedUI('manual_synthetic', 'e' * 64)
         exc.hh_recovered, exc.hh_uncertain = recovered, False
         raise exc
@@ -119,6 +121,7 @@ def run_exception(monkeypatch, tmp_path, *, phase='apply', late=False, recovered
     else:
         assert isinstance(error, asyncio.CancelledError if termination == 'cancel' else RuntimeError)
         assert returned is None and notices == []
+        agent.notify_needs_manual.assert_not_awaited()
         assert not manual_apply_queue.claim_candidate(candidate['token'])
     agent.notify_application.assert_not_awaited()
 
@@ -138,3 +141,9 @@ def test_nonrecoverable_ui_exception_stays_uncertain_before_shutdown(monkeypatch
 @pytest.mark.parametrize('late', [False, True])
 def test_ui_exception_unproven_shutdown_persists_manual_uncertainty(monkeypatch, tmp_path, termination, late):
     run_exception(monkeypatch, tmp_path, late=late, termination=termination)
+
+
+@pytest.mark.parametrize('termination', ['failure', 'cancel'])
+@pytest.mark.parametrize('late', [False, True])
+def test_normal_result_unproven_shutdown_stops_before_notification(monkeypatch, tmp_path, termination, late):
+    run_exception(monkeypatch, tmp_path, late=late, termination=termination, operation_raises=False)
