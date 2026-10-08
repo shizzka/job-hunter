@@ -205,6 +205,7 @@ AGENT_TASK_FLAGS: tuple[str, ...] = (
     "--analyze-resume",
     "--analytics-backfill",
     "--grab-resume",
+    "--refresh-resume",
     "--daemon",
 )
 
@@ -216,6 +217,7 @@ AGENT_FLAG_LABELS: dict[str, str] = {
     "--analyze-resume": "анализ резюме",
     "--analytics-backfill": "backfill аналитики",
     "--grab-resume": "скачивание резюме",
+    "--refresh-resume": "обновление резюме HH",
     "--daemon": "демон",
 }
 

@@ -80,6 +80,7 @@ from commands.resume import (
     _print_hh_resume_boost_detail,
     do_hh_resume_boost,
     do_hh_resume_boost_status,
+    do_hh_resume_refresh,
 )
 
 
@@ -3009,6 +3010,7 @@ async def main():
     group.add_argument("--hh-resume-boost", action="store_true", help="Ручное поднятие HH-резюме")
     group.add_argument("--dry-run", action="store_true", help="Поиск без откликов")
     group.add_argument("--grab-resume", action="store_true", help="Скачать резюме с hh.ru")
+    group.add_argument("--refresh-resume", action="store_true", help="Обновить локальное резюме по текущему HH_PRIMARY_RESUME_ID")
     group.add_argument("--create-profile", metavar="NAME", help="Создать новый профиль")
     group.add_argument("--list-profiles", action="store_true", help="Список профилей")
     group.add_argument("--analyze-resume", action="store_true", help="Анализ резюме (LLM)")
@@ -3097,6 +3099,9 @@ async def main():
             await do_geekjob_login()
         elif args.grab_resume:
             await do_grab_resume()
+        elif args.refresh_resume:
+            if not await do_hh_resume_refresh():
+                raise SystemExit(1)
         elif args.search:
             result = await do_search()
             print(f"\n✅ Найдено: {result['found']} | Откликов: {result['applied']} | Пропущено: {result['skipped']}")

@@ -34,6 +34,7 @@ BUTTON_SEARCH_EDIT = "✏️ Изменить запросы"
 BUTTON_SEARCH_SUGGEST = "✨ Предложить ИИ"
 BUTTON_SEARCH_USE_DRAFT = "✅ Сохранить предложенное"
 BUTTON_SEARCH_RESUME = "🧾 Выбрать резюме"
+BUTTON_REFRESH_RESUME = "🔄 Обновить резюме"
 BUTTON_SEARCH_CONDITIONS = "⚙️ Условия поиска"
 BUTTON_SEARCH_EXPERIENCE = "👤 Опыт"
 BUTTON_SEARCH_SALARY = "💰 Зарплата от"
@@ -156,6 +157,7 @@ ADMIN_BUTTON_MAP = {
     BUTTON_SEARCH_SUGGEST: "/search_suggest",
     BUTTON_SEARCH_USE_DRAFT: "/search_use_draft",
     BUTTON_SEARCH_RESUME: "/search_resume",
+    BUTTON_REFRESH_RESUME: "/refresh_resume",
     BUTTON_SEARCH_CONDITIONS: "/search_conditions",
     BUTTON_SEARCH_EXPERIENCE: "/search_experience",
     BUTTON_SEARCH_SALARY: "/search_salary",
@@ -225,6 +227,7 @@ USER_BUTTON_MAP = {
     BUTTON_SEARCH_SUGGEST: "/search_suggest",
     BUTTON_SEARCH_USE_DRAFT: "/search_use_draft",
     BUTTON_SEARCH_RESUME: "/search_resume",
+    BUTTON_REFRESH_RESUME: "/refresh_resume",
     BUTTON_SEARCH_CONDITIONS: "/search_conditions",
     BUTTON_SEARCH_EXPERIENCE: "/search_experience",
     BUTTON_SEARCH_SALARY: "/search_salary",
@@ -347,7 +350,7 @@ ADMIN_ONLY_COMMANDS = {
     "/diagnostics",
 }
 ACTIVE_CONFLICT_COMMANDS = {
-    "/search", "/dryrun", "/check", "/digest", "/analyze", "/backfill", "/grabresume",
+    "/search", "/dryrun", "/check", "/digest", "/analyze", "/backfill", "/grabresume", "/refresh_resume",
     "/chat_ai", "/ai_chat", "/chat_answer",
     "/hh_auth", "/client_hh_auth",
     "/daemon_on", "/daemon_off",
@@ -600,7 +603,8 @@ def build_reply_markup(
             rows = [
                 [{"text": BUTTON_SEARCH_EDIT}, {"text": BUTTON_SEARCH_SUGGEST}],
                 [{"text": BUTTON_SEARCH_USE_DRAFT}],
-                [{"text": BUTTON_SEARCH_RESUME}, {"text": BUTTON_BLACKLIST}],
+                [{"text": BUTTON_SEARCH_RESUME}, {"text": BUTTON_REFRESH_RESUME}],
+                [{"text": BUTTON_BLACKLIST}],
                 [{"text": BUTTON_BLACKLIST_ADD}, {"text": BUTTON_BLACKLIST_REMOVE}],
                 [{"text": BUTTON_SEARCH_CONDITIONS}, {"text": BUTTON_SEARCH_APPLICATION_MODE}],
                 [{"text": BUTTON_DRYRUN}, {"text": BUTTON_SEARCH}],
@@ -683,7 +687,8 @@ def build_reply_markup(
             rows = [
                 [{"text": BUTTON_SEARCH_EDIT}, {"text": BUTTON_SEARCH_SUGGEST}],
                 [{"text": BUTTON_SEARCH_USE_DRAFT}],
-                [{"text": BUTTON_SEARCH_RESUME}, {"text": BUTTON_BLACKLIST}],
+                [{"text": BUTTON_SEARCH_RESUME}, {"text": BUTTON_REFRESH_RESUME}],
+                [{"text": BUTTON_BLACKLIST}],
                 [{"text": BUTTON_BLACKLIST_ADD}, {"text": BUTTON_BLACKLIST_REMOVE}],
                 [{"text": BUTTON_SEARCH_CONDITIONS}, {"text": BUTTON_SEARCH_APPLICATION_MODE}],
                 [{"text": BUTTON_DRYRUN}, {"text": BUTTON_SEARCH}],
@@ -1869,6 +1874,7 @@ def _pretty_command_label(label: str) -> str:
         "hh auth capture": "Авторизация HH и захват резюме",
         "analytics backfill": "Пересчёт аналитики",
         "grab resume": "Загрузка резюме",
+        "refresh resume": "Обновление резюме HH",
         "chat AI reply": "ИИ-ответ в HH-чат",
         "chat AI alternative": "Другой вариант ИИ-ответа",
         "chat AI send": "Отправка ИИ-ответа в HH-чат",

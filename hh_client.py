@@ -6,7 +6,7 @@ import logging
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from playwright.async_api import async_playwright, BrowserContext, Page
 
 try:
@@ -1068,10 +1068,11 @@ class HHClient:
             return {"title": "", "sections": {}, "raw": ""}
         return await self.download_resume_by_id(resumes[0])
 
-    async def download_resume_by_id(self, resume: dict) -> dict:
+    async def download_resume_by_id(self, resume: dict, *, strict: bool = False) -> dict:
         """
         Скачать конкретное резюме.
         resume: {"id": str, "title": str, "url": str}
+        strict=True: подтвердить exact ID страницы и непустое содержимое без fallback.
         Возвращает {"title": str, "sections": {name: text}, "raw": str}
         """
         resume_url = resume.get("url", "")
@@ -1079,12 +1080,30 @@ class HHClient:
             resume_url = f"{config.HH_BASE_URL}/resume/{resume['id']}"
         if not resume_url.startswith("http"):
             resume_url = f"{config.HH_BASE_URL}{resume_url}"
+        if strict:
+            resume_id = str(resume.get("id") or "")
+            if re.fullmatch(r"[A-Za-z0-9_-]+", resume_id) is None:
+                raise ValueError("Некорректный ID резюме HH.")
+            # A catalog URL is not authority for the currently configured ID.
+            resume_url = f"{config.HH_BASE_URL.rstrip('/')}/resume/{resume_id}"
+
+        def verify_target_page():
+            current, expected = urlsplit(self._page.url), urlsplit(resume_url)
+            if (current.scheme != expected.scheme or current.hostname != expected.hostname
+                    or current.port != expected.port or current.path.rstrip('/') != expected.path):
+                raise ValueError("HH перенаправил загрузку: страница выбранного ID не подтверждена.")
 
         log.info("Downloading selected resume")
 
         try:
-            await self._page.goto(resume_url, wait_until="domcontentloaded", timeout=30000)
+            response = await self._page.goto(resume_url, wait_until="domcontentloaded", timeout=30000)
+            if strict:
+                if response is None or response.status >= 400:
+                    raise ValueError("HH не вернул страницу выбранного резюме.")
+                verify_target_page()
         except Exception as e:
+            if strict:
+                raise
             log.warning("Resume page nav issue: %s", e)
 
         await self._page.wait_for_timeout(4000)
@@ -1103,6 +1122,8 @@ class HHClient:
         # Заголовок (должность)
         title_el = await self._page.query_selector("[data-qa='resume-block-title-position']")
         title = (await title_el.inner_text()).strip() if title_el else resume["title"]
+        if strict and (not title_el or not title):
+            raise ValueError("Заголовок скачанного резюме HH не найден.")
 
         # Зарплатные ожидания
         salary_el = await self._page.query_selector("[data-qa='resume-block-salary']")
@@ -1173,4 +1194,8 @@ class HHClient:
             raw += f"## {name}\n{text}\n\n"
 
         log.info("Downloaded resume: sections=%d", len(sections))
+        if strict:
+            verify_target_page()
+            if not sections:
+                raise ValueError("HH вернул резюме без содержимого.")
         return {"title": title, "sections": sections, "raw": raw}
