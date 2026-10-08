@@ -826,6 +826,23 @@ async def do_manual_apply_token(token: str) -> dict:
     except HHUnexpectedUI as exc:
         uncertain = bool(getattr(exc, "hh_uncertain", False) or
                          (dispatch_started and getattr(exc, "hh_recovered", None) is not True))
+        owned_attempt = getattr(hh_client, "_external_attempt", None)
+        if owned_attempt is None:
+            monitor = getattr(getattr(hh_client, "_page", None), "_hh_action_monitor", None)
+            owned_attempt = getattr(monitor, "last_attempt", None)
+        manual_result = {"ok": False, "uncertain": uncertain, "reason": "hh_unexpected_ui"}
+        reconcile_manual_result()
+        # An exception has no normal dispatch result to pin. Keep its queue
+        # owner applying until shutdown has exposed any late action evidence.
+        shutdown_started = True
+        try:
+            await hh_client.stop()
+        except BaseException:
+            manual_result = {**manual_result, "ok": False, "uncertain": True}
+            raise
+        finally:
+            reconcile_manual_result()
+        uncertain = apply_result_is_uncertain(manual_result)
         if uncertain:
             message = record_manual_uncertain()
             await notify_needs_manual(vacancy, score, reason, note=message)
@@ -836,7 +853,7 @@ async def do_manual_apply_token(token: str) -> dict:
             finish("dismissed", message)
             analytics.record_decision(run_id=run_id, vacancy=vacancy, decision="guard_stop", note="manual_ai:hh_ui")
             await notify_needs_manual(vacancy, score, reason, note=message)
-        return {"ok": False, "uncertain": uncertain, "reason": "hh_unexpected_ui", "message": message}
+        return {**manual_result, "ok": False, "uncertain": uncertain, "message": message}
     except asyncio.CancelledError:
         if dispatch_started:
             record_manual_uncertain()
