@@ -3001,6 +3001,7 @@ async def main():
     group.add_argument("--digest", action="store_true", help="Отправить дайджест в Telegram")
     group.add_argument("--analytics-backfill", action="store_true", help="Подтянуть историю в аналитику")
     group.add_argument("--analytics-report", nargs="?", const=config.ANALYTICS_RECENT_DAYS, type=int, help="Отчет аналитики за N дней")
+    group.add_argument("--run-summary", nargs="?", const="", help="JSON-сводка последнего или выбранного run_id")
     group.add_argument("--filter-audit", nargs="?", const=config.ANALYTICS_RECENT_DAYS, type=int, help="Replay-аудит текущих фильтров по analytics history за N дней")
     group.add_argument("--hh-retry-preview", action="store_true", help="Показать HH retry-кандидатов без откликов")
     group.add_argument("--hh-retry-block-company", metavar="COMPANY", help="Не отправлять retry-отклики в компанию")
@@ -3076,6 +3077,7 @@ async def main():
         or args.google_form_submit
         or args.manual_apply_token
         or args.filter_audit
+        or args.run_summary is not None
         or args.hh_resume_boost_status
     ):
         profile_mod.activate_no_lock(args.profile)
@@ -3119,6 +3121,9 @@ async def main():
             await do_analytics_backfill()
         elif args.analytics_report is not None:
             await do_analytics_report(args.analytics_report)
+        elif args.run_summary is not None:
+            print(json.dumps(analytics.get_run_summary(args.run_summary or None, profile=args.profile),
+                             ensure_ascii=False, indent=2))
         elif args.filter_audit is not None:
             await do_filter_audit(args.filter_audit)
         elif args.hh_retry_preview:

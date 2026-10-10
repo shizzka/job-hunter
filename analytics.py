@@ -49,7 +49,7 @@ def current_context():
 _run_observation = ContextVar("search_observation", default=None)
 FUNNEL_FIELDS = ("fetched", "already_seen", "new", "keyword_pass", "matcher_pass",
                  "apply_attempt", "applied", "manual", "uncertain", "skipped", "failed", "guard_stop",
-                 "deferred_unscored", "dry_run_match", "not_processed", "retry_existing")
+                 "deferred_unscored", "dry_run_match", "not_processed", "retry_existing", "evaluated")
 
 
 def best_effort(function):
@@ -111,6 +111,9 @@ class SearchObservation:
         self.failure_stage = ""
         self.stop_reason = ""
         self.failures = []
+        self.failure_groups = {}
+        self.vacancy_failures = {}
+        self.terminal_failure_id = None
         self.history_file = config.RUN_HISTORY_FILE
 
     def entry(self, *, incomplete=False):
@@ -139,7 +142,8 @@ class SearchObservation:
                 "source_stats": sources, "funnel": dict(totals), "reason_breakdown": dict(self.reasons),
                 "failure_stage": (self.failure_stage or self.stage) if incomplete or not self.ok else "",
                 "error_kind": self.error_kind, "error": "hh_unexpected_ui" if self.error_kind == "HHUnexpectedUI" else self.error_kind,
-                "note": self.result.get("note", ""), "stage_failures": list(self.failures)}
+                "note": self.result.get("note", ""), "stage_failures": list(self.failures),
+                "profile_id": hashlib.sha256(_destination()[2].encode()).hexdigest()[:20]}
         if self.result.get("hh_recovery"):
             entry["hh_recovery"] = dict(self.result["hh_recovery"])
         if incomplete:
@@ -216,18 +220,46 @@ def _diagnostic_context(*, vacancy=True):
 
 
 @best_effort
-def record_failure(stage, error, *, source=None, continued=False):
+def record_failure(stage, error, *, source=None, continued=False, reason_code="UNKNOWN_ROOT_CAUSE",
+                   provider=None, retryable=None, fallback_status=None, model=None, group=False):
     context = current_context()
     source = source or context.get("source") or "unknown"
-    fields = {"source": source, "stage": stage, "error_kind": type(error).__name__, "continued": continued}
+    fields = {"source": source, "stage": stage, "error_kind": type(error).__name__, "continued": continued,
+              "reason_code": reason_code, "retryable": retryable, "outcome": "error", "severity": "error"}
+    if provider is not None:
+        fields["provider"] = provider
+    if fallback_status is not None:
+        fields["fallback_status"] = fallback_status
+    if model is not None:
+        fields["model"] = model
     observation = current_search()
+    if observation is not None and context.get("run_id") != observation.run_id:
+        observation = None
+    signature = (stage, source, reason_code, provider, model, retryable, fallback_status)
+    existing = observation.failure_groups.get(signature) if observation is not None and group else None
+    failure_id = existing or uuid.uuid4().hex
+    fields.update(failure_id=failure_id, created_at=_now().isoformat(timespec="seconds"))
+    if context.get("vacancy_id"):
+        fields["vacancy_id"] = str(context["vacancy_id"])
     if observation is not None:
-        observation.failures.append(fields)
+        cause = getattr(error, "jh_failure_id", None) if not continued else None
+        if cause and not any(f.get("failure_id") == cause for f in observation.failures):
+            cause = None
+        if cause:
+            fields["parent_failure_id"] = cause
+        if not existing:
+            observation.failures.append(fields)
+        if group:
+            observation.failure_groups[signature] = failure_id
+        if context.get("vacancy_id"):
+            observation.vacancy_failures[(source, str(context["vacancy_id"]), stage)] = cause or failure_id
         if not continued:
             observation.failure_stage = stage
+            observation.terminal_failure_id = cause or failure_id
     if config.ANALYTICS_ENABLED:
         with _diagnostic_context():
-            _append_event({"event": "stage_failed", **fields})
+            _append_event({"event": "failure_observed" if existing else "stage_failed", **fields})
+    return failure_id
 
 
 @best_effort
@@ -280,12 +312,24 @@ def zero_apply_diagnosis(run):
 
 
 async def tracked_call(stage, run_id, vacancy, function, *args, **kwargs):
-    if current_search() is not None:
+    if current_search() is not None and current_search().run_id == run_id:
         search_stage(stage, vacancy)
     with event_context(stage=stage, run_id=run_id,
                        vacancy_id=str(vacancy.get("id") or ""),
                        source=vacancy.get("source", "unknown")):
         result = await function(*args, **kwargs)
+        if stage == "matcher" and isinstance(result, dict):
+            if result.get("evaluation_status") == "deferred_unscored":
+                observation = current_search()
+                if observation is not None and observation.run_id != run_id:
+                    observation = None
+                key = (vacancy.get("source", "unknown"), str(vacancy.get("id")), stage)
+                if observation is None or key not in observation.vacancy_failures:
+                    record_failure(stage, RuntimeError(), continued=True,
+                                   reason_code="LLM_INVALID_RESPONSE" if result.get("llm_error") in {
+                                       "ValueError", "JSONDecodeError"} else "UNKNOWN_ROOT_CAUSE")
+            elif result.get("score") is not None and current_search() is not None and current_search().run_id == run_id:
+                count_stage("evaluated", vacancy)
         if (stage == "apply" and isinstance(result, dict) and result.get("ok")
                 and not result.get("already_applied") and not apply_result_is_uncertain(result)):
             count_application(vacancy)
@@ -302,10 +346,14 @@ def chat_context(function):
 
 @best_effort
 def finish_unclassified(observation):
+    pending = sum(key not in observation.decided for key in observation.candidates)
     for key, vacancy in observation.candidates.items():
         if key not in observation.decided:
             record_decision(run_id=observation.run_id, vacancy=vacancy, decision="not_processed",
-                            note=observation.stop_reason or ("run_incomplete" if not observation.ok else "unclassified"))
+                            note=observation.stop_reason or ("run_incomplete" if not observation.ok else "unclassified"),
+                            failure_id=observation.terminal_failure_id)
+    if pending:
+        log.info("run_finalized not_processed=%d failure_id=%s", pending, observation.terminal_failure_id or "unknown")
 
 
 def latest_run_records(records):
@@ -719,10 +767,13 @@ def record_decision(
     dry_run: bool = False,
     resume_variant: dict | None = None,
     note: str = "",
+    failure_id: str | None = None,
 ) -> None:
     outcome, reason_code = decision_outcome(decision, evaluation, note)
     observation = current_search()
     key = (vacancy.get("source", "unknown"), str(vacancy.get("id")))
+    if decision == "deferred_unscored" and observation is not None and run_id == observation.run_id:
+        failure_id = failure_id or observation.vacancy_failures.get((*key, "matcher"))
     if observation is not None and run_id == observation.run_id:
         previous = observation.decision_states.get(key)
         if previous is not None and previous[0] == "apply_uncertain" and decision != "apply_uncertain":
@@ -750,7 +801,8 @@ def record_decision(
             observation.counters[key[0]]["uncertain"] += 1
         if reason_code == "guard_stop" and outcome != "guard_stop":
             observation.counters[key[0]]["guard_stop"] += 1
-    log.info("decision=%s reason=%s", outcome, reason_code,
+    decision_log = log.debug if outcome in {"not_processed", "deferred_unscored"} else log.info
+    decision_log("decision=%s reason=%s failure_id=%s", outcome, reason_code, failure_id or "",
              extra={"observation_fields": {"run_id": run_id, "source": key[0],
                     "vacancy_id": key[1], "stage": "decision"}})
     if not config.ANALYTICS_ENABLED:
@@ -759,13 +811,14 @@ def record_decision(
     evaluation = evaluation or {}
     payload = {
         "event": "decision",
+        "stage": "decision",
         "created_at": _now().isoformat(timespec="seconds"),
         "run_id": run_id,
         "mode": "dry-run" if dry_run else "search",
         "dry_run": dry_run,
         "decision": decision,
         "outcome": outcome,
-        "reason_code": reason_code,
+        "reason_code": "UNKNOWN_ROOT_CAUSE" if reason_code == "unclassified" else reason_code,
         "reason_group": "matcher_reject" if reason_code in {"low_score", "red_flags"} else reason_code,
         "vacancy_id": str(vacancy.get("id") or "").strip(),
         "source": vacancy.get("source", "") or "unknown",
@@ -817,6 +870,8 @@ def record_decision(
         "guard_flags": list(evaluation.get("guard_flags", []) or []),
         "note": note,
     }
+    if failure_id:
+        payload["failure_id"] = failure_id
     payload.update(_resume_variant_payload(resume_variant))
     payload.update(resume_versions.payload(vacancy))
     _append_event(payload)
@@ -1070,6 +1125,48 @@ def _iter_events(events_file: str | None = None) -> list[dict]:
     except Exception as exc:
         log.warning("Failed to read analytics events: %s", type(exc).__name__)
         return []
+
+
+def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile=""):
+    """Read a selected/latest search run from profile-owned existing storage."""
+    from run_summary import build_run_summary
+    path = history_file if history_file is not None else config.RUN_HISTORY_FILE
+    try:
+        records = latest_run_records(read_json_records(path))
+    except FileNotFoundError:
+        records = []
+    try:
+        events = read_json_records(events_file or _destination()[0], strip_nuls=True)
+    except FileNotFoundError:
+        events = []
+    searches = [r for r in records if r.get("kind") == "search" or r.get("mode") in {"search", "dry-run"}]
+    if run_id:
+        run = next((r for r in reversed(searches) if r.get("run_id") == run_id), None)
+    else:
+        run = searches[-1] if searches else None
+        latest_start = next((e for e in reversed(events) if e.get("event") == "search_started"), None)
+        if run and latest_start and latest_start.get("run_id") != run.get("run_id"):
+            event_time = _parse_dt(latest_start.get("created_at"))
+            history_time = _parse_dt(run.get("started_at") or run.get("created_at"))
+            if event_time and history_time and event_time.timestamp() > history_time.timestamp():
+                # A surviving journal start can outlive a failed history append.
+                run = None
+                run_id = latest_start.get("run_id")
+        if run:
+            run_id = run.get("run_id")
+    if run is None:
+        lifecycle = [e for e in events if e.get("event") in {"search_started", "search_finished"}
+                     and (not run_id or e.get("run_id") == run_id)]
+        if not lifecycle:
+            return None
+        checkpoint = lifecycle[-1]
+        run = {**checkpoint, "started_at": checkpoint.get("started_at") or (
+                   checkpoint.get("created_at") if checkpoint['event'] == 'search_started' else None),
+               "status": "incomplete" if checkpoint['event'] == 'search_started' else 'finished'}
+        run_id = run.get("run_id")
+    if run.get("status") == "incomplete":
+        run = reconcile_run_records([run], events_file=events_file)[0]
+    return build_run_summary(run, events, profile=profile)
 
 
 FILTER_AUDIT_ALLOWED_DECISIONS = {
