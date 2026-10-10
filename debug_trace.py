@@ -197,6 +197,9 @@ class ApplyTrace:
         self.failure_stage = ""
         self.finished = False
         self.revision = _git_revision(project_root)
+        import analytics
+        self.run_context = analytics.current_context()
+        self.event_destination = analytics._destination()
 
     @classmethod
     def create(
@@ -362,3 +365,16 @@ class ApplyTrace:
         except Exception as exc:
             log.warning("Trace summary write failed: %s", type(exc).__name__)
         self.finished = True
+        # Only a reference enters the run journal; trace/DOM contents stay local.
+        import analytics
+        token = analytics._event_destination.set(self.event_destination)
+        try:
+            with analytics.event_context(**self.run_context):
+                analytics.record_event({"event": "debug_artifact", "source": self.source,
+                    "vacancy_id": self.vacancy_id, "stage": self.failure_stage or self.last_stage,
+                    "outcome": "success" if ok else "error", "artifact_type": "apply_trace",
+                    "artifact_ref": str(self.jsonl_path), "trace_id": self.trace_id})
+        except Exception as exc:
+            log.warning("Trace reference observation failed: error_kind=%s", type(exc).__name__)
+        finally:
+            analytics._event_destination.reset(token)

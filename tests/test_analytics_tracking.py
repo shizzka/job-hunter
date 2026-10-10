@@ -48,7 +48,7 @@ def test_failed_call_preserves_unknown_usage_and_resets_context(events):
 def test_application_attempt_and_result_share_identity(events, monkeypatch, result, outcome):
     monkeypatch.setattr(apply_orchestrator, '_dispatch_apply', AsyncMock(return_value=result))
     asyncio.run(apply_orchestrator.dispatch_apply({'id': '1', '_analytics_run_id': 'run', '_analytics_apply_mode': 'manual'}, 'letter'))
-    first, last = events()
+    first, last = [row for row in events() if row['event'] in {'application_attempt', 'application_result'}]
     assert first['application_id'] == last['application_id']
     assert first['event'] == 'application_attempt'
     assert last['outcome'] == outcome

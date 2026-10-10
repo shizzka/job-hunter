@@ -185,3 +185,17 @@ def test_smoke_setup_does_not_read_candidate_home(tmp_path, monkeypatch):
     home = _make_isolated_home(tmp_path)
     assert not list(home.glob("*cookies*"))
     assert (home / "resume.md").exists()
+
+
+def test_run_summary_cli_reads_isolated_dry_run(isolated_home):
+    search = _run_agent(["--dry-run"], isolated_home)
+    assert search.returncode == 0, search.stderr
+    result = _run_agent(["--run-summary"], isolated_home)
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["run_id"].startswith("dry-run-")
+    assert summary["status"] == "success"
+    assert summary["primary_failure"] is None
+    assert summary["counters"]["applied"] == 0
+    selected = _run_agent(["--run-summary", summary["run_id"]], isolated_home)
+    assert json.loads(selected.stdout) == summary

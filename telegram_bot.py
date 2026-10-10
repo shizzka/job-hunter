@@ -666,6 +666,16 @@ class TelegramBot(
             reply_markup=self._menu_reply_markup(principal),
         )
 
+    async def _send_run_summary(self, chat_id, principal, *, profile_name, run_id=None):
+        profile = self._profile(profile_name)
+        try:
+            summary = analytics.get_run_summary(run_id, events_file=profile.analytics_events_file,
+                history_file=profile.run_history_file, profile=profile_name)
+            text = build_run_summary_text(summary, profile_name=profile_name)
+        except OSError:
+            text = "📊 Запуск: данные недоступны. Попробуйте /raw_log."
+        await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal))
+
     def _update_profile_schedule(self, profile_name: str, *, search_interval_min: int, invite_check_interval_min: int | None = None) -> str:
         invite_minutes = search_interval_min if invite_check_interval_min is None else invite_check_interval_min
         return profile_mod.update_profile_env(
@@ -2724,6 +2734,10 @@ class TelegramBot(
             return
 
         if command in {"/log", "/hunter_log"}:
+            await self._send_run_summary(chat_id, principal, profile_name=profile_name, run_id=arg or None)
+            return
+
+        if command == "/raw_log":
             await self._send_log_tail(chat_id, principal, profile_name=profile_name, kind="log")
             return
 
