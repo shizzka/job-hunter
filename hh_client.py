@@ -6,7 +6,7 @@ import logging
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from playwright.async_api import async_playwright, BrowserContext, Page
 
 try:
@@ -165,7 +165,22 @@ class HHClient:
         self._ui_target = notifier.capture_delivery_target()
         self._ui_guard = None
 
+    def _raise_stopped_ui(self, stage):
+        if getattr(self, "_recovering", False) or getattr(self, "_hh_recovery_stop_reason", ""):
+            exc = HHUnexpectedUI(stage, "recovery_ownership_unavailable")
+            exc.hh_recovered = False
+            exc.hh_stop_reason = getattr(self, '_hh_recovery_stop_reason', '') or 'recovery_ownership_unavailable'
+            monitor = getattr(self._page, '_hh_action_monitor', None)
+            watch = getattr(self._context, '_hh_action_watch', None)
+            live = getattr(self, '_external_attempt', None)
+            previous = getattr(monitor, 'last_attempt', None)
+            exc.hh_uncertain = bool(getattr(self, '_hh_recovery_uncertain', False)
+                                    or getattr(monitor, 'unknown', False) or getattr(watch, 'unknown', False)
+                                    or getattr(live, 'uncertain', False) or getattr(previous, 'uncertain', False))
+            raise exc
+
     async def _ensure_expected_ui(self, stage, *, allowed=()):
+        self._raise_stopped_ui(stage)
         if self._ui_guard is None:
             import notifier
             target = self._ui_target
@@ -173,8 +188,47 @@ class HHClient:
                 return await notifier.notify_hh_unexpected_ui(photo, alert_stage, fingerprint, target=target)
             self._ui_guard = HHUIGuard(self._ui_home, notify=notify)
         if self._page is not None:
-            self._page._hh_ui_guard = self._ui_guard
-            return await self._ui_guard.ensure(self._page, stage, allowed=allowed)
+            page, guard = self._page, self._ui_guard
+            page._hh_ui_guard = guard
+            result = await guard.ensure(page, stage, allowed=allowed)
+            if self._page is not page or self._ui_guard is not guard:
+                self._hh_recovery_stop_reason = 'browser_ownership_changed'
+                self._hh_recovery_uncertain = True
+            self._raise_stopped_ui(stage)
+            return result
+
+    async def recover_unexpected_ui(self, exc="search", *, attempt=None) -> bool:
+        """Abandon only a vacancy with proven no-action ownership."""
+        from hh.recovery import recover_unexpected_ui
+        if isinstance(exc, HHUnexpectedUI) and hasattr(exc, "hh_recovered"):
+            return exc.hh_recovered
+        result = await recover_unexpected_ui(self, exc, attempt=attempt)
+        return result.recovered
+
+    async def hard_stop_browser(self) -> bool:
+        """Terminate only this captured HH browser, without cookie persistence."""
+        browser, context = self._browser, self._context
+        if all(getattr(self, name, None) is None for name in ('_browser', '_context', '_pw', '_page')):
+            return True
+        if browser is None or context is None or context.browser is not browser:
+            return False
+        if getattr(browser, '_hh_owner_session', None) is not self:
+            return False
+        if any(item is not context for item in browser.contexts):
+            return False
+        self._hh_recovery_stop_reason = getattr(self, '_hh_recovery_stop_reason', '') or 'hh_run_stopped'
+        binding = getattr(self, '_cookie_binding', None)
+        if binding is not None:
+            binding.closing = True
+        from hh.termination import terminate_browser
+        try:
+            confirmed = await terminate_browser(browser)
+            return (confirmed is True and self._browser is browser and self._context is context
+                    and self._cookie_binding is binding)
+        except Exception as exc:
+            log.warning("HH browser termination not confirmed: %s", type(exc).__name__)
+            return False
+
 
     async def start(self, headless: bool | None = None):
         """Запустить браузер и загрузить cookies."""
@@ -477,23 +531,19 @@ class HHClient:
         await self.stop()
 
     async def is_logged_in(self) -> bool:
-        """Проверить залогинен ли пользователь."""
+        """Confirm the authenticated catalog without executing its background JS."""
         try:
-            await self._ensure_expected_ui("login_before_navigation", allowed=("captcha",))
-            await self._page.goto(f"{config.HH_BASE_URL}/applicant/resumes", wait_until="domcontentloaded", timeout=30000)
-            await self._page.wait_for_timeout(2000)
-            # Закрыть модалку "Резюме стали компактнее" (whats-new-modal) если есть
-            await self._dismiss_whats_new_modal()
-            url = (self._page.url or "").casefold()
-            # Если редиректнуло на логин — не залогинен
-            if "/account/login" in url or "/auth/" in url:
-                return False
-            html = _compact_text(await self._page.content())
-            if '"usertype":"anonymous"' in html or '"luxpagename":"forbiddenpage"' in html:
-                return False
-            # Проверяем наличие элемента резюме (новый дизайн: resume-card-link-*)
-            resumes = await self._page.query_selector_all("[data-qa='resume'], [data-qa^='resume-card-link-']")
-            return len(resumes) > 0 or "/applicant/resumes" in url
+            await self._ensure_expected_ui("login_before_navigation")
+            page, context = self._page, self._context
+            # The rendered catalog attaches tracking/chat frames and sends
+            # background POSTs before resume_catalog. Keep the action monitor
+            # strict; read the same authenticated server HTML without rendering.
+            await self.get_resume_ids_readonly()
+            if self._page is not page or self._context is not context:
+                self._hh_recovery_stop_reason = 'browser_ownership_changed'
+                self._hh_recovery_uncertain = True
+            await self._ensure_expected_ui("resume_catalog")
+            return True
         except HHUnexpectedUI:
             raise
         except Exception as e:
@@ -502,7 +552,7 @@ class HHClient:
 
     async def _dismiss_whats_new_modal(self):
         """Only safe scoped close; no onboarding confirm/answers."""
-        await self._ensure_expected_ui("resume_catalog", allowed=("captcha",))
+        await self._ensure_expected_ui("resume_catalog")
 
     async def is_logged_in_passive(self) -> bool:
         """Проверить логин без навигации текущей страницы."""
@@ -547,117 +597,25 @@ class HHClient:
         )
 
     async def _search_vacancies(self, query: str, *, page: int, url: str) -> list[dict]:
-        """
-        Поиск вакансий по запросу. Возвращает список:
-        [{"id": "...", "title": "...", "company": "...", "salary": "...",
-          "url": "...", "snippet": "..."}]
-        """
+        """Read SSR search results without executing tracking/chat background JS."""
+        from hh.search import read_search_html
+        from hh.search_html import parse_hh_search_html, search_antibot_kind
+
         log.info("Searching: %s", url)
-
-        await self._ensure_expected_ui("search_before_navigation", allowed=("captcha",))
-        try:
-            await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        except Exception as e:
-            log.warning("Search page nav issue: %s", e)
-
-        await self._page.wait_for_timeout(4000)  # дать JS подгрузиться
-        await self._ensure_expected_ui("search", allowed=("captcha",))
-
-        # Дебаг: скриншот поисковой выдачи (первый запрос)
-        if page == 0:
-            safe_query = "".join(c if c.isalnum() else "_" for c in query[:20])
-            await self._save_debug_snapshot(f"debug_search_{safe_query}")
-
-        # Anti-bot check перед парсингом
-        anti_bot_kind = await self._detect_anti_bot_kind()
-        if anti_bot_kind == "captcha":
-            anti_bot_kind = await self._handle_anti_bot_with_solver(
-                anti_bot_kind,
-                stage="search_vacancies",
-            )
+        await self._ensure_expected_ui("search_before_navigation")
+        original_page, context = self._page, self._context
+        html, source_url = await read_search_html(self, url)
+        anti_bot_kind = search_antibot_kind(html)
         if anti_bot_kind:
             message = _anti_bot_message(anti_bot_kind, "на поиске")
             self._remember_antibot_signal(anti_bot_kind, "search", message)
-            log.warning("hh.ru anti-bot (%s) on search page: %s", anti_bot_kind, self._page.url)
+            log.warning("hh.ru anti-bot (%s) on search response", anti_bot_kind)
             return []
-
-        vacancies = []
-
-        # Стратегия 1: data-qa селекторы (классический hh.ru)
-        cards = await self._page.query_selector_all("[data-qa='serp-item']")
-        log.info("Search strategy 1 (serp-item): %d cards", len(cards))
-
-        # Стратегия 2: альтернативные селекторы
-        if not cards:
-            cards = await self._page.query_selector_all("[data-qa='vacancy-serp__vacancy']")
-            log.info("Search strategy 2 (vacancy-serp__vacancy): %d cards", len(cards))
-
-        # Стратегия 3: любые карточки с ссылкой на вакансию
-        if not cards:
-            cards = await self._page.query_selector_all("[data-qa*='serp-item'], [data-qa*='vacancy-serp']")
-            log.info("Search strategy 3 (wildcard serp): %d cards", len(cards))
-
-        # Стратегия 4: ищем по ссылкам на /vacancy/
-        if not cards:
-            log.info("All card strategies failed, falling back to link parsing")
-            vacancy_links = await self._page.query_selector_all("a[href*='/vacancy/']")
-            log.info("Found %d vacancy links on page", len(vacancy_links))
-            seen_ids = set()
-            for link in vacancy_links:
-                parent = None
-                try:
-                    href = await link.get_attribute("href") or ""
-                    if "/vacancy/" not in href:
-                        continue
-                    vid = href.split("/vacancy/")[-1].split("?")[0].split("/")[0]
-                    if not vid or not vid.isdigit() or vid in seen_ids:
-                        continue
-                    seen_ids.add(vid)
-                    title = (await link.inner_text()).strip()
-                    if not title or len(title) < 3 or len(title) > 200:
-                        continue
-                    # Пытаемся найти родительский контейнер для доп. инфо
-                    parent = await link.evaluate_handle("el => el.closest('[class*=\"vacancy\"], [class*=\"serp\"], article, section') || el.parentElement.parentElement")
-                    company = ""
-                    salary = "не указана"
-                    snippet = ""
-                    if parent:
-                        full_text = await parent.evaluate("el => el.innerText")
-                        lines = [l.strip() for l in full_text.split("\n") if l.strip()]
-                        # Обычно: заголовок, зарплата, компания, ...
-                        for line in lines:
-                            if "₽" in line or "$" in line or "руб" in line.lower():
-                                salary = line
-                            elif line != title and not company and len(line) > 2:
-                                company = line
-                    vacancies.append({
-                        "id": vid,
-                        "title": title,
-                        "company": company,
-                        "salary": salary,
-                        "url": href if href.startswith("http") else f"{config.HH_BASE_URL}{href}",
-                        "snippet": snippet,
-                    })
-                except Exception as e:
-                    log.debug("Link parse failed: %s", e)
-                finally:
-                    if parent is not None:
-                        try:
-                            await parent.dispose()
-                        except Exception:
-                            pass
-
-            log.info("Found %d vacancies via link parsing for '%s'", len(vacancies), query)
-            return vacancies
-
-        for card in cards:
-            try:
-                vacancy = await self._parse_vacancy_card(card)
-                if vacancy:
-                    vacancies.append(vacancy)
-            except Exception as e:
-                log.debug("Failed to parse vacancy card: %s", e)
-
+        vacancies = parse_hh_search_html(html, base_url=source_url)
+        if self._page is not original_page or self._context is not context:
+            self._hh_recovery_stop_reason = 'browser_ownership_changed'
+            self._hh_recovery_uncertain = True
+        await self._ensure_expected_ui("search")
         log.info("Found %d vacancies for '%s'", len(vacancies), query)
         return vacancies
 
@@ -737,36 +695,38 @@ class HHClient:
 
     async def get_vacancy_details(self, vacancy_url: str) -> str:
         """Получить полный текст вакансии."""
-        await self._ensure_expected_ui("details_before_navigation", allowed=("captcha",))
-        await self._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=20000)
-        await self._page.wait_for_timeout(2000)
-        await self._ensure_expected_ui("vacancy_details", allowed=("captcha",))
+        await self._ensure_expected_ui("details_before_navigation")
+        from hh.vacancy_details import passive_details_navigation
+        async with passive_details_navigation(self, vacancy_url):
+            await self._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=20000)
+            await self._page.wait_for_timeout(2000)
+            await self._ensure_expected_ui("vacancy_details")
 
-        body_text = await self._page_text(limit=20000)
-        try:
-            page_html = await self._page.content()
-        except Exception:
-            page_html = ""
-        if _looks_like_closed_or_archived_hh(body_text) or _has_archived_hh_state(page_html):
-            status = "Вакансия закрыта или находится в архиве"
-            context = (body_text or page_html).strip()[:3000]
-            return f"{status}\n\n{context}" if context else status
+            body_text = await self._page_text(limit=20000)
+            try:
+                page_html = await self._page.content()
+            except Exception:
+                page_html = ""
+            if _looks_like_closed_or_archived_hh(body_text) or _has_archived_hh_state(page_html):
+                status = "Вакансия закрыта или находится в архиве"
+                context = (body_text or page_html).strip()[:3000]
+                return f"{status}\n\n{context}" if context else status
 
-        # Описание вакансии
-        desc_el = await self._page.query_selector(
-            "[data-qa='vacancy-description'], "
-            ".vacancy-description, "
-            ".vacancy-section"
-        )
-        if desc_el:
-            return (await desc_el.inner_text()).strip()
+            # Описание вакансии
+            desc_el = await self._page.query_selector(
+                "[data-qa='vacancy-description'], "
+                ".vacancy-description, "
+                ".vacancy-section"
+            )
+            if desc_el:
+                return (await desc_el.inner_text()).strip()
 
-        # Fallback: весь контент страницы
-        body = await self._page.query_selector("main, .vacancy-body, article")
-        if body:
-            return (await body.inner_text()).strip()[:3000]
+            # Fallback: весь контент страницы
+            body = await self._page.query_selector("main, .vacancy-body, article")
+            if body:
+                return (await body.inner_text()).strip()[:3000]
 
-        return ""
+            return ""
 
     # ── Отклик на вакансию ────────────────────────────────────────────────
 
@@ -778,7 +738,7 @@ class HHClient:
         )
 
     async def _detect_response_controls(self):
-        await self._ensure_expected_ui("response_controls", allowed=("response", "captcha"))
+        await self._ensure_expected_ui("response_controls", allowed=("response",))
         return await _detect_response_controls(self)
 
     async def apply_to_vacancy(
@@ -819,14 +779,14 @@ class HHClient:
         Проверить статус откликов.
         Возвращает {"invitations": [...], "responses": int, "new_messages": int}
         """
-        await self._ensure_expected_ui("negotiations_before_navigation", allowed=("captcha",))
+        await self._ensure_expected_ui("negotiations_before_navigation")
         await self._page.goto(
             f"{config.HH_BASE_URL}/applicant/negotiations",
             wait_until="domcontentloaded",
             timeout=20000,
         )
         await self._page.wait_for_timeout(3000)
-        await self._ensure_expected_ui("negotiations", allowed=("captcha",))
+        await self._ensure_expected_ui("negotiations")
 
         result = {"invitations": [], "responses": 0, "new_messages": 0}
 
@@ -880,14 +840,14 @@ class HHClient:
 
     async def get_negotiation_statuses(self) -> list[dict]:
         """Прочитать видимые статусы откликов на странице переговоров."""
-        await self._ensure_expected_ui("negotiation_statuses_before_navigation", allowed=("captcha",))
+        await self._ensure_expected_ui("negotiation_statuses_before_navigation")
         await self._page.goto(
             f"{config.HH_BASE_URL}/applicant/negotiations",
             wait_until="domcontentloaded",
             timeout=20000,
         )
         await self._page.wait_for_timeout(3000)
-        await self._ensure_expected_ui("negotiation_statuses", allowed=("captcha",))
+        await self._ensure_expected_ui("negotiation_statuses")
 
         items = []
         cards = await self._page.query_selector_all(
@@ -1019,10 +979,19 @@ class HHClient:
             return {"title": "", "sections": {}, "raw": ""}
         return await self.download_resume_by_id(resumes[0])
 
-    async def download_resume_by_id(self, resume: dict) -> dict:
+    async def get_resume_ids_readonly(self) -> list[dict]:
+        from hh.resume_refresh import get_resume_ids_readonly
+        return await get_resume_ids_readonly(self)
+
+    async def download_resume_readonly(self, resume: dict) -> dict:
+        from hh.resume_refresh import download_resume_readonly
+        return await download_resume_readonly(self, resume)
+
+    async def download_resume_by_id(self, resume: dict, *, strict: bool = False) -> dict:
         """
         Скачать конкретное резюме.
         resume: {"id": str, "title": str, "url": str}
+        strict=True: подтвердить exact ID страницы и непустое содержимое без fallback.
         Возвращает {"title": str, "sections": {name: text}, "raw": str}
         """
         resume_url = resume.get("url", "")
@@ -1030,12 +999,30 @@ class HHClient:
             resume_url = f"{config.HH_BASE_URL}/resume/{resume['id']}"
         if not resume_url.startswith("http"):
             resume_url = f"{config.HH_BASE_URL}{resume_url}"
+        if strict:
+            resume_id = str(resume.get("id") or "")
+            if re.fullmatch(r"[A-Za-z0-9_-]+", resume_id) is None:
+                raise ValueError("Некорректный ID резюме HH.")
+            # A catalog URL is not authority for the currently configured ID.
+            resume_url = f"{config.HH_BASE_URL.rstrip('/')}/resume/{resume_id}"
+
+        def verify_target_page():
+            current, expected = urlsplit(self._page.url), urlsplit(resume_url)
+            if (current.scheme != expected.scheme or current.hostname != expected.hostname
+                    or current.port != expected.port or current.path.rstrip('/') != expected.path):
+                raise ValueError("HH перенаправил загрузку: страница выбранного ID не подтверждена.")
 
         log.info("Downloading selected resume")
 
         try:
-            await self._page.goto(resume_url, wait_until="domcontentloaded", timeout=30000)
+            response = await self._page.goto(resume_url, wait_until="domcontentloaded", timeout=30000)
+            if strict:
+                if response is None or response.status >= 400:
+                    raise ValueError("HH не вернул страницу выбранного резюме.")
+                verify_target_page()
         except Exception as e:
+            if strict:
+                raise
             log.warning("Resume page nav issue: %s", e)
 
         await self._page.wait_for_timeout(4000)
@@ -1054,6 +1041,8 @@ class HHClient:
         # Заголовок (должность)
         title_el = await self._page.query_selector("[data-qa='resume-block-title-position']")
         title = (await title_el.inner_text()).strip() if title_el else resume["title"]
+        if strict and (not title_el or not title):
+            raise ValueError("Заголовок скачанного резюме HH не найден.")
 
         # Зарплатные ожидания
         salary_el = await self._page.query_selector("[data-qa='resume-block-salary']")
@@ -1124,4 +1113,8 @@ class HHClient:
             raw += f"## {name}\n{text}\n\n"
 
         log.info("Downloaded resume: sections=%d", len(sections))
+        if strict:
+            verify_target_page()
+            if not sections:
+                raise ValueError("HH вернул резюме без содержимого.")
         return {"title": title, "sections": sections, "raw": raw}

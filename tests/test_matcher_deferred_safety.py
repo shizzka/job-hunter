@@ -92,7 +92,8 @@ def search_harness(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'GEEKJOB_ENABLED', False)
     monkeypatch.setattr(config, 'HH_RESUME_PIPELINE_ENABLED', False)
     monkeypatch.setattr(agent, 'HHClient', lambda: SimpleNamespace(
-        start=AsyncMock(), stop=AsyncMock(), is_logged_in=AsyncMock(return_value=False)))
+        start=AsyncMock(), stop=AsyncMock(), is_logged_in=AsyncMock(return_value=True),
+        get_negotiation_statuses=AsyncMock(return_value=[])))
     monkeypatch.setattr(agent.notifier, 'notify_stale_cookies', AsyncMock())
     monkeypatch.setattr(agent.notifier, 'notify_llm_issue', AsyncMock())
     monkeypatch.setattr(agent, 'office_log', AsyncMock())
@@ -226,8 +227,15 @@ def test_real_search_trace_uses_captured_session_state_before_cover(search_harne
     monkeypatch.setattr(agent, 'generate_cover_letter', cover)
     dispatch = AsyncMock(side_effect=AssertionError('No submission in offline regression'))
     monkeypatch.setattr(agent.apply_orchestrator, 'dispatch_apply', dispatch)
-    asyncio.run(agent.do_search())
-    cover.assert_awaited_once()
+    result = asyncio.run(agent.do_search())
     dispatch.assert_not_awaited()
-    assert trace.events[0] == ('HH_SESSION_CHECK', {
-        'ok': authenticated, 'authenticated': authenticated, 'url': 'https://hh.ru/synthetic'})
+    if authenticated:
+        cover.assert_awaited_once()
+        assert trace.events[0] == ('HH_SESSION_CHECK', {
+            'ok': True, 'authenticated': True, 'url': 'https://hh.ru/synthetic'})
+    else:
+        # The stabilization policy stops HH before evaluation or cover work
+        # when authentication is lost, including cached/deferred vacancies.
+        cover.assert_not_awaited()
+        assert trace.events == []
+        assert result['hh_recovery']['stopped']

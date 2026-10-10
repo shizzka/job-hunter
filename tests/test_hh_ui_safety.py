@@ -33,10 +33,15 @@ async def browser_case(html, action):
 def optional(title='Резюме стали компактнее', close=True, button_type='button'):
     control = f'<button type="{button_type}" aria-label="Закрыть" onclick="this.closest(\'[role=dialog]\').remove()">X</button>' if close else '<button type="button">Продолжить</button>'
     marker = ' data-qa="applicant-profile-onboarding-modal"' if title in ('Расскажите о себе', 'Заполните профиль') else ''
-    return f'<div role="dialog"{marker}><h2>{title}</h2><input name="profile-answer">{control}</div>'
+    # A known informational notice has no profile fields. A notice that gains
+    # fields is mixed UI, covered by the independent isolation regressions.
+    fields = '' if title == 'Резюме стали компактнее' else '<input name="profile-answer">'
+    return f'<div role="dialog"{marker}><h2>{title}</h2>{fields}{control}</div>'
 
 
-@pytest.mark.parametrize('title', ['Резюме стали компактнее', 'Расскажите о себе', 'Заполните профиль'])
+# The user forbids profile/onboarding clicks; their former close expectations
+# are replaced by zero-interaction cases in test_hh_ui_isolation.py.
+@pytest.mark.parametrize('title', ['Резюме стали компактнее'])
 def test_known_optional_modal_closes_without_answers_then_refetches(tmp_path, title):
     async def check(page):
         notify = AsyncMock()
@@ -318,5 +323,17 @@ def test_details_and_collector_preserve_ui_stop_signal(monkeypatch):
     with pytest.raises(HHUnexpectedUI):
         asyncio.run(apply_orchestrator.fetch_vacancy_details({'source': 'hh', 'url': 'https://hh.ru/vacancy/1'}, client))
     monkeypatch.setattr(search_pipeline, 'collect_hh_vacancies', AsyncMock(side_effect=blocked))
-    with pytest.raises(HHUnexpectedUI):
-        asyncio.run(search_pipeline.collect_all(client, None, None, None))
+    monkeypatch.setattr(search_pipeline, 'collect_superjob_vacancies', AsyncMock(return_value=[]))
+    monkeypatch.setattr(search_pipeline, 'collect_geekjob_vacancies', AsyncMock(return_value=[]))
+    other = {'id': 'habr:independent', 'source': 'habr', 'title': 'Synthetic QA'}
+    monkeypatch.setattr(search_pipeline, 'collect_habr_vacancies', AsyncMock(return_value=[other]))
+    source_stats = {}
+    import analytics
+    with analytics.observe_search('independent-ui-collection', 'search') as observation:
+        vacancies = asyncio.run(search_pipeline.collect_all(
+            client, None, None, None, source_stats=source_stats))
+        assert observation.failures == [{
+            'source': 'hh', 'stage': 'collection', 'error_kind': 'HHUnexpectedUI', 'continued': True}]
+    assert vacancies == [other]
+    assert source_stats['hh']['stop_reason']
+    assert source_stats['hh']['stop_fingerprint'] == blocked.fingerprint

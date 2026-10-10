@@ -1,0 +1,19 @@
+<!doctype html><html><head><title>Synthetic QA vacancy</title></head><body>
+<main><h1 data-qa="vacancy-title">QA Engineer</h1>
+<a data-qa="vacancy-company-name">Synthetic employer</a>
+<div data-qa="vacancy-description">Test browser lifecycle and Python services.</div>
+<a data-qa="vacancy-response-link-top" href="/applicant/vacancy_response?vacancyId=123">Откликнуться</a>
+</main><div><iframe id="mts-pixel" style="display:none" srcdoc="
+&lt;script&gt;
+    function stream_land(op) {
+        var sfmb = document.createElement('iframe');
+        sfmb.style = 'position:absolute;top:-2000px;left:0px;frameborder:0px';
+        sfmb.src = 'https://sm.rtb.mts.ru/s?p=' + op + '&amp;random=' + Math.random();
+        document.head.appendChild(sfmb);
+    }
+    stream_land('synthetic%3D');
+&lt;/script&gt;
+"></iframe></div>
+<script>window.syntheticPageScriptRan = true;
+fetch('/anatskytics', {method:'POST',body:'synthetic'}).catch(()=>{});</script>
+</body></html>

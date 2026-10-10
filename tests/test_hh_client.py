@@ -1,5 +1,7 @@
 from tests.browser_action_fakes import fake_cdp_context
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import config
 from hh import apply as hh_apply
@@ -68,133 +70,84 @@ class FakeContext:
         return [{"name": name} for name in self.names]
 
 
-def test_is_logged_in_false_on_login_redirect():
-    client = HHClient()
-    client._page = FakePage(url="https://hh.ru/account/login?backurl=%2Fapplicant%2Fresumes", html="")
+def attach_fake_apply_navigation(client):
+    """Give apply unit doubles the passive-navigation ownership contract."""
+    page = client._page
+    context = fake_cdp_context()
+    context.request = object()
+    page.context = context
+    async def no_route(*args, **kwargs):
+        return None
+    context.add_init_script = no_route
+    page.route = no_route
+    page.unroute = no_route
+    client._context = context
 
+
+def login_client(body, *, url="https://hh.ru/applicant/resumes", status=200, headers=None):
+    client = HHClient()
+    client._page = FakePage(url="about:blank", html="<html></html>")
+    response = SimpleNamespace(status=status, url=url,
+        headers=headers or {"content-type": "text/html"},
+        text=AsyncMock(return_value=body), dispose=AsyncMock())
+    client._context = SimpleNamespace(request=SimpleNamespace(get=AsyncMock(return_value=response)))
+    return client, response
+
+
+def test_is_logged_in_false_on_login_redirect():
+    client, response = login_client("", status=302,
+        headers={"location": "/account/login", "content-type": "text/html"})
     assert asyncio.run(client.is_logged_in()) is False
+    response.dispose.assert_awaited_once()
 
 
 def test_is_logged_in_false_on_forbidden_resume_page():
-    client = HHClient()
-    client._page = FakePage(
-        url="https://hh.ru/applicant/resumes",
-        html="""
-        <html>
-          <body>
-            <script>
-              window.__data = {"userType": "anonymous", "luxPageName": "ForbiddenPage"};
-            </script>
-          </body>
-        </html>
-        """,
-    )
-
+    client, response = login_client('<script>{"userType":"anonymous","luxPageName":"ForbiddenPage"}</script>')
     assert asyncio.run(client.is_logged_in()) is False
+    response.dispose.assert_awaited_once()
 
 
 def test_is_logged_in_true_on_resume_cards():
-    client = HHClient()
-    client._page = FakePage(
-        url="https://hh.ru/applicant/resumes",
-        html="<html><body>authorized</body></html>",
-        resume_count=2,
-    )
-
+    client, response = login_client('<a data-qa="resume-card-link-synthetic" href="/resume/synthetic">Synthetic</a>')
     assert asyncio.run(client.is_logged_in()) is True
+    assert client._page.goto_calls == []
+    response.dispose.assert_awaited_once()
 
 
-def test_is_logged_in_true_on_empty_authenticated_resume_page():
+def test_is_logged_in_false_on_unproven_empty_resume_page():
+    client, response = login_client('<h1>Мои резюме</h1><div>Пока нет резюме</div>')
+    assert asyncio.run(client.is_logged_in()) is False
+    response.dispose.assert_awaited_once()
+
+
+def search_client(body):
     client = HHClient()
-    client._page = FakePage(
-        url="https://hh.ru/applicant/resumes",
-        html="<html><body><h1>Мои резюме</h1><div>Пока нет резюме</div></body></html>",
-    )
+    client._page = FakePage(url="about:blank", html="<html></html>")
+    async def get(url, **kwargs):
+        return SimpleNamespace(status=200, url=url, headers={"content-type": "text/html"},
+            text=AsyncMock(return_value=body), dispose=AsyncMock())
+    client._context = SimpleNamespace(request=SimpleNamespace(get=AsyncMock(side_effect=get)))
+    return client
 
-    assert asyncio.run(client.is_logged_in()) is True
 
-
-def test_search_escalates_text_captcha_to_solver(monkeypatch):
-    client = HHClient()
-    client._page = FakePage(url="https://hh.ru/search/vacancy", html="<html></html>")
-    solver_calls = []
-
-    async def detect_anti_bot_kind():
-        return "captcha"
-
-    async def solve(kind, stage=""):
-        solver_calls.append((kind, stage))
-        return ""
-
-    monkeypatch.setattr(client, "_detect_anti_bot_kind", detect_anti_bot_kind)
-    monkeypatch.setattr(client, "_handle_anti_bot_with_solver", solve)
-
+def test_automatic_search_escalates_text_captcha_without_solver(monkeypatch):
+    client = search_client('<p>Подтвердите, что вы не робот</p>')
+    solver = AsyncMock()
+    monkeypatch.setattr(client, "_handle_anti_bot_with_solver", solver)
     assert asyncio.run(client.search_vacancies("QA engineer")) == []
-    assert solver_calls == [("captcha", "search_vacancies")]
+    solver.assert_not_awaited()
+    assert client.consume_antibot_signal()["kind"] == "captcha"
+    assert client._page.goto_calls == []
 
 
-def test_search_link_fallback_disposes_parent_handle(monkeypatch):
-    class ParentHandle:
-        def __init__(self):
-            self.disposed = False
-
-        async def evaluate(self, script):
-            if 'codex:hh-ui-inspect' in script:
-                return []
-            return "QA Engineer\nAcme\nот 100 000 руб"
-
-        async def dispose(self):
-            self.disposed = True
-
-    class VacancyLink:
-        def __init__(self, parent):
-            self.parent = parent
-
-        async def get_attribute(self, name):
-            return "/vacancy/123"
-
-        async def inner_text(self):
-            return "QA Engineer"
-
-        async def evaluate_handle(self, script):
-            return self.parent
-
-    class SearchPage:
-        url = "https://hh.ru/search/vacancy"
-
-        def __init__(self, link):
-            self.link = link
-
-        async def goto(self, *args, **kwargs):
-            return None
-
-        async def evaluate(self, script, *args):
-            if 'codex:hh-ui-inspect' in script:
-                return []
-            return None
-
-        async def wait_for_timeout(self, timeout_ms):
-            return None
-
-        async def query_selector_all(self, selector):
-            if selector == "a[href*='/vacancy/']":
-                return [self.link]
-            return []
-
-    parent = ParentHandle()
-    client = HHClient()
-    client._page = SearchPage(VacancyLink(parent))
-
-    async def no_anti_bot():
-        return ""
-
-    monkeypatch.setattr(client, "_detect_anti_bot_kind", no_anti_bot)
-
+def test_search_link_fallback_preserves_metadata_without_parent_handles():
+    client = search_client('<section><h2><a href="/vacancy/123">QA Engineer</a></h2>'
+                           '<div>Acme</div><div>от 100 000 руб</div></section>')
     vacancies = asyncio.run(client.search_vacancies("QA engineer", page=1))
-
     assert vacancies[0]["id"] == "123"
     assert vacancies[0]["company"] == "Acme"
-    assert parent.disposed is True
+    assert vacancies[0]["salary"] == "от 100 000 руб"
+    assert client._page.goto_calls == []
 
 
 def test_is_logged_in_passive_true_on_authenticated_non_login_page():
@@ -873,6 +826,7 @@ class FakeResumeSelectionReturnsToVacancyPage:
 def test_apply_to_vacancy_blocks_unverified_one_click_without_postfill(monkeypatch):
     client = HHClient()
     client._page = FakeApplyPage()
+    attach_fake_apply_navigation(client)
 
     called = {"value": False}
 
@@ -895,6 +849,7 @@ def test_apply_to_vacancy_blocks_unverified_one_click_without_postfill(monkeypat
 def test_apply_to_vacancy_skips_archived_page_before_click(monkeypatch):
     client = HHClient()
     client._page = FakeArchivedApplyPage()
+    attach_fake_apply_navigation(client)
 
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
 
@@ -949,6 +904,7 @@ def test_apply_to_vacancy_blocks_unverified_resume_after_selection(monkeypatch):
 def test_apply_to_vacancy_marks_questionnaire_as_manual(monkeypatch):
     client = HHClient()
     client._page = FakeQuestionResponsePage()
+    attach_fake_apply_navigation(client)
 
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
 
@@ -967,6 +923,7 @@ def test_apply_to_vacancy_marks_questionnaire_as_manual(monkeypatch):
 def test_apply_to_vacancy_autoanswers_salary_question(monkeypatch):
     client = HHClient()
     client._page = FakeAutoAnswerQuestionPage(question_text="Ваши зарплатные ожидания?")
+    attach_fake_apply_navigation(client)
 
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
     monkeypatch.setattr(config, "HH_AUTO_ANSWER_SIMPLE_QUESTIONS", True)
@@ -993,6 +950,7 @@ def test_apply_to_vacancy_stops_uncertain_after_separate_question_step(monkeypat
     client._page = FakeTwoStepAutoAnswerQuestionPage(
         question_text="Ваши зарплатные ожидания?"
     )
+    attach_fake_apply_navigation(client)
 
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
     monkeypatch.setattr(config, "HH_AUTO_ANSWER_SIMPLE_QUESTIONS", True)
@@ -1021,6 +979,7 @@ def test_apply_to_vacancy_autoanswers_resume_question_with_llm(monkeypatch):
         input_type="textarea",
         control="textarea",
     )
+    attach_fake_apply_navigation(client)
 
     async def fake_llm_answer(field: dict, resume_text: str, page_text: str = "", vacancy_context: str = "") -> str | None:
         return "Есть опыт API-тестирования через Postman и проверки JSON-ответов."
@@ -1058,6 +1017,7 @@ def test_apply_to_vacancy_sends_risky_question_to_manual(monkeypatch):
         input_type="textarea",
         control="textarea",
     )
+    attach_fake_apply_navigation(client)
 
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
     monkeypatch.setattr(config, "HH_AUTO_ANSWER_SIMPLE_QUESTIONS", True)
@@ -1089,6 +1049,7 @@ def test_apply_to_vacancy_sends_risky_question_to_manual(monkeypatch):
 def test_apply_to_vacancy_autoanswers_fourteen_questions_when_limit_allows(monkeypatch):
     client = HHClient()
     client._page = FakeManyAutoAnswerQuestionPage(question_count=14)
+    attach_fake_apply_navigation(client)
 
     async def fake_llm_answer(field: dict, resume_text: str, page_text: str = "", vacancy_context: str = "") -> str | None:
         return f"Ответ на {field['field_id']}"
@@ -1117,6 +1078,7 @@ def test_apply_to_vacancy_autoanswers_fourteen_questions_when_limit_allows(monke
 def test_apply_to_vacancy_keeps_question_limit(monkeypatch):
     client = HHClient()
     client._page = FakeManyAutoAnswerQuestionPage(question_count=21)
+    attach_fake_apply_navigation(client)
 
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
     monkeypatch.setattr(config, "HH_AUTO_ANSWER_SIMPLE_QUESTIONS", True)
@@ -1138,6 +1100,7 @@ def test_apply_to_vacancy_keeps_question_limit(monkeypatch):
 def test_apply_to_vacancy_expands_hidden_cover_letter_before_submit(monkeypatch):
     client = HHClient()
     client._page = FakeExpandableCoverLetterPage()
+    attach_fake_apply_navigation(client)
 
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
 
@@ -1238,6 +1201,7 @@ def test_stable_answer_library_skips_risky_aqa_commercial_question():
 def test_explicit_resume_is_verified_before_submit(monkeypatch):
     client = HHClient()
     client._page = FakeDirectResponsePage()
+    attach_fake_apply_navigation(client)
     original = client._page.evaluate
     async def evaluate(script, arg=None):
         if 'codex:hh-submit-arm' in script or 'codex:hh-submit-readback' in script:
@@ -1277,6 +1241,7 @@ def test_matching_title_cannot_override_mismatched_explicit_resume_id(monkeypatc
 def test_apply_stops_when_letter_field_does_not_retain_text(monkeypatch):
     client = HHClient()
     client._page = FakeDirectResponsePage()
+    attach_fake_apply_navigation(client)
     async def empty_value():
         return ''
     monkeypatch.setattr(client._page.letter, 'input_value', empty_value)
@@ -1286,7 +1251,7 @@ def test_apply_stops_when_letter_field_does_not_retain_text(monkeypatch):
     assert 'не сохранилось' in result['message']
 
 
-def test_apply_trace_separates_navigation_timeout_from_ready_dom(monkeypatch):
+def test_apply_trace_separates_navigation_timeout_from_ready_dom(monkeypatch, tmp_path):
     class TimeoutAfterLoadPage(FakeDirectResponsePage):
         async def goto(self, url: str, wait_until: str | None = None, timeout: int | None = None):
             self.url = url
@@ -1294,6 +1259,15 @@ def test_apply_trace_separates_navigation_timeout_from_ready_dom(monkeypatch):
 
     client = HHClient()
     client._page = TimeoutAfterLoadPage()
+    from hh.ui import HHUIGuard
+    # The fake page does not dispatch HTTP; model stable navigation ownership.
+    client._ui_home = str(tmp_path)
+    client._context = client._page.context
+    client._context.request = object()
+    client._context.add_init_script = AsyncMock()
+    client._page.route = AsyncMock()
+    client._page.unroute = AsyncMock()
+    client._ui_guard = HHUIGuard(str(tmp_path), notify=AsyncMock(return_value=False))
     trace = RecordingApplyTrace()
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
 
@@ -1309,9 +1283,18 @@ def test_apply_trace_separates_navigation_timeout_from_ready_dom(monkeypatch):
     assert not any(event["stage"] == "VACANCY_OPEN" for event in trace.events)
 
 
-def test_apply_trace_records_dom_submit_fallback(monkeypatch):
+def test_apply_trace_records_dom_submit_fallback(monkeypatch, tmp_path):
     client = HHClient()
     client._page = FakeDirectResponsePage()
+    from hh.ui import HHUIGuard
+    # The fake page does not dispatch HTTP; model stable navigation ownership.
+    client._ui_home = str(tmp_path)
+    client._context = client._page.context
+    client._context.request = object()
+    client._context.add_init_script = AsyncMock()
+    client._page.route = AsyncMock()
+    client._page.unroute = AsyncMock()
+    client._ui_guard = HHUIGuard(str(tmp_path), notify=AsyncMock(return_value=False))
     trace = RecordingApplyTrace()
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
 
@@ -1336,9 +1319,18 @@ def test_apply_trace_records_dom_submit_fallback(monkeypatch):
     assert submit["selector"] == ""
 
 
-def test_apply_trace_blocks_real_unanswered_required_questions(monkeypatch):
+def test_apply_trace_blocks_real_unanswered_required_questions(monkeypatch, tmp_path):
     client = HHClient()
     client._page = FakeDirectResponsePage()
+    from hh.ui import HHUIGuard
+    # The fake page does not dispatch HTTP; model stable navigation ownership.
+    client._ui_home = str(tmp_path)
+    client._context = client._page.context
+    client._context.request = object()
+    client._context.add_init_script = AsyncMock()
+    client._page.route = AsyncMock()
+    client._page.unroute = AsyncMock()
+    client._ui_guard = HHUIGuard(str(tmp_path), notify=AsyncMock(return_value=False))
     trace = RecordingApplyTrace()
     monkeypatch.setattr(client, "_is_captcha_page", lambda: asyncio.sleep(0, result=False))
 
@@ -1349,7 +1341,12 @@ def test_apply_trace_blocks_real_unanswered_required_questions(monkeypatch):
 
     result = asyncio.run(client.apply_to_vacancy("https://hh.ru/vacancy/1", trace=trace, preferred_resume_id="synthetic-resume"))
 
-    assert result == {"ok": False, "message": "Остались обязательные вопросы без ответа: 2"}
+    assert result["ok"] is False
+    assert result["message"] == "Остались обязательные вопросы без ответа: 2"
+    # This synthetic adapter has no authenticated BrowserContext/binding.
+    # Recovery must stop rather than assume session/action ownership.
+    assert result["hh_hard_stop"] and result["uncertain"]
+    assert result["hh_recovery_reason"] == "cookie_session_ownership_unproven"
     verify = _trace_event(trace, "PRE_SUBMIT_VERIFY")
     assert verify["ok"] is False
     assert verify["unanswered_required"] == 2
@@ -1359,6 +1356,7 @@ def test_apply_trace_blocks_real_unanswered_required_questions(monkeypatch):
 def test_questionnaire_stops_if_answers_clear_letter(monkeypatch):
     client = HHClient()
     client._page = FakeAutoAnswerQuestionPage(question_text='Ваши зарплатные ожидания?')
+    attach_fake_apply_navigation(client)
     monkeypatch.setattr(client, '_is_captcha_page', lambda: asyncio.sleep(0, result=False))
     async def answer(vacancy_context='', *, before_submit=None):
         assert client._page.letter.value == 'required letter'

@@ -2768,6 +2768,7 @@ class TelegramBot(
             "/analyze": ("--analyze-resume", "analyze resume", 3600),
             "/backfill": ("--analytics-backfill", "analytics backfill", 3600),
             "/grabresume": ("--grab-resume", "grab resume", 1800),
+            "/refresh_resume": ("--refresh-resume", "refresh resume", 1800),
         }
         if command in command_map:
             flag, label, timeout = command_map[command]

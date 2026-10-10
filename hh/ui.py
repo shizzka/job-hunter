@@ -11,35 +11,105 @@ from state_store.hh_ui import HHUIWarnings
 
 log = logging.getLogger("hh_ui")
 
+# Shared by passive recovery and synchronous action admission. A challenge is
+# a page-wide stop signal, including inline/hidden widgets without a modal.
+CHALLENGE_SELECTOR = ('iframe[src*="captcha" i], [data-qa="captcha"], '
+                      '[class*="captcha" i], [id*="captcha" i]')
+CHALLENGE_TEXT = ('ddos-guard', 'проверка браузера перед переходом на hh.ru',
+                  'не удалось проверить ваш браузер автоматически',
+                  'checking your browser before accessing', 'подтвердите, что вы не робот',
+                  'текст с картинки', "i'm not a robot", 'verify you are human',
+                  'проверка браузера', 'checking your browser', 'verify your browser')
+
 # Inspect and close share the same fresh DOM classifier. No persisted text/URL.
 _INSPECT = r"""() => {
     const visible = el => [...el.getClientRects()].some(box => box.width > 0 && box.height > 0) &&
         getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
-    const selectors = '[role="dialog"], dialog[open], [aria-modal="true"], [data-qa="modal-overlay"], [data-qa="whats-new-modal"]';
+    const selectors = '[role="dialog"], dialog[open], [aria-modal="true"], [data-qa="modal-overlay"], [data-qa="whats-new-modal"], [data-qa="applicant-profile-onboarding-modal"], [data-qa="applicant-profile-completion-modal"]';
     const all = [...document.querySelectorAll(selectors)].filter(visible);
     const roots = all.filter(el => !all.some(other => other !== el && other.contains(el)));
-    return roots.map((root, index) => {
-        const norm = text => (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
-        const title = norm(root.querySelector('h1,h2,h3,[role="heading"]')?.textContent);
-        const profileMarker = '[data-qa="applicant-profile-onboarding-modal"], [data-qa="applicant-profile-completion-modal"]';
-        const optional = title === 'резюме стали компактнее'
-            || (['расскажите о себе', 'заполните профиль'].includes(title) &&
-                (root.matches(profileMarker) || !!root.querySelector(profileMarker)));
-        const response = !!root.querySelector('form[name="vacancy_response"]') &&
-            !!root.querySelector('[data-qa="vacancy-response-submit-popup"], [data-qa="vacancy-response-letter-submit"]');
-        // HH mounts the response resume picker in a portal OUTSIDE its form.
-        // Recognize this exact radio-only surface, not arbitrary drop-base UI.
-        // The shared click/submit barrier rechecks this evidence on every event.
-        const forms = [...document.querySelectorAll('form[name="vacancy_response"]')].filter(visible);
-        const listboxes = root.querySelectorAll('[role="listbox"][data-qa="magritte-select-option-list"]');
+    const norm = text => (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const closeSelector = 'button[type="button"][data-qa="modal-close"], button[type="button"][data-qa="dialog-close"]';
+    // A known descendant never authorizes additional content on its wrapper.
+    // Inspect text nodes too: querySelectorAll alone misses bare consent text.
+    const covered = (root, surfaces, allowedClose = false) => {
+        const inside = el => surfaces.some(surface => surface === el || surface.contains(el)) ||
+            (allowedClose && !!el.closest(closeSelector) && root.contains(el.closest(closeSelector)));
+        if ([...root.querySelectorAll('*')].some(el => visible(el) && !inside(el) &&
+                !surfaces.some(surface => el.contains(surface)))) return false;
+        const texts = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        while (texts.nextNode()) {
+            const node = texts.currentNode;
+            if (norm(node.textContent) && visible(node.parentElement) && !inside(node.parentElement)) return false;
+        }
+        return true;
+    };
+    const forms = [...document.querySelectorAll('form[name="vacancy_response"]')].filter(visible);
+    const path = location.pathname.toLowerCase();
+    const globalChallenge = path.includes('captcha') || !!document.querySelector(__CHALLENGE_SELECTOR__) ||
+        __CHALLENGE_TEXT__.some(cue => norm(document.body?.innerText).slice(0, 3000).includes(cue));
+    const authLost = path.includes('/account/login') || path.includes('/auth/') ||
+        /"userType"\s*:\s*"anonymous"|"luxPageName"\s*:\s*"ForbiddenPage"/i.test(document.documentElement?.innerHTML || '');
+    const globalStopCount = Number(globalChallenge) + Number(authLost);
+    const incidents = roots.map((root, index) => {
+        const nested = [...root.querySelectorAll(selectors)].filter(visible);
+        // Preserve HH's inert overlay around one known dialog, without using
+        // it to hide a second dialog or any sibling controls/content.
+        const overlay = root.matches('[data-qa="modal-overlay"]') &&
+            nested.length === 1 && covered(root, nested);
+        const surface = overlay ? nested[0] : root;
+        const noNested = ![...surface.querySelectorAll(selectors)].some(visible);
+        const title = norm(surface.querySelector('h1,h2,h3,[role="heading"]')?.textContent);
+        const qa = surface.getAttribute('data-qa') || '';
+        const surfaceForms = [...surface.querySelectorAll('form')].filter(visible);
+        const close = [...surface.querySelectorAll('button,[role="button"]')].find(el => {
+            const qa = el.getAttribute('data-qa') || '';
+            const label = norm(el.getAttribute('aria-label') || el.getAttribute('title'));
+            return visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true' &&
+                el.type !== 'submit' && (['закрыть','close'].includes(label) ||
+                ['modal-close','whats-new-modal-close','dialog-close'].includes(qa));
+        });
+        // Profile/onboarding surfaces require manual handling even when their
+        // title is known. Only this informational notice may be dismissed.
+        const optionalMarker = !qa || qa === 'whats-new-modal';
+        const heading = surface.querySelector('h1,h2,h3,[role="heading"]');
+        const optionalButtons = [...surface.querySelectorAll('button,[role="button"]')];
+        const optional = noNested && optionalMarker && title === 'резюме стали компактнее' && close &&
+            !surface.querySelector('form,input,textarea,select,[contenteditable]:not([contenteditable="false"])') &&
+            optionalButtons.every(control => control === close) && covered(surface, [heading, close]);
+        const form = surfaceForms.length === 1 ? surfaceForms[0] : null;
+        const responseMarker = ['vacancy-response-popup', 'vacancy-response-popup-form'].includes(qa) ||
+            (!qa && form?.parentElement === surface);
+        // Native dialogs may embed an unnamed form; its actual successful
+        // controls still undergo exact resume/payload boundary validation.
+        const responseForm = form && (form.getAttribute('name') === 'vacancy_response'
+            ? forms.length === 1 && forms[0] === form : !form.getAttribute('name') && forms.length === 0);
+        const response = noNested && responseMarker && responseForm &&
+            !!form.querySelector('[data-qa="vacancy-response-submit-popup"], [data-qa="vacancy-response-letter-submit"]') &&
+            covered(surface, [form], true);
+        // The resume picker is a separate radio-only portal, scoped to one
+        // response form. Extra text or controls remain unknown UI.
+        const listboxes = surface.querySelectorAll('[role="listbox"][data-qa="magritte-select-option-list"]');
         const options = listboxes.length === 1
             ? [...listboxes[0].querySelectorAll('label[role="option"][data-magritte-select-option]')] : [];
-        const pickerControls = [...root.querySelectorAll('input,textarea,select,button,[role="button"],[contenteditable="true"]')];
-        const resumePicker = root.matches('div[role="dialog"][data-qa="drop-base"]') && !title &&
-            !root.querySelector(selectors) && forms.length === 1 &&
+        const pickerControls = [...surface.querySelectorAll('input,textarea,select,button,[role="button"],[contenteditable="true"]')];
+        // Captured Magritte layout/scrollbar nodes in this radio-only portal.
+        const pickerScrollbars = new Set([
+            'magritte-track___8yEer_1-0-36_xhh magritte-vertical-track___WywWv_1-0-36_xhh',
+            'magritte-thumb-limit___1w3VH_1-0-36_xhh',
+            'magritte-thumb___IHLT3_1-0-36_xhh magritte-vertical-thumb___ARK8c_1-0-36_xhh'
+        ]);
+        const pickerLayoutShape = el => el.tagName === 'DIV' && !norm(el.textContent) &&
+            (el.attributes.length === 1 && el.hasAttribute('class') ||
+             el.attributes.length === 2 && el.hasAttribute('class') && el.hasAttribute('style') &&
+             pickerScrollbars.has(el.getAttribute('class')));
+        const pickerLayout = [...surface.querySelectorAll('div[class]')].filter(el =>
+            pickerLayoutShape(el) && [...el.querySelectorAll('*')].every(pickerLayoutShape));
+        const resumePicker = surface.matches('div[role="dialog"][data-qa="drop-base"]') && !title &&
+            noNested && forms.length === 1 &&
             !!forms[0].querySelector('[data-qa="resume-title"]') &&
             !!forms[0].querySelector('[data-qa="vacancy-response-submit-popup"], [data-qa="vacancy-response-letter-submit"]') &&
-            options.length > 0 && pickerControls.length === options.length &&
+            options.length > 0 && pickerControls.length === options.length && covered(surface, options.concat(pickerLayout)) &&
             options.every(option => {
                 const radios = option.querySelectorAll('input[type="radio"]');
                 const id = option.getAttribute('data-magritte-select-option');
@@ -47,22 +117,23 @@ _INSPECT = r"""() => {
                     !!option.querySelector('[data-qa="resume-title"]') &&
                     pickerControls.includes(radios[0]);
             });
-        const captcha = !!root.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], [data-qa="captcha"]');
-        const kind = optional ? 'optional' : (response || resumePicker) ? 'response' : captcha ? 'captcha' : 'unknown';
-        const close = [...root.querySelectorAll('button,[role="button"]')].find(el => {
-            const qa = el.getAttribute('data-qa') || '';
-            const label = norm(el.getAttribute('aria-label') || el.getAttribute('title'));
-            return visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true' &&
-                el.type !== 'submit' && (['закрыть','close'].includes(label) ||
-                ['modal-close','whats-new-modal-close','dialog-close'].includes(qa));
-        });
+        const captchaSelector = '[data-qa="captcha"], iframe[src*="captcha" i], [class*="captcha" i], [id*="captcha" i]';
+        const captcha = root.matches(captchaSelector) || !!root.querySelector(captchaSelector) ||
+            ['ddos-guard', 'подтвердите, что вы не робот', 'verify you are human',
+                'checking your browser', 'проверка браузера'].some(cue => norm(root.innerText).includes(cue));
+        const kind = captcha ? 'captcha' : optional ? 'optional' : (response || resumePicker) ? 'response' : 'unknown';
         const controls = [...root.querySelectorAll('input,select,textarea,button,[role="button"]')]
             .map(el => [el.tagName, el.type || '', el.getAttribute('data-qa') || ''].join(':')).sort();
         const shape = JSON.stringify([kind, root.tagName, root.getAttribute('data-qa') || '',
             title.replace(/\d+/g,'#'), controls]);
-        return {root, close, descriptor: {index, kind, shape, closable: !!close}};
+        return {root, close, descriptor: {index: index + globalStopCount, kind, shape, closable: !!close}};
     });
-}"""
+    if (authLost) incidents.unshift({root: document.documentElement, close: null,
+        descriptor: {index: Number(globalChallenge), kind: 'unknown', shape: 'auth:session-lost', closable: false}});
+    if (globalChallenge) incidents.unshift({root: document.documentElement, close: null,
+        descriptor: {index: 0, kind: 'captcha', shape: 'captcha:global-challenge', closable: false}});
+    return incidents;
+}""".replace("__CHALLENGE_SELECTOR__", json.dumps(CHALLENGE_SELECTOR)).replace("__CHALLENGE_TEXT__", json.dumps(CHALLENGE_TEXT))
 INSPECT_SCRIPT = "/* codex:hh-ui-inspect */ () => { const inspect = (" + _INSPECT + r""");
     document.__hhUIAllowed = __ALLOWED__;
     if (!document.__hhUIBarrier) {
@@ -110,31 +181,66 @@ class HHUIGuard:
                 raise ValueError("Unknown HH UI dialog evidence")
         return dialogs
 
+    def _check_action_stop(self, page, stage):
+        """Do not keep interacting after an asynchronously observed action."""
+        monitor = getattr(page, '_hh_action_monitor', None)
+        session = getattr(monitor, 'session', None)
+        if session is None:
+            return
+        context = getattr(page, 'context', None)
+        watch = getattr(context, '_hh_action_watch', None)
+        reason = getattr(session, '_hh_recovery_stop_reason', '')
+        ownership_changed = (getattr(session, '_page', None) is not page
+                             or getattr(session, '_context', None) is not context)
+        uncertain = bool(getattr(session, '_hh_recovery_uncertain', False)
+                         or getattr(monitor, 'unknown', False) or getattr(watch, 'unknown', False)
+                         or ownership_changed)
+        if not (reason or uncertain or getattr(session, '_recovering', False)):
+            return
+        reason = reason or ('browser_ownership_changed' if ownership_changed else
+                            'possible_external_action' if uncertain else 'recovery_ownership_unavailable')
+        if self.blocked is None:
+            self.blocked = HHUnexpectedUI(stage, hashlib.sha256(reason.encode()).hexdigest())
+        self.blocked.hh_stop_reason = reason
+        self.blocked.hh_uncertain = bool(getattr(self.blocked, 'hh_uncertain', False) or uncertain)
+        self.blocked.hh_recovered = False
+        raise self.blocked
+
     async def ensure(self, page, stage, *, allowed=()):
+        self._check_action_stop(page, stage)
         if self.blocked is not None:
             raise self.blocked
         dialogs = []
         changed = False
         try:
             for _ in range(4):
+                self._check_action_stop(page, stage)
                 dialogs = await self._scan(page, allowed)
+                self._check_action_stop(page, stage)
                 blocking = [item for item in dialogs if item["kind"] not in allowed]
                 if not blocking:
                     return changed
                 # Never dismiss a known popup to work around another unknown UI.
                 if any(item["kind"] != "optional" or not item["closable"] for item in blocking):
                     break
+                self._check_action_stop(page, stage)
                 closed = await page.evaluate(CLOSE_SCRIPT, blocking[0])
+                self._check_action_stop(page, stage)
                 if closed is not True:
                     break
                 changed = True
                 # Refetch, not stale element handles; a changed/new modal is reclassified.
                 await page.wait_for_timeout(100)
+                self._check_action_stop(page, stage)
             else:
                 dialogs = await self._scan(page, allowed)
+                self._check_action_stop(page, stage)
+        except HHUnexpectedUI:
+            raise
         except Exception as exc:
             log.warning("HH UI inspection failed: %s", type(exc).__name__)
             dialogs = [{"shape": "inspection_failed", "kind": "unknown"}]
+        self._check_action_stop(page, stage)
         if not any(item["kind"] not in allowed for item in dialogs):
             return changed
         fingerprint = _fingerprint(dialogs)

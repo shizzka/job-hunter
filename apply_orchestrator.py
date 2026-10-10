@@ -3,6 +3,7 @@
 
 Извлечено из agent.py (A-002).
 """
+import asyncio
 import logging
 import os
 import uuid
@@ -16,6 +17,7 @@ from debug_trace import ApplyTrace
 from hh_client import HHClient
 from hh.resume_target import exact_title_resume_id
 from hh.ui import HHUnexpectedUI
+from outcome import apply_result_is_uncertain
 from superjob_client import SuperJobClient
 from habr_career_client import HabrCareerClient
 from geekjob_client import GeekJobClient
@@ -104,6 +106,133 @@ async def fetch_vacancy_details(
 
 # ── Диспетчеризация отклика ──
 
+def apply_result_with_current_uncertainty(vacancy: dict, hh_client, result: dict, *, owned_attempt=None) -> dict:
+    """Recheck this HH client's sticky evidence without browser actions or writes."""
+    if vacancy.get("source", "hh") != "hh":
+        return result
+    def uncertain():
+        stale_confirmation = ({'submission_status': 'uncertain'}
+                              if result.get('submission_status') == 'success_confirmed' else {})
+        return {**result, **stale_confirmation, "ok": False, "uncertain": True,
+                "message": "Исход отклика не подтверждён; нужна ручная сверка без автоматического повтора"}
+
+    if result.get('submission_status') == 'success_confirmed':
+        if hh_client is not None and result.get('ok') is True and not apply_result_is_uncertain(result):
+            from hh.verification import confirmed_result
+            confirmed = confirmed_result(hh_client, vacancy.get('url', ''), result,
+                                         owned_attempt=owned_attempt)
+            if confirmed is not None:
+                return confirmed
+        return uncertain()
+    if apply_result_is_uncertain(result):
+        return uncertain()
+    if hh_client is None:
+        return result
+    try:
+        if getattr(hh_client, "_hh_recovery_uncertain", False):
+            return uncertain()
+        page = getattr(hh_client, "_page", None)
+        context = getattr(hh_client, "_context", None)
+        monitor = getattr(page, "_hh_action_monitor", None)
+        watch = getattr(context, "_hh_action_watch", None)
+        if monitor is not None and (monitor.session is not hh_client or monitor.unknown):
+            return uncertain()
+        if watch is not None and (watch.session is not hh_client or watch.unknown):
+            return uncertain()
+        active = getattr(hh_client, "_external_attempt", None)
+        active_owner = None
+        earlier_monitor = None
+        if owned_attempt is not None:
+            earlier_monitor = getattr(owned_attempt.page, "_hh_action_monitor", None)
+            earlier_watch = getattr(owned_attempt.context, "_hh_action_watch", None)
+            if owned_attempt.page is not None and (
+                    earlier_monitor is None or (context is not None and (
+                        page is None or monitor is None or monitor.page is not page or page.context is not context
+                        or watch is None or watch.context is not context or watch.pages.get(page) is not monitor))):
+                return uncertain()
+            if earlier_monitor is not None and (
+                    earlier_monitor.session is not hh_client or earlier_monitor.page is not owned_attempt.page
+                    or owned_attempt.page.context is not owned_attempt.context or earlier_monitor.unknown
+                    or earlier_watch is None or earlier_watch.session is not hh_client
+                    or earlier_watch.context is not owned_attempt.context
+                    or earlier_watch.pages.get(owned_attempt.page) is not earlier_monitor
+                    or earlier_monitor.attempts.get(owned_attempt.owner) is not owned_attempt
+                    or (earlier_monitor is not monitor and earlier_monitor.owners)):
+                return uncertain()
+        if owned_attempt is not None and active is not None and active is not owned_attempt:
+            # A later legitimate attempt does not invalidate this earlier
+            # receipt. Both identities must be retained by the same context's
+            # exact owned registry, including the earlier Page after recovery.
+            if (active.client is not hh_client or active.context is not context or active.page is not page
+                    or active.repository.source != "hh" or not active.owner or active.uncertain
+                    or watch is None or watch.session is not hh_client or watch.context is not context
+                    or monitor is None or monitor.page is not page or page.context is not context
+                    or watch.pages.get(page) is not monitor
+                    or monitor.attempts.get(active.owner) is not active
+                    or owned_attempt.client is not hh_client or owned_attempt.context is not context
+                    or owned_attempt.repository.source != "hh" or not owned_attempt.owner
+                    or earlier_monitor is None or earlier_monitor.session is not hh_client
+                    or earlier_monitor.page is not owned_attempt.page or owned_attempt.page.context is not context
+                    or earlier_monitor.unknown or earlier_monitor.owners - {active.owner}
+                    or watch.pages.get(owned_attempt.page) is not earlier_monitor
+                    or earlier_monitor.attempts.get(owned_attempt.owner) is not owned_attempt):
+                return uncertain()
+            active_state = active.repository.get(active.url)
+            if (active_state.get("owner") != active.owner or active_state.get("status") not in {"preparing", "acting"}
+                    or (active_state.get("status") == "acting") != bool(active.acting)
+                    or (monitor.owners and not active.acting)):
+                return uncertain()
+            active_owner = active.owner
+        if monitor is not None and monitor.owners and (active_owner is None or monitor.owners - {active_owner}):
+            return uncertain()
+        attempt = owned_attempt if owned_attempt is not None else active
+        if attempt is None and monitor is not None:
+            attempt = monitor.last_attempt
+        if attempt is None:
+            return result
+        repository = attempt.repository
+        if attempt.client is not hh_client or repository.source != "hh" or not attempt.owner:
+            return uncertain()
+        if attempt.context is not context:
+            # Shutdown releases references only after the captured browser has
+            # died. Accept that release solely for this completed owned task.
+            shutdown = getattr(hh_client, "_hh_shutdown_operation", None)
+            if context is not None or not isinstance(shutdown, tuple) or len(shutdown) != 3:
+                return uncertain()
+            captured_context, browser, operation = shutdown
+            from hh.browser import _stop_browser_owned
+            if (captured_context is not attempt.context or browser is None
+                    or getattr(browser, "_hh_owner_session", None) is not hh_client
+                    or getattr(captured_context, "browser", None) is not browser
+                    or any(getattr(hh_client, field, None) is not None for field in
+                           ("_context", "_browser", "_page", "_pw", "_cookie_binding"))
+                    or not isinstance(operation, asyncio.Task) or not operation.done()
+                    or operation.cancelled() or operation.exception() is not None
+                    or getattr(operation.get_coro(), "cr_code", None) is not _stop_browser_owned.__code__):
+                return uncertain()
+            # The old monitor and receipt retain late evidence after release.
+            monitor = getattr(attempt.page, "_hh_action_monitor", None)
+            watch = getattr(captured_context, "_hh_action_watch", None)
+            if monitor is not None and (monitor.session is not hh_client or monitor.unknown or monitor.owners):
+                return uncertain()
+            if watch is not None and (watch.session is not hh_client or watch.unknown):
+                return uncertain()
+        # Native keys validate the exact HH vacancy identity before any read.
+        if repository.key(attempt.url) != repository.key(vacancy.get("url", "")):
+            return result
+        if attempt.uncertain:
+            return uncertain()
+        receipt = repository.get(attempt.url)
+        if receipt.get("owner") != attempt.owner:
+            return uncertain()
+        if receipt.get("status") not in {"failed", "completed"}:
+            return uncertain()
+    except Exception:
+        # Losing ownership or access to this receipt cannot prove no action.
+        return uncertain()
+    return result
+
+
 async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> dict:
     # Do not navigate to the resume catalog for a blocked company; still recheck
     # in _dispatch_apply after any preflight awaits.
@@ -167,45 +296,69 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
         **resume_versions.payload(vacancy),
     ):
         analytics.record_event({"event": "application_attempt"})
+        hh_client = kwargs.get("hh_client") or (args[0] if args else None)
         try:
             result = await _dispatch_apply(vacancy, cover_letter, *args, **kwargs)
         except Exception as exc:
-            analytics.record_event({"event": "application_result", "outcome": "error", "error_kind": type(exc).__name__})
+            monitor = getattr(getattr(hh_client, "_page", None), "_hh_action_monitor", None)
+            owned_attempt = getattr(hh_client, "_external_attempt", None) or getattr(monitor, "last_attempt", None)
+            result = {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
             trace = kwargs.get("trace")
-            if trace is not None:
-                failure_stage = trace.last_stage
-                hh_client = kwargs.get("hh_client") or (args[0] if args else None)
-                if not isinstance(exc, HHUnexpectedUI) and getattr(hh_client, "_page", None) is not None:
-                    await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
-                trace.finish(
-                    ok=False,
-                    message=f"{type(exc).__name__}: {exc}",
-                    failure_stage=failure_stage,
-                )
+            try:
+                if trace is not None:
+                    try:
+                        failure_stage = trace.last_stage
+                        if not isinstance(exc, HHUnexpectedUI) and getattr(hh_client, "_page", None) is not None:
+                            await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
+                        result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
+                        trace.finish(
+                            ok=False,
+                            message=str(result.get("message")),
+                            failure_stage=failure_stage,
+                        )
+                    except Exception as trace_error:
+                        log.warning("HH apply trace unavailable: error_kind=%s", type(trace_error).__name__)
+            finally:
+                result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
+                analytics.record_event({"event": "application_result",
+                    "outcome": "uncertain" if apply_result_is_uncertain(result) else "error",
+                    "error_kind": type(exc).__name__})
+            if apply_result_is_uncertain(result):
+                return result
             raise
-        outcome = ("already_applied" if result.get("already_applied") else
-                   "blocked" if result.get("reason") == "company_blacklisted" else
-                   "sent" if result.get("ok") else "failed")
-        analytics.record_event({"event": "application_result", "outcome": outcome,
-                                 "cover_letter_status": result.get("cover_letter_status", "unknown"),
-                                 "resume_selection_verified": result.get("resume_selection_verified", False),
-                                 "selected_resume_id": result.get("selected_resume_id", "")})
+        monitor = getattr(getattr(hh_client, "_page", None), "_hh_action_monitor", None)
+        owned_attempt = getattr(hh_client, "_external_attempt", None) or getattr(monitor, "last_attempt", None)
+        if apply_result_is_uncertain(result):
+            result = {**result, "ok": False, "uncertain": True}
+        result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
         trace = kwargs.get("trace")
-        if trace is not None:
-            result_ok = bool(result.get("ok"))
-            failure_stage = trace.last_stage
-            if not result_ok:
-                hh_client = kwargs.get("hh_client") or (args[0] if args else None)
-                if getattr(hh_client, "_page", None) is not None:
-                    await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
-            trace.finish(
-                ok=result_ok,
-                message=str(result.get("message") or outcome),
-                failure_stage=failure_stage,
-            )
-            result = dict(result)
-            result["trace_id"] = trace.trace_id
-            result["trace_dir"] = os.fspath(trace.trace_dir)
+        try:
+            if trace is not None:
+                try:
+                    failure_stage = trace.last_stage
+                    if not result.get("ok") and getattr(hh_client, "_page", None) is not None:
+                        await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
+                    result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
+                    trace.finish(
+                        ok=bool(result.get("ok")),
+                        message=str(result.get("message") or "apply result"),
+                        failure_stage=failure_stage,
+                    )
+                    result = {**result, "trace_id": trace.trace_id, "trace_dir": os.fspath(trace.trace_dir)}
+                except Exception as trace_error:
+                    log.warning("HH apply trace completion unavailable: error_kind=%s", type(trace_error).__name__)
+        finally:
+            # The awaited capture and synchronous finish may deliver a late
+            # browser action, even when the NativeAttempt has already returned.
+            result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
+            outcome = ("uncertain" if apply_result_is_uncertain(result) else
+                       "already_applied" if result.get("already_applied") else
+                       "blocked" if result.get("reason") == "company_blacklisted" else
+                       "sent" if result.get("ok") else "failed")
+            analytics.record_event({"event": "application_result", "outcome": outcome,
+                "cover_letter_status": result.get("cover_letter_status", "unknown"),
+                "resume_selection_verified": result.get("resume_selection_verified", False),
+                "selected_resume_id": result.get("selected_resume_id", "")})
         return result
 
 

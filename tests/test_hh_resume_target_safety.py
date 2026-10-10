@@ -306,6 +306,12 @@ def test_full_apply_exact_target_and_fresh_guards(monkeypatch, scenario):
     page.switch_on_descriptor = scenario == 'late_switch'
     client = hh_client.HHClient()
     client._page = page
+    # This unit page never dispatches HTTP; supply the navigation ownership contract.
+    client._context = page.context
+    client._context.request = object()
+    client._context.add_init_script = AsyncMock()
+    page.route = AsyncMock()
+    page.unroute = AsyncMock()
     client._save_debug_snapshot = AsyncMock()
     client._detect_anti_bot_kind = AsyncMock(return_value=None)
     client._handle_anti_bot_with_solver = AsyncMock(return_value=None)

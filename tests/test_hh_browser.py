@@ -33,11 +33,31 @@ def test_legacy_module_reexports_cookie_helpers():
     assert hh_client._save_cookies is browser._save_cookies
 
 
+async def terminate_fake_browser(browser):
+    await browser.close()
+    return True
+
+
+class FakeLifecyclePage:
+    def __init__(self, context):
+        self.context = context
+        self.handlers = {}
+        self.add_init_script = AsyncMock()
+
+    def on(self, event, callback):
+        self.handlers[event] = callback
+
+
 class FakeLifecycleContext:
     def __init__(self, cookies):
         self.loaded_cookies = []
         self.saved_cookies = cookies
-        self.page = SimpleNamespace(add_init_script=AsyncMock())
+        self.page = FakeLifecyclePage(self)
+        self.handlers = {}
+        self.add_init_script = AsyncMock()
+
+    def on(self, event, callback):
+        self.handlers[event] = callback
 
     async def add_cookies(self, cookies):
         self.loaded_cookies.extend(cookies)
@@ -135,8 +155,14 @@ def test_start_browser_builds_context_loads_cookies_and_applies_stealth(monkeypa
     }
     assert browser_instance.context_options["viewport"] == {"width": 1280, "height": 900}
     assert browser_instance.context_options["locale"] == "ru-RU"
+    assert browser_instance.context_options["service_workers"] == "block"
+    assert browser_instance._hh_owner_session is session
+    assert session._hh_blocked_worker_context is context
+    assert context._hh_workers_owner is session
     assert "Chrome/131.0.0.0" in browser_instance.context_options["user_agent"]
     assert context.loaded_cookies == cookies
+    assert context._hh_action_watch.pages[context.page].session is session
+    assert "request" in context.handlers and "websocket" in context.page.handlers
     assert stealth_calls == [context]
 
 
@@ -152,7 +178,7 @@ def test_stop_browser_saves_cookies_and_closes_resources():
     )
     saved = []
 
-    asyncio.run(browser.stop_browser(session, save_cookies=saved.append))
+    asyncio.run(browser.stop_browser(session, save_cookies=saved.append, terminate=terminate_fake_browser))
 
     assert saved == [cookies]
     assert browser_instance.closed is True
@@ -169,7 +195,7 @@ def test_stop_browser_ignores_closed_context_and_still_releases_resources():
     playwright = FakePlaywright(FakeChromium(browser_instance))
     session = SimpleNamespace(_context=context, _browser=browser_instance, _pw=playwright, _page=object())
 
-    asyncio.run(browser.stop_browser(session))
+    asyncio.run(browser.stop_browser(session, terminate=terminate_fake_browser))
 
     assert browser_instance.closed is True
     assert playwright.stopped is True

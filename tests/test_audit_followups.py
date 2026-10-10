@@ -65,7 +65,8 @@ def test_incomplete_cover_cannot_be_accepted_by_optimistic_verifier(isolated_can
 
 def test_operational_search_logs_do_not_dump_cover_or_question_answers(search_harness, monkeypatch, caplog):
     private = 'SYNTHETIC_PRIVATE_CANDIDATE_PAYLOAD'
-    client = SimpleNamespace(start=AsyncMock(), stop=AsyncMock(), is_logged_in=AsyncMock(return_value=True))
+    client = SimpleNamespace(start=AsyncMock(), stop=AsyncMock(), is_logged_in=AsyncMock(return_value=True),
+                             get_negotiation_statuses=AsyncMock(return_value=[]))
     monkeypatch.setattr(agent, 'HHClient', lambda: client)
     monkeypatch.setattr(config, 'HH_APPLICATION_MODE', 'auto')
     monkeypatch.setattr(config, 'HH_MIN_SECONDS_BETWEEN_APPLICATIONS', 0)

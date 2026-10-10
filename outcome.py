@@ -13,6 +13,7 @@ DECISION_SKIPPED_RED_FLAGS = "skipped_red_flags"
 DECISION_SKIPPED_LOW_SCORE = "skipped_low_score"
 DECISION_ALREADY_APPLIED = "already_applied"
 DECISION_QUESTIONS_REQUIRED = "questions_required"
+DECISION_APPLY_UNCERTAIN = "apply_uncertain"
 DECISION_APPLY_FAILED = "apply_failed"
 DECISION_APPLY_FAILED_EXCEPTION = "apply_failed_exception"
 DECISION_MANUAL_REVIEW = "manual_review"
@@ -21,6 +22,7 @@ DECISION_DEFERRED_UNSCORED = "deferred_unscored"
 # Группировка для аналитики
 DECISIONS_AUTO_APPLIED = {DECISION_APPLIED_AUTO}
 DECISIONS_MANUAL = {
+    DECISION_APPLY_UNCERTAIN,
     DECISION_QUESTIONS_REQUIRED,
     DECISION_APPLY_FAILED,
     DECISION_APPLY_FAILED_EXCEPTION,
@@ -32,6 +34,11 @@ DECISIONS_FILTERED = {
     DECISION_SKIPPED_LOW_SCORE,
     DECISION_ALREADY_APPLIED,
 }
+
+def apply_result_is_uncertain(result: dict) -> bool:
+    """Preserve the existing uncertain signals across native and GeekJob adapters."""
+    return bool(result.get("uncertain")) or result.get("submission_status") in {"uncertain", "preparing", "acting"}
+
 
 # ── Negotiation status buckets ──
 

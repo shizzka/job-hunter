@@ -237,7 +237,9 @@ def finish_candidate(token, owner, status, message="", *, store=None) -> bool:
         item = data["items"].get(token, {})
         if item.get("owner") != owner or item.get("status") != "applying":
             return
-        if item.get("external_started"):
+        if status == "uncertain":
+            status_value = "uncertain"
+        elif item.get("external_started"):
             status_value = status if status in {"applied", "already_applied"} else "uncertain"
         elif item.get("revoked") or item.get("feedback") == "bad":
             status_value = "dismissed"

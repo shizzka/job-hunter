@@ -22,12 +22,13 @@ def test_cancelled_native_search_does_not_leave_target_closed_future(monkeypatch
                 await context.route('**/*', lambda route: route.abort())
                 page = await context.new_page()
                 started = asyncio.Event()
-                async def blocked_goto(*args, **kwargs):
+                async def blocked_get(*args, **kwargs):
                     started.set()
                     await page.wait_for_timeout(30000)
-                monkeypatch.setattr(page, 'goto', blocked_goto)
+                monkeypatch.setattr(context.request, 'get', blocked_get)
                 client = HHClient()
                 client._page = page
+                client._context = context
                 monkeypatch.setattr(client, '_ensure_expected_ui', AsyncMock())
                 async def workflow():
                     try:

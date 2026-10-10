@@ -50,6 +50,25 @@ async def run_preflight(tmp_path, *, mode='', expected_id='qa-target', already_a
             client = hh_client.HHClient()
             client._page = page
             client._ui_home = str(tmp_path)
+            from hh.ui import HHUIGuard
+            from types import SimpleNamespace
+            from playwright.async_api import Route
+            client._context = context
+            client._ui_guard = HHUIGuard(str(tmp_path), notify=AsyncMock(return_value=False))
+
+            async def fetch(route, **options):
+                target = options.pop('url', route.request.url)
+                assert target in {
+                    'https://hh.ru/vacancy/1',
+                    'https://hh.ru/applicant/vacancy_response?vacancyId=1',
+                }
+                assert route.request.method == 'GET'
+                assert options == {'max_redirects': 0, 'max_retries': 0, 'timeout': 20000}
+                return SimpleNamespace(
+                    status=200, url=target, headers={'content-type': 'text/html'},
+                    text=AsyncMock(return_value=HTML), dispose=AsyncMock(),
+                )
+
             client._save_debug_snapshot = AsyncMock()
             client._detect_anti_bot_kind = AsyncMock(return_value=None)
             client._handle_anti_bot_with_solver = AsyncMock(return_value=None)
@@ -72,7 +91,7 @@ async def run_preflight(tmp_path, *, mode='', expected_id='qa-target', already_a
             # Picker delays are unnecessary in this synchronous synthetic DOM.
             page.wait_for_timeout = AsyncMock()
             try:
-                with patch.object(ElementHandle, 'click', click):
+                with patch.object(ElementHandle, 'click', click), patch.object(Route, 'fetch', fetch):
                     result = await apply._apply_to_vacancy(
                         client, 'https://hh.ru/vacancy/1',
                         preferred_resume_id=expected_id, preferred_resume_title='Synthetic QA', trace=trace,

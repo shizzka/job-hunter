@@ -13,7 +13,7 @@ from hh import browser
 from state_store.hh_cookies import HHCookieRepository as Repository, HHCookieStateError
 from state_store.json_store import atomic_write_json
 from tests.test_hh_browser import (FakeLifecycleContext, FakeLifecycleBrowser, FakeChromium,
-                             FakePlaywright, FakePlaywrightStarter)
+                             FakePlaywright, FakePlaywrightStarter, terminate_fake_browser)
 
 
 def cookies(value):
@@ -46,7 +46,7 @@ def lifecycle(tmp_path, monkeypatch):
     async def start():
         await browser.start_browser(session, settings=settings,
             playwright_factory=lambda: FakePlaywrightStarter(pw), stealth_available=False,
-            proxy_env_builder=lambda _: {})
+            proxy_env_builder=lambda _: {}, terminate=terminate_fake_browser)
     return SimpleNamespace(repo=repo, paths=paths, session=session, context=context,
                            instance=instance, pw=pw, settings=settings, start=start)
 
@@ -84,7 +84,7 @@ def test_save_after_profile_switch_keeps_original_destination(lifecycle, tmp_pat
         monkeypatch.setattr(browser.config, "HH_COOKIES_FILE", str(other.path))
         return cookies("rotated")
     lifecycle.context.cookies = capture
-    asyncio.run(browser.stop_browser(lifecycle.session) if shutdown else browser.save_session(lifecycle.session))
+    asyncio.run(browser.stop_browser(lifecycle.session, terminate=terminate_fake_browser) if shutdown else browser.save_session(lifecycle.session))
     assert lifecycle.repo.snapshot()[0] == cookies("rotated")
     assert other.snapshot()[0] == cookies("other-profile")
 
@@ -94,7 +94,7 @@ def test_stale_browser_cannot_replace_new_auth(lifecycle, shutdown):
     asyncio.run(lifecycle.start())
     lifecycle.repo.save(cookies("new-login"))
     if shutdown:
-        asyncio.run(browser.stop_browser(lifecycle.session))
+        asyncio.run(browser.stop_browser(lifecycle.session, terminate=terminate_fake_browser))
         assert lifecycle.instance.closed and lifecycle.pw.stopped
     else:
         with pytest.raises(HHCookieStateError, match="stale browser"):
@@ -130,7 +130,7 @@ def test_late_stop_does_not_clear_new_resources(lifecycle):
             setattr(lifecycle.session, field, value)
         return cookies("stale")
     lifecycle.context.cookies = capture
-    asyncio.run(browser.stop_browser(lifecycle.session))
+    asyncio.run(browser.stop_browser(lifecycle.session, terminate=terminate_fake_browser))
     assert lifecycle.instance.closed and lifecycle.pw.stopped
     assert all(getattr(lifecycle.session, field) is value for field, value in replacements.items())
     assert lifecycle.repo.snapshot()[0] == cookies("original")
@@ -163,7 +163,7 @@ def test_overlapping_cookie_reads_do_not_replay_older_result(lifecycle):
 def test_shutdown_does_not_erase_cached_auth(lifecycle):
     asyncio.run(lifecycle.start())
     lifecycle.context.saved_cookies = []
-    asyncio.run(browser.stop_browser(lifecycle.session))
+    asyncio.run(browser.stop_browser(lifecycle.session, terminate=terminate_fake_browser))
     assert lifecycle.repo.snapshot()[0] == cookies("original")
     assert lifecycle.instance.closed and lifecycle.pw.stopped
 
@@ -174,21 +174,22 @@ def test_cancel_during_cookie_capture_preserves_cache_and_closes(lifecycle):
         raise asyncio.CancelledError
     lifecycle.context.cookies = capture
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(browser.stop_browser(lifecycle.session))
+        asyncio.run(browser.stop_browser(lifecycle.session, terminate=terminate_fake_browser))
     assert lifecycle.repo.snapshot()[0] == cookies("original")
     assert lifecycle.instance.closed and lifecycle.pw.stopped
     assert lifecycle.session._context is None
 
 
-def test_cleanup_error_still_releases_owned_references(lifecycle):
+def test_unconfirmed_termination_retains_driver_and_owned_references(lifecycle):
     asyncio.run(lifecycle.start())
     async def fail():
         raise RuntimeError("synthetic close failure")
     lifecycle.instance.close = fail
     with pytest.raises(RuntimeError):
-        asyncio.run(browser.stop_browser(lifecycle.session, save_cookies=None))
-    assert lifecycle.pw.stopped
-    assert lifecycle.session._context is None
+        asyncio.run(browser.stop_browser(lifecycle.session, terminate=terminate_fake_browser, save_cookies=None))
+    assert not lifecycle.pw.stopped
+    assert lifecycle.session._context is lifecycle.context
+    assert lifecycle.session._browser is lifecycle.instance
 
 
 def test_failed_start_releases_resources_without_saving(lifecycle):
@@ -216,7 +217,7 @@ def test_parallel_start_is_rejected_without_second_browser(lifecycle):
         with pytest.raises(RuntimeError, match="starting"):
             await lifecycle.start()
         with pytest.raises(RuntimeError, match="startup"):
-            await browser.stop_browser(lifecycle.session)
+            await browser.stop_browser(lifecycle.session, terminate=terminate_fake_browser)
         with pytest.raises(RuntimeError, match="startup"):
             await browser.save_session(lifecycle.session)
         release.set()

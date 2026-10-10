@@ -2,6 +2,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -9,7 +10,7 @@ from hh import browser
 import hh_response_counter as counter
 from state_store.json_store import atomic_write_json
 from tests.test_hh_browser import (FakeLifecycleContext, FakeLifecycleBrowser, FakeChromium,
-                             FakePlaywright, FakePlaywrightStarter)
+                             FakePlaywright, FakePlaywrightStarter, terminate_fake_browser)
 
 
 def cookies(value):
@@ -59,8 +60,12 @@ def test_old_browser_cannot_erase_newly_persisted_login(session):
     current, context, pw, start, a, b = session
     asyncio.run(start())
     browser._save_cookies(cookies("new-login"))
-    asyncio.run(browser.stop_browser(current))
+    context.cookies = AsyncMock(return_value=cookies("rotated-a"))
+    captured_browser = current._browser
+    asyncio.run(browser.stop_browser(current, terminate=terminate_fake_browser))
+    context.cookies.assert_awaited_once()
     assert json.loads(a.read_text()) == cookies("new-login")
+    assert captured_browser.closed and pw.stopped
 
 
 def save(home, active, stamp):

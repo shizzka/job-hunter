@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"></head><body>
+<form name="vacancy_response" method="post">
+  <input type="hidden" name="_xsrf" value="fixture-xsrf">
+  <div data-qa="resume-title" role="button">Configured resume</div>
+  <textarea data-qa="vacancy-response-popup-form-letter-input">Approved cover letter</textarea>
+  <button type="submit" data-qa="vacancy-response-submit-popup">Respond</button>
+</form>
+<!-- Observed React/Magritte resume selector is a portal outside the form. -->
+<div role="dialog" data-qa="drop-base">
+  <div role="listbox" data-qa="magritte-select-option-list">
+    <label role="option" data-magritte-select-option="fixture-resume" aria-selected="true">
+      <input type="radio" value="fixture-resume" checked>
+      <span data-qa="resume-title">Configured resume</span>
+    </label>
+  </div>
+</div>
+<script>
+(() => {
+  const form=document.querySelector('form[name="vacancy_response"]');
+  const resume={id:'fixture-numeric-resume-id',hash:'fixture-resume',isIncomplete:false};
+  const fixtureState={
+    applicantVacancyResponseStatuses:{'2':{resumes:{'fixture-resume':resume}}},
+    countriesProfileVisibilityAgreement:{vacancyId:2,show:false}
+  };
+  window.__fixtureReduxState=fixtureState;
+  const store={getState:()=>fixtureState};
+  const formFiber={stateNode:form,return:null,child:null,sibling:null,memoizedProps:{}};
+  const componentType=function VacancyResponseForm(){};
+  componentType.displayName='components/VacancyResponseForm/index/VacancyResponseForm';
+  const componentFiber={stateNode:null,type:componentType,return:null,child:formFiber,sibling:null,
+    memoizedProps:{vacancyId:'2',vacancySource:undefined,selectedResume:resume,letterValue:'Approved cover letter'}};
+  const providerFiber={stateNode:null,type:{displayName:'Provider'},return:null,child:componentFiber,sibling:null,
+    memoizedProps:{value:{store}}};
+  const currentRoot={stateNode:null,type:null,return:null,child:providerFiber,sibling:null,memoizedProps:{}};
+  const fiberRoot={current:currentRoot};
+  const hostRoot={stateNode:fiberRoot,type:null,return:null,child:null,sibling:null,memoizedProps:{}};
+  currentRoot.stateNode=fiberRoot; currentRoot.return=hostRoot;
+  providerFiber.return=currentRoot; componentFiber.return=providerFiber; formFiber.return=componentFiber;
+  form['__reactFiber$fixture']=formFiber;
+})();
+</script>
+</body></html>

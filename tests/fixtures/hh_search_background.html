@@ -1,0 +1,15 @@
+<!doctype html><html lang="ru"><body>
+<!-- Reduced observed SSR article/QA structure; all content and IDs are synthetic. -->
+<section data-qa="vacancy-serp__results"><article data-qa="vacancy-serp__vacancy">
+<h2><a data-qa="serp-item__title" href="/vacancy/123456?from=search"><span data-qa="serp-item__title-text">QA Engineer</span></a></h2>
+<a data-qa="vacancy-serp__vacancy-employer"><span>Example employer</span></a>
+<div data-qa="vacancy-serp__vacancy_snippet_requirement">Experience with testing.</div>
+<div data-qa="vacancy-serp__vacancy_snippet_responsibility">Test software.</div>
+<a data-qa="vacancy-serp__vacancy_response" href="/applicant/vacancy_response?vacancyId=123456">Respond</a>
+</article></section>
+<script>
+const pixel = document.createElement('iframe');
+pixel.id = 'mts-pixel';
+document.body.appendChild(pixel);
+fetch('/anatskytics', {method: 'POST', body: 'synthetic'}).catch(() => {});
+</script></body></html>
