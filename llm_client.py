@@ -571,6 +571,37 @@ def _is_retryable_provider_error(exc: Exception) -> bool:
     )
 
 
+def _failure_reason(exc):
+    status = _status_code(exc)
+    if status in {401, 403} and not _is_model_unavailable(exc):
+        return "LLM_AUTH_FAILED"
+    if _is_quota_or_rate_limit(exc):
+        return "LLM_QUOTA_OR_RATE_LIMIT"
+    if _is_model_unavailable(exc):
+        return "LLM_MODEL_UNAVAILABLE"
+    if status == 408 or isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        return "LLM_TIMEOUT"
+    if isinstance(exc, (APIConnectionError, TransportError, ConnectionError)):
+        return "LLM_TRANSPORT_ERROR"
+    if status is not None and 500 <= status <= 599:
+        return "LLM_SERVICE_ERROR"
+    return "UNKNOWN_ROOT_CAUSE"
+
+
+def _observe_provider_failure(exc, provider, *, model=None, exhausted=False, fallback_status="not_attempted"):
+    # Observation must never change routing, exception propagation or retries.
+    try:
+        failure_id = analytics.record_failure(analytics.current_context().get("stage", "provider"), exc,
+            continued=True, reason_code="LLM_PROVIDER_EXHAUSTED" if exhausted else _failure_reason(exc),
+            provider=provider, retryable=_is_retryable_provider_error(exc),
+            fallback_status=fallback_status, model=model, group=exhausted)
+        if failure_id:
+            exc.jh_failure_id = failure_id
+        return failure_id
+    except Exception:
+        log.warning("Could not record provider failure metadata")
+
+
 class _FallbackCompletions:
     def __init__(self, owner: "FallbackLLMClient"):
         self._owner = owner
@@ -724,6 +755,7 @@ class FallbackLLMClient:
                 _record_usage(provider.name, str(provider_kwargs.get("model") or ""), error_kind=type(exc).__name__)
                 last_exc = exc
                 if not _is_retryable_provider_error(exc):
+                    _observe_provider_failure(exc, provider.name, model=requested_model)
                     raise
                 log.warning(
                     "LLM provider %s rejected model %s (%s); continuing allowed fallback chain",
@@ -733,7 +765,12 @@ class FallbackLLMClient:
                 )
 
         if last_exc is not None:
-            raise LLMProvidersExhaustedError(attempted, requested_model, last_exc) from last_exc
+            failure_id = _observe_provider_failure(last_exc, ",".join(attempted), exhausted=True,
+                fallback_status="failed" if len(attempted) > 1 else "unavailable", model=requested_model)
+            error = LLMProvidersExhaustedError(attempted, requested_model, last_exc)
+            if failure_id:
+                error.jh_failure_id = failure_id
+            raise error from last_exc
         raise LLMProvidersExhaustedError(attempted, requested_model,
                                        RuntimeError("No eligible providers for request capability"))
 

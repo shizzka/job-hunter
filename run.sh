@@ -14,6 +14,7 @@ umask 077
 #   ./run.sh bot-daemon  — Telegram bot (в фоне)
 #   ./run.sh stats       — статистика
 #   ./run.sh analytics [days] — аналитика за N дней
+#   ./run.sh run-summary [run_id] — детерминированная JSON-сводка запуска
 #   ./run.sh filter-audit [days] — replay-аудит фильтров по analytics
 #   ./run.sh analytics-backfill — подтянуть историю в аналитику
 #   ./run.sh retry-preview — показать HH retry-кандидатов без откликов
@@ -117,6 +118,9 @@ case "$MODE" in
         ;;
     stats)
         $VENV agent.py $PROFILE_ARG --stats
+        ;;
+    run-summary)
+        $VENV agent.py $PROFILE_ARG --run-summary "${2:-}"
         ;;
     analytics|funnel)
         DAYS="${2:-}"

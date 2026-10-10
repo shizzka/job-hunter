@@ -6,6 +6,7 @@ import analytics
 import json
 import os
 import re
+import html
 from collections import deque
 
 import config
@@ -22,7 +23,8 @@ BUTTON_DIAGNOSTICS = "🩺 Диагностика"
 BUTTON_RESEARCH = "🔬 Отказы и конверсии"
 BUTTON_STATS = "📈 Статистика"
 BUTTON_RUNS = "🕓 Прогоны"
-BUTTON_LOG = "📜 Лог поиска"
+BUTTON_LOG = "📊 Последний запуск"
+BUTTON_RAW_LOG = "🧾 Raw log"
 BUTTON_CHAT_LOG = "💬 Лог чатов"
 BUTTON_SEARCH = "🔎 Поиск"
 BUTTON_BLACKLIST = "🚫 Компании"
@@ -145,6 +147,7 @@ ADMIN_BUTTON_MAP = {
     BUTTON_RESEARCH: "/research",
     BUTTON_RUNS: "/runs",
     BUTTON_LOG: "/log",
+    BUTTON_RAW_LOG: "/raw_log",
     BUTTON_CHAT_LOG: "/chat_log",
     BUTTON_SEARCH: "/search",
     BUTTON_SEARCH_SETTINGS: "/search_settings",
@@ -214,6 +217,7 @@ USER_BUTTON_MAP = {
     BUTTON_RESEARCH: "/research",
     BUTTON_RUNS: "/runs",
     BUTTON_LOG: "/log",
+    BUTTON_RAW_LOG: "/raw_log",
     BUTTON_CHAT_LOG: "/chat_log",
     BUTTON_SEARCH: "/search",
     BUTTON_SEARCH_SETTINGS: "/search_settings",
@@ -274,6 +278,7 @@ LEGACY_BUTTON_MAP = {
     "Прогоны": "/runs",
     "Лог": "/log",
     "Лог поиска": "/log",
+    "📜 Лог поиска": "/log",
     "Логи": "/log",
     "Лог чатов": "/chat_log",
     "Чат лог": "/chat_log",
@@ -575,7 +580,8 @@ def build_reply_markup(
                 [{"text": BUTTON_STATUS}, {"text": BUTTON_DIAGNOSTICS}],
                 [{"text": BUTTON_STATS}, {"text": BUTTON_RUNS}],
                 [{"text": BUTTON_CHECK}, {"text": BUTTON_HH_RESPONSES}],
-                [{"text": BUTTON_LOG}, {"text": BUTTON_CHAT_LOG}],
+                [{"text": BUTTON_LOG}, {"text": BUTTON_RAW_LOG}],
+                [{"text": BUTTON_CHAT_LOG}],
                 *_navigation_rows(),
             ]
         elif menu == MENU_RUN:
@@ -662,7 +668,8 @@ def build_reply_markup(
                 [{"text": BUTTON_STATUS}, {"text": BUTTON_STATS}],
                 [{"text": BUTTON_RUNS}, {"text": BUTTON_CHECK}],
                 [{"text": BUTTON_HH_RESPONSES}],
-                [{"text": BUTTON_LOG}, {"text": BUTTON_CHAT_LOG}],
+                [{"text": BUTTON_LOG}, {"text": BUTTON_RAW_LOG}],
+                [{"text": BUTTON_CHAT_LOG}],
                 *_navigation_rows(),
             ]
         elif menu == MENU_RUN:
@@ -993,6 +1000,7 @@ def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default") ->
         "⚡ Основные действия доступны через кнопки меню.",
         "• «Мой поиск»: ключевые слова, резюме и ИИ-черновик запросов",
         "• «Мониторинг»: статус, статистика, прогоны, инвайты",
+        "• Сводка запуска: /log или /log run_id; текстовый лог: /raw_log",
         "• Счётчик HH: кнопка «Отклики HH» или команда /hh_responses",
         "• «Запуск»: поиск, тестовый прогон, ИИ-анализ, вход HH",
         "• Ответ ИИ в HH-чат: кнопка открывает список последних входящих; /chat_ai ссылка_на_чат или chat_id — ручной аварийный ввод",
@@ -1826,6 +1834,56 @@ def build_log_text(profile_name: str, *, kind: str, path: str, content: str, lin
     ])
 
 
+def build_run_summary_text(summary, *, profile_name):
+    if summary is None:
+        return "📊 Запуск не найден. История пока отсутствует или run_id неизвестен.\n🧾 /raw_log"
+    def safe(value):
+        return html.escape(str(value if value is not None else "неизвестно")[:180])
+    states = {"success": "✅ успешно", "partial": "⚠ частично", "failed": "❌ ошибка",
+              "incomplete": "⏳ не завершён / прерван", "unknown": "❔ неизвестно"}
+    lines = ["📊 Последний / выбранный запуск", f"Run: {safe(summary['run_id'])}",
+             f"Профиль: {safe(_pretty_profile_name(profile_name))}",
+             f"Источники: {safe(', '.join(summary['sources']) or None)}",
+             f"Итог: {states.get(summary['status'], '❔ неизвестно')}"]
+    lines.append(f"Начало: {safe(summary['started_at'])}")
+    if summary.get("stop_reason") == "RUN_LIMIT":
+        lines.append("Остановлен по лимиту прогона.")
+    if summary.get("finished_at"):
+        lines.append(f"Завершён: {safe(summary['finished_at'])}")
+    if summary.get("duration_seconds") is not None:
+        lines.append(f"Длительность: {summary['duration_seconds']:.0f} с")
+    counters = summary['counters']
+    for key, label in (("fetched", "✅ собрано"), ("already_seen", "♻ уже просмотрено"),
+                       ("evaluated", "🔎 оценено"), ("matcher_pass", "🎯 подходит"),
+                       ("applied", "📨 подтверждено откликов"), ("skipped", "⏭ пропущено"),
+                       ("deferred_unscored", "⚠ оценка отложена"), ("not_processed", "⚠ не обработано"),
+                       ("failed", "❌ неудачных операций"), ("uncertain", "❔ требуют сверки")):
+        value = counters.get(key)
+        prefix = "≥" if summary['counter_status'] == 'minimum_or_unknown' and value else ""
+        lines.append(f"{label}: {prefix}{safe(value)}")
+    failure = summary.get("primary_failure")
+    if failure:
+        lines += ["", "❌ Основная проблема", safe(failure['reason_code']),
+            f"Этап: {safe(failure['stage'])}", f"Источник: {safe(failure['source'])}"]
+        if failure.get("provider"):
+            lines.append(f"Провайдер: {safe(failure['provider'])}")
+        lines += [f"Время: {safe(failure['first_failure_at'])}",
+            f"Затронуто вакансий: {safe(failure['affected_count'])}"]
+        consequences = failure.get('downstream_events') or {}
+        lines.extend(f"• {count} × {safe(event)}" for event, count in list(consequences.items())[:5])
+        retry = {True: "да", False: "нет", None: "неизвестно"}.get(failure.get('retryable'), "неизвестно")
+        fallback = {"failed": "не сработал", "unavailable": "недоступен", "not_attempted": "не запускался"}
+        lines += [f"Retryable: {retry}", f"Fallback: {safe(fallback.get(failure.get('fallback_status')))}",
+                  f"Failure ID: {safe(failure['failure_id'])}"]
+        if summary['failure_count'] > 1:
+            lines.append(f"Всего первичных проблем: {summary['failure_count']}")
+    if summary.get('artifacts'):
+        lines += ["", "Debug artifacts:"]
+        lines.extend(f"• {safe(ref['artifact_type'])}: {safe(ref['artifact_ref'])}" for ref in summary['artifacts'][:2])
+    lines += ["", "🧾 /raw_log · другой запуск: /log &lt;run_id&gt;"]
+    return "\n".join(lines)
+
+
 def _format_counter_number(value: object) -> str:
     try:
         number = int(value or 0)
@@ -2000,4 +2058,5 @@ __all__ = [
     if name.isupper()
     or name.startswith(("BUTTON_", "MENU_", "CALLBACK_"))
     or name in _EXPORTED_HELPERS
+    or name == "build_run_summary_text"
 ]

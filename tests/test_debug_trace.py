@@ -6,9 +6,31 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import apply_orchestrator
+import analytics
+import config
 from debug_trace import ApplyTrace, cleanup_traces
+from state_store.private_journal import read_json_records
 
 SECRET_LIKE = "sk-" + ("x" * 24)
+
+
+def test_trace_journal_reference_is_pinned_and_contains_no_payload(tmp_path, monkeypatch):
+    journal = tmp_path / 'qa-events.jsonl'
+    monkeypatch.setattr(config, 'ANALYTICS_ENABLED', True)
+    monkeypatch.setattr(config, 'ANALYTICS_EVENTS_FILE', str(journal))
+    with analytics.event_context(run_id='run-qa', source='hh', vacancy_id='42'):
+        trace = ApplyTrace.create(home_dir=str(tmp_path), source='hh', vacancy_id='42',
+                                  profile='qa', mode='test')
+    foreign = tmp_path / 'other-events.jsonl'
+    monkeypatch.setattr(config, 'ANALYTICS_EVENTS_FILE', str(foreign))
+    trace.finish(ok=False, message='private error text', failure_stage='RESULT_CHECK')
+    event, = read_json_records(journal)
+    assert event['run_id'] == 'run-qa'
+    assert event['artifact_ref'] == str(trace.jsonl_path)
+    assert event['artifact_type'] == 'apply_trace'
+    assert event['vacancy_id'] == '42'
+    assert 'private error text' not in json.dumps(event)
+    assert not foreign.exists()
 
 
 class FakePage:

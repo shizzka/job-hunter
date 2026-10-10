@@ -343,7 +343,10 @@ def test_actual_search_decisions_unchanged_with_failed_analytics(search_home, mo
     records = read_json_records(config.RUN_HISTORY_FILE)
     assert records[-1]["ok"] is True and records[-1]["manual"] == 1
     assert PRIVATE not in json.dumps(records)
-    assert records[-1]["stage_failures"][-1] == {"source": "hh", "stage": "apply", "error_kind": "ValueError", "continued": True}
+    failure = records[-1]["stage_failures"][-1]
+    assert {key: failure[key] for key in ("source", "stage", "error_kind", "continued")} == {
+        "source": "hh", "stage": "apply", "error_kind": "ValueError", "continued": True}
+    assert failure["failure_id"] and failure["reason_code"] == "UNKNOWN_ROOT_CAUSE"
     assert set(record["run_id"] for record in records) == {result["run_id"]}
 
 
