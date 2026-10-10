@@ -1,6 +1,7 @@
 """Synthetic DOM only: no HH login, provider, Telegram or real submit."""
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -332,8 +333,17 @@ def test_details_and_collector_preserve_ui_stop_signal(monkeypatch):
     with analytics.observe_search('independent-ui-collection', 'search') as observation:
         vacancies = asyncio.run(search_pipeline.collect_all(
             client, None, None, None, source_stats=source_stats))
-        assert observation.failures == [{
-            'source': 'hh', 'stage': 'collection', 'error_kind': 'HHUnexpectedUI', 'continued': True}]
+        assert len(observation.failures) == 1
+        failure = observation.failures[0]
+        assert isinstance(failure['failure_id'], str) and failure['failure_id']
+        assert isinstance(failure['created_at'], str)
+        datetime.fromisoformat(failure['created_at'])
+        assert failure == {
+            'source': 'hh', 'stage': 'collection', 'error_kind': 'HHUnexpectedUI', 'continued': True,
+            'reason_code': 'UNKNOWN_ROOT_CAUSE', 'retryable': None,
+            'outcome': 'error', 'severity': 'error',
+            'failure_id': failure['failure_id'], 'created_at': failure['created_at'],
+        }
     assert vacancies == [other]
     assert source_stats['hh']['stop_reason']
     assert source_stats['hh']['stop_fingerprint'] == blocked.fingerprint
