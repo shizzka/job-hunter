@@ -1,6 +1,7 @@
 """Offline regression coverage for correlated, profile-owned run diagnostics."""
 import asyncio
 import json
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -274,6 +275,25 @@ def fake_client(monkeypatch, error):
     monkeypatch.setattr(client, "_client_for", lambda index: transports[index])
     monkeypatch.setattr(matcher, "_get_client", lambda: client)
     return calls
+
+
+def test_record_failure_preserves_expanded_schema(runtime):
+    with analytics.observe_search("schema-run", "search") as observation:
+        failure_id = analytics.record_failure("collection", TimeoutError(), source="habr", continued=True)
+        assert len(observation.failures) == 1
+        failure = observation.failures[0]
+        assert isinstance(failure_id, str) and failure_id
+        assert isinstance(failure["created_at"], str)
+        datetime.fromisoformat(failure["created_at"])
+        assert failure == {
+            "source": "habr", "stage": "collection", "error_kind": "TimeoutError", "continued": True,
+            "reason_code": "UNKNOWN_ROOT_CAUSE", "retryable": None,
+            "outcome": "error", "severity": "error",
+            "failure_id": failure_id, "created_at": failure["created_at"],
+        }
+    event = read_json_records(runtime.analytics_events_file)[0]
+    assert event["event"] == "stage_failed"
+    assert all(event[key] == value for key, value in failure.items())
 
 
 def bot_for_profile(monkeypatch, paths):
