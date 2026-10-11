@@ -1,5 +1,10 @@
 """Offline reproduction of the static MTS srcdoc iframe seen on vacancy_details."""
 import asyncio
+import ssl
+import subprocess
+from contextlib import contextmanager, nullcontext
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -14,51 +19,96 @@ from hh_client import HHClient
 
 URL = 'https://hh.ru/vacancy/123'
 NEXT_URL = 'https://hh.ru/vacancy/456'
+SPB_URL = 'https://spb.hh.ru/vacancy/123?hhtmFrom=negotiation_list'
 FIXTURE = Path(__file__).parent / 'fixtures' / 'hh_vacancy_details_background.html'
 HTML = FIXTURE.read_text()
 
 
-async def browser_scenario(tmp_path, monkeypatch, check, body=HTML):
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=[
-            '--disable-background-networking',
-            '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost'])
-        try:
-            context = await browser.new_context(service_workers='block')
-            await context.add_init_script(script=BLOCK_WORKER_CONSTRUCTORS)
-            requests, frames, fetched = [], [], []
+@contextmanager
+def regional_document_server(tmp_path, body):
+    """Serve the bypassed native redirect on loopback; public DNS stays blocked."""
+    key, certificate = tmp_path / 'loopback.key', tmp_path / 'loopback.crt'
+    subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+        '-keyout', str(key), '-out', str(certificate), '-days', '1',
+        '-subj', '/CN=spb.hh.ru'], check=True, capture_output=True)
+    native = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            native.append((self.headers.get('Host'), self.path))
+            if native[-1] != ('spb.hh.ru', '/vacancy/123?hhtmFrom=negotiation_list'):
+                self.send_error(404)
+                return
+            data = body.encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        def log_message(self, *args):
+            pass
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(certificate, key)
+    server.socket = tls.wrap_socket(server.socket, server_side=True)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_port, native
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
 
-            async def route(item):
-                requests.append((item.request.method, item.request.url))
-                if item.request.url == URL:
-                    await item.fulfill(status=200, content_type='text/html', body=body)
-                elif item.request.url == NEXT_URL:
-                    await item.fulfill(status=200, content_type='text/html',
-                        body='<main>Next page</main><script>window.nextPageScriptRan=true</script>')
+
+async def browser_scenario(tmp_path, monkeypatch, check, body=HTML, *, redirect=False):
+    server = regional_document_server(tmp_path, body) if redirect else nullcontext((None, []))
+    with server as (port, native):
+        async with async_playwright() as pw:
+            mapping = f'MAP spb.hh.ru 127.0.0.1:{port}, ' if redirect else ''
+            browser = await pw.chromium.launch(headless=True, args=[
+                '--disable-background-networking', '--no-proxy-server',
+                '--host-resolver-rules=' + mapping + 'MAP * ~NOTFOUND, EXCLUDE localhost'])
+            try:
+                context = await browser.new_context(service_workers='block', ignore_https_errors=redirect)
+                await context.add_init_script(script=BLOCK_WORKER_CONSTRUCTORS)
+                requests, frames, fetched = [], [], []
+
+                async def route(item):
+                    requests.append((item.request.method, item.request.url))
+                    if item.request.url == URL:
+                        await item.fulfill(status=200, content_type='text/html', body=body)
+                    elif item.request.url == NEXT_URL:
+                        await item.fulfill(status=200, content_type='text/html',
+                            body='<main>Next page</main><script>window.nextPageScriptRan=true</script>')
+                    else:
+                        await item.abort()
+                await context.route('**/*', route)
+
+                async def fetch(item, **kwargs):
+                    target = kwargs.get('url', item.request.url)
+                    assert target in ({URL, SPB_URL} if redirect else {URL})
+                    assert item.request.method == 'GET'
+                    fetched.append((target, kwargs))
+                    initial_redirect = redirect and target == URL
+                    return SimpleNamespace(status=302 if initial_redirect else 200, url=target,
+                        headers={'location': SPB_URL} if initial_redirect else {'content-type':'text/html'},
+                        body=AsyncMock(return_value=body.encode()),
+                        text=AsyncMock(return_value='' if initial_redirect else body), dispose=AsyncMock())
+                # Route.fetch uses APIRequest transport and bypasses browser route interception.
+                monkeypatch.setattr(Route, 'fetch', fetch)
+                client = HHClient()
+                client._page = await context.new_page()
+                client._context = context
+                client._ui_guard = HHUIGuard(tmp_path, notify=AsyncMock(return_value=False))
+                monitor_page(client, client._page)
+                await bootstrap_boundary(client._page)
+                client._page.on('frameattached', lambda frame: frames.append(frame))
+                if redirect:
+                    await check(client, requests, frames, fetched, native)
                 else:
-                    await item.abort()
-            await context.route('**/*', route)
-
-            async def fetch(item, **kwargs):
-                assert item.request.url == URL
-                assert item.request.method == 'GET'
-                fetched.append((item.request.url, kwargs))
-                return SimpleNamespace(status=200, url=URL,
-                    headers={'content-type':'text/html'},
-                    body=AsyncMock(return_value=body.encode()),
-                    text=AsyncMock(return_value=body), dispose=AsyncMock())
-            # Route.fetch uses APIRequest transport and bypasses browser route interception.
-            monkeypatch.setattr(Route, 'fetch', fetch)
-            client = HHClient()
-            client._page = await context.new_page()
-            client._context = context
-            client._ui_guard = HHUIGuard(tmp_path, notify=AsyncMock(return_value=False))
-            monitor_page(client, client._page)
-            await bootstrap_boundary(client._page)
-            client._page.on('frameattached', lambda frame: frames.append(frame))
-            await check(client, requests, frames, fetched)
-        finally:
-            await browser.close()
+                    await check(client, requests, frames, fetched)
+            finally:
+                await browser.close()
 
 
 def test_observed_static_mts_iframe_first_sets_details_uncertainty(tmp_path, monkeypatch):
@@ -106,6 +156,40 @@ def test_details_retains_browser_dom_without_observed_background_actions(tmp_pat
         assert not client._page._hh_action_monitor.unknown
         assert not client._context._hh_action_watch.unknown
     asyncio.run(browser_scenario(tmp_path, monkeypatch, check))
+
+
+def test_regional_details_redirect_never_loads_unsanitized_native_document(tmp_path, monkeypatch):
+    async def check(client, requests, frames, fetched, native):
+        page = client._page
+        try:
+            description = await client.get_vacancy_details(URL)
+        except HHUnexpectedUI as stopped:
+            # RED diagnosis: the fulfilled raw 302 bypasses all browser routes,
+            # attaches the observed iframe and marks uncertainty before submit.
+            assert stopped.stage == 'vacancy_details'
+            assert stopped.hh_stop_reason == 'possible_external_action'
+            assert stopped.hh_uncertain is True
+            assert native == [('spb.hh.ru', '/vacancy/123?hhtmFrom=negotiation_list')]
+            assert frames and len(fetched) == 1
+            assert client._page._hh_action_monitor.unknown
+            assert client._context._hh_action_watch.unknown
+            assert getattr(client, '_external_attempt', None) is None
+            raise
+        assert description == 'Test browser lifecycle and Python services.'
+        assert client._page is page and page.url == URL
+        assert [target for target, _ in fetched] == [URL, SPB_URL]
+        assert native == [] and frames == []
+        assert await page.locator('[data-qa="vacancy-title"]').inner_text() == 'QA Engineer'
+        assert await page.locator('template[data-jh-passive-details="mts-pixel"]').count() == 1
+        assert await page.evaluate('Boolean(window.syntheticPageScriptRan)') is False
+        assert not client._page._hh_action_monitor.unknown
+        assert not client._context._hh_action_watch.unknown
+        assert getattr(client, '_external_attempt', None) is None
+        assert all(method == 'GET' for method, _ in requests)
+        await page.goto(NEXT_URL)
+        assert await page.evaluate('window.nextPageScriptRan') is True
+        assert not client._page._hh_action_monitor.unknown
+    asyncio.run(browser_scenario(tmp_path, monkeypatch, check, redirect=True))
 
 
 @pytest.mark.parametrize('body', [
@@ -219,22 +303,86 @@ def test_details_redirect_trust_rejects_before_fulfill(location):
         route.abort.assert_awaited_once()
         response.dispose.assert_awaited_once()
         page.unroute.assert_awaited_once()
-        route.fetch.assert_awaited_once_with(max_redirects=0, max_retries=0, timeout=20000)
+        route.fetch.assert_awaited_once_with(url=URL, max_redirects=0, max_retries=0, timeout=20000)
     asyncio.run(check())
 
 
-def test_details_route_preserves_trusted_redirect_as_native_navigation():
+def test_details_route_follows_trusted_redirect_and_fulfills_only_passive_html():
+    from hh.vacancy_details import DETAILS_CSP, inert_details_html, passive_details_navigation
+    async def check():
+        client, page, route, response = fake_navigation_session(status=302,
+            headers={'location': SPB_URL})
+        final = SimpleNamespace(status=200, url=SPB_URL,
+            headers={'content-type':'text/html', 'content-length':'999', 'content-encoding':'gzip',
+                'content-security-policy':"img-src 'self'"},
+            text=AsyncMock(return_value=HTML), dispose=AsyncMock())
+        route.fetch.side_effect = [response, final]
+        async with passive_details_navigation(client, URL):
+            await page.handler(route)
+        assert route.fetch.await_args_list[0].kwargs == {
+            'url': URL, 'max_redirects':0, 'max_retries':0, 'timeout':20000}
+        assert route.fetch.await_args_list[1].kwargs == {
+            'url': SPB_URL, 'max_redirects':0, 'max_retries':0, 'timeout':20000}
+        route.fulfill.assert_awaited_once_with(status=200,
+            headers={'content-type':'text/html',
+                'content-security-policy':"img-src 'self', " + DETAILS_CSP},
+            body=inert_details_html(HTML))
+        response.text.assert_not_awaited()
+        response.dispose.assert_awaited_once()
+        final.dispose.assert_awaited_once()
+        route.abort.assert_not_awaited()
+        page.unroute.assert_awaited_once()
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize('final_url', [
+    'https://evil.invalid/vacancy/123', 'https://spb.hh.ru/vacancy/456',
+    'https://spb.hh.ru/vacancy/123?resumeId=synthetic',
+])
+def test_details_route_rejects_unsafe_final_response_url(final_url):
     from hh.vacancy_details import passive_details_navigation
     async def check():
         client, page, route, response = fake_navigation_session(status=302,
-            headers={'location':'/vacancy/123?from=synthetic'})
-        async with passive_details_navigation(client, URL):
-            await page.handler(route)
-        route.fulfill.assert_awaited_once_with(status=302,
-            headers={'location':'/vacancy/123?from=synthetic'}, body='')
-        response.text.assert_not_awaited()
+            headers={'location': SPB_URL})
+        final = SimpleNamespace(status=200, url=final_url, headers={'content-type':'text/html'},
+            text=AsyncMock(return_value=HTML), dispose=AsyncMock())
+        route.fetch.side_effect = [response, final]
+        with pytest.raises(ValueError):
+            async with passive_details_navigation(client, URL):
+                await page.handler(route)
+        assert route.fetch.await_count == 2
+        route.fulfill.assert_not_awaited()
+        route.abort.assert_awaited_once()
+        final.text.assert_not_awaited()
         response.dispose.assert_awaited_once()
-        route.abort.assert_not_awaited()
+        final.dispose.assert_awaited_once()
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize('locations', [
+    [SPB_URL, URL],
+    ['/vacancy/123?hop=1', '/vacancy/123?hop=2', '/vacancy/123?hop=3', '/vacancy/123?hop=4'],
+], ids=['redirect-loop', 'redirect-limit'])
+def test_details_route_rejects_redirect_loop_and_limit_without_native_navigation(locations):
+    from hh.vacancy_details import passive_details_navigation
+    from urllib.parse import urljoin
+    async def check():
+        client, page, route, _ = fake_navigation_session()
+        responses, target = [], URL
+        for location in locations:
+            responses.append(SimpleNamespace(status=302, url=target, headers={'location':location},
+                text=AsyncMock(), dispose=AsyncMock()))
+            target = urljoin(target, location)
+        route.fetch.side_effect = responses
+        with pytest.raises(ValueError, match='Vacancy details redirect (loop|limit)'):
+            async with passive_details_navigation(client, URL):
+                await page.handler(route)
+        assert route.fetch.await_count == len(locations)
+        route.fulfill.assert_not_awaited()
+        route.abort.assert_awaited_once()
+        for response in responses:
+            response.text.assert_not_awaited()
+            response.dispose.assert_awaited_once()
         page.unroute.assert_awaited_once()
     asyncio.run(check())
 
@@ -256,6 +404,49 @@ def test_details_route_rejects_ownership_change_after_fetch():
         route.abort.assert_awaited_once()
         response.text.assert_not_awaited()
         response.dispose.assert_awaited_once()
+        page.unroute.assert_awaited_once()
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize('owner', ['page', 'context', 'guard', 'request_context'])
+@pytest.mark.parametrize('when', ['redirect_dispose', 'final_fetch'])
+def test_details_route_rejects_ownership_change_during_redirect_hop(owner, when):
+    from hh.vacancy_details import passive_details_navigation
+    async def check():
+        client, page, route, response = fake_navigation_session(status=302,
+            headers={'location':SPB_URL})
+        final = SimpleNamespace(status=200, url=SPB_URL, headers={'content-type':'text/html'},
+            text=AsyncMock(return_value=HTML), dispose=AsyncMock())
+        def replace():
+            if owner == 'request_context':
+                client._context.request = object()
+            else:
+                setattr(client, {'page':'_page', 'context':'_context', 'guard':'_ui_guard'}[owner], object())
+        if when == 'redirect_dispose':
+            response.dispose.side_effect = replace
+            route.fetch.side_effect = [response, final]
+        else:
+            async def fetch(**kwargs):
+                if kwargs['url'] == URL:
+                    return response
+                replace()
+                return final
+            route.fetch.side_effect = fetch
+        with pytest.raises(HHUnexpectedUI) as stopped:
+            async with passive_details_navigation(client, URL):
+                await page.handler(route)
+        assert stopped.value.hh_stop_reason == 'browser_ownership_changed'
+        assert stopped.value.hh_uncertain is True
+        route.fulfill.assert_not_awaited()
+        route.abort.assert_awaited_once()
+        response.dispose.assert_awaited_once()
+        final.text.assert_not_awaited()
+        if when == 'redirect_dispose':
+            assert route.fetch.await_count == 1
+            final.dispose.assert_not_awaited()
+        else:
+            assert route.fetch.await_count == 2
+            final.dispose.assert_awaited_once()
         page.unroute.assert_awaited_once()
     asyncio.run(check())
 

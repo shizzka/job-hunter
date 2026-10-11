@@ -1263,7 +1263,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     negotiation_statuses = await hh_client.get_negotiation_statuses()
                     analytics.record_negotiation_statuses(negotiation_statuses)
                     if hh_pipeline.enabled():
-                        resumes = await hh_client.get_resume_ids()
+                        resumes = await hh_client.get_resume_ids_readonly()
                         hh_pipeline.remember_resolved_variants(
                             hh_pipeline.resolve_variants(resumes)
                         )

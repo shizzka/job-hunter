@@ -527,3 +527,113 @@ def test_event_destination_is_pinned_to_selected_run(runtime, monkeypatch, tmp_p
     assert not other.exists()
     event = read_json_records(runtime.analytics_events_file)[0]
     assert event["event"] == "synthetic_test_event" and event["run_id"] == "run-a"
+
+
+def test_hh_uncertainty_is_source_stop_cause_not_continued_collection(runtime):
+    first = {'id': '137085748', 'source': 'hh'}
+    with analytics.observe_search('run-a', 'search') as observation:
+        with analytics.event_context(source='hh', vacancy_id=''):
+            analytics.record_failure('collection', ValueError(), continued=True)
+        analytics.search_stage('details', first)
+        analytics.record_decision(run_id='run-a', vacancy=first, decision='apply_uncertain',
+                                  note='hh:apply_uncertain')
+        for index in range(104):
+            analytics.record_decision(run_id='run-a', vacancy={'id': str(index), 'source': 'hh'},
+                                      decision='not_processed', note='hh_recovery_breaker')
+        # An unrelated source and non-breaker decisions must not inherit the HH cause.
+        analytics.record_decision(run_id='run-a', vacancy={'id': 'other', 'source': 'habr'},
+                                  decision='not_processed', note='hh_recovery_breaker')
+        analytics.record_decision(run_id='run-a', vacancy={'id': 'limit', 'source': 'hh'},
+                                  decision='not_processed', note='run_limit')
+        observation.ok = True
+        run = {**observation.entry(), 'finished_at': '2026-10-11T10:22:42+00:00'}
+    events = read_json_records(runtime.analytics_events_file)
+    summary = build_run_summary(run, events)
+    root = summary['primary_failure']
+    assert summary['failure_count'] == 2
+    assert root['reason_code'] == 'apply_uncertain'
+    assert root['stage'] == 'details'
+    assert root['failure_id']
+    assert root['retryable'] is False
+    assert root['affected_count'] == 105
+    assert root['downstream_events'] == {'apply_uncertain': 1, 'not_processed': 104}
+    stopped = [e for e in events if e.get('note') == 'hh_recovery_breaker' and e.get('source') == 'hh']
+    assert len(stopped) == 104
+    assert all(e.get('failure_id') == root['failure_id'] for e in stopped)
+    assert all(e['reason_code'] == 'hh_recovery_breaker' for e in stopped)
+    assert observation.terminal_failure_id is None
+
+
+def test_legacy_hh_uncertainty_reconstructs_only_explicit_breaker_consequences():
+    run = finished_run(funnel={'fetched': 106, 'uncertain': 1, 'not_processed': 104},
+                       stage_failures=[{'failure_id': 'collection', 'stage': 'collection',
+                           'source': 'hh', 'continued': True, 'reason_code': 'UNKNOWN_ROOT_CAUSE',
+                           'created_at': '2026-10-11T10:21:08+00:00'}])
+    events = [{'event': 'decision', 'run_id': 'run-a', 'source': 'hh', 'vacancy_id': 'before',
+               'decision': 'not_processed', 'note': 'hh_recovery_breaker'},
+              {'event': 'decision', 'run_id': 'run-a', 'source': 'hh', 'vacancy_id': '137085748',
+               'decision': 'apply_uncertain', 'reason_code': 'apply_uncertain',
+               'created_at': '2026-10-11T10:22:41+00:00'}]
+    events += [{'event': 'decision', 'run_id': 'run-a', 'source': 'hh', 'vacancy_id': str(i),
+                'decision': 'not_processed', 'note': 'hh_recovery_breaker'} for i in range(104)]
+    events += [{'event': 'decision', 'run_id': 'run-a', 'source': source, 'vacancy_id': vid,
+                'decision': 'not_processed', 'note': note}
+               for source, vid, note in [('habr', 'other', 'hh_recovery_breaker'),
+                                         ('hh', 'unrelated', 'unclassified')]]
+    before = json.dumps([run, events], sort_keys=True)
+    summary = build_run_summary(run, events)
+    root = summary['primary_failure']
+    assert root['reason_code'] == 'apply_uncertain'
+    assert root['stage'] == 'unknown'  # Historical decision did not store the failure stage.
+    assert root['failure_id'] and root['correlation_origin'] == 'journal_decision'
+    assert root['affected_count'] == 105
+    assert root['downstream_events'] == {'apply_uncertain': 1, 'not_processed': 104}
+    assert summary == build_run_summary(run, events)
+    assert json.dumps([run, events], sort_keys=True) == before
+
+
+def test_uncertainty_finalization_is_source_scoped_and_deduplicated(runtime):
+    first = {"id": "first", "source": "hh"}
+    pending = [{"id": "hh-pending", "source": "hh"},
+               {"id": "habr-pending", "source": "habr"}]
+    with analytics.observe_search("run-a", "search") as observation:
+        analytics.register_candidates([first, *pending])
+        analytics.search_stage("apply", first)
+        for _ in range(2):
+            analytics.record_decision(run_id="run-a", vacancy=first, decision="apply_uncertain")
+        analytics.finish_unclassified(observation)
+        assert len(observation.failures) == 1
+        assert observation.counters["hh"]["uncertain"] == 1
+    events = read_json_records(runtime.analytics_events_file)
+    hh = next(e for e in events if e.get("vacancy_id") == "hh-pending")
+    habr = next(e for e in events if e.get("vacancy_id") == "habr-pending")
+    assert hh["failure_id"] == observation.failures[0]["failure_id"]
+    assert hh["note"] == "hh_recovery_breaker"
+    assert not habr.get("failure_id")
+
+
+def test_late_uncertainty_does_not_borrow_another_vacancys_stage(runtime):
+    with analytics.observe_search('run-a', 'search') as observation:
+        analytics.search_stage('details', {'id': 'other', 'source': 'habr'})
+        analytics.record_decision(run_id='run-a', vacancy={'id': 'receipt', 'source': 'hh'},
+                                  decision='apply_uncertain')
+        root = observation.failures[0]
+        assert root['source'] == 'hh' and root['vacancy_id'] == 'receipt'
+        assert root['stage'] == 'unknown'
+
+
+def test_late_uncertainty_stage_belongs_to_its_async_receipt_context(runtime):
+    async def scenario():
+        with analytics.observe_search('run-a', 'search') as observation:
+            ready = asyncio.Event()
+            first = {'id': 'receipt', 'source': 'hh'}
+            analytics.search_stage('apply', first)
+            async def receipt():
+                await ready.wait()
+                analytics.record_decision(run_id='run-a', vacancy=first, decision='apply_uncertain')
+            task = asyncio.create_task(receipt())
+            analytics.search_stage('details', {'id': 'other', 'source': 'habr'})
+            ready.set()
+            await task
+            assert observation.failures[0]['stage'] == 'apply'
+    asyncio.run(scenario())

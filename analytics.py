@@ -82,7 +82,7 @@ def decision_outcome(decision, evaluation=None, note=""):
     if decision == "guard_stop":
         return "guard_stop", "guard_stop"
     if decision == "not_processed":
-        return "not_processed", note if note in {"run_limit", "run_incomplete"} else "unclassified"
+        return "not_processed", note if note in {"run_limit", "run_incomplete", "hh_recovery_breaker"} else "unclassified"
     if decision == "apply_uncertain":
         return "manual", "apply_uncertain"
     if decision.startswith("apply_failed"):
@@ -114,6 +114,8 @@ class SearchObservation:
         self.failure_groups = {}
         self.vacancy_failures = {}
         self.terminal_failure_id = None
+        self.source_stop_failures = {}
+        self.uncertain_failures = {}
         self.history_file = config.RUN_HISTORY_FILE
 
     def entry(self, *, incomplete=False):
@@ -221,11 +223,14 @@ def _diagnostic_context(*, vacancy=True):
 
 @best_effort
 def record_failure(stage, error, *, source=None, continued=False, reason_code="UNKNOWN_ROOT_CAUSE",
-                   provider=None, retryable=None, fallback_status=None, model=None, group=False):
+                   provider=None, retryable=None, fallback_status=None, model=None, group=False,
+                   source_stopped=False):
     context = current_context()
     source = source or context.get("source") or "unknown"
     fields = {"source": source, "stage": stage, "error_kind": type(error).__name__, "continued": continued,
               "reason_code": reason_code, "retryable": retryable, "outcome": "error", "severity": "error"}
+    if source_stopped:
+        fields["source_stopped"] = True
     if provider is not None:
         fields["provider"] = provider
     if fallback_status is not None:
@@ -255,7 +260,10 @@ def record_failure(stage, error, *, source=None, continued=False, reason_code="U
             observation.vacancy_failures[(source, str(context["vacancy_id"]), stage)] = cause or failure_id
         if not continued:
             observation.failure_stage = stage
-            observation.terminal_failure_id = cause or failure_id
+            if source_stopped:
+                observation.source_stop_failures.setdefault(source, cause or failure_id)
+            else:
+                observation.terminal_failure_id = cause or failure_id
     if config.ANALYTICS_ENABLED:
         with _diagnostic_context():
             _append_event({"event": "failure_observed" if existing else "stage_failed", **fields})
@@ -349,9 +357,12 @@ def finish_unclassified(observation):
     pending = sum(key not in observation.decided for key in observation.candidates)
     for key, vacancy in observation.candidates.items():
         if key not in observation.decided:
+            source_failure = (observation.source_stop_failures.get(key[0])
+                              if not observation.stop_reason else None)
             record_decision(run_id=observation.run_id, vacancy=vacancy, decision="not_processed",
-                            note=observation.stop_reason or ("run_incomplete" if not observation.ok else "unclassified"),
-                            failure_id=observation.terminal_failure_id)
+                            note=observation.stop_reason or ("hh_recovery_breaker" if source_failure else
+                                 "run_incomplete" if not observation.ok else "unclassified"),
+                            failure_id=observation.terminal_failure_id or source_failure)
     if pending:
         log.info("run_finalized not_processed=%d failure_id=%s", pending, observation.terminal_failure_id or "unknown")
 
@@ -772,6 +783,25 @@ def record_decision(
     outcome, reason_code = decision_outcome(decision, evaluation, note)
     observation = current_search()
     key = (vacancy.get("source", "unknown"), str(vacancy.get("id")))
+    if observation is not None and run_id == observation.run_id and key[0] == "hh":
+        if decision == "apply_uncertain":
+            failure_id = failure_id or observation.uncertain_failures.get(key)
+            if not failure_id:
+                # This is a source stop, not a failure of other sources. Pin the
+                # receipt identity even when a late callback has stale context.
+                context = current_context()
+                owns_stage = (context.get("run_id") == run_id and context.get("source") == key[0]
+                              and str(context.get("vacancy_id")) == key[1])
+                stage = (context.get("stage") if owns_stage and context.get("stage") in {"details", "apply"}
+                         else "unknown")
+                with event_context(run_id=run_id, source=key[0], vacancy_id=key[1]):
+                    failure_id = record_failure(stage, RuntimeError("apply_uncertain"),
+                                                reason_code="apply_uncertain", retryable=False,
+                                                source_stopped=True)
+            observation.uncertain_failures[key] = failure_id
+            observation.source_stop_failures.setdefault(key[0], failure_id)
+        elif decision == "not_processed" and note == "hh_recovery_breaker":
+            failure_id = failure_id or observation.source_stop_failures.get(key[0])
     if decision == "deferred_unscored" and observation is not None and run_id == observation.run_id:
         failure_id = failure_id or observation.vacancy_failures.get((*key, "matcher"))
     if observation is not None and run_id == observation.run_id:

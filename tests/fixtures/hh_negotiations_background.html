@@ -1,0 +1,13 @@
+<!doctype html><html><body>
+<div data-qa="negotiations-item">
+  <div>Просмотрен</div>
+  <div><a href="/vacancy/123?from=negotiations">QA Engineer</a></div>
+  <div>Synthetic employer</div>
+</div>
+<script>
+const pixel = document.createElement('iframe');
+pixel.id = 'mts-pixel';
+document.body.append(pixel);
+fetch('/anatskytics', {method: 'POST', body: 'synthetic'}).catch(() => {});
+</script>
+</body></html>

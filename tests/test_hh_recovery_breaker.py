@@ -164,7 +164,7 @@ def test_seen_safety_marker_blocks_legacy_retry_in_automatic_search(synthetic,mo
     monkeypatch.setattr(pipeline,'_now',lambda:datetime.now()+timedelta(days=10))
     fake_hh=SimpleNamespace(start=AsyncMock(),stop=AsyncMock(),_page=None,
             is_logged_in=AsyncMock(return_value=True), get_negotiation_statuses=AsyncMock(return_value=[]),
-            get_resume_ids=AsyncMock(return_value=[]))
+            get_resume_ids_readonly=AsyncMock(return_value=[]))
     monkeypatch.setattr(agent,'HHClient',lambda:fake_hh)
     async def collect(*a,hh_retry_vacancies=None,**k):
         return list(hh_retry_vacancies or [])+[vac('habr:other','habr')]

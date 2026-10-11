@@ -1,6 +1,7 @@
 """Deterministic diagnostics over existing search checkpoints and journal events."""
 from collections import Counter
 from datetime import datetime
+import uuid
 
 
 def _time(value):
@@ -61,6 +62,23 @@ def build_run_summary(run, events=(), *, profile=""):
     failures = [{**f, **first_events.get(f.get("failure_id"), {})} for f in data.get("stage_failures") or []]
     saved_ids = {f.get("failure_id") for f in failures if f.get("failure_id")}
     failures += [e for e in journal_failures if e.get("event") == "failure_observed" or e.get("failure_id") not in saved_ids]
+    # Older journals recorded the uncertainty decision but omitted its failure
+    # event. Reconstruct a stable identity from that explicit evidence, without
+    # rewriting history or guessing the missing execution stage.
+    legacy_causes = {}
+    positions = {id(event): index for index, event in enumerate(events)}
+    for key, event in decisions.items():
+        if key[0] != "hh" or event.get("decision") != "apply_uncertain":
+            continue
+        fid = event.get("failure_id") or uuid.uuid5(
+            uuid.NAMESPACE_URL, f"job-hunter:{run_id}:{key[0]}:{key[1]}:apply_uncertain").hex
+        legacy_causes[key] = fid
+        if not any(f.get("failure_id") == fid for f in failures):
+            failures.append({"failure_id": fid, "reason_code": "apply_uncertain",
+                "source": key[0], "vacancy_id": key[1], "stage": "unknown",
+                "retryable": False, "continued": False, "source_stopped": True,
+                "created_at": event.get("recorded_at_utc") or event.get("created_at"),
+                "correlation_origin": "journal_decision"})
     aliases = {f['failure_id']: f['parent_failure_id'] for f in failures
                if f.get('failure_id') and f.get('parent_failure_id')}
     definitions = {f['failure_id']: f for f in reversed(failures)
@@ -82,12 +100,20 @@ def build_run_summary(run, events=(), *, profile=""):
                 "retryable": root.get("retryable"), "fallback_status": root.get("fallback_status"),
                 "first_failure_at": root.get("recorded_at_utc") or root.get("created_at"),
                 "continued": root.get("continued", False)}
+            if root.get("correlation_origin"):
+                roots[fid]["correlation_origin"] = root["correlation_origin"]
         affected.setdefault(fid, set())
         downstream.setdefault(fid, Counter())
         if failure.get("vacancy_id"):
             affected[fid].add((failure.get("source") or "unknown", str(failure["vacancy_id"])))
     for key, event in decisions.items():
-        fid = origin(event.get("failure_id"))
+        inferred = legacy_causes.get(key)
+        if (not inferred and key[0] == "hh" and event.get("decision") == "not_processed"
+                and event.get("note") == "hh_recovery_breaker"):
+            prior = [(positions[id(decisions[cause])], fid) for cause, fid in legacy_causes.items()
+                     if cause[0] == key[0] and positions[id(decisions[cause])] < positions[id(event)]]
+            inferred = max(prior)[1] if prior else None
+        fid = origin(event.get("failure_id") or inferred)
         if fid:
             if fid not in roots:
                 roots[fid] = {"failure_id": fid, "reason_code": "UNKNOWN_ROOT_CAUSE",
@@ -112,11 +138,12 @@ def build_run_summary(run, events=(), *, profile=""):
     for fid, root in roots.items():
         root["affected_count"] = len(affected.get(fid, ())) or None
         root["downstream_events"] = dict(sorted(downstream.get(fid, {}).items()))
-    # A checkpoint can omit an earlier durable journal failure. Select by the
-    # root's first timestamp, retaining insertion order when time is unknown.
+    # A source-stopping failure takes priority over a recovered failure. Within
+    # each class use the first durable timestamp, then stable insertion order.
     def failure_order(item):
         timestamp = _time(item[1].get("first_failure_at"))
-        return (timestamp is None, timestamp.timestamp() if timestamp else 0)
+        return (bool(item[1].get("continued")), timestamp is None,
+                timestamp.timestamp() if timestamp else 0)
     roots = dict(sorted(roots.items(), key=failure_order))
     progress = sum(counters.get(key) or 0 for key in ("evaluated", "applied", "matcher_pass"))
     if any(root['stage'] == 'collection' for root in roots.values()):

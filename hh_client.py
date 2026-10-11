@@ -839,48 +839,9 @@ class HHClient:
         return result
 
     async def get_negotiation_statuses(self) -> list[dict]:
-        """Прочитать видимые статусы откликов на странице переговоров."""
-        await self._ensure_expected_ui("negotiation_statuses_before_navigation")
-        await self._page.goto(
-            f"{config.HH_BASE_URL}/applicant/negotiations",
-            wait_until="domcontentloaded",
-            timeout=20000,
-        )
-        await self._page.wait_for_timeout(3000)
-        await self._ensure_expected_ui("negotiation_statuses")
-
-        items = []
-        cards = await self._page.query_selector_all(
-            "[data-qa='negotiations-item'], "
-            ".negotiations-item, "
-            ".resume-negotiations-item"
-        )
-        for card in cards:
-            try:
-                text = (await card.inner_text()).strip()
-                if not text:
-                    continue
-                lines = [line.strip() for line in text.splitlines() if line.strip()]
-                if len(lines) < 3:
-                    continue
-                link = await card.query_selector("a[href*='/vacancy/']")
-                href = await link.get_attribute("href") if link else ""
-                href = _absolute_hh_url(href or "")
-                vacancy_id = ""
-                if "/vacancy/" in href:
-                    vacancy_id = href.split("/vacancy/")[-1].split("?")[0].split("/")[0]
-                items.append(
-                    {
-                        "id": vacancy_id,
-                        "status": lines[0],
-                        "title": lines[1],
-                        "company": lines[2],
-                        "url": href,
-                    }
-                )
-            except Exception:
-                pass
-        return items
+        """Read visible negotiation statuses without running background site JS."""
+        from hh.negotiations import read_negotiation_statuses
+        return await read_negotiation_statuses(self, base_url=config.HH_BASE_URL)
 
     # ── Получить список резюме ────────────────────────────────────────────
 

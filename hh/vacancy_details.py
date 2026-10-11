@@ -113,25 +113,39 @@ async def passive_details_navigation(session, vacancy_url, *, stage="vacancy_det
             _trusted_url(request.url, path.rstrip('/'))
             if request.method != 'GET' or _mutating_request(request):
                 raise ValueError('Unknown vacancy details navigation payload')
-            response = await route.fetch(max_redirects=0, max_retries=0, timeout=20000)
-            fresh()
-            _trusted_url(response.url, path.rstrip('/'))
-            headers = dict(response.headers)
-            if response.status in (301, 302, 303, 307, 308):
-                target = urljoin(request.url, headers.get('location', ''))
-                if not headers.get('location'):
+            target, visited = request.url, set()
+            # Native redirected documents bypass Playwright routing. Fetch only
+            # validated read-only hops here and fulfill the final passive HTML.
+            for _ in range(4):
+                if target in visited:
+                    raise ValueError('Vacancy details redirect loop detected')
+                visited.add(target)
+                response = await route.fetch(url=target, max_redirects=0, max_retries=0, timeout=20000)
+                fresh()
+                _trusted_url(response.url, path.rstrip('/'))
+                if _mutating_request(type('Navigation', (), {'method': 'GET', 'url': response.url})()):
+                    raise ValueError('Unknown vacancy details response payload')
+                headers = dict(response.headers)
+                if response.status not in (301, 302, 303, 307, 308):
+                    break
+                location = headers.get('location', '')
+                if not location:
                     raise ValueError('Vacancy redirect has no location')
+                target = urljoin(target, location)
                 _trusted_url(target, path.rstrip('/'))
                 if _mutating_request(type('Navigation', (), {'method': 'GET', 'url': target})()):
                     raise ValueError('Unknown vacancy redirect payload')
-                body = ''
-            else:
-                if response.status != 200 or headers.get('content-type', '').split(';', 1)[0].strip().casefold() != 'text/html':
-                    raise ValueError('Unknown vacancy details response')
-                body = inert_details_html(await response.text())
+                await response.dispose()
+                response = None
                 fresh()
-                existing = headers.get('content-security-policy', '')
-                headers['content-security-policy'] = (existing + ', ' if existing else '') + DETAILS_CSP
+            else:
+                raise ValueError('Vacancy details redirect limit exceeded')
+            if response.status != 200 or headers.get('content-type', '').split(';', 1)[0].strip().casefold() != 'text/html':
+                raise ValueError('Unknown vacancy details response')
+            body = inert_details_html(await response.text())
+            fresh()
+            existing = headers.get('content-security-policy', '')
+            headers['content-security-policy'] = (existing + ', ' if existing else '') + DETAILS_CSP
             headers.pop('content-length', None)
             headers.pop('content-encoding', None)
             await route.fulfill(status=response.status, headers=headers, body=body)
