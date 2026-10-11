@@ -377,11 +377,11 @@ class HHClient:
                 'HH_AUTO_ANSWER_SIMPLE_QUESTIONS', 'HH_AUTO_ANSWER_MAX_QUESTIONS',
                 'HH_AUTO_ANSWER_MAX_CHARS', 'HH_AUTO_ANSWER_SALARY_TEXT',
                 'HH_AUTO_ANSWER_SALARY_NUMBER', 'HH_AUTO_ANSWER_USE_LLM',
-                'HH_QUESTION_MODEL', 'HH_CHOICE_MODEL', 'LLM_MODEL', 'LLM_API_KEY')})
+                'HH_QUESTION_MODEL', 'HH_CHOICE_MODEL', 'LLM_MODEL')})
             snapshot = capture_candidate(resume, settings=captured,
                 profile_builder=_build_profile_note_block, facts_builder=_build_facts_block,
                 salary_builder=_build_salary_rule_block, knowledge_builder=_build_knowledge_base_block)
-            client = _get_question_answer_client() if captured.HH_AUTO_ANSWER_USE_LLM and captured.LLM_API_KEY else None
+            client = _get_question_answer_client() if captured.HH_AUTO_ANSWER_USE_LLM else None
         except Exception as exc:
             log.warning('Candidate answer snapshot failed: %s', type(exc).__name__)
             return {'handled': True, 'ok': False, 'message': 'Данные кандидата не подтверждены — нужна ручная проверка', 'notes': []}

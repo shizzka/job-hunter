@@ -678,7 +678,7 @@ async def answer_question_with_llm(
 ) -> str | None:
     from answer_grounding import current_answer_settings
     settings = current_answer_settings() or settings
-    if not settings.HH_AUTO_ANSWER_USE_LLM or not settings.LLM_API_KEY or not resume_text.strip():
+    if not settings.HH_AUTO_ANSWER_USE_LLM or not resume_text.strip():
         return None
 
     question_text = (field.get("question_text") or field.get("placeholder") or "").strip()
@@ -821,7 +821,7 @@ async def answer_choice_with_llm(
     """
     from answer_grounding import current_answer_settings
     settings = current_answer_settings() or settings
-    if not settings.HH_AUTO_ANSWER_USE_LLM or not settings.LLM_API_KEY or not resume_text.strip():
+    if not settings.HH_AUTO_ANSWER_USE_LLM or not resume_text.strip():
         return None
 
     control = (field.get("control") or "").strip().lower()
