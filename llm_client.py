@@ -528,6 +528,7 @@ def _is_quota_or_rate_limit(exc: Exception) -> bool:
             "too many requests",
             "weekly usage limit",
             "rate limit",
+            "rate_limit_exceeded",  # Groq also uses this code for HTTP 413 TPM limits.
             "quota",
             "insufficient_quota",
         )

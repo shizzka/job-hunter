@@ -2,6 +2,8 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+import httpx
+from openai import AsyncOpenAI, APIStatusError
 
 import llm_client
 
@@ -69,3 +71,53 @@ def test_groq_rate_limit_switches_account_on_same_endpoint(monkeypatch):
     assert calls == [("first-test-key", "test-strong"), ("second-test-key", "test-strong")]
     assert usage == ["groq", "groq2"]
     assert client._active_index_by_model["gpt-oss:120b"] == 1
+
+
+@pytest.mark.parametrize("status,code,expected", [
+    (429, "rate_limit_exceeded", ["groq", "groq2"]),
+    (413, "rate_limit_exceeded", ["groq", "groq2", "ollama"]),
+    (413, "payload_too_large", ["groq"]),
+])
+def test_sdk_rate_limit_code_falls_through_without_retrying(monkeypatch, status, code, expected):
+    calls = []
+    monkeypatch.setattr(llm_client, "_record_usage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(llm_client, "_observe_provider_failure", lambda *args, **kwargs: None)
+    providers = [
+        llm_client.ProviderSpec("groq", "https://groq.test/v1", "synthetic-one"),
+        llm_client.ProviderSpec("groq2", "https://groq.test/v1", "synthetic-two"),
+        llm_client.ProviderSpec("ollama", "http://lan.test/v1", "synthetic-lan",
+                                text_fallback_model="local-model", timeout_seconds=1),
+    ]
+    client = llm_client.FallbackLLMClient(providers)
+
+    def transport(provider):
+        def handle(request):
+            calls.append(provider.name)
+            if provider.name == "groq" or (status == 413 and provider.name == "groq2"):
+                return httpx.Response(status, json={"error": {
+                    "message": "Request too large", "type": "tokens", "code": code}})
+            return httpx.Response(200, json={
+                "id": "synthetic", "object": "chat.completion", "created": 0,
+                "model": "synthetic-model", "choices": [{"index": 0,
+                    "finish_reason": "stop", "message": {"role": "assistant", "content": "OK"}}]})
+        return httpx.MockTransport(handle)
+
+    for index, provider in enumerate(providers):
+        client._clients[index] = AsyncOpenAI(
+            api_key=provider.api_key, base_url=provider.base_url, max_retries=0,
+            http_client=httpx.AsyncClient(transport=transport(provider)))
+
+    async def run():
+        try:
+            if code == "payload_too_large":
+                with pytest.raises(APIStatusError) as error:
+                    await client.chat.completions.create(model="test-model", messages=[])
+                assert error.value.status_code == 413
+            else:
+                response = await client.chat.completions.create(model="test-model", messages=[])
+                assert response.choices[0].message.content == "OK"
+        finally:
+            await client.aclose()
+
+    asyncio.run(run())
+    assert calls == expected
