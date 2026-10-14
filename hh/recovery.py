@@ -90,13 +90,13 @@ class PageActions:
     def mark_unknown(self, request=None):
         self.observations += 1
         log.debug('HH unowned page event; observations=%s', self.observations)
-        if _unknown_requires_stop(self.session, request):
+        watch = getattr(self.page.context, '_hh_action_watch', None)
+        if _unknown_requires_stop(self.session, request, watch):
             self.unknown = True
             self.session._hh_recovery_stop_reason = 'possible_external_action'
             self.session._hh_recovery_uncertain = True
         # A callback on the current document may name an earlier vacancy or
         # one formerly shown on another Page in this same authenticated context.
-        watch = getattr(self.page.context, '_hh_action_watch', None)
         if watch is not None and watch.session is self.session and watch.context is self.page.context:
             watch.mark_unknown(request)
 
@@ -129,7 +129,7 @@ class ContextActions:
     def mark_unknown(self, request=None):
         self.observations += 1
         log.debug('HH unowned context event; observations=%s', self.observations)
-        if not _unknown_requires_stop(self.session, request):
+        if not _unknown_requires_stop(self.session, request, self):
             return
         self.unknown = True
         self.session._hh_recovery_stop_reason = 'possible_external_action'
@@ -145,12 +145,25 @@ class ContextActions:
                     _preserve_unknown_attempt(attempt)
 
 
-def _unknown_requires_stop(session, request):
-    # begin() opens the action window; run_native_attempt finally releases it.
+def _unknown_requires_stop(session, request, watch):
+    # Releasing _external_attempt does not close the document's callbacks.
+    # Even a failed/completed receipt can be invalidated by a late action;
+    # retain the context's attempt history until that context is destroyed.
     attempt = getattr(session, '_external_attempt', None)
-    return bool(getattr(attempt, 'acting', False) or (
-        request is not None and getattr(request, 'method', '').upper() in {'POST', 'PUT', 'PATCH'}
-        and urlsplit(request.url).path.startswith(RESPONSE_PATH)))
+    if attempt is None and (watch is None or watch.last_attempt is None):
+        return False
+    if request is None:
+        return True
+    try:
+        return _hh_target(request.url) and _mutating_request(request)
+    except Exception:
+        # An unreadable event cannot prove a harmless target or method.
+        return True
+
+
+def _hh_target(url):
+    host = urlsplit(url).hostname
+    return host is None or host == 'hh.ru' or host.endswith('.hh.ru')
 
 
 def _preserve_unknown_attempt(attempt):
@@ -212,6 +225,7 @@ def monitor_page(session, page):
                 # Observation only: neither admission nor the unknown-action guard
                 # changes. Retain duplicate/unapproved POSTs too for reconciliation.
                 if (request.method.upper() == 'POST'
+                        and _hh_target(request.url)
                         and urlsplit(request.url).path.startswith(RESPONSE_PATH)):
                     watch.application_post_sequence += 1
                     attempt = getattr(session, '_external_attempt', None) or watch.last_attempt
@@ -233,7 +247,7 @@ def monitor_page(session, page):
                 watch.mark_unknown(request)
         context.on('request', request_seen)
         def response_seen(response):
-            if not urlsplit(response.url).path.startswith(RESPONSE_PATH):
+            if not (_hh_target(response.url) and urlsplit(response.url).path.startswith(RESPONSE_PATH)):
                 return
             for monitor in watch.pages.values():
                 for attempt in monitor.attempts.values():
