@@ -79,6 +79,34 @@ def build_run_summary(run, events=(), *, profile=""):
                 "retryable": False, "continued": False, "source_stopped": True,
                 "created_at": event.get("recorded_at_utc") or event.get("created_at"),
                 "correlation_origin": "journal_decision"})
+    # Legacy navigation guards have explicit failed trace-stage metadata but
+    # no failure ID. Join only the same vacancy's unrecovered isolation and
+    # hard-stop decision; generic guards/text never prove a navigation cause.
+    for key, event in decisions.items():
+        if (key[0] != "hh" or event.get("decision") != "guard_stop"
+                or event.get("note") != "hh:ui_hard_stop" or event.get("failure_id")):
+            continue
+        prior = events[:positions[id(event)]]
+        matching = [e for e in prior if (e.get("source"), str(e.get("vacancy_id"))) == key]
+        isolation = next((e for e in reversed(matching) if e.get("event") == "hh_ui_isolation"), None)
+        artifact = next((e for e in reversed(matching)
+                         if e.get("event") == "debug_artifact" and e.get("artifact_type") == "apply_trace"), None)
+        if (isolation is None or isolation.get("recovered") is not False
+                or artifact is None or artifact.get("stage") != "VACANCY_NAVIGATION"
+                or artifact.get("outcome") != "error"
+                or positions[id(artifact)] > positions[id(isolation)]
+                or any(e.get("event") in {"decision", "hh_ui_isolation"}
+                       and positions[id(artifact)] < positions[id(e)] < positions[id(isolation)]
+                       for e in matching)):
+            continue
+        fid = uuid.uuid5(uuid.NAMESPACE_URL,
+                        f"job-hunter:{run_id}:{key[0]}:{key[1]}:vacancy_navigation_failed").hex
+        legacy_causes[key] = fid
+        failures.append({"failure_id": fid, "reason_code": "vacancy_navigation_failed",
+            "source": key[0], "vacancy_id": key[1], "stage": "VACANCY_NAVIGATION",
+            "retryable": False, "continued": False, "source_stopped": True,
+            "created_at": artifact.get("recorded_at_utc") or artifact.get("created_at"),
+            "correlation_origin": "journal_trace_stage"})
     aliases = {f['failure_id']: f['parent_failure_id'] for f in failures
                if f.get('failure_id') and f.get('parent_failure_id')}
     definitions = {f['failure_id']: f for f in reversed(failures)

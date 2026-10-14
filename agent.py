@@ -65,6 +65,7 @@ from geekjob_client import GeekJobClient
 from habr_career_client import HabrCareerClient
 from hh_client import HHClient
 from hh.ui import HHUnexpectedUI
+from hh.vacancy_details import HHVacancyUnavailable
 from matcher import analyze_cover_letter, evaluate_vacancy, generate_cover_letter, is_manual_review_candidate, is_deferred_evaluation
 from office_bridge import office_log, create_task, task_progress, task_complete
 from office_bridge import close_session as close_office_session
@@ -1483,7 +1484,16 @@ async def do_search(dry_run: bool = False) -> dict:
                 receipt.notifying = False
 
         async def record_hh_ui_incident(v, vid, bucket, score=0, reason="", evaluation=None,
-                                        details="", fingerprint="", recovered=False, message="", receipt=None):
+                                        details="", fingerprint="", recovered=False, message="", receipt=None,
+                                        navigation_failure=None):
+            failure_id = None
+            if (not recovered and isinstance(navigation_failure, dict)
+                    and navigation_failure.get("stage") == "VACANCY_NAVIGATION"
+                    and navigation_failure.get("reason_code") == "vacancy_navigation_failed"):
+                with analytics.event_context(run_id=run_id, source="hh", vacancy_id=str(vid)):
+                    failure_id = analytics.record_failure(
+                        "VACANCY_NAVIGATION", RuntimeError("vacancy_navigation_failed"),
+                        reason_code="vacancy_navigation_failed", retryable=False, source_stopped=True)
             if recovered:
                 hh_breaker.recovered_incident(fingerprint)
             else:
@@ -1495,6 +1505,7 @@ async def do_search(dry_run: bool = False) -> dict:
             hh_pipeline.mark_terminal(vid, "manual_hh_guard_stop")
             analytics.record_event({"event": "hh_ui_isolation", "source": "hh", "vacancy_id": str(vid),
                                     "fingerprint": fingerprint, "recovered": recovered,
+                                    "failure_id": failure_id,
                                     **hh_breaker.snapshot()})
             message = message or "Вакансия оставлена без дальнейших действий; нужна ручная проверка."
             if hh_breaker.stopped:
@@ -1508,6 +1519,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 v, vid, score, reason, evaluation or {}, details,
                 result, bucket, run_id, set_hunter_status,
                 analytics_note=("hh:recovered_ui" if recovered else "hh:ui_hard_stop"),
+                failure_id=failure_id,
                 before_notify=halt_hh_browser if hh_breaker.stopped else None,
                 receipt=receipt, receipt_classification="guard",
                 observe=observe_hh_receipts,
@@ -1596,6 +1608,14 @@ async def do_search(dry_run: bool = False) -> dict:
                     apply_orchestrator.fetch_vacancy_details,
                     v, hh_client, superjob_client, habr_client, geekjob_client,
                 ))
+            except HHVacancyUnavailable:
+                seen.mark_seen(vid, v, "skipped_unavailable")
+                hh_pipeline.mark_terminal(vid, "vacancy_forbidden")
+                result["skipped"] += 1
+                bucket["rejected"] += 1
+                analytics.record_decision(run_id=run_id, vacancy=v, decision="skipped_unavailable",
+                                          note="hh:vacancy_forbidden")
+                continue
             except HHUnexpectedUI as exc:
                 await observe_hh_receipts(handle_hh_unexpected(exc, v, vid, bucket))
                 continue
@@ -2201,7 +2221,8 @@ async def do_search(dry_run: bool = False) -> dict:
                 if source == "hh" and apply_result.get("hh_hard_stop"):
                     await receipt.wait(record_hh_ui_incident(
                         v, vid, bucket, score=score, reason=reason, evaluation=cover_evaluation, details=details,
-                        message=apply_result.get("hh_recovery_reason") or "HH: безопасное восстановление не доказано", receipt=receipt))
+                        message=apply_result.get("hh_recovery_reason") or "HH: безопасное восстановление не доказано",
+                        navigation_failure=apply_result.get("hh_navigation_failure"), receipt=receipt))
                     continue
                 if source == "hh":
                     _record_hh_questionnaire_analytics(

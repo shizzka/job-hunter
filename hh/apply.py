@@ -6,8 +6,11 @@ from state_store.native_apply import NativeApplyRepository, run_native_attempt
 import os
 import re
 
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
 from hh.text import compact_text, normalize_text
 from hh.ui import HHUnexpectedUI, ensure_session_ui
+from hh.vacancy_details import HHVacancyNavigationError, safe_navigation_url
 from hh.submit_boundary import arm_submit_boundary, bind_submit_control, REACT_RESPONSE_STATE_SCRIPT, wait_popup_receipt_navigation
 from browser_action_boundary import dispatch_approved, release_boundary
 
@@ -811,14 +814,32 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
         session._approved_hh_payload = {"resume_id": str(preferred_resume_id).strip(),
                                         "cover_letter": cover_letter, "answers": []}
         from hh.recovery import abandon_page, recover_unexpected_ui
-        from hh.verification import reconcile_post_submit
+        from hh.verification import confirmed_result, reconcile_post_submit
         attempt = session._external_attempt
         owned_attempt = attempt
         try:
             result = await _apply_to_vacancy(session, url, cover_letter, response_url,
                 preferred_resume_title, preferred_resume_id, vacancy_context, trace,
                 absolute_hh_url=absolute_hh_url, anti_bot_message=anti_bot_message, logger=logger)
+        except HHVacancyNavigationError as exc:
+            await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter)
+            session._hh_recovery_stop_reason = (getattr(session, '_hh_recovery_stop_reason', '')
+                                                or 'vacancy_navigation_failed')
+            uncertain = bool(attempt.uncertain or attempt.acting or attempt.command_started
+                             or getattr(session, '_hh_recovery_uncertain', False))
+            if uncertain:
+                attempt.uncertain = True
+            return {'ok': False, 'hh_hard_stop': True, 'uncertain': uncertain,
+                    'hh_recovery_reason': 'vacancy_navigation_failed',
+                    'hh_navigation_failure': exc.metadata,
+                    'message': 'Загрузка вакансии HH остановлена; нужна ручная проверка'}
         except HHUnexpectedUI as exc:
+            watch = getattr(attempt.context, '_hh_action_watch', None)
+            attempt._hh_guard_failure = {
+                'stage': exc.stage, 'reason': getattr(exc, 'hh_stop_reason', '') or 'unexpected_ui',
+                'native_acting': bool(attempt.acting), 'command_started': bool(attempt.command_started),
+                'application_posts': getattr(watch, 'application_post_sequence', None),
+            }
             await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter)
             await recover_unexpected_ui(session, exc, attempt=attempt)
             raise
@@ -837,6 +858,9 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
                     "hh_hard_stop": True, "hh_recovery_reason": recovered.reason,
                     "message": "Подготовка HH остановлена; нужна ручная проверка"}
         await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter)
+        confirmed = confirmed_result(session, url, result, owned_attempt=attempt, close_attempt=True)
+        if confirmed is not None:
+            return confirmed
         explicit_uncertain = bool(result.get("uncertain")) or result.get("submission_status") in {"uncertain", "preparing", "acting"}
         if explicit_uncertain:
             result = {**result, "ok": False, "uncertain": True, "hh_hard_stop": True}
@@ -866,6 +890,19 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
     if confirmed is not None:
         return confirmed
     if bool(result.get('uncertain')) or result.get('submission_status') in {'uncertain', 'preparing', 'acting'}:
+        failure = getattr(owned_attempt, '_hh_guard_failure', None)
+        if failure:
+            failure = {**failure, 'native_acting': bool(owned_attempt.acting),
+                       'command_started': bool(owned_attempt.command_started),
+                       'application_posts': getattr(getattr(owned_attempt.context, '_hh_action_watch', None),
+                                                    'application_post_sequence', None)}
+            # Diagnostic scope only: keep every sticky browser/native uncertainty
+            # and the durable non-retryable receipt, including unknown frame events.
+            scope = ('native_action' if failure['native_acting'] or failure['command_started']
+                     or (failure['application_posts'] or 0) > 0 else
+                     'browser_preflight' if failure['application_posts'] == 0 else 'unproven')
+            result = {**result, 'hh_guard_failure': failure, 'hh_failure_stage': failure['stage'],
+                      'hh_uncertainty_scope': scope}
         return {**result, 'ok': False, 'uncertain': True, 'hh_hard_stop': True}
     return result
 
@@ -1163,30 +1200,31 @@ async def _apply_to_vacancy(
     from hh.response_navigation import response_navigation
     # This initial document is read-only. Every valid exact-resume apply path
     # below navigates to a normal response document before form interaction.
-    async with passive_details_navigation(session, vacancy_url,
-                                          stage="vacancy_open", allowed=("response",)):
-        try:
-            await session._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=30000)
-            trace_event(
-                "VACANCY_NAVIGATION",
-                ok=True,
-                requested_url=vacancy_url,
-                url=getattr(session._page, "url", vacancy_url),
-            )
-        except HHUnexpectedUI:
-            raise
-        except Exception as e:
-            logger.warning("Vacancy page nav issue: %s", e)
-            trace_event(
-                "VACANCY_NAVIGATION",
-                ok=False,
-                requested_url=vacancy_url,
-                url=getattr(session._page, "url", ""),
-                error=type(e).__name__,
-            )
-
-        await session._page.wait_for_timeout(3000)
-        await ensure_session_ui(session, "vacancy_open", allowed=("response",))
+    navigation_timed_out = False
+    try:
+        async with passive_details_navigation(session, vacancy_url,
+                                              stage="vacancy_open", allowed=("response",)):
+            # A failed goto must leave the context immediately so its routing
+            # failure wins over the browser's subsequent chrome-error document.
+            try:
+                await session._page.goto(vacancy_url, wait_until="domcontentloaded", timeout=30000)
+            except (TimeoutError, PlaywrightTimeoutError):
+                # Keep the existing ready-DOM timeout path, subject to the
+                # same ownership/UI guard and VACANCY_READY checks below.
+                navigation_timed_out = True
+            except HHUnexpectedUI:
+                raise
+            except Exception as exc:
+                raise HHVacancyNavigationError(vacancy_url,
+                    error_type=type(exc).__name__, error_code='navigation_transport_failed') from exc
+            await session._page.wait_for_timeout(3000)
+            await ensure_session_ui(session, "vacancy_open", allowed=("response",))
+    except HHVacancyNavigationError as failure:
+        logger.warning("Vacancy page navigation failed: %s", failure.metadata['error_code'])
+        trace_event('VACANCY_NAVIGATION', ok=False, hh_navigation_failure=failure.metadata)
+        raise
+    trace_event('VACANCY_NAVIGATION', ok=not navigation_timed_out, requested_url=safe_navigation_url(vacancy_url),
+                url=safe_navigation_url(getattr(session._page, 'url', '')))
     await save_debug_snapshot("debug_apply_page")
 
     anti_bot_kind = await session._detect_anti_bot_kind()
@@ -1260,6 +1298,8 @@ async def _apply_to_vacancy(
         if not target_url:
             trace_event("RESUME_SELECTED", ok=False, expected=True, reason="vacancy_id_missing")
             return {"ok": False, "message": "Не удалось открыть форму для проверки резюме"}
+        trace_event("RESUME_PREFLIGHT_STARTED", ok=True, target_url=target_url,
+                    controlled_submit_started=False)
         # The awaited existing-response check can reveal a new dialog or an
         # unknown action. Recheck before navigation, outside its error handler.
         await ensure_session_ui(session, "response_fallback_before_navigation", allowed=("response",))

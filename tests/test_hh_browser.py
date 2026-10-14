@@ -55,6 +55,7 @@ class FakeLifecycleContext:
         self.page = FakeLifecyclePage(self)
         self.handlers = {}
         self.add_init_script = AsyncMock()
+        self.expose_binding = AsyncMock()
 
     def on(self, event, callback):
         self.handlers[event] = callback

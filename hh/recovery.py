@@ -7,6 +7,7 @@ until destruction. The replacement proves authentication before publication.
 from __future__ import annotations
 
 import contextlib
+import logging
 import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -16,6 +17,28 @@ from browser_action_boundary import RUNTIME, bootstrap_boundary
 from hh.ui import CHALLENGE_SELECTOR, CHALLENGE_TEXT, HHUIGuard, HHUnexpectedUI
 
 AUTH_URL = 'https://hh.ru/applicant/resumes'
+log = logging.getLogger('hh_recovery')
+
+
+async def install_frame_observation(session, context):
+    """Observe child-document interaction without making frame presence an action."""
+    def interaction(source):
+        watch = getattr(context, '_hh_action_watch', None)
+        page, frame = source.get('page'), source.get('frame')
+        if (source.get('context') is context and watch is not None
+                and watch.session is session and page in watch.pages
+                and frame is not page.main_frame):
+            watch.pages[page].mark_unknown()
+
+    await context.expose_binding('__jhHHFrameInteraction', interaction)
+    await context.add_init_script(script=r'''(() => {
+        if (window === window.top) return;
+        const notify = window.__jhHHFrameInteraction;
+        for (const name of ['pointerdown', 'keydown', 'click', 'submit'])
+            window.addEventListener(name, event => {
+                notify().catch(() => {});
+            }, true);
+    })()''')
 BLOCK_WORKER_CONSTRUCTORS = r'''(() => {
     const previous = window.__jhHHWorkersBlocked;
     const valid = api => !!api && api.blocked === true && ['Worker','SharedWorker'].every(name => {
@@ -43,6 +66,7 @@ class PageActions:
     session: object
     page: object
     unknown: bool = False
+    embedded_history: bool = False
     owners: set[str] = field(default_factory=set)
     last_attempt: object = None
     attempts: dict[str, object] = field(default_factory=dict)
@@ -210,9 +234,12 @@ def monitor_page(session, page):
     def socket_seen(socket):
         socket.on('framesent', lambda frame: monitor.mark_unknown())
     page.on('websocket', socket_seen)
-    # A removed iframe can have exposed a pristine Worker constructor before
-    # its document-start hook ran. Snapshots cannot erase that history.
-    page.on('frameattached', lambda frame: monitor.mark_unknown())
+    # Presence alone proves no action. Child gestures, mutating requests,
+    # workers, popups and socket sends remain independently observed.
+    def frame_seen(frame):
+        monitor.embedded_history = True
+        log.warning('HH frame attached; observation only')
+    page.on('frameattached', frame_seen)
     page.on('popup', lambda popup: monitor.mark_unknown())
     page.on('worker', lambda worker: monitor.mark_unknown())
     return monitor
@@ -365,7 +392,7 @@ async def abandon_page(session, *, attempt=None):
             raise RecoveryBlocked('blocked_service_worker_policy_unproven', uncertain=True)
         if watch.unknown or monitor.unknown or monitor.owners:
             raise RecoveryBlocked('possible_external_action', uncertain=True)
-        if len(old.frames) != 1:
+        if monitor.embedded_history or len(old.frames) != 1:
             raise RecoveryBlocked('embedded_frame_lifecycle_unproven')
         if old.workers:
             raise RecoveryBlocked('background_worker_ownership_unproven', uncertain=True)

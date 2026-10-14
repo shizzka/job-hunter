@@ -190,7 +190,12 @@ def test_owned_popup_frame_race_requires_unambiguous_fresh_applied_get(
             clicked = await session._click_with_fallbacks(
                 control, "submit_button", before_click=fresh_identity_and_letter
             )
-            return {"ok": clicked, "cover_letter_status": "submitted_with_application" if clicked else "unconfirmed"}
+            assert clicked is True
+            # The browser-side receipt cannot classify the terminal result yet.
+            # Only the independent fresh GET may close this owned POST.
+            return {"ok": False, "hh_hard_stop": True,
+                    "hh_recovery_reason": "native_action_or_uncertainty",
+                    "cover_letter_status": "unconfirmed"}
 
         monkeypatch.setattr(hh_apply, "_apply_to_vacancy", apply_core)
         monkeypatch.setattr(apply_orchestrator, "create_hh_apply_trace", lambda *args, **kwargs: None)
@@ -262,9 +267,10 @@ def test_owned_popup_frame_race_requires_unambiguous_fresh_applied_get(
                 assert monitor.unknown is False
                 assert context._hh_action_watch.unknown is False
             else:
-                assert monitor.unknown is True
-                assert context._hh_action_watch.unknown is True
-            assert repository.get(VACANCY_URL)["status"] == "uncertain"
+                mutated = variant in {"late_second_post", "post_success_late_post"}
+                assert monitor.unknown is mutated
+                assert context._hh_action_watch.unknown is mutated
+            assert repository.get(VACANCY_URL)["status"] in {"completed", "uncertain"}
             if variant in {"cookie_changed_before_get", "cookie_changed_during_get"}:
                 assert await context.cookies([RESPONSE_URL]) != cookie_before
             else:
@@ -297,13 +303,15 @@ def test_owned_popup_frame_race_requires_unambiguous_fresh_applied_get(
             if expected_success:
                 assert result.get("ok") is True
                 assert result.get("uncertain") is not True
-                assert result.get("native_receipt_status") == "uncertain"
+                assert result.get("native_receipt_status") == "completed"
+                assert not result.get("hh_hard_stop")
                 assert result.get("cover_letter_status") == "submitted_with_application"
                 assert len(popup_posts) == 1
                 assert repository.claim(VACANCY_URL, "", "") is None
             else:
                 assert result.get("uncertain") is True
-                assert repository.get(VACANCY_URL)["status"] == "uncertain"
+                assert repository.get(VACANCY_URL)["status"] in {"completed", "uncertain"}
+                assert repository.claim(VACANCY_URL, "", "") is None
         finally:
             await browser.close()
             await pw.stop()

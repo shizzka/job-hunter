@@ -161,8 +161,9 @@ async def start_browser(
             ),
             locale="ru-RU",
         )
-        from hh.recovery import BLOCK_WORKER_CONSTRUCTORS
+        from hh.recovery import BLOCK_WORKER_CONSTRUCTORS, install_frame_observation
         await session._context.add_init_script(script=BLOCK_WORKER_CONSTRUCTORS)
+        await install_frame_observation(session, session._context)
         session._hh_blocked_worker_context = session._context
         session._context._hh_workers_owner = session
         if binding is not None:

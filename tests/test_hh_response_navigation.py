@@ -143,7 +143,7 @@ async def configured_response_navigation(client):
             yield
 
 
-def test_red_without_response_initializer_observed_iframe_sets_unknown(tmp_path, monkeypatch):
+def test_without_response_initializer_passive_frame_is_observed(tmp_path, monkeypatch):
     """Test-only disable switch keeps the production helper untouched."""
     async def check(client, page, context, blocked):
         assert os.getenv('HH_RESPONSE_FIX_DISABLED') == '1'
@@ -158,12 +158,11 @@ def test_red_without_response_initializer_observed_iframe_sets_unknown(tmp_path,
         await page.goto(URL, wait_until='domcontentloaded')
         await append_observed_frames(page, include=('mts',))
         await page.wait_for_timeout(100)
-        assert client._page._hh_action_monitor.unknown
-        assert context._hh_action_watch.unknown
-        with pytest.raises(HHUnexpectedUI) as stopped:
-            client._raise_stopped_ui('resume_preflight')
-        assert stopped.value.hh_stop_reason == 'possible_external_action'
-        assert stopped.value.hh_uncertain is True
+        assert client._page._hh_action_monitor.embedded_history
+        assert not client._page._hh_action_monitor.unknown
+        assert not context._hh_action_watch.unknown
+        client._raise_stopped_ui('resume_preflight')
+        assert context._hh_action_watch.application_post_sequence == 0
         assert blocked and all(method == 'GET' for method, _ in blocked)
         assert any('sm.rtb.mts.ru/s' in url for _, url in blocked)
     monkeypatch.setenv('HH_RESPONSE_FIX_DISABLED', '1')
@@ -277,7 +276,7 @@ def test_vendor_replay_timer_iframe_preserves_safe_response_controls(tmp_path, m
 
 
 @pytest.mark.parametrize('variant', ['other_bundle', 'extra_attr', 'src_attr', 'body_parent'])
-def test_replay_timer_nonmatching_variants_stay_fail_closed(tmp_path, monkeypatch, variant):
+def test_replay_timer_nonmatching_passive_frames_are_observed(tmp_path, monkeypatch, variant):
     """Only the observed source and exact hidden head iframe are recognized."""
     monkeypatch.delenv('HH_RESPONSE_FIX_DISABLED', raising=False)
     script_url = VENDOR_URL
@@ -314,11 +313,11 @@ def test_replay_timer_nonmatching_variants_stay_fail_closed(tmp_path, monkeypatc
         except HHUnexpectedUI as exc:
             guard_error = exc
 
-        assert client._page._hh_action_monitor.unknown, variant
-        assert context._hh_action_watch.unknown, variant
-        assert guard_error is not None, variant
-        assert guard_error.hh_stop_reason == 'possible_external_action'
-        assert guard_error.hh_uncertain is True
+        assert client._page._hh_action_monitor.embedded_history, variant
+        assert not client._page._hh_action_monitor.unknown, variant
+        assert not context._hh_action_watch.unknown, variant
+        assert guard_error is None, variant
+        assert context._hh_action_watch.application_post_sequence == 0
         assert blocked == []
 
     asyncio.run(browser_case(
@@ -328,7 +327,7 @@ def test_replay_timer_nonmatching_variants_stay_fail_closed(tmp_path, monkeypatc
     ))
 
 
-def test_unknown_frame_shape_variants_keep_global_guard_sticky(tmp_path, monkeypatch):
+def test_unrecognized_frames_remain_unmodified_and_passive(tmp_path, monkeypatch):
     variants = [
         ('mts', {'style': 'display:block'}), ('mts', {'extra': 'title'}),
         ('mts', {'parent': 'body'}), ('mts', {'grammar': 'not-observed'}),
@@ -341,20 +340,18 @@ def test_unknown_frame_shape_variants_keep_global_guard_sticky(tmp_path, monkeyp
         ('uxfeedback', {'extra': 'title'}), ('uxfeedback', {'parent': 'div'}),
     ]
     async def check(client, page, context, blocked):
-        with pytest.raises(HHUnexpectedUI) as stopped:
-            async with response_navigation(client, URL):
-                await page.goto(URL, wait_until='domcontentloaded')
-                for kind, variant in variants:
-                    rows = await append_observed_frames(page, include=(kind,), variant={'kind':kind, **variant})
-                    assert rows[0]['attached'] is True, (kind, variant)
-                await page.wait_for_timeout(100)
-                assert client._page._hh_action_monitor.unknown
-                assert context._hh_action_watch.unknown
-                assert blocked == []
-        assert stopped.value.hh_stop_reason == 'possible_external_action'
-        assert stopped.value.hh_uncertain is True
+        async with response_navigation(client, URL):
+            await page.goto(URL, wait_until='domcontentloaded')
+            for kind, variant in variants:
+                rows = await append_observed_frames(page, include=(kind,), variant={'kind':kind, **variant})
+                assert rows[0]['attached'] is True, (kind, variant)
+            await page.wait_for_timeout(100)
+            assert client._page._hh_action_monitor.embedded_history
+            assert not client._page._hh_action_monitor.unknown
+            assert not context._hh_action_watch.unknown
+            assert blocked == []
+        assert context._hh_action_watch.application_post_sequence == 0
     asyncio.run(browser_case(tmp_path, monkeypatch, check))
-
 
 def fake_navigation_session():
     from hh_client import HHClient

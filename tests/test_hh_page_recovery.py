@@ -352,6 +352,9 @@ window.addEventListener('submit',()=>window.recordLeak('submit'),true);</script>
                 client._browser = browser
                 browser._hh_owner_session = client
                 client._context = context
+                await context.add_init_script(script=BLOCK_WORKER_CONSTRUCTORS)
+                client._hh_blocked_worker_context = context
+                context._hh_workers_owner = client
                 client._cookie_paths = CookiePaths(str(tmp_path / 'cookies.json'), str(tmp_path / 'state'))
                 client._cookie_binding = CookieBinding(HHCookieRepository(tmp_path / 'cookies.json'), None, True, context)
                 client._cookie_write_nonce = object()
@@ -371,9 +374,10 @@ window.addEventListener('submit',()=>window.recordLeak('submit'),true);</script>
                 operation = AsyncMock(return_value={'ok': False, 'needs_questions': True})
                 monkeypatch.setattr(hh_apply, '_apply_to_vacancy', operation)
                 result = await apply(client)
-                assert result['hh_hard_stop'] and result['uncertain']
-                assert result['reason'] == 'native_client_busy'
-                operation.assert_not_awaited()
+                assert result['hh_hard_stop'] and not result.get('uncertain')
+                assert result['hh_recovery_reason'] == 'embedded_frame_lifecycle_unproven'
+                operation.assert_awaited_once()
+                assert not old._hh_action_monitor.unknown
                 assert await client.hard_stop_browser() is True
                 old.close.assert_not_awaited()
                 context.new_page.assert_not_awaited()

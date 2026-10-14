@@ -695,6 +695,9 @@ class HHClient:
 
     async def get_vacancy_details(self, vacancy_url: str) -> str:
         """Получить полный текст вакансии."""
+        prior_proof = getattr(self, '_hh_forbidden_document_proof', None)
+        if prior_proof is not None:
+            await prior_proof()
         await self._ensure_expected_ui("details_before_navigation")
         from hh.vacancy_details import passive_details_navigation
         async with passive_details_navigation(self, vacancy_url):

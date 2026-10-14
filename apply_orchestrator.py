@@ -17,6 +17,7 @@ from debug_trace import ApplyTrace
 from hh_client import HHClient
 from hh.resume_target import exact_title_resume_id
 from hh.ui import HHUnexpectedUI
+from hh.vacancy_details import HHVacancyNavigationError, HHVacancyUnavailable, classify_vacancy_forbidden
 from outcome import apply_result_is_uncertain
 from superjob_client import SuperJobClient
 from habr_career_client import HabrCareerClient
@@ -91,12 +92,24 @@ async def fetch_vacancy_details(
     try:
         if source == "hh" and hh_client is not None:
             details = await hh_client.get_vacancy_details(url)
+            hh_client._hh_consecutive_forbidden_vacancies = set()
         elif source == "habr" and habr_client is not None:
             details = await habr_client.get_vacancy_details(url)
         elif source == "geekjob" and geekjob_client is not None:
             details = await geekjob_client.get_vacancy_details(url)
     except HHUnexpectedUI:
         raise
+    except HHVacancyNavigationError as error:
+        if source == "hh" and hh_client is not None and await classify_vacancy_forbidden(hh_client, error, url):
+            trace = create_hh_apply_trace(vacancy, mode="details-preflight", force=True)
+            if trace is not None:
+                trace.event("VACANCY_FORBIDDEN", ok=False, navigation_failure=error.metadata,
+                            reason="vacancy_forbidden", authenticated_catalog_verified=True, action_started=False)
+                trace.finish(ok=False, message="Вакансия HH недоступна; пропущена до apply",
+                             failure_stage="VACANCY_FORBIDDEN")
+            raise HHVacancyUnavailable(error.metadata) from error
+        analytics.record_failure("details", error, source=source, continued=True)
+        log.warning("Failed to get %s details for %s: %s", source, vacancy.get("id"), type(error).__name__)
     except Exception as e:
         analytics.record_failure("details", e, source=source, continued=True)
         log.warning("Failed to get %s details for %s: %s", source, vacancy.get("id"), type(e).__name__)
@@ -125,6 +138,10 @@ def apply_result_with_current_uncertainty(vacancy: dict, hh_client, result: dict
                 return confirmed
         return uncertain()
     if apply_result_is_uncertain(result):
+        return uncertain()
+    # A proven remote receipt must retain its typed terminal classification;
+    # a generic ok marker cannot replay it through another outcome path.
+    if owned_attempt is not None and getattr(hh_client, '_hh_verified_attempt', None) is owned_attempt:
         return uncertain()
     if hh_client is None:
         return result
@@ -307,7 +324,7 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
             try:
                 if trace is not None:
                     try:
-                        failure_stage = trace.last_stage
+                        failure_stage = result.get('hh_failure_stage') or trace.last_stage
                         if not isinstance(exc, HHUnexpectedUI) and getattr(hh_client, "_page", None) is not None:
                             await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
                         result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
@@ -335,7 +352,7 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
         try:
             if trace is not None:
                 try:
-                    failure_stage = trace.last_stage
+                    failure_stage = result.get('hh_failure_stage') or trace.last_stage
                     if not result.get("ok") and getattr(hh_client, "_page", None) is not None:
                         await trace.capture(hh_client._page, "failure", screenshot=True, html=True)
                     result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)

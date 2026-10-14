@@ -267,7 +267,7 @@ def test_inert_details_rejects_malformed_duplicate_embeds(body):
 
 def fake_navigation_session(body=HTML, status=200, headers=None):
     """Native routing API shape with no browser/network needed for transport failures."""
-    page = SimpleNamespace(main_frame=object())
+    page = SimpleNamespace(main_frame=object(), on=lambda *args: None)
     async def install(pattern, handler):
         page.handler = handler
     page.route = AsyncMock(side_effect=install)
@@ -520,4 +520,74 @@ def test_details_route_unroute_failure_still_drains_owned_pending_fetch():
         route.fulfill.assert_not_awaited()
         assert route.fetch.await_count == 1
         page.unroute.assert_awaited_once()
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize('goto_error', [RuntimeError, TimeoutError])
+@pytest.mark.parametrize('late_uncertainty', ['', 'attempt', 'session'])
+def test_apply_regional_forbidden_navigation_keeps_cause_before_chrome_error_guard(tmp_path, monkeypatch, late_uncertainty, goto_error):
+    """302 -> regional 403 -> goto error must stop before inspecting chrome-error UI."""
+    from hh import apply as hh_apply
+    from hh import recovery, verification
+    import hh_client
+
+    async def check():
+        client, page, route, redirect = fake_navigation_session(status=302,
+            headers={'location': SPB_URL})
+        client._cookie_paths = SimpleNamespace(cookies_file=tmp_path / 'cookies.json')
+        client._save_debug_snapshot = AsyncMock()
+        page.url = URL
+        page.wait_for_timeout = AsyncMock()
+        final = SimpleNamespace(status=403, url=SPB_URL,
+            headers={'content-type': 'text/html; charset=UTF-8'},
+            text=AsyncMock(return_value='<html>ForbiddenPage</html>'), dispose=AsyncMock())
+        route.fetch.side_effect = [redirect, final]
+
+        async def goto(*args, **kwargs):
+            await page.handler(route)
+            page.url = 'chrome-error://chromewebdata/'
+            raise goto_error('Page.goto: net::ERR_FAILED; synthetic-private-query')
+        page.goto = AsyncMock(side_effect=goto)
+        async def ensure(stage, **kwargs):
+            if stage == 'vacancy_open':
+                error = HHUnexpectedUI(stage, 'synthetic')
+                error.hh_stop_reason = 'auth_origin_unproven'
+                raise error
+        client._ensure_expected_ui.side_effect = ensure
+        abandon = AsyncMock(return_value=SimpleNamespace(recovered=False,
+            reason='auth_origin_unproven', uncertain=False))
+        monkeypatch.setattr(recovery, 'abandon_page', abandon)
+        async def reconcile(session, attempt, *args):
+            if late_uncertainty == 'attempt':
+                attempt.uncertain = True
+            elif late_uncertainty == 'session':
+                session._hh_recovery_uncertain = True
+        monkeypatch.setattr(verification, 'reconcile_post_submit', AsyncMock(side_effect=reconcile))
+        result = await hh_apply.apply_to_vacancy(client, URL, preferred_resume_id='synthetic-exact',
+            absolute_hh_url=lambda value: value, anti_bot_message=lambda *args: '', logger=hh_client.log)
+        assert result['hh_recovery_reason'] == 'vacancy_navigation_failed'
+        failure = result['hh_navigation_failure']
+        assert failure == {
+            'stage': 'VACANCY_NAVIGATION', 'reason_code': 'vacancy_navigation_failed',
+            'requested_url': URL, 'response_url': 'https://spb.hh.ru/vacancy/123',
+            'response_origin': 'https://spb.hh.ru', 'status': 403, 'content_type': 'text/html',
+            'redirect_chain': [{'url': URL, 'status': 302},
+                               {'url': 'https://spb.hh.ru/vacancy/123', 'status': 403}],
+            'error_type': 'ValueError', 'error_code': 'unexpected_response', 'method': 'GET',
+        }
+        assert result['ok'] is False and result['hh_hard_stop'] is True
+        assert bool(result.get('uncertain')) is bool(late_uncertainty)
+        from state_store.native_apply import NativeApplyRepository
+        receipt = NativeApplyRepository(client._cookie_paths.cookies_file, 'hh').get(URL)
+        assert receipt['status'] == ('uncertain' if late_uncertainty else 'failed')
+        assert [call.args[0] for call in client._ensure_expected_ui.await_args_list] == (
+            ['apply_before_navigation', 'vacancy_open'] if goto_error is TimeoutError else ['apply_before_navigation'])
+        abandon.assert_not_awaited()
+        assert page.wait_for_timeout.await_count == (1 if goto_error is TimeoutError else 0)
+        final.text.assert_not_awaited()
+        route.fulfill.assert_not_awaited()
+        route.abort.assert_awaited_once()
+        assert [call.kwargs['url'] for call in route.fetch.await_args_list] == [URL, SPB_URL]
+        assert route.request.method == 'GET'
+        assert 'synthetic-private-query' not in repr(result)
     asyncio.run(check())

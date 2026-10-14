@@ -22,7 +22,11 @@ RESPONSE_CSP = (
 # Captured HH replay timer helper (Wu); other builds/actors fail closed.
 # This bundle's helper only reads native timer functions and has a window
 # fallback if its temporary iframe cannot be appended/accessed/removed.
-REPLAY_VENDOR_URL = 'https://i.hh.ru/build/vendors.df512a23f097c519.js'
+REPLAY_VENDOR_URLS = (
+    'https://i.hh.ru/build/vendors.df512a23f097c519.js',
+    # Captured 2026-10-11: identical Wu timer fallback, newer static build.
+    'https://i.hh.ru/build/vendors.91818c9dc6b48eb9.js',
+)
 
 
 def _exact_response_url(url, vacancy_id):
@@ -38,7 +42,7 @@ def _tracker_init(vacancy_id):
     grammar = re.sub(r'\s+', '', _MTS_SRCDOC.pattern)
     return r"""(() => {
       const id=__ID__, mts=new RegExp('^(?:'+__GRAMMAR__+')$');
-      const replayVendor=__REPLAY_VENDOR__;
+      const replayVendors=__REPLAY_VENDORS__;
       const exact=()=>location.protocol==='https:'&&['hh.ru','spb.hh.ru'].includes(location.host)&&location.pathname==='/applicant/vacancy_response'&&!location.hash&&new URLSearchParams(location.search).toString()==='vacancyId='+id;
       for(const method of ['appendChild','insertBefore']) {
         const original=Node.prototype[method];
@@ -51,11 +55,13 @@ def _tracker_init(vacancy_id):
             const feedbackFrame=this===document.body && attrs==='class,sandbox,src' && node.getAttribute('class')==='uxfeedback-widget' && node.getAttribute('sandbox')==='allow-scripts allow-same-origin allow-forms allow-popups' && node.getAttribute('src')==='https://hhcdn.ru/uxfeedback/widget.html';
             let replayTimerFrame=false;
             if(method==='appendChild' && this===document.head && attrs==='hidden' && node.getAttribute('hidden')==='' && node.hidden && node.childNodes.length===0) {
-              const prefix='at Wu ('+replayVendor+':';
               try {
                 replayTimerFrame=(new Error().stack||'').split('\n').some(line=>{
                   line=line.trim();
-                  return line.startsWith(prefix) && /^\d+:\d+\)$/.test(line.slice(prefix.length));
+                  return replayVendors.some(vendor=>{
+                    const prefix='at Wu ('+vendor+':';
+                    return line.startsWith(prefix) && /^\d+:\d+\)$/.test(line.slice(prefix.length));
+                  });
                 });
               } catch (_) {}
             }
@@ -64,7 +70,7 @@ def _tracker_init(vacancy_id):
           return Reflect.apply(original,this,[node,...args]);
         };
       }
-    })();""".replace('__ID__', json.dumps(vacancy_id)).replace('__GRAMMAR__', json.dumps(grammar)).replace('__REPLAY_VENDOR__', json.dumps(REPLAY_VENDOR_URL))
+    })();""".replace('__ID__', json.dumps(vacancy_id)).replace('__GRAMMAR__', json.dumps(grammar)).replace('__REPLAY_VENDORS__', json.dumps(REPLAY_VENDOR_URLS))
 
 
 @asynccontextmanager

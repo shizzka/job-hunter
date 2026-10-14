@@ -226,9 +226,12 @@ def test_transient_frame_cannot_restore_proven_single_renderer_ownership(tmp_pat
         }''')
         await old.wait_for_timeout(50)
         assert len(old.frames) == 1
+        assert old._hh_action_monitor.embedded_history
+        assert not old._hh_action_monitor.unknown
         recovered = await abandon_page(client)
         assert recovered.recovered is False
-        assert recovered.uncertain is True
+        assert recovered.reason == 'embedded_frame_lifecycle_unproven'
+        assert recovered.uncertain is False
         assert not old.is_closed()
         assert len(requests) == 1
 
@@ -447,7 +450,7 @@ def test_late_replacement_frame_is_not_published_after_auth_inspection(tmp_path)
 @pytest.mark.parametrize('kind', ['captcha', 'ddos_guard', 'browser_check'])
 def test_automatic_apply_stops_detected_antibot_before_response_retry_or_solver(kind):
     page = SimpleNamespace(url=VACANCY, goto=AsyncMock(), wait_for_timeout=AsyncMock(),
-                           route=AsyncMock(), unroute=AsyncMock())
+                           route=AsyncMock(), unroute=AsyncMock(), on=Mock())
     context = SimpleNamespace(request=object(), add_init_script=AsyncMock())
     session = SimpleNamespace(_page=page, _context=context, _ui_guard=None,
                               _raise_stopped_ui=Mock(), _save_debug_snapshot=AsyncMock(),

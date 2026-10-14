@@ -172,7 +172,7 @@ async def reconcile_post_submit(session, attempt, resume_id, letter):
                 attempt._hh_verified_receipt = None
 
 
-def confirmed_result(session, vacancy_url, result, *, owned_attempt=None):
+def confirmed_result(session, vacancy_url, result, *, owned_attempt=None, close_attempt=False):
     """Report the proven remote fact separately from a dirty browser receipt."""
     try:
         attempt = getattr(session, '_hh_verified_attempt', None)
@@ -191,7 +191,31 @@ def confirmed_result(session, vacancy_url, result, *, owned_attempt=None):
             return None
         if result.get('selected_resume_id') not in {None, '', record.resume_id}:
             return None
+        monitor = attempt.page._hh_action_monitor
+        watch = attempt.context._hh_action_watch
+        # A confirmed vacancy does not erase an unrelated external action,
+        # authentication failure, or revoked browser/cookie ownership.
+        allowed_stops = {'', 'native_action_or_uncertainty', 'native_attempt_already_acting'}
+        if (monitor.unknown or watch.unknown or result.get('anti_bot_kind')
+                or getattr(session, '_hh_recovery_stop_reason', '') not in allowed_stops
+                or result.get('hh_recovery_reason', '') not in allowed_stops):
+            return None
+        binding = getattr(session, '_cookie_binding', None)
+        if (session._context is attempt.context and binding is not None
+                and (binding.context is not attempt.context or binding.closing or binding.revoked)):
+            return None
         status = attempt.repository.get(attempt.url)['status']
+        # Close stale attempt-local inference before NativeAttempt writes its
+        # terminal receipt. Acting remains set and completed/uncertain durable
+        # receipts stay non-retryable; never reopen a terminal uncertain owner.
+        if status != 'completed' and not (close_attempt and status == 'acting'):
+            return None
+        if close_attempt and status == 'acting':
+            attempt.uncertain = False
+            session._hh_recovery_stop_reason = ''
+            session._hh_recovery_uncertain = False
+        result = {key: value for key, value in result.items()
+                  if key not in {'hh_hard_stop', 'hh_recovery_reason'}}
         return {**result, 'ok': True, 'uncertain': False, 'already_applied': False,
                 'submission_status': 'success_confirmed', 'native_receipt_status': status,
                 'resume_selection_verified': True, 'selected_resume_id': record.resume_id,
