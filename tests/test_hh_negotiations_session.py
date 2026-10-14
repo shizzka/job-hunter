@@ -11,6 +11,7 @@ import agent
 import analytics
 import config
 from browser_action_boundary import bootstrap_boundary
+from tests.test_hh_search_session import retain_unproven_attempt
 from hh.recovery import BLOCK_WORKER_CONSTRUCTORS, monitor_page
 from hh.ui import HHUIGuard, HHUnexpectedUI
 from hh_client import HHClient
@@ -130,6 +131,7 @@ def test_blacklisted_first_candidate_does_not_leave_102_hh_candidates_unprocesse
 @pytest.mark.parametrize('during', ['before', 'get', 'text', 'dispose'])
 def test_negotiations_preserve_existing_or_new_uncertainty(tmp_path, during):
     async def check(client, requests, response):
+        await retain_unproven_attempt(client, tmp_path)
         if during == 'before':
             client._page._hh_action_monitor.mark_unknown()
         else:

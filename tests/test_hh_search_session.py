@@ -11,6 +11,7 @@ from browser_action_boundary import bootstrap_boundary
 from hh.recovery import BLOCK_WORKER_CONSTRUCTORS, monitor_page
 from hh.ui import HHUIGuard, HHUnexpectedUI
 from hh_client import HHClient
+from state_store.native_apply import NativeApplyRepository, run_native_attempt
 
 URL = 'https://hh.ru/search/vacancy?text=synthetic'
 SSR = '''<section data-qa="vacancy-serp__results"><article data-qa="vacancy-serp__vacancy">
@@ -22,6 +23,16 @@ BACKGROUND = '''<script>
 const pixel=document.createElement('iframe');pixel.id='mts-pixel';document.body.append(pixel);
 fetch('/anatskytics',{method:'POST',body:'synthetic'}).catch(()=>{});
 </script>'''
+
+
+async def retain_unproven_attempt(client, tmp_path):
+    """Keep a real failed receipt whose lack of external action is unproven."""
+    repository = NativeApplyRepository(tmp_path / 'uncertainty-cookies.json', 'hh')
+
+    async def operation():
+        return {'ok': False}
+
+    await run_native_attempt(client, repository, 'https://hh.ru/vacancy/999999', operation)
 
 
 async def browser_scenario(tmp_path, check, body=SSR + BACKGROUND):
@@ -61,6 +72,8 @@ def test_observed_search_event_sets_uncertainty_before_parsing(tmp_path, source)
     </script>''' if source == 'frameattached' else '''<script>
     fetch('/anatskytics',{method:'POST',body:'synthetic'}).catch(()=>{});</script>'''
     async def check(client, requests, response):
+        if source == 'telemetry_post':
+            await retain_unproven_attempt(client, tmp_path)
         observed = asyncio.Event()
         client._page.on('frameattached', lambda f: observed.set() if source == 'frameattached' else None)
         client._context.on('request', lambda r: observed.set() if source == 'telemetry_post' and r.method=='POST' else None)
@@ -97,6 +110,7 @@ def test_search_reads_observed_ssr_without_background_events(tmp_path):
 @pytest.mark.parametrize('during',['before','get','text','dispose'])
 def test_search_preserves_uncertainty_and_does_not_retry(tmp_path,during):
     async def check(client, requests, response):
+        await retain_unproven_attempt(client, tmp_path)
         if during=='before':
             client._page._hh_action_monitor.mark_unknown()
         else:

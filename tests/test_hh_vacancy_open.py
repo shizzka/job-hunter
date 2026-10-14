@@ -8,6 +8,7 @@ import pytest
 
 import hh.apply as hh_apply
 import hh_client
+from tests.test_hh_search_session import retain_unproven_attempt
 from hh.ui import HHUnexpectedUI
 _DETAILS_SPEC = importlib.util.spec_from_file_location(
     "hh_vacancy_details_helpers", Path(__file__).with_name("test_hh_vacancy_details.py")
@@ -187,6 +188,7 @@ def test_initial_apply_reload_handles_static_mts_embed_before_vacancy_open_bound
 def test_initial_apply_does_not_clear_preexisting_uncertainty(tmp_path, monkeypatch):
     async def check(template_client, requests, frames, fetched):
         client = template_client
+        await retain_unproven_attempt(client, tmp_path)
         client._page._hh_action_monitor.mark_unknown()
 
         with pytest.raises(HHUnexpectedUI) as raised:

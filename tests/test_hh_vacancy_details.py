@@ -13,6 +13,7 @@ import pytest
 from playwright.async_api import Route, async_playwright
 
 from browser_action_boundary import bootstrap_boundary
+from tests.test_hh_search_session import retain_unproven_attempt
 from hh.recovery import BLOCK_WORKER_CONSTRUCTORS, monitor_page
 from hh.ui import HHUIGuard, HHUnexpectedUI
 from hh_client import HHClient
@@ -212,6 +213,7 @@ def test_unknown_or_same_id_tampered_static_embed_fails_closed(tmp_path, monkeyp
 
 def test_details_does_not_clear_preexisting_uncertainty(tmp_path, monkeypatch):
     async def check(client, requests, frames, fetched):
+        await retain_unproven_attempt(client, tmp_path)
         client._page._hh_action_monitor.mark_unknown()
         with pytest.raises(HHUnexpectedUI) as raised:
             await client.get_vacancy_details(URL)

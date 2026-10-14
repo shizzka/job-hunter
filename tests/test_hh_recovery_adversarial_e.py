@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from tests.test_hh_search_session import retain_unproven_attempt
 from hh.recovery import AUTH_URL, abandon_page, monitor_page
 from hh import apply as hh_apply
 from hh.ui import HHUIGuard, HHUnexpectedUI
@@ -58,6 +59,7 @@ def test_unowned_post_halts_next_details_before_navigation(tmp_path, monkeypatch
         from tests.test_hh_page_recovery import install_details_transport
         stub = '<div data-qa="vacancy-description">Synthetic ordinary page</div>'
         install_details_transport(monkeypatch, requests, stub, initial_body=stub)
+        await retain_unproven_attempt(client, tmp_path)
         await old.evaluate("fetch('/synthetic-unowned-action', {method:'POST', body:'unapproved'}).catch(() => {})")
         assert old._hh_action_monitor.unknown
         old.wait_for_timeout = AsyncMock()
@@ -92,6 +94,7 @@ document.querySelector('#first button').onclick = () => {
 </script>'''
 
     async def scenario(client, old, requests):
+        await retain_unproven_attempt(client, tmp_path)
         assert (await client._ui_guard._scan(old, ()))[0]['kind'] == 'optional'
         stopped = None
         try:
@@ -513,6 +516,7 @@ def test_closed_foreign_popup_keeps_uncertain_action_ownership(tmp_path):
     async def scenario(client, old, requests):
         close = AsyncMock(wraps=old.close)
         old.close = close
+        await retain_unproven_attempt(client, tmp_path)
         opened = await old.evaluate('''() => {
             const foreign = window.open('about:blank', '_synthetic_e_closed_popup');
             if (!foreign) return false;

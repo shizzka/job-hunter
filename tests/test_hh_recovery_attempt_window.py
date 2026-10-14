@@ -1,4 +1,4 @@
-"""Unowned observations only affect action safety within the native window."""
+"""Unowned observations respect pending claims and retained attempt history."""
 import asyncio
 from types import SimpleNamespace
 
@@ -28,11 +28,12 @@ def request(page, url, method='POST'):
 
 @pytest.mark.parametrize('stage', ['idle', 'preparing', 'finished'])
 @pytest.mark.parametrize('surface', ['page', 'unmonitored', 'worker', 'event', 'malformed'])
-def test_background_observations_outside_window_stay_passive(tmp_path, stage, surface):
+def test_background_observations_respect_unproven_attempt_window(tmp_path, stage, surface):
     client, context, page, monitor = monitored_client()
     watch = context._hh_action_watch
     repository = NativeApplyRepository(tmp_path / 'cookies.json', 'hh')
     retained = []
+    requires_stop = stage != 'idle' and surface in {'event', 'malformed'}
 
     def observe():
         if surface == 'event':
@@ -44,16 +45,22 @@ def test_background_observations_outside_window_stay_passive(tmp_path, stage, su
             context.emit('request', request(source, 'https://mc.yandex.ru/watch/123'))
         assert watch.observations == 1
         assert monitor.observations == (1 if surface in {'page', 'event'} else 0)
-        assert not watch.unknown and not monitor.unknown
-        assert not getattr(client, '_hh_recovery_stop_reason', '')
-        assert not getattr(client, '_hh_recovery_uncertain', False)
+        assert watch.unknown is requires_stop
+        assert monitor.unknown is (requires_stop and surface == 'event')
+        if requires_stop:
+            assert client._hh_recovery_stop_reason == 'possible_external_action'
+            assert client._hh_recovery_uncertain
+        else:
+            assert not getattr(client, '_hh_recovery_stop_reason', '')
+            assert not getattr(client, '_hh_recovery_uncertain', False)
 
     async def operation():
         attempt = client._external_attempt
         retained.append(attempt)
         if stage == 'preparing':
             observe()
-            assert not attempt.uncertain and not action_observed(client, attempt)
+            assert attempt.uncertain is requires_stop
+            assert action_observed(client, attempt) is requires_stop
         else:
             attempt.begin()
         return {'ok': True}
@@ -62,12 +69,17 @@ def test_background_observations_outside_window_stay_passive(tmp_path, stage, su
         observe()
     else:
         result = asyncio.run(run_native_attempt(client, repository, URL, operation))
-        assert result['ok'] and not result.get('uncertain')
+        if stage == 'preparing' and requires_stop:
+            assert not result['ok'] and result['uncertain']
+        else:
+            assert result['ok'] and not result.get('uncertain')
         if stage == 'finished':
             observe()
             assert retained[0].acting and client._external_attempt is None
-            assert not retained[0].uncertain
-        assert repository.get(URL)['status'] == 'completed'
+        assert retained[0].uncertain is requires_stop
+        assert repository.get(URL)['status'] == ('uncertain' if requires_stop else 'completed')
+        assert repository.get(URL)['owner'] == retained[0].owner
+        assert not repository.claim(URL, '', '')
 
 
 @pytest.mark.parametrize('method', ['POST', 'PUT', 'PATCH'])
@@ -117,7 +129,7 @@ def test_unknown_inside_window_remains_sticky_after_window_closes(tmp_path, surf
     assert monitor.unknown is (surface != 'malformed')
     assert context._hh_action_watch.unknown and action_observed(client, retained[0])
     monitor.mark_unknown()
-    assert retained[0].uncertain and monitor.unknown is (surface != 'malformed')
+    assert retained[0].uncertain and monitor.unknown
     assert context._hh_action_watch.unknown
     assert client._hh_recovery_uncertain
     assert repository.get(URL)['status'] == 'uncertain'

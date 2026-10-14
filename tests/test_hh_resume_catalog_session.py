@@ -9,6 +9,7 @@ from playwright.async_api import async_playwright
 
 import config
 from browser_action_boundary import bootstrap_boundary
+from tests.test_hh_search_session import retain_unproven_attempt
 from hh.recovery import BLOCK_WORKER_CONSTRUCTORS, monitor_page
 from hh.ui import HHUIGuard, HHUnexpectedUI
 from hh_client import HHClient
@@ -53,6 +54,8 @@ def test_observed_catalog_events_remain_possible_external_action(tmp_path, sourc
     body = CATALOG if source == 'frameattached' else '''<a data-qa="resume-card-link-synthetic">Synthetic</a>
     <script>fetch('/anatskytics', {method:'POST', body:'synthetic'}).catch(()=>{});</script>'''
     async def check(client, requests, response):
+        if source == 'telemetry_post':
+            await retain_unproven_attempt(client, tmp_path)
         observed = asyncio.Event()
         client._context.on('request', lambda r: observed.set() if r.method == 'POST' else None)
         client._page.on('frameattached', lambda f: observed.set())
@@ -88,6 +91,7 @@ def test_session_proof_reads_observed_catalog_without_loading_its_scripts(tmp_pa
 
 def test_session_proof_does_not_clear_preexisting_uncertainty(tmp_path):
     async def check(client, requests, response):
+        await retain_unproven_attempt(client, tmp_path)
         client._page._hh_action_monitor.mark_unknown()
         with pytest.raises(HHUnexpectedUI) as raised:
             await client.is_logged_in()

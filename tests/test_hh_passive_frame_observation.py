@@ -5,11 +5,12 @@ from types import SimpleNamespace
 import pytest
 from playwright.async_api import async_playwright
 
+from tests.test_hh_search_session import retain_unproven_attempt
 from hh.recovery import install_frame_observation, monitor_page
 
 
 @pytest.mark.parametrize('side_effect', ['none', 'post', 'get', 'click', 'submit'])
-def test_hidden_frame_only_becomes_uncertain_on_unowned_post(side_effect, caplog):
+def test_hidden_frame_only_becomes_uncertain_on_unowned_post(side_effect, caplog, tmp_path):
     async def run():
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
@@ -39,6 +40,7 @@ def test_hidden_frame_only_becomes_uncertain_on_unowned_post(side_effect, caplog
             assert not getattr(session, '_hh_recovery_stop_reason', '')
             assert 'frame attached' in caplog.text.lower()
             if side_effect != 'none':
+                await retain_unproven_attempt(session, tmp_path)
                 frame = next(frame for frame in page.frames if frame is not page.main_frame)
                 if side_effect == 'post':
                     await frame.evaluate("""() => fetch('https://hh.ru/applicant/vacancy_response/popup', {

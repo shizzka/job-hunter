@@ -149,8 +149,11 @@ def _unknown_requires_stop(session, request, watch):
     # Releasing _external_attempt does not close the document's callbacks.
     # Even a failed/completed receipt can be invalidated by a late action;
     # retain the context's attempt history until that context is destroyed.
+    # Manual claims install their approval guard before browser startup, so
+    # their unproven outcome window precedes NativeAttempt registration too.
     attempt = getattr(session, '_external_attempt', None)
-    if attempt is None and (watch is None or watch.last_attempt is None):
+    if (attempt is None and (watch is None or watch.last_attempt is None)
+            and getattr(session, '_manual_apply_guard', None) is None):
         return False
     if request is None:
         return True
