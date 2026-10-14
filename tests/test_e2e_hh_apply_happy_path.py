@@ -221,9 +221,10 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True):
             if noise and not continuity:
                 await page.wait_for_function("window.telemetryFinished === true")
             result = await agent.do_search()
-            if noise:
-                # sendBeacon does not await its response. Drain both offline
-                # handlers before taking evidence or closing Chromium.
+            if noise and not continuity:
+                # The happy path requires both telemetry responses. Continuity
+                # checks pipeline decisions even if navigation cancels beacons;
+                # their observed requests remain diagnostic evidence only.
                 await asyncio.wait_for(noise_answered.wait(), timeout=5)
             decisions = [event for event in read_json_records(config.ANALYTICS_EVENTS_FILE)
                          if event.get("event") == "decision"]

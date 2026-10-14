@@ -1,16 +1,14 @@
 """Offline Chromium gate: one vacancy 403 must leave later HH work runnable."""
 import asyncio
 
-from tests.test_e2e_hh_apply_happy_path import NOISE_URLS, run_hh_gate
+from tests.test_e2e_hh_apply_happy_path import run_hh_gate
 
 
 def test_hh_vacancy_forbidden_preserves_run_continuity(tmp_path, monkeypatch):
     gate = asyncio.run(run_hh_gate(tmp_path, monkeypatch, continuity=True))
-    # Verify the first real navigation received 403 and the departing live
-    # document emitted real pagehide POSTs, all terminated by offline routing.
+    # Verify the real GET denial, then test pipeline behaviour. Navigation may
+    # cancel departing-document beacons; their delivery is not this gate's goal.
     assert ("GET", "https://hh.ru/vacancy/1", 403) in gate.evidence["documents"]
-    assert set(gate.evidence["noise_posts"]) == {("POST", url) for url in NOISE_URLS}
-    assert all(("POST", url) in gate.answered for url in NOISE_URLS)
     first = [event for event in gate.decisions if event.get("vacancy_id") == "1"]
     assert len(first) == 1, gate.evidence
     assert first[0]["decision"] in {"skipped", "unavailable", "skipped_unavailable"}, gate.evidence
