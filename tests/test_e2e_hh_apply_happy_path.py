@@ -54,7 +54,8 @@ document.querySelector('form[name="vacancy_response"]').addEventListener('submit
 </script>"""
 
 
-async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True):
+async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
+                      continue_after_apply=False):
     """Reuse the confirmed-success harness; replace transport and search inputs only."""
     for key, name in {
         "JOB_HUNTER_HOME": "", "SEEN_VACANCIES_FILE": "seen.json",
@@ -84,7 +85,7 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True):
 
     dispatch = AsyncMock(wraps=observed_dispatch)
     monkeypatch.setattr(apply_orchestrator, "dispatch_apply", dispatch)
-    ids = ("1", "2", "3") if continuity else ("2",)
+    ids = ("1", "2", "3") if continuity else ("2", "3") if continue_after_apply else ("2",)
     vacancies = [{
         "id": vid, "source": "hh", "source_label": "hh.ru",
         "title": "Synthetic QA vacancy", "company": f"Synthetic employer {vid}",
@@ -97,8 +98,9 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True):
         matched.append(vacancy["id"])
         # Continuity ends at a real matcher rejection: no second application
         # or post-submit frame lifecycle is needed to prove the run continued.
-        return {"score": 10 if continuity else 90, "reason": "Synthetic QA match",
-                "should_apply": not continuity, "red_flags": []}
+        should_apply = not continuity and vacancy["id"] == "2"
+        return {"score": 90 if should_apply else 10, "reason": "Synthetic QA match",
+                "should_apply": should_apply, "red_flags": []}
 
     monkeypatch.setattr(agent, "evaluate_vacancy", evaluate)
     monkeypatch.setattr(agent, "generate_cover_letter", AsyncMock(return_value=COVER_LETTER))
@@ -211,7 +213,7 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True):
             client._cookie_binding = SimpleNamespace(context=context, closing=False, revoked=False)
             client._hh_blocked_worker_context = context
             context._hh_workers_owner = client
-            monitor_page(client, page)
+            monitor = monitor_page(client, page)
             client.start, client.stop = AsyncMock(), AsyncMock()
             client.is_logged_in = AsyncMock(return_value=True)
             client.get_negotiation_statuses = AsyncMock(return_value=[])
@@ -247,7 +249,8 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True):
             return SimpleNamespace(result=result, evidence=evidence, decisions=decisions,
                                    entries=seen.all_entries(), requests=requests, answered=answered,
                                    fresh_gets=fresh_gets, application_posts=application_posts,
-                                   dispatch_results=dispatch_results)
+                                   dispatch_results=dispatch_results,
+                                   native_attempts=tuple(monitor.attempts.values()))
         finally:
             await browser.close()
 
@@ -271,3 +274,60 @@ def test_hh_apply_happy_path_through_real_page_noise(tmp_path, monkeypatch):
     assert gate.result["hh_recovery"]["stopped"] is False, gate.evidence
     confirmation = [call for call in gate.fresh_gets if call["url"] == VACANCY_URL]
     assert len(confirmation) == 1 and confirmation[0]["max_redirects"] == 0, gate.evidence
+
+
+def test_confirmed_success_after_hidden_vendor_iframe_preserves_run_continuity(tmp_path, monkeypatch):
+    import hh.verification as verification
+
+    real_confirmed_result = verification.confirmed_result
+    confirmations = []
+
+    def observe_confirmation(*args, **kwargs):
+        result = real_confirmed_result(*args, **kwargs)
+        if result is not None:
+            confirmations.append((kwargs.get("owned_attempt"), result))
+        return result
+
+    monkeypatch.setattr(verification, "confirmed_result", observe_confirmation)
+    gate = asyncio.run(run_hh_gate(tmp_path, monkeypatch, continue_after_apply=True))
+
+    # The hidden vendor frame is actually loaded before the owned application;
+    # neither inherited uncertainty nor a terminal success dictionary is forged.
+    assert ("GET", VENDOR_URL) in gate.answered, gate.evidence
+    assert len(gate.native_attempts) == 1, gate.evidence
+    attempt = gate.native_attempts[0]
+    submit_count = len(gate.application_posts)
+    assert submit_count == 1, gate.evidence
+    assert gate.application_posts == [("POST", POPUP_URL)], gate.evidence
+    assert len(attempt._hh_application_posts) == 1
+    assert attempt._hh_application_posts[0]["owned"] is True
+    assert attempt._hh_application_posts[0]["status"] == 200
+    confirmation = [call for call in gate.fresh_gets if call["url"] == VACANCY_URL]
+    assert len(confirmation) == 1 and confirmation[0]["max_redirects"] == 0, gate.evidence
+    assert confirmations and all(owner is attempt for owner, _ in confirmations)
+    assert all(result["submission_status"] == "success_confirmed"
+               and result["ok"] is True and result["uncertain"] is False
+               for _, result in confirmations)
+    outcome = gate.dispatch_results[0]
+    assert outcome["submission_status"] == "success_confirmed", gate.evidence
+    assert outcome["uncertain"] is False and not outcome.get("hh_hard_stop"), gate.evidence
+    assert outcome["native_receipt_status"] == "completed", gate.evidence
+    assert attempt.acting is True and attempt.uncertain is False
+    assert attempt.repository.get(VACANCY_URL)["status"] == "completed"
+    assert attempt.repository.claim(VACANCY_URL, "", "") is None
+
+    assert gate.entries["2"]["action"] == "applied", gate.evidence
+    assert gate.result["applied"] == gate.result["source_stats"]["hh"]["applied"] == 1, gate.evidence
+    assert any(event.get("vacancy_id") == "2" and event["decision"] == "applied_auto"
+               for event in gate.decisions), gate.evidence
+    assert not {"guard_stop", "apply_uncertain"}.intersection(
+        event["decision"] for event in gate.decisions), gate.evidence
+    assert gate.result["source_stats"]["hh"].get("guard_stop", 0) == 0, gate.evidence
+    assert gate.evidence["uncertain"] is False and gate.evidence["stop_reason"] == "", gate.evidence
+    assert gate.evidence["matched"] == ["2", "3"], gate.evidence
+    assert gate.evidence["dispatched"] == ["2"], gate.evidence
+    assert gate.entries["3"]["action"] == "skipped_low_score", gate.evidence
+    assert any(event.get("vacancy_id") == "3" and event["decision"] == "skipped_low_score"
+               for event in gate.decisions), gate.evidence
+    assert gate.result["funnel"]["not_processed"] == 0, gate.evidence
+    assert gate.result["hh_recovery"]["stopped"] is False, gate.evidence
