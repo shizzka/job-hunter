@@ -1,5 +1,7 @@
 """Recheck approved native payload synchronously at browser click/submit events."""
 
+RESPONSE_PATH = '/applicant/vacancy_response'
+
 # Captured HH component 501788. DOM-attached Fibers can be alternates: only
 # HostRoot.stateNode.current may supply the current selected-resume props.
 REACT_RESPONSE_STATE_SCRIPT = r'''() => {
@@ -73,7 +75,7 @@ def popup_request_matches(proof, request):
         actual, approved = urlsplit(request.url), urlsplit(proof['url'])
         if (actual != approved or actual.scheme != 'https'
                 or actual.netloc not in {'hh.ru', 'spb.hh.ru'}
-                or actual.path != '/applicant/vacancy_response/popup'
+                or actual.path != RESPONSE_PATH + '/popup'
                 or actual.query or actual.fragment or request.method != 'POST'):
             return False
         content_type = request.headers.get('content-type', '')
@@ -140,7 +142,7 @@ async def _install_popup_gate(session, boundary_id, descriptor):
         if not fresh:
             monitor = getattr(page, '_hh_action_monitor', None)
             if monitor is not None:
-                monitor.mark_unknown()
+                monitor.mark_unknown(request)
             await route.abort()
             return
         used = True

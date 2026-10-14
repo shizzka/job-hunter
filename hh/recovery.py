@@ -14,6 +14,7 @@ from html.parser import HTMLParser
 from urllib.parse import parse_qs, parse_qsl, urlsplit
 
 from browser_action_boundary import RUNTIME, bootstrap_boundary
+from hh.submit_boundary import RESPONSE_PATH
 from hh.ui import CHALLENGE_SELECTOR, CHALLENGE_TEXT, HHUIGuard, HHUnexpectedUI
 
 AUTH_URL = 'https://hh.ru/applicant/resumes'
@@ -70,6 +71,7 @@ class PageActions:
     owners: set[str] = field(default_factory=set)
     last_attempt: object = None
     attempts: dict[str, object] = field(default_factory=dict)
+    observations: int = 0
 
     def register(self, attempt):
         watch = getattr(self.page.context, '_hh_action_watch', None)
@@ -85,15 +87,18 @@ class PageActions:
         attempt._hh_application_posts = []
         watch.last_attempt = attempt
 
-    def mark_unknown(self):
-        self.unknown = True
-        self.session._hh_recovery_stop_reason = 'possible_external_action'
-        self.session._hh_recovery_uncertain = True
+    def mark_unknown(self, request=None):
+        self.observations += 1
+        log.debug('HH unowned page event; observations=%s', self.observations)
+        if _unknown_requires_stop(self.session, request):
+            self.unknown = True
+            self.session._hh_recovery_stop_reason = 'possible_external_action'
+            self.session._hh_recovery_uncertain = True
         # A callback on the current document may name an earlier vacancy or
         # one formerly shown on another Page in this same authenticated context.
         watch = getattr(self.page.context, '_hh_action_watch', None)
         if watch is not None and watch.session is self.session and watch.context is self.page.context:
-            watch.mark_unknown()
+            watch.mark_unknown(request)
 
     def observe(self, request):
         attempt = getattr(self.session, '_external_attempt', None)
@@ -108,7 +113,7 @@ class PageActions:
                 if post['request'] is request:
                     post['owned'] = True
         else:
-            self.mark_unknown()
+            self.mark_unknown(request)
 
 
 @dataclass
@@ -119,8 +124,13 @@ class ContextActions:
     unknown: bool = False
     last_attempt: object = None
     application_post_sequence: int = 0
+    observations: int = 0
 
-    def mark_unknown(self):
+    def mark_unknown(self, request=None):
+        self.observations += 1
+        log.debug('HH unowned context event; observations=%s', self.observations)
+        if not _unknown_requires_stop(self.session, request):
+            return
         self.unknown = True
         self.session._hh_recovery_stop_reason = 'possible_external_action'
         self.session._hh_recovery_uncertain = True
@@ -133,6 +143,14 @@ class ContextActions:
                         and attempt.page is page and attempt.context is self.context
                         and attempt.repository.source == 'hh'):
                     _preserve_unknown_attempt(attempt)
+
+
+def _unknown_requires_stop(session, request):
+    # begin() opens the action window; run_native_attempt finally releases it.
+    attempt = getattr(session, '_external_attempt', None)
+    return bool(getattr(attempt, 'acting', False) or (
+        request is not None and getattr(request, 'method', '').upper() in {'POST', 'PUT', 'PATCH'}
+        and urlsplit(request.url).path.startswith(RESPONSE_PATH)))
 
 
 def _preserve_unknown_attempt(attempt):
@@ -194,7 +212,7 @@ def monitor_page(session, page):
                 # Observation only: neither admission nor the unknown-action guard
                 # changes. Retain duplicate/unapproved POSTs too for reconciliation.
                 if (request.method.upper() == 'POST'
-                        and urlsplit(request.url).path.startswith('/applicant/vacancy_response')):
+                        and urlsplit(request.url).path.startswith(RESPONSE_PATH)):
                     watch.application_post_sequence += 1
                     attempt = getattr(session, '_external_attempt', None) or watch.last_attempt
                     posts = getattr(attempt, '_hh_application_posts', None)
@@ -207,15 +225,15 @@ def monitor_page(session, page):
                 observed_page = request.frame.page
                 monitor = watch.pages.get(observed_page)
                 if monitor is None:
-                    watch.mark_unknown()
+                    watch.mark_unknown(request)
                 else:
                     monitor.observe(request)
             except Exception:
                 # Worker-originated requests have no owning Frame/Page.
-                watch.mark_unknown()
+                watch.mark_unknown(request)
         context.on('request', request_seen)
         def response_seen(response):
-            if not urlsplit(response.url).path.startswith('/applicant/vacancy_response'):
+            if not urlsplit(response.url).path.startswith(RESPONSE_PATH):
                 return
             for monitor in watch.pages.values():
                 for attempt in monitor.attempts.values():
