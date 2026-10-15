@@ -233,8 +233,8 @@ def test_owned_confirmation_overrides_only_its_inherited_stop(tmp_path, monkeypa
             assert repository.claim(VACANCY_URL, "", "") is None
             if variant == "post_success_unrelated_put":
                 assert not result.get("hh_hard_stop")
-                # Independent mutation does not add an application POST, change
-                # its owned receipt, or invalidate the fresh GET body itself.
+                # An unrelated readable payload cannot submit another resume
+                # and preserves the already verified receipt.
                 await page.evaluate("""() => fetch('/applicant/synthetic-preference', {
                   method: 'PUT', body: 'synthetic-only'
                 }).catch(() => null)""")
@@ -242,18 +242,18 @@ def test_owned_confirmation_overrides_only_its_inherited_stop(tmp_path, monkeypa
                     vacancy, client, result, owned_attempt=attempt
                 )
                 assert len(unrelated_mutations) == 1
-                assert monitor.unknown is True
-                assert context._hh_action_watch.unknown is True
+                assert monitor.unknown is False
+                assert context._hh_action_watch.unknown is False
                 assert context._hh_action_watch.application_post_sequence == 1
                 assert len(attempt._hh_application_posts) == 1
                 assert attempt._hh_application_posts[0]["owned"] is True
                 assert attempt._hh_application_posts[0]["status"] == 200
                 assert len(apply_core_calls) == len(popup_posts) == len(fresh_get_calls) == 1
-                assert result.get("ok") is False
-                assert result.get("uncertain") is True
-                assert result.get("submission_status") == "uncertain"
-                assert client._hh_recovery_stop_reason == "possible_external_action"
-                assert repository.get(VACANCY_URL)["status"] == "uncertain"
+                assert result.get("ok") is True
+                assert result.get("uncertain") is False
+                assert result.get("submission_status") == "success_confirmed"
+                assert not client._hh_recovery_stop_reason
+                assert repository.get(VACANCY_URL)["status"] == "completed"
                 assert repository.claim(VACANCY_URL, "", "") is None
                 return
             if consumer == "result":

@@ -7,11 +7,14 @@ until destruction. The replacement proves authentication before publication.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import re
 from dataclasses import dataclass, field
+from email import policy
+from email.parser import Parser
 from html.parser import HTMLParser
-from urllib.parse import parse_qs, parse_qsl, urlsplit
+from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlsplit
 
 from browser_action_boundary import RUNTIME, bootstrap_boundary
 from hh.submit_boundary import RESPONSE_PATH
@@ -19,6 +22,7 @@ from hh.ui import CHALLENGE_SELECTOR, CHALLENGE_TEXT, HHUIGuard, HHUnexpectedUI
 
 AUTH_URL = 'https://hh.ru/applicant/resumes'
 log = logging.getLogger('hh_recovery')
+RESPONSE_FIELDS = {'resume_id', 'resumeId', 'resumeHash', 'resume_hash', 'resume', 'letter'}
 
 
 async def install_frame_observation(session, context):
@@ -189,7 +193,7 @@ def _unknown_classification(request, reason, frame_kind, event_url):
         else:
             diagnostic['path'] = '/[other]'
         keys = set(parse_qs(parsed.query, keep_blank_values=True))
-        diagnostic['query_fields'] = sorted(keys & {'resume_id', 'resumeId', 'resumeHash', 'resume', 'letter'})
+        diagnostic['query_fields'] = sorted(keys & RESPONSE_FIELDS)
     if frame_kind is None:
         with contextlib.suppress(Exception):
             if getattr(request, 'service_worker', None) is not None:
@@ -230,7 +234,18 @@ def _unknown_requires_stop(session, request, watch):
     if request is None:
         return True
     try:
-        return _hh_target(request.url) and _mutating_request(request)
+        if not _hh_target(request.url) or not _mutating_request(request):
+            return False
+        if _application_request(request):
+            return True
+        # Only unrelated traffic after our successful dispatch is passive.
+        # Earlier unknown evidence stays sticky; this never clears a latch.
+        attempt = attempt or getattr(watch, 'last_attempt', None)
+        posts = getattr(attempt, '_hh_application_posts', [])
+        return not (watch is not None and watch.session is session
+                    and attempt is watch.last_attempt and attempt.client is session
+                    and attempt.context is watch.context and len(posts) == 1
+                    and posts[0]['owned'] is True and posts[0]['status'] == 200)
     except Exception:
         # An unreadable event cannot prove a harmless target or method.
         return True
@@ -278,14 +293,56 @@ def _request_matches(proof, request):
         return False
 
 
-def _mutating_request(request):
-    method = request.method.upper()
-    if method not in {'GET', 'HEAD'}:
+def _response_fields_present(request):
+    """Conservative payload check; unreadable/opaque bodies cannot prove safety."""
+    if set(parse_qs(urlsplit(request.url).query, keep_blank_values=True)) & RESPONSE_FIELDS:
         return True
-    # A form may use GET. Response entry navigation has only vacancyId; a
-    # successful-control payload is an external action even with a GET method.
-    keys = set(parse_qs(urlsplit(request.url).query))
-    return bool(keys & {'resume_id', 'resumeId', 'resumeHash', 'resume', 'letter'})
+    try:
+        body = getattr(request, 'post_data', None)
+        if body is None:
+            return bool(getattr(request, 'post_data_buffer', None))
+        if not body:
+            return False
+        content_header = request.headers.get('content-type', '')
+        content_type = content_header.split(';', 1)[0].strip().lower()
+        if (content_type not in {'application/x-www-form-urlencoded', 'multipart/form-data',
+                                 'application/json', 'text/plain'}
+                or request.headers.get('content-encoding', 'identity').lower() != 'identity'):
+            return True
+        if content_type == 'application/json' or body.lstrip().startswith(('{', '[')):
+            # Decode escaped JSON keys, including nested objects. Matching values
+            # too is deliberately conservative and never authorizes an action.
+            body = json.dumps(json.loads(body), ensure_ascii=False)
+        elif content_type == 'multipart/form-data':
+            message = Parser(policy=policy.default).parsestr(
+                'Content-Type: ' + content_header + '\r\nMIME-Version: 1.0\r\n\r\n' + body)
+            if not message.is_multipart() or message.defects or message['content-type'].defects:
+                return True
+            for part in message.iter_parts():
+                disposition = part['content-disposition']
+                if (part.is_multipart() or part.defects or disposition is None or disposition.defects
+                        or part.get_content_disposition() != 'form-data'):
+                    return True
+                name = part.get_param('name', header='content-disposition')
+                if not isinstance(name, str) or name in RESPONSE_FIELDS:
+                    return True
+        fields = '|'.join(re.escape(name) for name in RESPONSE_FIELDS)
+        return bool(re.search(r'(?<!\w)(?:' + fields + r')(?!\w)', unquote_plus(body)))
+    except Exception:
+        return True
+
+
+def _mutating_request(request):
+    # Successful controls are external actions even with GET/HEAD or blank values.
+    return request.method.upper() not in {'GET', 'HEAD'} or _response_fields_present(request)
+
+
+def _application_request(request):
+    """Share the stop decision and sequence fence for every possible HH submit."""
+    return (_hh_target(request.url)
+            and ((request.method.upper() not in {'GET', 'HEAD'}
+                  and urlsplit(request.url).path.startswith(RESPONSE_PATH))
+                 or _response_fields_present(request)))
 
 
 def monitor_page(session, page):
@@ -297,12 +354,9 @@ def monitor_page(session, page):
         context._hh_action_watch = watch
         def request_seen(request):
             try:
-                # GET/HEAD successful controls are possible form actions even on
-                # an unknown path. POST receipts keep their existing meaning.
-                if (_mutating_request(request)
-                        and _hh_target(request.url)
-                        and (urlsplit(request.url).path.startswith(RESPONSE_PATH)
-                             or request.method.upper() in {'GET', 'HEAD'})):
+                # Every possible submit advances the fence, on any HH path and
+                # with any method. Only actual POSTs supply POST receipts.
+                if _application_request(request):
                     watch.application_post_sequence += 1
                     attempt = getattr(session, '_external_attempt', None) or watch.last_attempt
                     posts = getattr(attempt, '_hh_application_posts', None)

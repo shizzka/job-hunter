@@ -23,7 +23,7 @@ def monitored_client():
 
 def request(page, url, method='POST'):
     return SimpleNamespace(method=method, url=url, frame=SimpleNamespace(page=page),
-                           headers={}, post_data='unapproved')
+                           headers={}, post_data=None if method in {'GET', 'HEAD'} else 'unapproved')
 
 
 @pytest.mark.parametrize('stage', ['idle', 'preparing', 'finished'])

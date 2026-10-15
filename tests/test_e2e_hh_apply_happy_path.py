@@ -59,7 +59,8 @@ document.querySelector('form[name="vacancy_response"]').addEventListener('submit
 async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                       continue_after_apply=False, stale_receipt=False,
                       confirmation_html=APPLIED_HTML, form_disappears=False,
-                      session_failure='', repeat_run=False, apply_next=False):
+                      session_failure='', repeat_run=False, apply_next=False,
+                      post_submit_effect=''):
     """Reuse the confirmed-success harness; replace transport and search inputs only."""
     for key, name in {
         "JOB_HUNTER_HOME": "", "SEEN_VACANCIES_FILE": "seen.json",
@@ -208,6 +209,10 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                     return PassiveResponse(url, '<script>{"userType":"anonymous"}</script>')
                 if url == VACANCY_URL and "2" in submitted:
                     count = sum(call['url'] == VACANCY_URL for call in fresh_gets)
+                    if post_submit_effect and count == 1:
+                        # Emit real browser traffic from the destination page
+                        # while confirmation awaits its independent server GET.
+                        await page.evaluate('async () => {' + post_submit_effect + '}')
                     body = (confirmation_html[min(count - 1, len(confirmation_html) - 1)]
                             if isinstance(confirmation_html, list) else confirmation_html)
                     if session_failure == 'unknown':
@@ -324,6 +329,35 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                                    native_attempts=tuple(monitor.attempts.values()))
         finally:
             await browser.close()
+
+
+@pytest.mark.parametrize('effect, expected_applied, expected_sequence', [
+    ("await fetch('/analytics/pageview',{method:'POST',body:'pageview=applied'});", True, 1),
+    ("await fetch('/applicant/vacancy_response',{method:'POST',body:'vacancy_id=2'}).catch(()=>{});", False, 2),
+    ("await fetch('/unknown?resume_id=other&letter=').catch(()=>{});", False, 2),
+    ("await fetch('/unknown',{method:'POST',body:new URLSearchParams({resume_hash:'other'})}).catch(()=>{});", False, 2),
+])
+def test_post_submit_hh_traffic_preserves_only_owned_application(
+        tmp_path, monkeypatch, effect, expected_applied, expected_sequence):
+    gate = asyncio.run(run_hh_gate(tmp_path, monkeypatch, noise=False, post_submit_effect=effect))
+    attempt, = gate.native_attempts
+    watch = attempt.context._hh_action_watch
+    assert watch.application_post_sequence == expected_sequence, gate.evidence
+    assert watch.unknown is not expected_applied, gate.evidence
+    assert attempt.page._hh_action_monitor.unknown is not expected_applied, gate.evidence
+    assert attempt._hh_application_posts[0]['owned'] is True
+    assert attempt._hh_application_posts[0]['status'] == 200
+    assert gate.result['applied'] == int(expected_applied), gate.evidence
+    assert gate.entries['2']['action'] == ('applied' if expected_applied else 'apply_uncertain'), gate.evidence
+    assert attempt.repository.get(VACANCY_URL)['status'] == ('completed' if expected_applied else 'uncertain')
+    if expected_applied:
+        assert ('POST', ANALYTICS_URL) in gate.answered
+        assert watch.last_unknown_diagnostic['requires_stop'] is False
+        assert len([call for call in gate.fresh_gets if call['url'] == VACANCY_URL]) == 1
+        assert gate.dispatch_results[0]['submission_status'] == 'success_confirmed'
+    else:
+        assert gate.dispatch_results[0]['uncertain'] is True
+        assert gate.dispatch_results[0].get('submission_status') != 'success_confirmed'
 
 
 def test_hh_apply_happy_path_through_real_page_noise(tmp_path, monkeypatch):
