@@ -107,7 +107,7 @@ MENU_ADMIN = "admin"
 MENU_LLM = "llm"
 BUTTON_LLM = "🧠 Платные LLM"
 BUTTON_LLM_BALANCE = "💰 Баланс"
-BUTTON_LLM_TEST = "🧪 Тест"
+BUTTON_LLM_TEST = "🧪 Проверить LLM"
 MENU_SEARCH = "search_settings"
 MENU_SEARCH_CONDITIONS = "search_conditions"
 MENU_APPLICATION_MODE = "application_mode"
@@ -294,6 +294,7 @@ GUEST_BUTTON_MAP = {
     BUTTON_HELP: "/start",
 }
 LEGACY_BUTTON_MAP = {
+    "🧪 Тест": "/llm_test",
     "🧾 Raw log": "/raw_log",
     "🟢 Демон: вкл": "/daemon_on",
     "⛔ Демон: выкл": "/daemon_off",
@@ -582,26 +583,8 @@ def _normalize_process_runtime(runtime: dict | None, *, expected_tokens: tuple[s
     return stale_runtime
 
 
-def build_reply_markup(
-    role: str,
-    *,
-    menu: str = MENU_MAIN,
-    profile_buttons: list[str] | None = None,
-    active: bool = False,
-    can_stop: bool = False,
-) -> dict:
-    if profile_buttons is not None:
-        rows = [[{"text": f"{BUTTON_PROFILE_PREFIX}{name}"}] for name in profile_buttons]
-        rows.append([{"text": BUTTON_BACK}])
-        rows = _append_active_controls(rows, active=active, can_stop=can_stop)
-        return {
-            "keyboard": rows,
-            "resize_keyboard": True,
-            "one_time_keyboard": True,
-            "is_persistent": False,
-        }
-
-    menu = _normalize_menu(role, menu)
+def reply_menu_layouts(role: str) -> dict[str, list[list[str]]]:
+    """Single source of truth for persistent action buttons and their owners."""
     layouts = {
         MENU_MAIN: [[BUTTON_SEARCH, BUTTON_DRYRUN], [BUTTON_RESPONSES, BUTTON_SEARCH_SETTINGS],
                     [BUTTON_HH, BUTTON_CANDIDATE_PROFILE], [BUTTON_MENU_MONITOR], [BUTTON_HELP]],
@@ -626,9 +609,46 @@ def build_reply_markup(
                      [BUTTON_DIGEST, BUTTON_BACKFILL], [BUTTON_DAEMON_ON, BUTTON_DAEMON_OFF]],
         MENU_LLM: [[BUTTON_LLM_BALANCE, BUTTON_LLM_TEST], [BUTTON_AI_LIMITS]],
     }
-    labels = layouts[menu]
-    if menu == MENU_MAIN and role == ROLE_ADMIN:
-        labels = [*labels[:-1], [BUTTON_MENU_ADMIN], labels[-1]]
+    if role != ROLE_ADMIN:
+        layouts.pop(MENU_ADMIN)
+        layouts.pop(MENU_LLM)
+    else:
+        labels = layouts[MENU_MAIN]
+        layouts[MENU_MAIN] = [*labels[:-1], [BUTTON_MENU_ADMIN], labels[-1]]
+    return layouts
+
+
+def reply_menu_for_command(role: str, command: str) -> str | None:
+    """Find the owning screen using the same layouts that render the keyboard."""
+    button_map = ADMIN_BUTTON_MAP if role == ROLE_ADMIN else USER_BUTTON_MAP
+    for menu, rows in reply_menu_layouts(role).items():
+        for row in rows:
+            if any(button_map.get(label) == command for label in row):
+                return menu
+    return None
+
+
+def build_reply_markup(
+    role: str,
+    *,
+    menu: str = MENU_MAIN,
+    profile_buttons: list[str] | None = None,
+    active: bool = False,
+    can_stop: bool = False,
+) -> dict:
+    if profile_buttons is not None:
+        rows = [[{"text": f"{BUTTON_PROFILE_PREFIX}{name}"}] for name in profile_buttons]
+        rows.append([{"text": BUTTON_BACK}])
+        rows = _append_active_controls(rows, active=active, can_stop=can_stop)
+        return {
+            "keyboard": rows,
+            "resize_keyboard": True,
+            "one_time_keyboard": True,
+            "is_persistent": False,
+        }
+
+    menu = _normalize_menu(role, menu)
+    labels = reply_menu_layouts(role)[menu]
     rows = [[{"text": label} for label in row] for row in labels]
     if menu != MENU_MAIN:
         rows.extend(_navigation_rows())
@@ -1963,7 +1983,7 @@ def _format_users_text(users: list[dict]) -> str:
     return "\n".join(lines)
 
 
-_EXPORTED_HELPERS = ['_append_active_controls', '_callback_data', '_client_auth_label', '_client_display_name', '_client_status_label', '_command_conflicts_with_active', '_error_excerpt', '_extract_analyze_markdown', '_format_ai_profile_counts', '_format_counter_number', '_format_elapsed', '_format_interval_label', '_format_runtime_block', '_format_users_text', '_normalize_menu', '_normalize_process_runtime', '_ok_icon', '_parse_callback_data', '_parse_chat_action_callback_data', '_parse_chat_ai_callback_data', '_parse_chat_ai_manual_callback_data', '_parse_chat_manual_send_callback_data', '_parse_chat_send_callback_data', '_parse_hh_reauth_callback_data', '_parse_manual_apply_callback_data', '_parse_manual_block_company_callback_data', '_parse_manual_feedback_callback_data', '_parse_manual_why_callback_data', '_pretty_command_label', '_pretty_pid', '_pretty_profile_name', '_pretty_runtime_action', '_pretty_runtime_mode', '_pretty_runtime_status', '_pretty_value', '_redact_log_text', '_resolve_guest_command', '_resolve_message_command', '_role_label', '_role_title', '_sanitize_analyze_output', '_sanitize_command_output', '_schedule_preset_label', '_status_icon', '_status_label', '_strip_markdown_markup', '_tail_text_file', '_unique_paths', 'build_ai_limits_text', 'build_busy_reply_markup', 'build_busy_status_text', 'build_client_hh_auth_inline_markup', 'build_client_review_inline_markup', 'build_client_status_text', 'build_clients_inline_markup', 'build_clients_text', 'build_daily_summary_text', 'build_diagnostics_text', 'build_guest_reply_markup', 'build_guest_welcome_text', 'build_help_text', 'build_hh_auth_admin_text', 'build_hh_auth_result_text', 'build_hh_resumes_text', 'build_hh_response_count_text', 'build_log_text', 'build_menu_section_text', 'build_profiles_text', 'build_progress_text', 'build_reply_markup', 'build_runs_text', 'build_schedule_text', 'build_stats_text', 'build_status_text', 'format_ai_snapshot_text', 'format_command_result', 'format_run_summary', 'normalize_command', 'parse_hh_auth_command_result', 'split_message']
+_EXPORTED_HELPERS = ['_append_active_controls', '_callback_data', '_client_auth_label', '_client_display_name', '_client_status_label', '_command_conflicts_with_active', '_error_excerpt', '_extract_analyze_markdown', '_format_ai_profile_counts', '_format_counter_number', '_format_elapsed', '_format_interval_label', '_format_runtime_block', '_format_users_text', '_normalize_menu', '_normalize_process_runtime', '_ok_icon', '_parse_callback_data', '_parse_chat_action_callback_data', '_parse_chat_ai_callback_data', '_parse_chat_ai_manual_callback_data', '_parse_chat_manual_send_callback_data', '_parse_chat_send_callback_data', '_parse_hh_reauth_callback_data', '_parse_manual_apply_callback_data', '_parse_manual_block_company_callback_data', '_parse_manual_feedback_callback_data', '_parse_manual_why_callback_data', '_pretty_command_label', '_pretty_pid', '_pretty_profile_name', '_pretty_runtime_action', '_pretty_runtime_mode', '_pretty_runtime_status', '_pretty_value', '_redact_log_text', '_resolve_guest_command', '_resolve_message_command', '_role_label', '_role_title', '_sanitize_analyze_output', '_sanitize_command_output', '_schedule_preset_label', '_status_icon', '_status_label', '_strip_markdown_markup', '_tail_text_file', '_unique_paths', 'build_ai_limits_text', 'build_busy_reply_markup', 'build_busy_status_text', 'build_client_hh_auth_inline_markup', 'build_client_review_inline_markup', 'build_client_status_text', 'build_clients_inline_markup', 'build_clients_text', 'build_daily_summary_text', 'build_diagnostics_text', 'build_guest_reply_markup', 'build_guest_welcome_text', 'build_help_text', 'build_hh_auth_admin_text', 'build_hh_auth_result_text', 'build_hh_resumes_text', 'build_hh_response_count_text', 'build_log_text', 'build_menu_section_text', 'build_profiles_text', 'build_progress_text', 'build_reply_markup', 'build_runs_text', 'build_schedule_text', 'build_stats_text', 'build_status_text', 'format_ai_snapshot_text', 'format_command_result', 'format_run_summary', 'reply_menu_for_command', 'normalize_command', 'parse_hh_auth_command_result', 'split_message']
 
 __all__ = [
     name

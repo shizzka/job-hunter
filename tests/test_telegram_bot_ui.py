@@ -94,7 +94,7 @@ COMMON_SCREENS = {
 }
 ADMIN_SCREENS = {
     ui.MENU_ADMIN: ["🩺 Диагностика", "🧾 Профили", "👥 Пользователи", "🧑‍💼 Клиенты", "🧠 Платные LLM", "📰 Дайджест", "🗃 Пересчёт аналитики", "🟢 Фоновый режим: вкл", "⛔ Фоновый режим: выкл"],
-    ui.MENU_LLM: ["💰 Баланс", "🧪 Тест", "🎁 Лимиты ИИ"],
+    ui.MENU_LLM: ["💰 Баланс", "🧪 Проверить LLM", "🎁 Лимиты ИИ"],
 }
 MENU_COMMANDS = {
     "/menu_responses": ui.MENU_RESPONSES, "/search_settings": ui.MENU_SEARCH,
@@ -158,3 +158,11 @@ def test_navigation_and_profile_switch_keep_active_controls(role):
     profiles = ui.build_reply_markup(role, profile_buttons=["qa", "electrician"], active=True)
     assert profiles["keyboard"][0] == [{"text": "📁 Профиль: qa"}]
     assert profiles["one_time_keyboard"] is True
+
+
+def test_button_labels_have_no_substring_collisions():
+    # Include secondary, guest and busy buttons as well as persistent menu buttons.
+    labels = [value for name, value in vars(ui).items()
+              if name.startswith("BUTTON_") and not name.endswith("_PREFIX")]
+    assert len(labels) == len(set(labels)), "Different buttons must have different labels"
+    assert not [(a, b) for a in labels for b in labels if a != b and a in b]

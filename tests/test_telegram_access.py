@@ -30,6 +30,7 @@ class TestTelegramAccess:
 def user_bot(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "TELEGRAM_AI_LIMITS_FILE", str(tmp_path / "ai.json"))
     monkeypatch.setattr(config, "TELEGRAM_AI_FREE_ANALYSES", 1)
+    monkeypatch.setattr(config, "TELEGRAM_BOT_STATE_FILE", str(tmp_path / "bot-state.json"))
     bot = telegram_bot.TelegramBot("qa")
     monkeypatch.setattr(bot, "_selected_profile", lambda principal: "qa")
     monkeypatch.setattr(bot, "_active_command", lambda profile: None)
@@ -61,7 +62,10 @@ def test_opened_commands_reach_handlers_for_regular_user(user_bot, monkeypatch, 
     monkeypatch.setattr(bot, method, handler)
     asyncio.run(bot._dispatch(42, principal, command, ""))
     handler.assert_awaited_once()
-    assert not bot._send_text.called
+    if command == "/forms":
+        bot._send_text.assert_awaited_once_with(42, "📝 Анкеты", reply_markup={})
+    else:
+        bot._send_text.assert_not_awaited()
 
 
 @pytest.mark.parametrize("command", sorted(ui.ADMIN_ONLY_COMMANDS - {"/cancel_active"}))

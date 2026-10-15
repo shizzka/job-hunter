@@ -234,7 +234,8 @@ def test_strict_download_rejects_stale_redirected_or_empty_page(monkeypatch, opt
 
 @pytest.mark.parametrize("role", [ui.ROLE_ADMIN, ui.ROLE_USER])
 @pytest.mark.parametrize("text", ["🔄 Обновить резюме", "/refresh_resume", "/refresh_resume@hunter_bot"])
-def test_telegram_refresh_button_and_command_route_to_selected_profile(monkeypatch, role, text):
+def test_telegram_refresh_button_and_command_route_to_selected_profile(tmp_path, monkeypatch, role, text):
+    monkeypatch.setattr(resume.config, "TELEGRAM_BOT_STATE_FILE", str(tmp_path / "bot-state.json"))
     bot = TelegramBot(profile_name="qa")
     monkeypatch.setattr(bot, "_selected_profile", lambda principal: "selected-profile")
     monkeypatch.setattr(bot, "_active_command", lambda profile: None)
@@ -246,7 +247,8 @@ def test_telegram_refresh_button_and_command_route_to_selected_profile(monkeypat
     command, arg = ui._resolve_message_command(text, role)
     asyncio.run(bot._dispatch(42, principal, command, arg))
     assert calls == [(42, principal, "selected-profile", "--refresh-resume", "refresh resume", 1800)]
-    keyboard = ui.build_reply_markup(role, menu=ui.MENU_SEARCH)["keyboard"]
+    assert bot._selected_menu(principal) == ui.MENU_HH
+    keyboard = bot._menu_reply_markup(principal)["keyboard"]
     assert [{"text": ui.BUTTON_SEARCH_RESUME}, {"text": ui.BUTTON_REFRESH_RESUME}] in keyboard
     assert ui._command_conflicts_with_active(command)
 

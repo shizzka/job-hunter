@@ -229,15 +229,16 @@ def _update_user(user_id: int, mutator) -> dict:
     return snapshot
 
 
-def record_resume_analysis(user_id: int, *, profile_name: str) -> dict:
+def record_resume_analysis(user_id: int, *, profile_name: str, consume_credit: bool = True) -> dict:
     def mutate(registry, entry):
-        entry["free_used"] = int(entry.get("free_used", 0)) + 1
+        if consume_credit:
+            entry["free_used"] = int(entry.get("free_used", 0)) + 1
         profile_key = str(profile_name or "").strip() or "default"
         profile_bucket = entry.setdefault("profiles", {}).setdefault(profile_key, _normalize_profile_bucket({}))
         profile_bucket["analysis_count"] = int(profile_bucket.get("analysis_count", 0)) + 1
         profile_bucket["last_used_at"] = _now()
         entry["updated_at"] = _now()
-        _append_event(registry, action="analysis_used", user_id=user_id, profile_name=profile_key, amount=1)
+        _append_event(registry, action="analysis_used", user_id=user_id, profile_name=profile_key, amount=int(consume_credit))
 
     return _update_user(user_id, mutate)
 
