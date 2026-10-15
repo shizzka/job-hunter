@@ -817,6 +817,8 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
         from hh.verification import confirmed_result, prepare_uncertain_continuation, reconcile_post_submit
         attempt = session._external_attempt
         owned_attempt = attempt
+        # Keep the four-argument reconciliation hook; trace belongs to this owner.
+        attempt._hh_reconciliation_trace = trace
 
         async def reconcile_exception(exc):
             if trace is not None:
@@ -828,7 +830,7 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
                                                    for post in getattr(attempt, '_hh_application_posts', [])])
                 except Exception as trace_error:
                     logger.warning("HH apply exception trace unavailable: %s", type(trace_error).__name__)
-            await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter, trace=trace)
+            await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter)
             # A destroyed form/renderer can fail the click helper after dispatch.
             # Close only this owner's proven success before recovery can stop the
             # browser and NativeAttempt persists a terminal uncertain receipt.
@@ -884,7 +886,7 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
             return {"ok": False, "uncertain": recovered.uncertain,
                     "hh_hard_stop": True, "hh_recovery_reason": recovered.reason,
                     "message": "Подготовка HH остановлена; нужна ручная проверка"}
-        await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter, trace=trace)
+        await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter)
         confirmed = confirmed_result(session, url, result, owned_attempt=attempt, close_attempt=True)
         if confirmed is not None:
             return confirmed

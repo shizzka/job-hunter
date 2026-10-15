@@ -118,6 +118,8 @@ def _owned_post(session, attempt, resume_id, letter):
 
 async def reconcile_post_submit(session, attempt, resume_id, letter, *, trace=None):
     """Verify one owned POST; at most two GETs allow server rendering to catch up."""
+    if trace is None:
+        trace = getattr(attempt, '_hh_reconciliation_trace', None)
     response = None
     step = 'reentry'
     read_number = 0
