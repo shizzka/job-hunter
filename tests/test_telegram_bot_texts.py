@@ -34,8 +34,8 @@ def test_button_labels_are_russian():
     assert BUTTON_HH_AUTH == "🔐 Вход HH"
     assert BUTTON_HH_RESPONSES == "📨 Отклики HH"
     assert BUTTON_CHAT_AI == "🤖 Ответ ИИ в чат"
-    assert BUTTON_DAEMON_ON == "🟢 Демон: вкл"
-    assert BUTTON_DAEMON_OFF == "⛔ Демон: выкл"
+    assert BUTTON_DAEMON_ON == "🟢 Фоновый режим: вкл"
+    assert BUTTON_DAEMON_OFF == "⛔ Фоновый режим: выкл"
     assert BUTTON_REPEAT_OFF == "🛑 Повтор: выкл"
     assert BUTTON_SEARCH_SETTINGS == "🎯 Мой поиск"
     assert BUTTON_SEARCH_USE_DRAFT == "✅ Сохранить предложенное"
@@ -50,10 +50,10 @@ def test_search_settings_menu_is_available_to_regular_user():
     assert "✏️ Изменить запросы" in labels
     assert "✨ Предложить ИИ" in labels
     assert "✅ Сохранить предложенное" in labels
-    assert "🧾 Выбрать резюме" in labels
+    assert "🧾 Выбрать резюме" not in labels
     assert "⚙️ Условия поиска" in labels
     assert "🛡 Режим откликов" in labels
-    assert "📋 На рассмотрении" in [
+    assert "📋 Отклики" in [
         button["text"]
         for row in build_reply_markup(ROLE_USER)["keyboard"]
         for button in row
@@ -272,25 +272,25 @@ def test_chat_ai_command_is_available_to_admin_menu():
 
     assert ADMIN_BUTTON_MAP[BUTTON_CHAT_AI] == "/chat_ai"
     assert ADMIN_BUTTON_MAP[BUTTON_DIAGNOSTICS] == "/diagnostics"
-    assert "/chat_ai" in ADMIN_ONLY_COMMANDS
+    assert "/chat_ai" not in ADMIN_ONLY_COMMANDS
     assert "/chat_ai" in ACTIVE_CONFLICT_COMMANDS
     assert "/chat_ai" in build_help_text(ROLE_ADMIN, profile_name="qa")
 
 
-def test_chat_ai_button_is_visible_in_admin_main_menu():
-    from telegram_bot_ui import MENU_MAIN, build_reply_markup
+def test_chat_ai_button_is_visible_in_admin_responses_menu():
+    from telegram_bot_ui import MENU_RESPONSES, build_reply_markup
 
-    markup = build_reply_markup(ROLE_ADMIN, menu=MENU_MAIN)
+    markup = build_reply_markup(ROLE_ADMIN, menu=MENU_RESPONSES)
     labels = [button["text"] for row in markup["keyboard"] for button in row]
 
-    assert labels[0] == BUTTON_CHAT_AI
+    assert BUTTON_CHAT_AI in labels
 
 
-def test_diagnostics_button_is_visible_in_admin_monitor_menu_only():
-    from telegram_bot_ui import MENU_MONITOR, build_reply_markup
+def test_diagnostics_button_is_visible_in_admin_section_only():
+    from telegram_bot_ui import MENU_ADMIN, build_reply_markup
 
-    admin_markup = build_reply_markup(ROLE_ADMIN, menu=MENU_MONITOR)
-    user_markup = build_reply_markup(ROLE_USER, menu=MENU_MONITOR)
+    admin_markup = build_reply_markup(ROLE_ADMIN, menu=MENU_ADMIN)
+    user_markup = build_reply_markup(ROLE_USER, menu=MENU_ADMIN)
     admin_labels = [button["text"] for row in admin_markup["keyboard"] for button in row]
     user_labels = [button["text"] for row in user_markup["keyboard"] for button in row]
 
@@ -299,10 +299,10 @@ def test_diagnostics_button_is_visible_in_admin_monitor_menu_only():
 
 
 def test_hh_response_button_is_visible_and_mapped_for_both_roles():
-    from telegram_bot_ui import ADMIN_BUTTON_MAP, MENU_MONITOR, USER_BUTTON_MAP, build_reply_markup
+    from telegram_bot_ui import ADMIN_BUTTON_MAP, MENU_RESPONSES, USER_BUTTON_MAP, build_reply_markup
 
     for role in (ROLE_ADMIN, ROLE_USER):
-        markup = build_reply_markup(role, menu=MENU_MONITOR)
+        markup = build_reply_markup(role, menu=MENU_RESPONSES)
         labels = [button["text"] for row in markup["keyboard"] for button in row]
         assert BUTTON_HH_RESPONSES in labels
 

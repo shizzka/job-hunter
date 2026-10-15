@@ -76,3 +76,85 @@ def test_notification_keeps_uncertain_separate_from_unsent(monkeypatch):
     assert "Не отправлено автоматически: 116" in text
     assert "Исход отклика не подтверждён: 1; нужна ручная сверка" in text
     assert "страниц не опрошено: 2" in text and "❌" not in text
+
+# Exact screen membership is the owner-approved tree; overview/list text appears on entry.
+COMMON_SCREENS = {
+    ui.MENU_MAIN: ["🔎 Поиск", "🧪 Тестовый прогон", "📋 Отклики", "🎯 Мой поиск", "🔐 Мой hh", "🧠 Обо мне", "📊 Мониторинг", "❓ Помощь"],
+    ui.MENU_RESPONSES: ["📋 На рассмотрении", "📨 Отклики HH", "📝 Анкеты", "🤖 Ответ ИИ в чат"],
+    ui.MENU_SEARCH: ["✏️ Изменить запросы", "✨ Предложить ИИ", "✅ Сохранить предложенное", "⚙️ Условия поиска", "🚫 Компании", "🛡 Режим откликов", "⏰ Расписание"],
+    ui.MENU_SEARCH_CONDITIONS: ["👤 Опыт", "💰 Зарплата от", "💵 Только с зарплатой", "🏠 Только удалёнка"],
+    ui.MENU_EXPERIENCE: ["👤 Любой опыт", "🌱 Без опыта", "1–3 года", "3–6 лет", "6+ лет"],
+    ui.MENU_COMPANIES: ["➕ В чёрный список", "➖ Разрешить компанию"],
+    ui.MENU_APPLICATION_MODE: ["👀 Только показать", "✋ Подтверждать", "⚡ Автоотклик"],
+    ui.MENU_REPEAT: ["🔁 3 раза/день", "📅 1 раз/день", "🗓 1 раз/нед", "🛑 Повтор: выкл"],
+    ui.MENU_HH: ["🔐 Вход HH", "🧾 HH резюме", "🧾 Выбрать резюме", "🔄 Обновить резюме", "🧠 Анализ резюме", "📄 Забрать резюме"],
+    ui.MENU_CANDIDATE: ["📋 Мои факты", "✨ Уточнить профиль", "➕ Добавить факт"],
+    ui.MENU_MONITOR: ["📊 Статус", "❓ Почему не было откликов", "🕓 Прогоны", "📈 Статистика", "🔬 Отказы и конверсии", "📬 Инвайты", "📜 Журналы"],
+    ui.MENU_LOGS: ["📊 Последний запуск", "🧾 Подробный", "💬 Лог чатов"],
+}
+ADMIN_SCREENS = {
+    ui.MENU_ADMIN: ["🩺 Диагностика", "🧾 Профили", "👥 Пользователи", "🧑‍💼 Клиенты", "🧠 Платные LLM", "📰 Дайджест", "🗃 Пересчёт аналитики", "🟢 Фоновый режим: вкл", "⛔ Фоновый режим: выкл"],
+    ui.MENU_LLM: ["💰 Баланс", "🧪 Тест", "🎁 Лимиты ИИ"],
+}
+MENU_COMMANDS = {
+    "/menu_responses": ui.MENU_RESPONSES, "/search_settings": ui.MENU_SEARCH,
+    "/menu_hh": ui.MENU_HH, "/candidate_profile": ui.MENU_CANDIDATE,
+    "/menu_monitor": ui.MENU_MONITOR, "/menu_logs": ui.MENU_LOGS,
+    "/search_conditions": ui.MENU_SEARCH_CONDITIONS, "/search_experience": ui.MENU_EXPERIENCE,
+    "/search_application_mode": ui.MENU_APPLICATION_MODE, "/companies": ui.MENU_COMPANIES,
+    "/schedule": ui.MENU_REPEAT, "/menu_admin": ui.MENU_ADMIN, "/menu_llm": ui.MENU_LLM,
+}
+
+
+def labels(role, menu):
+    return [b["text"] for row in ui.build_reply_markup(role, menu=menu)["keyboard"] for b in row
+            if b["text"] not in {ui.BUTTON_BACK, ui.BUTTON_MENU}]
+
+
+@pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN])
+def test_agreed_tree_is_reachable_and_every_button_occurs_once(role):
+    from collections import Counter
+    screens = {**COMMON_SCREENS}
+    if role == ui.ROLE_ADMIN:
+        screens.update(ADMIN_SCREENS)
+        screens[ui.MENU_MAIN] = [*screens[ui.MENU_MAIN], ui.BUTTON_MENU_ADMIN]
+    visited, pending, seen = set(), [ui.MENU_MAIN], Counter()
+    while pending:
+        menu = pending.pop()
+        assert menu not in visited  # Every submenu also has exactly one entry point.
+        visited.add(menu)
+        actual = labels(role, menu)
+        assert Counter(actual) == Counter(screens[menu])
+        seen.update(actual)
+        for label in actual:
+            command, _ = ui._resolve_message_command(label, role)
+            assert command.startswith("/")
+            if role == ui.ROLE_USER:
+                assert command not in ui.ADMIN_ONLY_COMMANDS
+            if command in MENU_COMMANDS:
+                pending.append(MENU_COMMANDS[command])
+    assert visited == set(screens)
+    assert set(seen.values()) == {1}
+    if role == ui.ROLE_USER:
+        assert not set(seen).intersection(label for items in ADMIN_SCREENS.values() for label in items)
+    assert labels(role, ui.MENU_MAIN)[:2] == [ui.BUTTON_SEARCH, ui.BUTTON_DRYRUN]
+
+
+def test_admin_menu_ids_are_rejected_for_regular_users():
+    for menu in ADMIN_SCREENS:
+        assert ui._normalize_menu(ui.ROLE_USER, menu) == ui.MENU_MAIN
+    assert ui._normalize_menu(ui.ROLE_ADMIN, "unknown") == ui.MENU_MAIN
+
+
+@pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN])
+def test_navigation_and_profile_switch_keep_active_controls(role):
+    for menu in COMMON_SCREENS:
+        markup = ui.build_reply_markup(role, menu=menu, active=True, can_stop=role == ui.ROLE_ADMIN)
+        actual = [b["text"] for row in markup["keyboard"] for b in row]
+        assert ui.BUTTON_BUSY in actual
+        assert (ui.BUTTON_CANCEL_ACTIVE in actual) == (role == ui.ROLE_ADMIN)
+        if menu != ui.MENU_MAIN:
+            assert ui.BUTTON_BACK in actual and ui.BUTTON_MENU in actual
+    profiles = ui.build_reply_markup(role, profile_buttons=["qa", "electrician"], active=True)
+    assert profiles["keyboard"][0] == [{"text": "📁 Профиль: qa"}]
+    assert profiles["one_time_keyboard"] is True

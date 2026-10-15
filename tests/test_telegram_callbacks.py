@@ -655,3 +655,35 @@ def test_callback_router_rejects_unknown_action(monkeypatch):
             True,
         )
     ]
+
+
+@pytest.mark.parametrize("payload,handler", [
+    ("chat_ai:qa:123:456", "_start_chat_ai_reply"),
+    ("chat_ai_alt:qa:123:456", "_start_chat_ai_reply"),
+    ("chat_ai_any:qa:123:456", "_start_chat_ai_reply"),
+    ("chat_ai_any_alt:qa:123:456", "_start_chat_ai_reply"),
+    ("chat_send:qa:123:456~abcdef123456", "_start_chat_ai_reply"),
+    ("chat_send_any:qa:123:456~abcdef123456", "_start_chat_ai_reply"),
+    ("gf:view:qa:abcdef123456:0", "_form_callback"),
+    ("gform_preview:qa:123:456", "_start_google_form_preview"),
+    ("gform_submit:qa:abcdef123456", "_start_google_form_submit"),
+])
+@pytest.mark.parametrize("target,chat_type,allowed", [("qa", "private", True), ("other", "private", False), ("qa", "group", False)])
+def test_user_ai_and_form_callbacks_require_own_profile_and_private_chat(monkeypatch, payload, handler, target, chat_type, allowed):
+    from unittest.mock import AsyncMock
+    bot, calls = _configured_bot(monkeypatch, principal={"user_id": 42, "role": telegram_bot.ROLE_USER, "profile": "qa"})
+    monkeypatch.setattr(bot, "_profile_names", lambda: ["qa", "other"])
+    mocked = AsyncMock()
+    monkeypatch.setattr(bot, handler, mocked)
+    monkeypatch.setattr(bot, "_append_chat_ai_audit_event", lambda *a, **kw: None)
+    asyncio.run(bot._handle_callback_query(_callback(payload.replace(":qa:", f":{target}:"), user_id=42, chat_type=chat_type)))
+    assert mocked.await_count == int(allowed)
+    if not allowed:
+        assert calls["answers"][-1][2] is True
+
+
+@pytest.mark.parametrize("payload", ["ca:43", "cr:43", "ch:43"])
+def test_user_ai_access_does_not_open_admin_callbacks(monkeypatch, payload):
+    bot, calls = _configured_bot(monkeypatch, principal={"user_id": 42, "role": telegram_bot.ROLE_USER, "profile": "qa"})
+    asyncio.run(bot._handle_callback_query(_callback(payload, user_id=42, chat_type="private")))
+    assert calls["answers"][-1][1] == "🔒 Нужны права администратора."

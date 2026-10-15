@@ -242,6 +242,23 @@ def record_resume_analysis(user_id: int, *, profile_name: str) -> dict:
     return _update_user(user_id, mutate)
 
 
+def consume_ai_usage(user_id: int, *, profile_name: str, action: str) -> bool:
+    """Reserve one shared AI credit atomically before a user operation starts."""
+    consumed = False
+
+    def mutate(registry, entry):
+        nonlocal consumed
+        if _snapshot(entry)["available_soft"] <= 0:
+            return
+        entry["free_used"] = int(entry.get("free_used", 0)) + 1
+        entry["updated_at"] = _now()
+        _append_event(registry, action=action, user_id=user_id, profile_name=profile_name, amount=1)
+        consumed = True
+
+    _update_user(user_id, mutate)
+    return consumed
+
+
 def grant_bonus(user_id: int, *, amount: int = 1, actor_user_id: int = 0) -> dict:
     grant = max(0, int(amount))
 

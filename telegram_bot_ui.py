@@ -25,7 +25,7 @@ BUTTON_RESEARCH = "🔬 Отказы и конверсии"
 BUTTON_STATS = "📈 Статистика"
 BUTTON_RUNS = "🕓 Прогоны"
 BUTTON_LOG = "📊 Последний запуск"
-BUTTON_RAW_LOG = "🧾 Raw log"
+BUTTON_RAW_LOG = "🧾 Подробный"
 BUTTON_CHAT_LOG = "💬 Лог чатов"
 BUTTON_SEARCH = "🔎 Поиск"
 BUTTON_BLACKLIST = "🚫 Компании"
@@ -67,8 +67,8 @@ BUTTON_CLIENT_START = "🆕 Стать клиентом"
 BUTTON_CLIENT_STATUS = "📄 Моя заявка"
 BUTTON_HH_AUTH = "🔐 Вход HH"
 BUTTON_HH_RESUMES = "🧾 HH резюме"
-BUTTON_DAEMON_ON = "🟢 Демон: вкл"
-BUTTON_DAEMON_OFF = "⛔ Демон: выкл"
+BUTTON_DAEMON_ON = "🟢 Фоновый режим: вкл"
+BUTTON_DAEMON_OFF = "⛔ Фоновый режим: выкл"
 BUTTON_SCHEDULE = "⏰ Расписание"
 BUTTON_REPEAT_3DAY = "🔁 3 раза/день"
 BUTTON_REPEAT_DAILY = "📅 1 раз/день"
@@ -82,6 +82,10 @@ BUTTON_BACK = "◀ Назад"
 BUTTON_BUSY = "⏳ Выполняется..."
 BUTTON_CANCEL_ACTIVE = "⏹ Остановить"
 BUTTON_MENU_MONITOR = "📊 Мониторинг"
+BUTTON_RESPONSES = "📋 Отклики"
+BUTTON_HH = "🔐 Мой hh"
+BUTTON_LOGS = "📜 Журналы"
+BUTTON_ZERO_APPLY = "❓ Почему не было откликов"
 BUTTON_MENU_RUN = "🚀 Запуск"
 BUTTON_MENU_REPEAT = "⏰ Повтор"
 BUTTON_MENU_ADMIN = "⚙️ Админ"
@@ -102,14 +106,21 @@ MENU_REPEAT = "repeat"
 MENU_ADMIN = "admin"
 MENU_LLM = "llm"
 BUTTON_LLM = "🧠 Платные LLM"
-BUTTON_LLM_BALANCE = "💰 Баланс DeepSeek"
-BUTTON_LLM_TEST = "🧪 Тест DeepSeek"
+BUTTON_LLM_BALANCE = "💰 Баланс"
+BUTTON_LLM_TEST = "🧪 Тест"
 MENU_SEARCH = "search_settings"
 MENU_SEARCH_CONDITIONS = "search_conditions"
 MENU_APPLICATION_MODE = "application_mode"
 MENU_EXPERIENCE = "search_experience"
 MENU_REVIEW = "review"
 MENU_CANDIDATE = "candidate_profile"
+MENU_HH = MENU_RUN  # Preserve saved menu IDs and legacy /menu_run navigation.
+MENU_RESPONSES = MENU_REVIEW
+MENU_LOGS = "logs"
+MENU_COMPANIES = "companies"
+MENU_PARENTS = {MENU_LLM: MENU_ADMIN, MENU_LOGS: MENU_MONITOR,
+                MENU_SEARCH_CONDITIONS: MENU_SEARCH, MENU_EXPERIENCE: MENU_SEARCH_CONDITIONS,
+                MENU_APPLICATION_MODE: MENU_SEARCH, MENU_COMPANIES: MENU_SEARCH, MENU_REPEAT: MENU_SEARCH}
 PROGRESS_FRAMES = ["⏳", "⌛️", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕"]
 CLIENT_ONBOARDING_STEPS = ("full_name", "target_role", "target_location", "notes")
 CALLBACK_CLIENT_APPROVE = "ca"
@@ -129,6 +140,10 @@ CALLBACK_MANUAL_SNOOZE = "manual_snooze"
 CALLBACK_HH_REAUTH = "hh_reauth"
 
 ADMIN_BUTTON_MAP = {
+    BUTTON_RESPONSES: "/menu_responses",
+    BUTTON_HH: "/menu_hh",
+    BUTTON_LOGS: "/menu_logs",
+    BUTTON_ZERO_APPLY: "/why_no_apply",
     BUTTON_CANDIDATE_PROFILE: "/candidate_profile",
     BUTTON_CANDIDATE_FACTS: "/candidate_facts",
     BUTTON_CANDIDATE_INTERVIEW: "/candidate_interview",
@@ -205,6 +220,13 @@ ADMIN_BUTTON_MAP = {
     BUTTON_CANCEL_ACTIVE: "/cancel_active",
 }
 USER_BUTTON_MAP = {
+    BUTTON_FORMS: "/forms",
+    BUTTON_CHAT_AI: "/chat_ai",
+    BUTTON_GRAB_RESUME: "/grabresume",
+    BUTTON_RESPONSES: "/menu_responses",
+    BUTTON_HH: "/menu_hh",
+    BUTTON_LOGS: "/menu_logs",
+    BUTTON_ZERO_APPLY: "/why_no_apply",
     BUTTON_CANDIDATE_PROFILE: "/candidate_profile",
     BUTTON_CANDIDATE_FACTS: "/candidate_facts",
     BUTTON_CANDIDATE_INTERVIEW: "/candidate_interview",
@@ -272,6 +294,11 @@ GUEST_BUTTON_MAP = {
     BUTTON_HELP: "/start",
 }
 LEGACY_BUTTON_MAP = {
+    "🧾 Raw log": "/raw_log",
+    "🟢 Демон: вкл": "/daemon_on",
+    "⛔ Демон: выкл": "/daemon_off",
+    "💰 Баланс DeepSeek": "/llm_balance",
+    "🧪 Тест DeepSeek": "/llm_test",
     "Мониторинг": "/menu_monitor",
     "Запуск": "/menu_run",
     "Повтор": "/menu_repeat",
@@ -344,10 +371,8 @@ LEGACY_BUTTON_MAP = {
 }
 ADMIN_ONLY_COMMANDS = {
     "/menu_llm", "/llm_balance", "/llm_test",
-    "/forms",
     "/profiles", "/profile", "/users", "/grant", "/revoke",
-    "/digest", "/backfill", "/grabresume",
-    "/chat_ai", "/ai_chat", "/chat_answer",
+    "/digest", "/backfill",
     "/daemon_on", "/daemon_off",
     "/ai_limits", "/ai_grant", "/ai_reset",
     "/clients", "/client_approve", "/client_reject", "/client_hh_auth",
@@ -514,9 +539,9 @@ def _format_runtime_block(title: str, runtime: dict) -> list[str]:
 
 def _normalize_menu(role: str, menu: str | None) -> str:
     if role == ROLE_ADMIN:
-        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_ADMIN, MENU_LLM, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW, MENU_CANDIDATE}
+        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_ADMIN, MENU_LLM, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW, MENU_CANDIDATE, MENU_LOGS, MENU_COMPANIES}
     else:
-        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW, MENU_CANDIDATE}
+        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW, MENU_CANDIDATE, MENU_LOGS, MENU_COMPANIES}
     return menu if menu in allowed else MENU_MAIN
 
 
@@ -577,169 +602,36 @@ def build_reply_markup(
         }
 
     menu = _normalize_menu(role, menu)
-    if role == ROLE_ADMIN:
-        if menu == MENU_MONITOR:
-            rows = [
-                [{"text": BUTTON_RESEARCH}],
-                [{"text": BUTTON_STATUS}, {"text": BUTTON_DIAGNOSTICS}],
-                [{"text": BUTTON_STATS}, {"text": BUTTON_RUNS}],
-                [{"text": BUTTON_CHECK}, {"text": BUTTON_HH_RESPONSES}],
-                [{"text": BUTTON_LOG}, {"text": BUTTON_RAW_LOG}],
-                [{"text": BUTTON_CHAT_LOG}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_RUN:
-            rows = [
-                [{"text": BUTTON_SEARCH}, {"text": BUTTON_DRYRUN}],
-                [{"text": BUTTON_ANALYZE}, {"text": BUTTON_DIGEST}],
-                [{"text": BUTTON_CHAT_AI}, {"text": BUTTON_HH_RESPONSES}],
-                [{"text": BUTTON_FORMS}],
-                [{"text": BUTTON_HH_AUTH}, {"text": BUTTON_HH_RESUMES}],
-                [{"text": BUTTON_BACKFILL}, {"text": BUTTON_GRAB_RESUME}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_REPEAT:
-            rows = [
-                [{"text": BUTTON_SCHEDULE}],
-                [{"text": BUTTON_REPEAT_3DAY}, {"text": BUTTON_REPEAT_DAILY}],
-                [{"text": BUTTON_REPEAT_WEEKLY}, {"text": BUTTON_REPEAT_OFF}],
-                [{"text": BUTTON_DAEMON_ON}, {"text": BUTTON_DAEMON_OFF}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_SEARCH:
-            rows = [
-                [{"text": BUTTON_SEARCH_EDIT}, {"text": BUTTON_SEARCH_SUGGEST}],
-                [{"text": BUTTON_SEARCH_USE_DRAFT}],
-                [{"text": BUTTON_SEARCH_RESUME}, {"text": BUTTON_REFRESH_RESUME}],
-                [{"text": BUTTON_BLACKLIST}],
-                [{"text": BUTTON_BLACKLIST_ADD}, {"text": BUTTON_BLACKLIST_REMOVE}],
-                [{"text": BUTTON_SEARCH_CONDITIONS}, {"text": BUTTON_SEARCH_APPLICATION_MODE}],
-                [{"text": BUTTON_DRYRUN}, {"text": BUTTON_SEARCH}],
-                [{"text": BUTTON_SCHEDULE}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_SEARCH_CONDITIONS:
-            rows = [
-                [{"text": BUTTON_SEARCH_EXPERIENCE}, {"text": BUTTON_SEARCH_SALARY}],
-                [{"text": BUTTON_SEARCH_SALARY_TOGGLE}, {"text": BUTTON_SEARCH_REMOTE}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_APPLICATION_MODE:
-            rows = [
-                [{"text": BUTTON_APPLICATION_PREVIEW}],
-                [{"text": BUTTON_APPLICATION_CONFIRM}, {"text": BUTTON_APPLICATION_AUTO}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_EXPERIENCE:
-            rows = [
-                [{"text": BUTTON_EXPERIENCE_ANY}, {"text": BUTTON_EXPERIENCE_NONE}],
-                [{"text": BUTTON_EXPERIENCE_1_3}, {"text": BUTTON_EXPERIENCE_3_6}],
-                [{"text": BUTTON_EXPERIENCE_6_PLUS}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_REVIEW:
-            rows = [
-                [{"text": BUTTON_REVIEW}, {"text": BUTTON_SEARCH_SETTINGS}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_CANDIDATE:
-            rows = [
-                [{"text": BUTTON_CANDIDATE_FACTS}, {"text": BUTTON_CANDIDATE_INTERVIEW}],
-                [{"text": BUTTON_CANDIDATE_ADD_FACT}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_LLM:
-            rows = [[{"text": BUTTON_LLM_BALANCE}, {"text": BUTTON_LLM_TEST}], *_navigation_rows()]
-        elif menu == MENU_ADMIN:
-            rows = [
-                [{"text": BUTTON_PROFILES}, {"text": BUTTON_USERS}],
-                [{"text": BUTTON_CLIENTS}, {"text": BUTTON_LLM}],
-                [{"text": BUTTON_AI_LIMITS}, {"text": BUTTON_HELP}],
-                *_navigation_rows(),
-            ]
-        else:
-            rows = [
-                [{"text": BUTTON_CHAT_AI}, {"text": BUTTON_FORMS}],
-                [{"text": BUTTON_SEARCH_SETTINGS}, {"text": BUTTON_CANDIDATE_PROFILE}],
-                [{"text": BUTTON_REVIEW}],
-                [{"text": BUTTON_MENU_MONITOR}, {"text": BUTTON_MENU_RUN}],
-                [{"text": BUTTON_MENU_REPEAT}, {"text": BUTTON_MENU_ADMIN}],
-                [{"text": BUTTON_HELP}],
-            ]
-    else:
-        if menu == MENU_MONITOR:
-            rows = [
-                [{"text": BUTTON_RESEARCH}],
-                [{"text": BUTTON_STATUS}, {"text": BUTTON_STATS}],
-                [{"text": BUTTON_RUNS}, {"text": BUTTON_CHECK}],
-                [{"text": BUTTON_HH_RESPONSES}],
-                [{"text": BUTTON_LOG}, {"text": BUTTON_RAW_LOG}],
-                [{"text": BUTTON_CHAT_LOG}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_RUN:
-            rows = [
-                [{"text": BUTTON_SEARCH}, {"text": BUTTON_DRYRUN}],
-                [{"text": BUTTON_ANALYZE}],
-                [{"text": BUTTON_HH_AUTH}, {"text": BUTTON_HH_RESUMES}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_REPEAT:
-            rows = [
-                [{"text": BUTTON_SCHEDULE}],
-                [{"text": BUTTON_REPEAT_3DAY}, {"text": BUTTON_REPEAT_DAILY}],
-                [{"text": BUTTON_REPEAT_WEEKLY}, {"text": BUTTON_REPEAT_OFF}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_SEARCH:
-            rows = [
-                [{"text": BUTTON_SEARCH_EDIT}, {"text": BUTTON_SEARCH_SUGGEST}],
-                [{"text": BUTTON_SEARCH_USE_DRAFT}],
-                [{"text": BUTTON_SEARCH_RESUME}, {"text": BUTTON_REFRESH_RESUME}],
-                [{"text": BUTTON_BLACKLIST}],
-                [{"text": BUTTON_BLACKLIST_ADD}, {"text": BUTTON_BLACKLIST_REMOVE}],
-                [{"text": BUTTON_SEARCH_CONDITIONS}, {"text": BUTTON_SEARCH_APPLICATION_MODE}],
-                [{"text": BUTTON_DRYRUN}, {"text": BUTTON_SEARCH}],
-                [{"text": BUTTON_SCHEDULE}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_SEARCH_CONDITIONS:
-            rows = [
-                [{"text": BUTTON_SEARCH_EXPERIENCE}, {"text": BUTTON_SEARCH_SALARY}],
-                [{"text": BUTTON_SEARCH_SALARY_TOGGLE}, {"text": BUTTON_SEARCH_REMOTE}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_APPLICATION_MODE:
-            rows = [
-                [{"text": BUTTON_APPLICATION_PREVIEW}],
-                [{"text": BUTTON_APPLICATION_CONFIRM}, {"text": BUTTON_APPLICATION_AUTO}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_EXPERIENCE:
-            rows = [
-                [{"text": BUTTON_EXPERIENCE_ANY}, {"text": BUTTON_EXPERIENCE_NONE}],
-                [{"text": BUTTON_EXPERIENCE_1_3}, {"text": BUTTON_EXPERIENCE_3_6}],
-                [{"text": BUTTON_EXPERIENCE_6_PLUS}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_REVIEW:
-            rows = [
-                [{"text": BUTTON_REVIEW}, {"text": BUTTON_SEARCH_SETTINGS}],
-                *_navigation_rows(),
-            ]
-        elif menu == MENU_CANDIDATE:
-            rows = [
-                [{"text": BUTTON_CANDIDATE_FACTS}, {"text": BUTTON_CANDIDATE_INTERVIEW}],
-                [{"text": BUTTON_CANDIDATE_ADD_FACT}],
-                *_navigation_rows(),
-            ]
-        else:
-            rows = [
-                [{"text": BUTTON_SEARCH_SETTINGS}, {"text": BUTTON_CANDIDATE_PROFILE}],
-                [{"text": BUTTON_REVIEW}],
-                [{"text": BUTTON_MENU_MONITOR}, {"text": BUTTON_MENU_RUN}],
-                [{"text": BUTTON_MENU_REPEAT}, {"text": BUTTON_HELP}],
-            ]
+    layouts = {
+        MENU_MAIN: [[BUTTON_SEARCH, BUTTON_DRYRUN], [BUTTON_RESPONSES, BUTTON_SEARCH_SETTINGS],
+                    [BUTTON_HH, BUTTON_CANDIDATE_PROFILE], [BUTTON_MENU_MONITOR], [BUTTON_HELP]],
+        MENU_RESPONSES: [[BUTTON_REVIEW, BUTTON_HH_RESPONSES], [BUTTON_FORMS, BUTTON_CHAT_AI]],
+        MENU_SEARCH: [[BUTTON_SEARCH_EDIT, BUTTON_SEARCH_SUGGEST], [BUTTON_SEARCH_USE_DRAFT],
+                      [BUTTON_SEARCH_CONDITIONS, BUTTON_BLACKLIST],
+                      [BUTTON_SEARCH_APPLICATION_MODE, BUTTON_SCHEDULE]],
+        MENU_SEARCH_CONDITIONS: [[BUTTON_SEARCH_EXPERIENCE, BUTTON_SEARCH_SALARY],
+                                 [BUTTON_SEARCH_SALARY_TOGGLE, BUTTON_SEARCH_REMOTE]],
+        MENU_COMPANIES: [[BUTTON_BLACKLIST_ADD, BUTTON_BLACKLIST_REMOVE]],
+        MENU_APPLICATION_MODE: [[BUTTON_APPLICATION_PREVIEW], [BUTTON_APPLICATION_CONFIRM, BUTTON_APPLICATION_AUTO]],
+        MENU_EXPERIENCE: [[BUTTON_EXPERIENCE_ANY, BUTTON_EXPERIENCE_NONE],
+                          [BUTTON_EXPERIENCE_1_3, BUTTON_EXPERIENCE_3_6], [BUTTON_EXPERIENCE_6_PLUS]],
+        MENU_REPEAT: [[BUTTON_REPEAT_3DAY, BUTTON_REPEAT_DAILY], [BUTTON_REPEAT_WEEKLY, BUTTON_REPEAT_OFF]],
+        MENU_HH: [[BUTTON_HH_AUTH, BUTTON_HH_RESUMES], [BUTTON_SEARCH_RESUME, BUTTON_REFRESH_RESUME],
+                  [BUTTON_ANALYZE, BUTTON_GRAB_RESUME]],
+        MENU_CANDIDATE: [[BUTTON_CANDIDATE_FACTS, BUTTON_CANDIDATE_INTERVIEW], [BUTTON_CANDIDATE_ADD_FACT]],
+        MENU_MONITOR: [[BUTTON_STATUS], [BUTTON_ZERO_APPLY], [BUTTON_RUNS, BUTTON_STATS],
+                       [BUTTON_RESEARCH, BUTTON_CHECK], [BUTTON_LOGS]],
+        MENU_LOGS: [[BUTTON_LOG, BUTTON_RAW_LOG], [BUTTON_CHAT_LOG]],
+        MENU_ADMIN: [[BUTTON_DIAGNOSTICS], [BUTTON_PROFILES, BUTTON_USERS], [BUTTON_CLIENTS, BUTTON_LLM],
+                     [BUTTON_DIGEST, BUTTON_BACKFILL], [BUTTON_DAEMON_ON, BUTTON_DAEMON_OFF]],
+        MENU_LLM: [[BUTTON_LLM_BALANCE, BUTTON_LLM_TEST], [BUTTON_AI_LIMITS]],
+    }
+    labels = layouts[menu]
+    if menu == MENU_MAIN and role == ROLE_ADMIN:
+        labels = [*labels[:-1], [BUTTON_MENU_ADMIN], labels[-1]]
+    rows = [[{"text": label} for label in row] for row in labels]
+    if menu != MENU_MAIN:
+        rows.extend(_navigation_rows())
     rows = _append_active_controls(rows, active=active, can_stop=can_stop)
     return {
         "keyboard": rows,
@@ -1004,13 +896,15 @@ def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default") ->
         f"📁 Профиль: {_pretty_profile_name(profile_name)}",
         "",
         "⚡ Основные действия доступны через кнопки меню.",
-        "• «Мой поиск»: ключевые слова, резюме и ИИ-черновик запросов",
+        "• «Мой поиск»: запросы, условия, компании, режим откликов и расписание",
         "• «Мониторинг»: статус, статистика, прогоны, инвайты",
         "• Сводка запуска: /log или /log run_id; текстовый лог: /raw_log",
         "• Счётчик HH: кнопка «Отклики HH» или команда /hh_responses",
-        "• «Запуск»: поиск, тестовый прогон, ИИ-анализ, вход HH",
+        "• Поиск и тестовый прогон — в главном меню",
+        "• «Мой hh»: вход, резюме и ИИ-анализ",
+        "• «Отклики»: рассмотрение, отклики HH, анкеты и ответ ИИ в чат",
         "• Ответ ИИ в HH-чат: кнопка открывает список последних входящих; /chat_ai ссылка_на_чат или chat_id — ручной аварийный ввод",
-        "• «Повтор»: расписание и периодические запуски",
+        "• «Мой поиск» → «Расписание»: периодические запуски",
     ]
     if role == ROLE_ADMIN:
         lines.extend([
@@ -1034,35 +928,18 @@ def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
             "• Статус процесса и расписания",
             "• Статистика откликов и прогоны",
             "• Проверка инвайтов",
-            "• Точный счётчик откликов из аккаунта HH",
+            "• Причина отсутствия откликов и журналы",
         ])
-    if section == MENU_RUN:
-        lines = [
-            f"🚀 Запуск профиля {profile_title}",
-            "",
-            "• Разовый поиск и тестовый прогон",
-            "• ИИ-проверка резюме",
-            "• Вход HH и захват текущих резюме",
-            "• Ответ ИИ в HH-чат: /chat_ai покажет список последних входящих; можно передать ссылку или chat_id",
-        ]
-        if role == ROLE_ADMIN:
-            lines.extend([
-                "• Дайджест и обновление резюме",
-                "• Пересчёт аналитики и обновление резюме",
-            ])
-        return "\n".join(lines)
+    if section == MENU_HH:
+        return f"🔐 Мой hh · {profile_title}\nВход HH, выбор, обновление, анализ и сохранение резюме."
+    if section == MENU_RESPONSES:
+        return f"📋 Отклики · {profile_title}\nНа рассмотрении, отклики HH, анкеты и ответ ИИ в чат."
+    if section == MENU_LOGS:
+        return f"📜 Журналы · {profile_title}\nСводка последнего запуска, подробный журнал и лог чатов."
+    if section == MENU_COMPANIES:
+        return f"🚫 Компании · {profile_title}\nПросмотр и изменение чёрного списка компаний."
     if section == MENU_REPEAT:
-        lines = [
-            f"⏰ Повтор профиля {profile_title}",
-            "",
-            "• Посмотреть текущее расписание",
-            "• Включить режим 3/день, 1/день, 1/нед",
-        ]
-        if role == ROLE_ADMIN:
-            lines.append("• Остановить повтор или вручную включить демон")
-        else:
-            lines.append("• Остановить повтор, не прерывая текущий разовый поиск")
-        return "\n".join(lines)
+        return f"⏰ Расписание · {profile_title}\nПовторные запуски: 3 раза в день, раз в день или раз в неделю."
     if section == MENU_SEARCH:
         return "\n".join([
             f"🎯 Мой поиск · профиль {profile_title}",
@@ -1070,7 +947,7 @@ def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
             "• Посмотрите и измените ключевые слова",
             "• Попросите ИИ предложить черновик по резюме",
             "• Настройте опыт, зарплату, удалёнку и режим откликов",
-            "• Запустите тестовый или обычный поиск",
+            "• Поиск и тестовый прогон доступны в главном меню",
             "• Расписание управляет только этим профилем",
         ])
     if section == MENU_CANDIDATE:
@@ -1088,7 +965,7 @@ def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
             "• Переключение профилей",
             "• Просмотр клиентских заявок",
             "• Управление доступами пользователей",
-            "• Помощь по командам",
+            "• Диагностика, LLM, дайджест и фоновый режим",
         ])
     return build_help_text(role, profile_name=profile_name)
 
@@ -1384,16 +1261,17 @@ def format_ai_snapshot_text(snapshot: dict) -> str:
         f"• Всего запусков: {snapshot.get('analysis_total', 0)}",
         f"• По профилям: {_format_ai_profile_counts(snapshot)}",
         "",
-        "ℹ️ Сейчас лимит мягкий: запуск не блокируется, только считается.",
+        "ℹ️ Анализ резюме учитывается без блокировки. Генерации для чатов и анкет требуют остатка лимита.",
     ])
 
 
 def build_ai_limits_text(*, users: list[dict], snapshots: list[dict], events: list[dict]) -> str:
     lines = [
-        "🎁 Лимиты ИИ для резюме",
+        "🎁 Лимиты ИИ",
         "",
         f"• Базовый бесплатный лимит: {config.TELEGRAM_AI_FREE_ANALYSES}",
-        "• Пока ограничение не блокирует анализ, а только считает использования.",
+        "• Генерации для чатов и анкет расходуют общий остаток пользователя; при нуле запуск блокируется.",
+        "• Анализ резюме по-прежнему учитывается без блокировки.",
         "",
         "👥 Пользователи:",
     ]
@@ -1416,7 +1294,7 @@ def build_ai_limits_text(*, users: list[dict], snapshots: list[dict], events: li
                 f"запусков {snapshot.get('analysis_total', 0)}"
             )
 
-    lines.extend(["", "⚙️ Управление доступно через раздел «Админ»."])
+    lines.extend(["", "⚙️ Управление: «Админ» → «Платные LLM» → «Лимиты ИИ»."])
     if events:
         lines.extend(["", "🕓 Последние события:"])
         for item in events:

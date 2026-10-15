@@ -144,15 +144,22 @@ class TelegramCallbackRouter:
             f"{CALLBACK_MANUAL_SNOOZE}:",
             f"{CALLBACK_MANUAL_BLOCK_COMPANY}:",
         ))
-        if (
-            principal.get("role") != ROLE_ADMIN
-            and (
-                not manual_callback
-                or (message.get("chat") or {}).get("type") != "private"
-            )
-        ):
-            await self._answer_callback_query(callback_id, "🔒 Нужны права администратора.", show_alert=True)
-            return
+        user_ai_callback = raw_data.startswith((
+            "gf:", "gform_preview:", "gform_submit:",
+            "chat_ai:", "chat_send:", "chat_ai_any:", "chat_send_any:",
+            "chat_ai_alt:", "chat_ai_any_alt:",
+        ))
+        if principal.get("role") != ROLE_ADMIN:
+            private = (message.get("chat") or {}).get("type") == "private"
+            if not private or not (manual_callback or user_ai_callback):
+                await self._answer_callback_query(callback_id, "🔒 Нужны права администратора.", show_alert=True)
+                return
+            if user_ai_callback:
+                parts = raw_data.split(":")
+                profile_index = 2 if raw_data.startswith("gf:") else 1
+                if len(parts) <= profile_index or not can_access_profile(parts[profile_index]):
+                    await self._answer_callback_query(callback_id, "🔒 Этот профиль вам недоступен.", show_alert=True)
+                    return
 
         if raw_data.startswith("gf:"):
             if (message.get("chat") or {}).get("type") != "private":

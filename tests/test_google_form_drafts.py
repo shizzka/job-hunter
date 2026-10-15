@@ -77,6 +77,9 @@ class FakeBot(TelegramFormEditor):
         self.home = home
         self.sent = []
 
+    def _selected_profile(self, principal):
+        return principal.get("profile", "qa")
+
     def _profile_names(self):
         return ["qa"]
 
@@ -100,9 +103,10 @@ class FakeBot(TelegramFormEditor):
         return {"message_id": len(self.sent) + 100}
 
 
-def test_reply_binding_survives_restart_and_ignores_unrelated_messages(stored):
+@pytest.mark.parametrize("role", ["admin", "user"])
+def test_reply_binding_survives_restart_and_ignores_unrelated_messages(stored, role):
     home, item = stored
-    principal = {"user_id": 7, "role": "admin"}
+    principal = {"user_id": 7, "role": role, "profile": "qa"}
     bot = FakeBot(home)
     asyncio.run(bot._ask_form_field(7, principal, "qa", TOKEN, 0))
     restarted = FakeBot(home)
@@ -362,11 +366,13 @@ def test_partial_preview_notification_has_editor_and_fits_telegram(stored, monke
         assert len(kw["caption"]) <= 1024 if "caption" in kw else len(args[0]) <= 4096
 
 
-def test_form_callback_rejects_non_admin_before_access(monkeypatch):
+def test_form_callback_rejects_other_profile_before_access(monkeypatch):
     from telegram_app.callbacks import TelegramCallbackRouter
     import telegram_access
     calls = []
     class Router(TelegramCallbackRouter):
+        def _selected_profile(self, principal):
+            return "other"
         async def _answer_callback_query(self, *args, **kwargs):
             calls.append(args)
         async def _form_callback(self, *args):
@@ -374,4 +380,4 @@ def test_form_callback_rejects_non_admin_before_access(monkeypatch):
     monkeypatch.setattr(telegram_access, "resolve_user", lambda uid: {"role": "user", "user_id": uid})
     asyncio.run(Router()._handle_callback_query({"id": "cb", "from": {"id": 9},
                 "data": f"gf:view:qa:{TOKEN}:0", "message": {"chat": {"id": 9, "type": "private"}}}))
-    assert "администратора" in calls[0][1]
+    assert "профиль вам недоступен" in calls[0][1]

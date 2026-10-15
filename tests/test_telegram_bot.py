@@ -93,7 +93,7 @@ class TestFormatting:
     def test_build_help_text_user_mentions_repeat_commands(self):
         text = telegram_bot.build_help_text(role=telegram_bot.ROLE_USER, profile_name="qa")
         assert "📁 Профиль: QA" in text
-        assert "• «Повтор»: расписание и периодические запуски" in text
+        assert "• «Мой поиск» → «Расписание»: периодические запуски" in text
 
     def test_build_reply_markup_admin(self):
         markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_ADMIN)
@@ -103,17 +103,17 @@ class TestFormatting:
 
     def test_build_reply_markup_admin_repeat_menu(self):
         markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_ADMIN, menu=telegram_bot.MENU_REPEAT)
-        assert any(button["text"] == telegram_bot.BUTTON_DAEMON_ON for row in markup["keyboard"] for button in row)
+        assert any(button["text"] == telegram_bot.BUTTON_REPEAT_DAILY for row in markup["keyboard"] for button in row)
         assert markup["is_persistent"] is True
 
     def test_build_reply_markup_admin_menu_admin(self):
-        markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_ADMIN, menu=telegram_bot.MENU_ADMIN)
+        markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_ADMIN, menu=telegram_bot.MENU_LLM)
         assert any(button["text"] == telegram_bot.BUTTON_AI_LIMITS for row in markup["keyboard"] for button in row)
 
     def test_build_reply_markup_user_main_menu(self):
         markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_USER)
-        assert any(button["text"] == telegram_bot.BUTTON_MENU_RUN for row in markup["keyboard"] for button in row)
-        assert any(button["text"] == telegram_bot.BUTTON_MENU_REPEAT for row in markup["keyboard"] for button in row)
+        assert any(button["text"] == telegram_bot.BUTTON_SEARCH for row in markup["keyboard"] for button in row)
+        assert any(button["text"] == telegram_bot.BUTTON_DRYRUN for row in markup["keyboard"] for button in row)
 
     def test_build_reply_markup_user_run_menu(self):
         markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_USER, menu=telegram_bot.MENU_RUN)
@@ -363,7 +363,7 @@ class TestFormatting:
             snapshots=[{"user_id": 1, "free_total": 1, "free_used": 1, "bonus_total": 0, "available_soft": 0, "analysis_total": 1, "profiles": {}}],
             events=[{"created_at": "2026-03-19T12:00:00", "action": "analysis_used", "user_id": 1, "profile_name": "qa", "amount": 1, "actor_user_id": 0}],
         )
-        assert "Лимиты ИИ для резюме" in text
+        assert "Лимиты ИИ" in text
         assert "Базовый бесплатный лимит: 1" in text
         assert "analysis_used" in text
 

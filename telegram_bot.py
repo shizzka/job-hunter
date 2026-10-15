@@ -1015,7 +1015,9 @@ class TelegramBot(
                 "Изменение запросов отменено.",
                 reply_markup=self._menu_reply_markup(
                     principal,
-                    menu=MENU_SEARCH_CONDITIONS if input_kind == "salary" else MENU_SEARCH,
+                    menu=(MENU_SEARCH_CONDITIONS if input_kind == "salary" else
+                          MENU_HH if input_kind == "resume" else
+                          MENU_COMPANIES if input_kind in {"company_block", "company_unblock"} else MENU_SEARCH),
                 ),
             )
             return True
@@ -1027,7 +1029,7 @@ class TelegramBot(
                 await self._send_text(chat_id, str(exc))
                 return True
             self._clear_search_settings_state(principal["user_id"], "search_input")
-            await self._send_text(chat_id, "Список компаний обновлён.", reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH))
+            await self._send_text(chat_id, "Список компаний обновлён.", reply_markup=self._menu_reply_markup(principal, menu=MENU_COMPANIES))
             return True
         if input_kind == "salary":
             normalized = text.strip().replace(" ", "").replace("₽", "")
@@ -1073,14 +1075,14 @@ class TelegramBot(
                 await self._send_text(
                     chat_id,
                     "❌ Отправьте номер резюме из списка или «Отмена».",
-                    reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+                    reply_markup=self._menu_reply_markup(principal, menu=MENU_HH),
                 )
                 return True
             self._clear_search_settings_state(principal["user_id"], "search_input")
             await self._send_text(
                 chat_id,
                 f"✅ Основное резюме выбрано: {title or resume_id}\nФайл настроек: {env_file}" + restart_note,
-                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_HH),
             )
             return True
         try:
@@ -1740,7 +1742,7 @@ class TelegramBot(
                     "Кнопка «🔐 Вход HH» уже показана ниже на клавиатуре.\n"
                     "Пароль в Telegram мы не просим."
                 ),
-                reply_markup=build_reply_markup(ROLE_USER, menu=MENU_RUN),
+                reply_markup=build_reply_markup(ROLE_USER, menu=MENU_HH),
             )
         return client
 
@@ -2022,7 +2024,7 @@ class TelegramBot(
             await self._cancel_active_command(chat_id, principal, profile_name=profile_name)
             return
         if command == "/back":
-            parent = MENU_ADMIN if self._selected_menu(principal) == MENU_LLM else MENU_MAIN
+            parent = MENU_PARENTS.get(self._selected_menu(principal), MENU_MAIN)
             await self._send_menu(chat_id, principal, profile_name=profile_name, menu=parent)
             return
         if active_command and _command_conflicts_with_active(command):
@@ -2137,6 +2139,9 @@ class TelegramBot(
 
         menu_commands = {
             "/menu_monitor": MENU_MONITOR,
+            "/menu_responses": MENU_RESPONSES,
+            "/menu_hh": MENU_HH,
+            "/menu_logs": MENU_LOGS,
             "/menu_run": MENU_RUN,
             "/menu_repeat": MENU_REPEAT,
             "/menu_admin": MENU_ADMIN,
@@ -2146,13 +2151,13 @@ class TelegramBot(
             return
 
         if command in {"/companies", "/company_block", "/company_unblock"}:
-            self._set_selected_menu(principal["user_id"], MENU_SEARCH)
+            self._set_selected_menu(principal["user_id"], MENU_COMPANIES)
             companies = company_blacklist.list_companies(profile_name)
             message = "🚫 Чёрный список компаний\n" + ("\n".join("• " + x for x in companies) or "Пока пуст.")
             if command != "/companies":
                 self._set_search_settings_state(principal["user_id"], search_input=command[1:])
                 message += "\n\nПришлите точное название одной компании. Добавить её можно заранее, до поиска и первого отклика. Для отмены — Назад."
-            await self._send_text(chat_id, message, reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH))
+            await self._send_text(chat_id, message, reply_markup=self._menu_reply_markup(principal, menu=MENU_COMPANIES))
             return
 
         if command == "/search_settings":
@@ -2308,12 +2313,13 @@ class TelegramBot(
             return
 
         if command == "/search_resume":
+            self._set_selected_menu(principal["user_id"], MENU_HH)
             catalog = client_hh_auth.load_hh_resume_catalog(profile_name)
             if not catalog:
                 await self._send_text(
                     chat_id,
                     "🧾 Пока нет списка резюме HH. Сначала нажмите «Вход HH», затем повторите попытку.",
-                    reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+                    reply_markup=self._menu_reply_markup(principal, menu=MENU_HH),
                 )
                 return
             lines = ["🧾 Выберите резюме для поиска. Отправьте его номер:", ""]
@@ -2325,7 +2331,7 @@ class TelegramBot(
             await self._send_text(
                 chat_id,
                 "\n".join(lines),
-                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+                reply_markup=self._menu_reply_markup(principal, menu=MENU_HH),
             )
             return
 
@@ -2680,6 +2686,7 @@ class TelegramBot(
             return
 
         if command == "/schedule":
+            self._set_selected_menu(principal["user_id"], MENU_REPEAT)
             search_interval_min, invite_check_interval_min = self._profile_schedule(profile_name)
             await self._send_text(
                 chat_id,
@@ -2727,6 +2734,15 @@ class TelegramBot(
                     selected=True,
                 )
             await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal))
+            return
+
+        if command == "/why_no_apply":
+            run = self._latest_run(profile_name)
+            diagnosis = analytics.zero_apply_diagnosis(run) if run else ""
+            await self._send_text(chat_id, diagnosis or (
+                "В последнем прогоне есть подтверждённые отклики." if run and (run.get("funnel") or run).get("applied")
+                else "Нет завершённого прогона с точным нулём откликов для диагностики."),
+                reply_markup=self._menu_reply_markup(principal))
             return
 
         if command == "/runs":
@@ -3030,7 +3046,7 @@ class TelegramBot(
             await self._send_text(
                 target_user_id,
                 "🔐 Администратор подтвердил вход HH. Запускаем захват сессии и текущих HH резюме.",
-                reply_markup=build_reply_markup(ROLE_USER, menu=MENU_RUN),
+                reply_markup=build_reply_markup(ROLE_USER, menu=MENU_HH),
             )
         active_command = self._mark_active_command(principal=principal, label="hh auth capture", profile_name=profile_name)
         self._append_debug_log(
@@ -3112,7 +3128,7 @@ class TelegramBot(
                             f"{build_hh_auth_result_text(result)}\n\n"
                             f"{build_client_status_text(telegram_clients.get_client(target_user_id) or client)}"
                         ),
-                        reply_markup=build_reply_markup(ROLE_USER, menu=MENU_RUN),
+                        reply_markup=build_reply_markup(ROLE_USER, menu=MENU_HH),
                     )
             except asyncio.CancelledError:
                 if progress_task:
@@ -3135,7 +3151,7 @@ class TelegramBot(
                     await self._send_text(
                         target_user_id,
                         build_hh_auth_result_text({"cancelled": True}),
-                        reply_markup=build_reply_markup(ROLE_USER, menu=MENU_RUN),
+                        reply_markup=build_reply_markup(ROLE_USER, menu=MENU_HH),
                     )
             except Exception as exc:
                 log.error("HH auth capture failed: %s", exc, exc_info=True)
@@ -3170,12 +3186,24 @@ class TelegramBot(
                             "❌ Вход HH завершился с ошибкой.\n\n"
                             "Администратор уже получил журнал отладки и сможет повторить запуск."
                         ),
-                        reply_markup=build_reply_markup(ROLE_USER, menu=MENU_RUN),
+                        reply_markup=build_reply_markup(ROLE_USER, menu=MENU_HH),
                     )
             finally:
                 self._clear_active_command(profile_name)
 
         active_command.task = asyncio.create_task(runner())
+
+    async def _authorize_ai_usage(self, chat_id: int, principal: dict, *, profile_name: str, action: str, consume: bool = True) -> bool:
+        if principal.get("role") == ROLE_ADMIN:
+            return True
+        if profile_name != self._selected_profile(principal):
+            await self._send_text(chat_id, "🔒 Этот профиль вам недоступен.")
+            return False
+        if not consume or telegram_resume_limits.consume_ai_usage(principal["user_id"], profile_name=profile_name, action=action):
+            return True
+        await self._send_text(chat_id, "🎁 Лимит ИИ исчерпан. Попросите администратора добавить доступ через «Лимиты ИИ».",
+                              reply_markup=self._menu_reply_markup(principal))
+        return False
 
     async def _start_google_form_preview(
         self,
@@ -3229,6 +3257,10 @@ class TelegramBot(
         reply_markup = self._menu_reply_markup(principal)
         if self._has_active_command(profile_name):
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+            return
+
+        if not await self._authorize_ai_usage(chat_id, principal, profile_name=profile_name, action="form_ai_used",
+                                              consume="--google-form-submit" not in argv):
             return
 
         active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
@@ -3398,6 +3430,10 @@ class TelegramBot(
             return
 
         label = "chat AI send" if force_send else "chat AI alternative" if alternative else "chat AI reply"
+        if not await self._authorize_ai_usage(chat_id, principal, profile_name=profile_name, action="chat_ai_used",
+                                              consume=not (force_send and re.fullmatch(r"\d+~[0-9a-f]{12}", hh_message_id))):
+            return
+
         active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
         progress_message = await self._send_text_safely(
             chat_id,

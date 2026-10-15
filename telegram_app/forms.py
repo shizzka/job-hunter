@@ -158,7 +158,7 @@ class TelegramFormEditor:
         reply_id = int((message.get("reply_to_message") or {}).get("message_id") or 0)
         if not pending.get("prompt_id") or reply_id != pending["prompt_id"]:
             return False
-        if principal.get("role") != "admin":
+        if principal.get("role") != "admin" and pending.get("profile") != self._selected_profile(principal):
             return True
         if text.startswith("/") and text != "/skip":
             return False
@@ -205,6 +205,8 @@ class TelegramFormEditor:
                 raise ValueError('Старая кнопка отправки. Откройте актуальный черновик через /forms.')
         elif not number.isdigit():
             raise ValueError("Некорректный номер поля.")
+        if principal.get("role") != "admin" and profile != self._selected_profile(principal):
+            raise ValueError("Этот профиль вам недоступен.")
         home = self._form_home(profile)
         drafts.get_draft(home, token)
         if self._has_active_command(profile):
