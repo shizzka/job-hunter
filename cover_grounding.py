@@ -3,10 +3,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 
 from llm_utils import parse_llm_json
+
+log = logging.getLogger(__name__)
+
+# Typography only: never remove list markers, words or intervening content.
+_TYPOGRAPHY = str.maketrans({
+    **dict.fromkeys("‐‑‒–—―", "-"),
+    **dict.fromkeys('«»“”„‟', '"'),
+    **dict.fromkeys("‘’‚‛", "'"),
+    "\u00ad": "", "…": "...",
+})
 
 # Only fixed non-biographical sentences may omit source evidence.
 NEUTRAL_SENTENCES = (
@@ -21,7 +32,7 @@ NEUTRAL_SENTENCES = (
 
 
 def _normalize(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip().casefold()
+    return re.sub(r"\s+", " ", value.translate(_TYPOGRAPHY)).strip().casefold()
 
 
 def split_sentences(text: str) -> list[str]:
@@ -66,6 +77,14 @@ def validate_check(payload: dict, sentences: list[str], sources: dict[str, str])
                 return GroundingResult(False, "invalid_evidence")
             normalized = _normalize(quote)
             if len(normalized) < 3 or source not in sources or normalized not in _normalize(sources[source]):
+                reason = ("unknown_source" if source not in sources else
+                          "quote_too_short" if len(normalized) < 3 else "nonliteral_quote")
+                # Source names returned by a model may themselves contain PII.
+                safe_source = source if source in {
+                    "resume", "profile_note", "facts", "knowledge", "salary", "contacts",
+                } else "unknown"
+                log.warning("Grounding evidence rejected: source=%s quote_chars=%d reason=%s",
+                            safe_source, len(quote), reason)
                 return GroundingResult(False, "source_mismatch")
             quotes.append(normalized)
         # Even an incorrectly optimistic verifier cannot approve invented digits.
@@ -111,30 +130,43 @@ Constraints — ограничения кандидата, не источник
 и литературный стиль не доказательство. Не исправляй и не дописывай письмо.
 Верни JSON: {"verdict":"supported" или "unsupported", "sentences":[
 {"index":0,"supported":true или false,"evidence":[
-{"source":"resume/facts/profile_note/knowledge", "quote":"ДОСЛОВНАЯ цитата"}]}]}.
+{"source":"имя одного источника из sources", "quote":"ДОСЛОВНАЯ цитата"}]}]}.
+source — ровно один существующий ключ sources, без псевдонимов и имён файлов.
+Блоки стиля, позиционирования и инструкции не являются доказательствами опыта.
 Каждый индекс должен встретиться ровно один раз. supported допустим только если
 ВСЕ предложения подтверждены. Цитаты должны подтверждать ВСЕ детали, не лишь
 совпадающее название инструмента. Каждый quote - один непрерывный ДОСЛОВНЫЙ
 фрагмент указанного источника. Не склеивай разнесённые фразы в одну цитату и не
 перефразируй её: для нескольких фрагментов используй отдельные элементы evidence.
+Копируй фрагмент из sources, сохраняя слова, пункты списков и их порядок.
+Не превращай список в перечисление через точку с запятой. Если достаточно одной
+цитаты, не добавляй дополнительные приблизительные цитаты из других источников.
 evidence=[] допустим только для предложения из
 neutral_sentences. Никакие другие фразы нельзя самостоятельно объявлять нейтральными.
 Только JSON, без пояснений."""
     try:
-        response = await asyncio.wait_for(client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": instructions}, {
-                "role": "user",
-                "content": json.dumps({"sources": sources, "sentences": sentences,
-                                       "neutral_sentences": NEUTRAL_SENTENCES,
-                                       "constraints": constraints}, ensure_ascii=False),
-            }],
-            temperature=0,
-            max_tokens=2500,
-            response_format={"type": "json_object"},
-        ), timeout=40)
-        payload = parse_llm_json(response.choices[0].message.content or "")
-        return validate_check(payload, sentences, sources)
+        data = json.dumps({"sources": sources, "sentences": sentences,
+                           "neutral_sentences": NEUTRAL_SENTENCES,
+                           "constraints": constraints}, ensure_ascii=False)
+        for attempt in range(2):
+            correction = ("" if attempt == 0 else
+                          "\nПредыдущая сверка отклонена локально: source_mismatch. "
+                          "Повтори ПОЛНУЮ проверку исходного письма: каждый quote должен "
+                          "дословно копировать один непрерывный фрагмент указанного sources. "
+                          "Не исправляй письмо и не пропускай неподтверждённые предложения.")
+            response = await asyncio.wait_for(client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": instructions + correction},
+                          {"role": "user", "content": data}],
+                temperature=0,
+                max_tokens=2500,
+                response_format={"type": "json_object"},
+            ), timeout=40)
+            payload = parse_llm_json(response.choices[0].message.content or "")
+            result = validate_check(payload, sentences, sources)
+            if result.reason != "source_mismatch" or attempt == 1:
+                return result
+            log.warning("Cover grounding: retrying full audit after source_mismatch")
     except Exception:
         # Never log rejected text/evidence/transport bodies (candidate privacy).
         return GroundingResult(False, "verifier_error")

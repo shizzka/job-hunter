@@ -1148,7 +1148,7 @@ def analyze_cover_letter(
         "overclaim_guard": bool(overclaim_guard),
         "grounding_status": status,
         "grounding_check_failed": status in {"verifier_error", "incomplete_check", "invalid_check",
-            "invalid_evidence", "missing_sources", "invalid_draft"},
+            "invalid_evidence", "missing_sources", "invalid_draft", "source_mismatch"},
     }
 
 
@@ -1620,7 +1620,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
             constraints=fact_constraints,
         )
         if not grounding.ok:
-            overclaim = grounding.reason in {"unsupported_claims", "number_mismatch", "missing_evidence", "source_mismatch"}
+            overclaim = grounding.reason in {"unsupported_claims", "number_mismatch", "missing_evidence"}
             log.warning("Cover letter grounding: status=%s overclaim_guard=%s check_failed=%s fallback=true",
                         grounding.reason, str(overclaim).lower(), str(not overclaim).lower())
             return _remember_cover_letter_meta(
