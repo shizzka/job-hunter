@@ -1,13 +1,29 @@
 """Read-only HH reconciliation; browser uncertainty never authorizes a retry."""
 import asyncio
 import hashlib
+import logging
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
-from hh.recovery import _auth_cookies, _request_matches
-from hh.ui import CHALLENGE_TEXT
+from hh.recovery import AUTH_URL, _auth_cookies, _authenticated_server_html, _request_matches
+from hh.ui import CHALLENGE_TEXT, HHUIGuard
+
+log = logging.getLogger('hh_verification')
+
+
+def _diagnose(attempt, trace, step, ok=False, **fields):
+    """Only classifications and counts: never headers, cookies or page text."""
+    diagnostic = {'step': step, **fields}
+    name = '_hh_continuation_diagnostic' if step.startswith('continuation_') else '_hh_reconciliation_diagnostic'
+    setattr(attempt, name, diagnostic)
+    log.info('HH reconciliation ok=%s evidence=%s', ok, diagnostic)
+    if trace is not None:
+        try:
+            trace.event('POST_SUBMIT_RECONCILIATION', ok=ok, **diagnostic)
+        except Exception:
+            log.warning('HH reconciliation trace unavailable')
 
 
 class _AppliedHTML(HTMLParser):
@@ -100,67 +116,140 @@ def _owned_post(session, attempt, resume_id, letter):
     return proof
 
 
-async def reconcile_post_submit(session, attempt, resume_id, letter):
-    """One fresh authenticated GET before normal hard-stop destroys the context."""
+async def reconcile_post_submit(session, attempt, resume_id, letter, *, trace=None):
+    """Verify one owned POST; at most two GETs allow server rendering to catch up."""
     response = None
+    step = 'reentry'
+    read_number = 0
     try:
         if getattr(attempt, '_hh_reconciliation_started', False):
+            _diagnose(attempt, trace, step)
             return
+        step = 'owned_post'
         proof = _owned_post(session, attempt, resume_id, letter)
         if proof is None:
+            _diagnose(attempt, trace, step)
             return
         attempt._hh_reconciliation_started = True
         page, context = attempt.page, attempt.context
         request_context = context.request
         binding = getattr(session, '_cookie_binding', None)
+        sequence = context._hh_action_watch.application_post_sequence
         def fresh():
-            if (session._page is not page or session._context is not context
-                    or session._external_attempt is not attempt or context.request is not request_context
-                    or getattr(session, '_cookie_binding', None) is not binding
-                    or binding is not None and (binding.context is not context or binding.closing or binding.revoked)
-                    or _owned_post(session, attempt, resume_id, letter) is not proof):
+            if context._hh_action_watch.application_post_sequence != sequence:
+                _diagnose(attempt, trace, 'post_sequence_changed', after=step,
+                          expected=sequence, actual=context._hh_action_watch.application_post_sequence,
+                          read_number=read_number)
                 raise RuntimeError('HH reconciliation ownership changed')
+            checks = {
+                'page': session._page is page, 'context': session._context is context,
+                'attempt': session._external_attempt is attempt,
+                'request_context': context.request is request_context,
+                'cookie_binding': getattr(session, '_cookie_binding', None) is binding,
+                'cookie_owner': binding is None or (binding.context is context and not binding.closing and not binding.revoked),
+                'owned_post': _owned_post(session, attempt, resume_id, letter) is proof,
+                'page_monitor': not page._hh_action_monitor.unknown,
+                'context_watch': not context._hh_action_watch.unknown,
+            }
+            failed = [name for name, valid in checks.items() if not valid]
+            if failed:
+                _diagnose(attempt, trace, 'ownership_changed', after=step, failed=failed,
+                          read_number=read_number)
+                raise RuntimeError('HH reconciliation ownership changed')
+        step = 'initial_ownership'
         fresh()
         # The Cookie header belongs to the actual dispatched request, rather
         # than an account snapshot taken only after navigation has completed.
+        step = 'post_headers'
         headers = await attempt._hh_application_posts[0]['request'].all_headers()
         fresh()
         sent_tokens = [part.strip().split('=', 1)[1] for part in headers.get('cookie', '').split(';')
                        if part.strip().split('=', 1)[0].casefold() == 'hhtoken' and '=' in part]
         if len(sent_tokens) != 1 or not sent_tokens[0]:
+            _diagnose(attempt, trace, 'post_cookie_missing_or_ambiguous', token_count=len(sent_tokens))
             return
+        step = 'cookies_before'
         before = _auth_cookies(await context.cookies(['https://hh.ru/applicant/resumes']))
         fresh()
         if {dict(cookie)['value'] for cookie in before} != {sent_tokens[0]}:
+            _diagnose(attempt, trace, 'post_cookie_mismatch')
             return
-        sequence = context._hh_action_watch.application_post_sequence
         # The form may disappear without a redirect, or navigation may destroy
         # its renderer. The exact owned POST supplies the vacancy and origin;
         # the current browser URL is not a receipt of the remote result.
         target = urlsplit(proof['url'])
         url = target._replace(path='/vacancy/' + proof['fields']['vacancy_id']).geturl()
-        response = await request_context.get(url, max_redirects=0, timeout=15000,
-                                             headers={'Cache-Control': 'no-cache'})
+        for read_number in (1, 2):
+            if read_number == 2:
+                step = 'cookies_before_retry'
+                current = _auth_cookies(await context.cookies([AUTH_URL]))
+                fresh()
+                if before != current:
+                    _diagnose(attempt, trace, 'cookies_changed', read_number=read_number)
+                    return
+            step = 'vacancy_get'
+            response = await request_context.get(url, max_redirects=0, timeout=15000,
+                                                 headers={'Cache-Control': 'no-cache'})
+            fresh()
+            content_type = response.headers.get('content-type', '').split(';', 1)[0].strip().lower()
+            if response.status != 200 or response.url != url or content_type != 'text/html':
+                attempt._hh_reconciliation_blocked = True
+                _diagnose(attempt, trace, 'vacancy_response', read_number=read_number,
+                          status=response.status, url_matches=response.url == url, html=content_type == 'text/html')
+                return
+            step = 'vacancy_html'
+            html = await response.text()
+            fresh()
+            parser = _AppliedHTML()
+            parser.feed(html)
+            parser.close()
+            text = ' '.join(parser.text).casefold()
+            blocked = (any(marker in text for marker in CHALLENGE_TEXT)
+                       or bool(re.search(r'"userType"\s*:\s*"anonymous"|"luxPageName"\s*:\s*"ForbiddenPage"', html, re.I))
+                       or bool(re.search(r'(?:data-qa|id|class)=[\"\'][^\"\']*captcha', html, re.I)))
+            if blocked:
+                attempt._hh_reconciliation_blocked = True
+                _diagnose(attempt, trace, 'server_auth_or_challenge', read_number=read_number)
+                return
+            step = 'cookies_after'
+            after = _auth_cookies(await context.cookies([AUTH_URL]))
+            fresh()
+            if before != after:
+                _diagnose(attempt, trace, 'cookies_changed', read_number=read_number)
+                return
+            if applied_server_html(html):
+                break
+            _diagnose(attempt, trace, 'applied_server_html_false', read_number=read_number,
+                      title=parser.title, again=parser.again, conflict=parser.conflict,
+                      delivered='резюме доставлено' in ' '.join(text.split()))
+            step = 'response_dispose'
+            await response.dispose()
+            response = None
+            fresh()
+            if read_number == 2:
+                return
+            step = 'render_delay'
+            await asyncio.sleep(0.5)
+            fresh()
+        step = 'response_dispose'
+        await response.dispose()
+        response = None
         fresh()
-        if (response.status != 200 or response.url != url
-                or response.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'text/html'):
-            return
-        html = await response.text()
-        fresh()
-        if not applied_server_html(html):
-            return
-        after = _auth_cookies(await context.cookies(['https://hh.ru/applicant/resumes']))
+        step = 'cookies_final'
+        after = _auth_cookies(await context.cookies([AUTH_URL]))
         fresh()
         if before != after:
-            return
-        if context._hh_action_watch.application_post_sequence != sequence:
+            _diagnose(attempt, trace, 'cookies_changed', read_number=read_number)
             return
         snapshot = {**proof, 'fields': dict(proof['fields'])}
         attempt._hh_verified_receipt = _Verified(attempt, snapshot, resume_id, letter,
                                                 hashlib.sha256(html.encode()).hexdigest(), sequence)
         session._hh_verified_attempt = attempt
-    except Exception:
+        _diagnose(attempt, trace, 'verified', ok=True, read_number=read_number)
+    except Exception as exc:
         # Verification failure preserves the original uncertain result.
+        if not (isinstance(exc, RuntimeError) and str(exc) == 'HH reconciliation ownership changed'):
+            _diagnose(attempt, trace, step, error_kind=type(exc).__name__, read_number=read_number)
         return
     finally:
         if response is not None:
@@ -169,6 +258,156 @@ async def reconcile_post_submit(session, attempt, resume_id, letter):
             except Exception:
                 # A failed read lifecycle must not publish verification.
                 attempt._hh_verified_receipt = None
+                _diagnose(attempt, trace, 'response_dispose', read_number=read_number)
+
+
+@dataclass(frozen=True)
+class _UncertainSession:
+    attempt: object
+    binding: object
+    request_context: object
+    post_sequence: int
+
+
+def _session_intact(session, record):
+    """Session permission is separate from the unresolved vacancy's outcome."""
+    attempt = record.attempt
+    page, context = attempt.page, attempt.context
+    monitor, watch = page._hh_action_monitor, context._hh_action_watch
+    active = getattr(session, '_external_attempt', None)
+    if (session._page is not page or session._context is not context or page.context is not context
+            or page.is_closed() or context.request is not record.request_context
+            or getattr(session, '_cookie_binding', None) is not record.binding
+            or record.binding.context is not context or record.binding.closing or record.binding.revoked
+            or monitor.session is not session or monitor.page is not page or monitor.unknown
+            or watch.session is not session or watch.context is not context or watch.unknown
+            or watch.pages.get(page) is not monitor or monitor.attempts.get(attempt.owner) is not attempt
+            or getattr(session, '_hh_recovery_stop_reason', '')
+            or getattr(session, '_hh_recovery_uncertain', False) or getattr(session, '_recovering', False)
+            or getattr(session._ui_guard, 'blocked', None) is not None
+            or getattr(attempt, '_hh_guard_failure', None) or getattr(attempt, '_hh_reconciliation_blocked', False)
+            or watch.application_post_sequence < record.post_sequence):
+        return False
+    # Subsequent legitimate work may replace last_attempt. Never accept an
+    # unregistered/foreign owner, and never clear any of its action evidence.
+    latest = watch.last_attempt
+    if (latest is None or latest.client is not session or latest.page is not page or latest.context is not context
+            or monitor.attempts.get(latest.owner) is not latest or monitor.last_attempt is not latest
+            or latest.repository.source != 'hh' or (active is not None and active is not latest)):
+        return False
+    state = latest.repository.get(latest.url)
+    if state.get('owner') != latest.owner:
+        return False
+    if latest is not attempt:
+        if state.get('status') in {'preparing', 'acting'}:
+            if active is not latest or latest.uncertain:
+                return False
+        elif state.get('status') == 'uncertain':
+            later = getattr(latest, '_hh_uncertain_session', None)
+            if not isinstance(later, _UncertainSession) or later.attempt is not latest or later.binding is not record.binding:
+                return False
+        elif state.get('status') not in {'completed', 'failed'}:
+            return False
+    allowed_owners = {attempt.owner}
+    if active is not None and active.acting:
+        allowed_owners.add(active.owner)
+    return not (monitor.owners - allowed_owners)
+
+
+async def prepare_uncertain_continuation(session, attempt, result, resume_id, letter, *, trace=None):
+    """Permit later vacancies only after independent authentication and UI reads."""
+    response = None
+    step = 'continuation_eligibility'
+    try:
+        if (result.get('anti_bot_kind') or getattr(attempt, '_hh_guard_failure', None)
+                or getattr(attempt, '_hh_reconciliation_diagnostic', {}).get('step') != 'applied_server_html_false'):
+            return False
+        proof = _owned_post(session, attempt, resume_id, letter)
+        binding = getattr(session, '_cookie_binding', None)
+        if proof is None or binding is None or not isinstance(session._ui_guard, HHUIGuard):
+            return False
+        record = _UncertainSession(attempt, binding, attempt.context.request,
+                                   attempt.context._hh_action_watch.application_post_sequence)
+
+        def fresh():
+            if (not _session_intact(session, record) or session._external_attempt is not attempt
+                    or _owned_post(session, attempt, resume_id, letter) is not proof
+                    or attempt.context._hh_action_watch.application_post_sequence != record.post_sequence
+                    or attempt.page._hh_action_monitor.owners - {attempt.owner}):
+                raise RuntimeError('HH continuation ownership changed')
+
+        fresh()
+        step = 'continuation_ui'
+        dialogs = await session._ui_guard._scan(attempt.page, ('response',))
+        fresh()
+        if any(item['kind'] != 'response' for item in dialogs):
+            _diagnose(attempt, trace, step, reason='blocking_ui')
+            return False
+        before = _auth_cookies(await attempt.context.cookies([AUTH_URL]))
+        fresh()
+        # Recheck the actual POST's account too, even if cookies changed after
+        # the unsuccessful vacancy verification but before this separate read.
+        headers = await attempt._hh_application_posts[0]['request'].all_headers()
+        fresh()
+        sent = [part.strip().split('=', 1)[1] for part in headers.get('cookie', '').split(';')
+                if '=' in part and part.strip().split('=', 1)[0].casefold() == 'hhtoken']
+        if len(sent) != 1 or {dict(cookie)['value'] for cookie in before} != {sent[0]}:
+            _diagnose(attempt, trace, 'continuation_cookie_mismatch')
+            return False
+        step = 'continuation_auth'
+        response = await record.request_context.get(AUTH_URL, max_redirects=0, timeout=15000,
+                                                    headers={'Cache-Control': 'no-cache'})
+        fresh()
+        if (response.status != 200 or response.url != AUTH_URL
+                or response.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'text/html'):
+            _diagnose(attempt, trace, step, reason='response_unproven', status=response.status)
+            return False
+        _authenticated_server_html(await response.text())
+        fresh()
+        after = _auth_cookies(await attempt.context.cookies([AUTH_URL]))
+        fresh()
+        if before != after:
+            _diagnose(attempt, trace, 'continuation_cookies_changed')
+            return False
+        await response.dispose()
+        response = None
+        fresh()
+        step = 'continuation_ui_final'
+        dialogs = await session._ui_guard._scan(attempt.page, ('response',))
+        fresh()
+        if any(item['kind'] != 'response' for item in dialogs):
+            _diagnose(attempt, trace, step, reason='blocking_ui')
+            return False
+        after = _auth_cookies(await attempt.context.cookies([AUTH_URL]))
+        fresh()
+        if before != after:
+            _diagnose(attempt, trace, 'continuation_cookies_changed')
+            return False
+        attempt._hh_uncertain_session = record
+        _diagnose(attempt, trace, 'continuation_session_verified', ok=True)
+        return True
+    except Exception as exc:
+        _diagnose(attempt, trace, step, error_kind=type(exc).__name__)
+        return False
+    finally:
+        if response is not None:
+            try:
+                await response.dispose()
+            except Exception:
+                pass
+
+
+def can_continue_uncertain(session, attempt):
+    """A typed session receipt never converts an uncertain outcome into success."""
+    try:
+        record = getattr(attempt, '_hh_uncertain_session', None)
+        if not isinstance(record, _UncertainSession) or record.attempt is not attempt:
+            return False
+        state = attempt.repository.get(attempt.url)
+        return (state.get('owner') == attempt.owner and state.get('status') == 'uncertain'
+                and _session_intact(session, record))
+    except Exception:
+        return False
 
 
 def confirmed_result(session, vacancy_url, result, *, owned_attempt=None, close_attempt=False):
@@ -196,6 +435,7 @@ def confirmed_result(session, vacancy_url, result, *, owned_attempt=None, close_
         # authentication failure, or revoked browser/cookie ownership.
         allowed_stops = {'', 'native_action_or_uncertainty', 'native_attempt_already_acting'}
         if (monitor.unknown or watch.unknown or result.get('anti_bot_kind')
+                or getattr(attempt, '_hh_guard_failure', None)
                 or getattr(session, '_hh_recovery_stop_reason', '') not in allowed_stops
                 or result.get('hh_recovery_reason', '') not in allowed_stops):
             return None

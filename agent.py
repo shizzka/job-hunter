@@ -931,6 +931,12 @@ class _HHApplyReceipt:
     def account(self, classification):
         self.classification = classification
 
+    def can_continue(self):
+        from hh.verification import can_continue_uncertain
+        return (self.result is not None and not self.result.get('hh_hard_stop')
+                and not self.result.get('anti_bot_kind')
+                and can_continue_uncertain(self.client, self.owned_attempt))
+
     def reconcile(self):
         if self.result is None or self.vacancy.get("source", "hh") != "hh":
             return False
@@ -1183,9 +1189,11 @@ async def do_search(dry_run: bool = False) -> dict:
             return await operation
         finally:
             reconcile_hh_receipts()
-            if (any(receipt.promoted for receipt in hh_receipts)
+            if (any(receipt.promoted and not receipt.can_continue() for receipt in hh_receipts)
                     and not hh_halting and not hh_hard_stop_failed):
                 if not hh_shutdown_started:
+                    hh_breaker.hard_stop("HH: целостность сессии после неопределённого отклика не подтверждена")
+                    result["hh_recovery"] = hh_breaker.snapshot()
                     await halt_hh_browser()
                 await flush_hh_uncertain_notifications()
 
@@ -1449,9 +1457,11 @@ async def do_search(dry_run: bool = False) -> dict:
                 bucket["uncertain"] = bucket.get("uncertain", 0) + 1
                 seen.mark_seen(vid, v, "apply_uncertain")
                 hh_pipeline.mark_terminal(vid, "apply_uncertain")
-                hh_breaker.hard_stop("HH: исход отклика неизвестен; требуется ручная сверка")
+                if not receipt.can_continue():
+                    hh_breaker.hard_stop("HH: исход отклика неизвестен; целостность сессии не подтверждена")
                 result["hh_recovery"] = hh_breaker.snapshot()
-                bucket["stop_reason"] = hh_breaker.reason
+                if hh_breaker.stopped:
+                    bucket["stop_reason"] = hh_breaker.reason
                 analytics.record_decision(
                     run_id=run_id, vacancy=v, decision=DECISION_APPLY_UNCERTAIN,
                     evaluation=evaluation, details=details, resume_variant=resume_variant,
@@ -1466,18 +1476,19 @@ async def do_search(dry_run: bool = False) -> dict:
             receipt.notifying = True
             try:
                 note = ("Исход отклика не подтверждён. Отклик мог быть отправлен; "
-                        "проверьте историю откликов вручную. Автоматического повтора нет. HH остановлен.")
-                try:
-                    await observe_hh_receipts(halt_hh_browser())
-                finally:
-                    reconcile_hh_receipts()
-                # Pin the one-time correction only after browser death is proven;
-                # nested status/notifier awaits may themselves re-enter the drain.
+                        "проверьте историю откликов вручную. Автоматического повтора нет.")
+                if not receipt.can_continue():
+                    try:
+                        await observe_hh_receipts(halt_hh_browser())
+                    finally:
+                        reconcile_hh_receipts()
                 receipt.notified = True
                 try:
                     await set_hunter_status("search_manual", "Ручная сверка: исход отклика неизвестен", "busy")
                 finally:
                     receipt.reconcile()
+                note += (" Сессия проверена; обработка следующих вакансий HH продолжается."
+                         if receipt.can_continue() else " HH остановлен.")
                 create_task(f"Ручная сверка: {v['title']} @ {v['company']}",
                             f"URL: {v.get('url', '')}\n{note}", "medium")
                 try:
@@ -2207,10 +2218,13 @@ async def do_search(dry_run: bool = False) -> dict:
                     )
                     if source == "hh":
                         hh_pipeline.mark_terminal(vid, "apply_uncertain")
-                        hh_breaker.hard_stop("HH: исход отклика неизвестен; требуется ручная сверка")
+                        if not receipt.can_continue():
+                            hh_breaker.hard_stop("HH: исход отклика неизвестен; целостность сессии не подтверждена")
                         result["hh_recovery"] = hh_breaker.snapshot()
-                        bucket["stop_reason"] = hh_breaker.reason
-                        uncertainty_note += " HH остановлен."
+                        if hh_breaker.stopped:
+                            bucket["stop_reason"] = hh_breaker.reason
+                        uncertainty_note += (" Обработка следующих вакансий HH продолжается."
+                                             if receipt.can_continue() else " HH остановлен.")
                     await receipt.wait(_mark_manual(
                         "Ручная сверка: исход отклика неизвестен",
                         "apply_uncertain",
@@ -2220,7 +2234,7 @@ async def do_search(dry_run: bool = False) -> dict:
                         result, bucket, run_id, set_hunter_status,
                         resume_variant=hh_resume_variant,
                         analytics_note=f"{source}:apply_uncertain",
-                        before_notify=halt_hh_browser if source == "hh" else None,
+                        before_notify=halt_hh_browser if source == "hh" and not receipt.can_continue() else None,
                         observe=observe_hh_receipts,
                     ))
                     continue

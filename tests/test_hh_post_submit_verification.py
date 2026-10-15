@@ -279,8 +279,10 @@ def test_owned_popup_frame_race_requires_unambiguous_fresh_applied_get(
             if variant in {"popup_http_error", "cookie_changed_before_get"}:
                 assert fresh_get_calls == []
             else:
-                # The verifier uses exactly one canonical no-redirect GET.
-                assert len(fresh_get_calls) == 1
+                # Only an unconfirmed HTML receipt gets a second vacancy GET;
+                # a separate auth GET cannot serve as delivery confirmation.
+                vacancy_gets = [call for call in fresh_get_calls if call['url'] == VACANCY_URL]
+                assert len(vacancy_gets) == (2 if variant in {'mixed_unsent_cta', 'inert_markers'} else 1)
                 assert fresh_get_calls[0]["url"] == VACANCY_URL
                 assert fresh_get_calls[0]["kwargs"].get("max_redirects") == 0
             if variant == "late_second_post":

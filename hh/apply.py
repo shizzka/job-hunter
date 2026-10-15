@@ -814,7 +814,7 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
         session._approved_hh_payload = {"resume_id": str(preferred_resume_id).strip(),
                                         "cover_letter": cover_letter, "answers": []}
         from hh.recovery import abandon_page, recover_unexpected_ui
-        from hh.verification import confirmed_result, reconcile_post_submit
+        from hh.verification import confirmed_result, prepare_uncertain_continuation, reconcile_post_submit
         attempt = session._external_attempt
         owned_attempt = attempt
 
@@ -828,7 +828,7 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
                                                    for post in getattr(attempt, '_hh_application_posts', [])])
                 except Exception as trace_error:
                     logger.warning("HH apply exception trace unavailable: %s", type(trace_error).__name__)
-            await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter)
+            await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter, trace=trace)
             # A destroyed form/renderer can fail the click helper after dispatch.
             # Close only this owner's proven success before recovery can stop the
             # browser and NativeAttempt persists a terminal uncertain receipt.
@@ -868,6 +868,10 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
             confirmed = await reconcile_exception(exc)
             if confirmed is not None:
                 return confirmed
+            if await prepare_uncertain_continuation(session, attempt, {},
+                    str(preferred_resume_id).strip(), cover_letter, trace=trace):
+                return {'ok': False, 'uncertain': True,
+                        'message': 'Исход отклика не подтверждён; сессия HH проверена, автоматического повтора нет'}
             # A preparation exception can leave the same stale response DOM
             # as a normal manual exit. Resolve ownership before NativeAttempt
             # finally clears it, and never navigate that old page afterward.
@@ -880,10 +884,16 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
             return {"ok": False, "uncertain": recovered.uncertain,
                     "hh_hard_stop": True, "hh_recovery_reason": recovered.reason,
                     "message": "Подготовка HH остановлена; нужна ручная проверка"}
-        await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter)
+        await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter, trace=trace)
         confirmed = confirmed_result(session, url, result, owned_attempt=attempt, close_attempt=True)
         if confirmed is not None:
             return confirmed
+        needs_reconciliation = (not result.get('ok') or bool(result.get('uncertain'))
+                                or result.get('submission_status') in {'uncertain', 'preparing', 'acting'})
+        if needs_reconciliation and await prepare_uncertain_continuation(session, attempt, result,
+                str(preferred_resume_id).strip(), cover_letter, trace=trace):
+            return {**result, 'ok': False, 'uncertain': True, 'hh_hard_stop': False,
+                    'hh_recovery_reason': ''}
         explicit_uncertain = bool(result.get("uncertain")) or result.get("submission_status") in {"uncertain", "preparing", "acting"}
         if explicit_uncertain:
             result = {**result, "ok": False, "uncertain": True, "hh_hard_stop": True}
@@ -907,12 +917,18 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
                         result.update(ok=False, uncertain=True)
         return result
     result = await run_native_attempt(session, repository, url, operation)
-    from hh.verification import confirmed_result
+    from hh.verification import can_continue_uncertain, confirmed_result
     confirmed = (confirmed_result(session, url, result, owned_attempt=owned_attempt)
                  if owned_attempt is not None else None)
     if confirmed is not None:
         return confirmed
     if bool(result.get('uncertain')) or result.get('submission_status') in {'uncertain', 'preparing', 'acting'}:
+        if can_continue_uncertain(session, owned_attempt):
+            # Retire only this known request from the live action window. Its
+            # durable uncertain receipt and sticky attempt flag remain intact;
+            # all late unapproved actions still trip the context monitor.
+            owned_attempt.page._hh_action_monitor.owners.discard(owned_attempt.owner)
+            return {**result, 'ok': False, 'uncertain': True, 'hh_hard_stop': False}
         failure = getattr(owned_attempt, '_hh_guard_failure', None)
         if failure:
             failure = {**failure, 'native_acting': bool(owned_attempt.acting),

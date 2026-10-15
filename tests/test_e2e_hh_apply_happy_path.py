@@ -58,7 +58,8 @@ document.querySelector('form[name="vacancy_response"]').addEventListener('submit
 
 async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                       continue_after_apply=False, stale_receipt=False,
-                      confirmation_html=APPLIED_HTML, form_disappears=False):
+                      confirmation_html=APPLIED_HTML, form_disappears=False,
+                      session_failure='', repeat_run=False, apply_next=False):
     """Reuse the confirmed-success harness; replace transport and search inputs only."""
     for key, name in {
         "JOB_HUNTER_HOME": "", "SEEN_VACANCIES_FILE": "seen.json",
@@ -81,7 +82,8 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
     trace = (ApplyTrace.create(home_dir=str(tmp_path), source="hh", vacancy_id="2",
                                profile="synthetic", mode="auto")
              if stale_receipt or form_disappears else None)
-    monkeypatch.setattr(apply_orchestrator, "create_hh_apply_trace", lambda *args, **kwargs: trace)
+    monkeypatch.setattr(apply_orchestrator, "create_hh_apply_trace",
+                        lambda vacancy, **kwargs: trace if vacancy['id'] == '2' else None)
     dispatch_results = []
 
     async def observed_dispatch(*args, **kwargs):
@@ -91,7 +93,7 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
 
     dispatch = AsyncMock(wraps=observed_dispatch)
     monkeypatch.setattr(apply_orchestrator, "dispatch_apply", dispatch)
-    ids = ("1", "2", "3") if continuity else ("2", "3") if continue_after_apply else ("2",)
+    ids = ("1", "2", "3") if continuity else ("2", "3") if continue_after_apply or apply_next else ("2",)
     vacancies = [{
         "id": vid, "source": "hh", "source_label": "hh.ru",
         "title": "Synthetic QA vacancy", "company": f"Synthetic employer {vid}",
@@ -104,7 +106,7 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
         matched.append(vacancy["id"])
         # Continuity ends at a real matcher rejection: no second application
         # or post-submit frame lifecycle is needed to prove the run continued.
-        should_apply = not continuity and vacancy["id"] == "2"
+        should_apply = not continuity and (vacancy["id"] == "2" or apply_next)
         return {"score": 90 if should_apply else 10, "reason": "Synthetic QA match",
                 "should_apply": should_apply, "red_flags": []}
 
@@ -136,6 +138,17 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
 
                 async def read_stale_receipt(session, boundary_id):
                     await real_wait(session, boundary_id)
+                    if session._external_attempt.url.endswith('/3'):
+                        return
+                    if session_failure in {'anti_bot', 'unexpected_ui', 'auth_ui'}:
+                        markup = {
+                            'anti_bot': '<div data-qa="captcha">Verify you are human</div>',
+                            'unexpected_ui': '<div role="dialog">Unrecognized consent<button>Continue</button></div>',
+                            'auth_ui': '<script type="application/json">{"userType":"anonymous"}</script>',
+                        }[session_failure]
+                        await page.evaluate('(markup) => document.body.insertAdjacentHTML("beforeend", markup)', markup)
+                        await session._ensure_expected_ui('post_submit_b3')
+                        raise AssertionError('The real UI guard must stop this flow')
                     # A real redirect destroys the form's execution context.
                     # Reproduce a stale read inside the click helper, before
                     # it returns to the caller that records SUBMIT_CLICK.
@@ -164,17 +177,21 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                 if url == AUTH_URL:
                     return PassiveResponse(url, '<a data-qa="resume-card-link-fixture" '
                                            'href="/resume/fixture-resume">Configured resume</a>')
-                if url == RESPONSE_URL:
-                    script = SUBMIT_SCRIPT
+                if urlsplit(url).path == '/applicant/vacancy_response':
+                    vid = '3' if 'vacancyId=3' in url else '2'
+                    script = SUBMIT_SCRIPT.replace("vacancy_id:'2'", f"vacancy_id:'{vid}'").replace('/vacancy/2', f'/vacancy/{vid}')
                     if form_disappears:
                         script = script.replace("location.assign('/vacancy/2')",
                                                 "document.querySelector('form[name=\"vacancy_response\"]').remove()")
-                    return PassiveResponse(url, FIXTURE + script)
+                    form = (FIXTURE.replace("'2':{resumes:", f"'{vid}':{{resumes:")
+                            .replace('vacancyId:2,', f'vacancyId:{vid},')
+                            .replace("vacancyId:'2'", f"vacancyId:'{vid}'"))
+                    return PassiveResponse(url, form + script)
                 if urlsplit(url).path.startswith("/vacancy/"):
                     vid = url.rsplit("/", 1)[-1]
                     status = 403 if continuity and vid == "1" else 200
                     body = "<main>Вакансия недоступна</main>" if status == 403 else (
-                        APPLIED_HTML if vid in submitted else VACANCY_HTML)
+                        APPLIED_HTML if vid in submitted else VACANCY_HTML.replace('vacancyId=2', f'vacancyId={vid}'))
                     return PassiveResponse(url, body, status)
                 raise AssertionError(f"Unexpected offline document: {url}")
 
@@ -187,8 +204,17 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
 
             async def readonly_get(url, **kwargs):
                 fresh_gets.append({"url": url, **kwargs})
+                if url == AUTH_URL and session_failure == 'auth_server':
+                    return PassiveResponse(url, '<script>{"userType":"anonymous"}</script>')
                 if url == VACANCY_URL and "2" in submitted:
-                    return PassiveResponse(url, confirmation_html)
+                    count = sum(call['url'] == VACANCY_URL for call in fresh_gets)
+                    body = (confirmation_html[min(count - 1, len(confirmation_html) - 1)]
+                            if isinstance(confirmation_html, list) else confirmation_html)
+                    if session_failure == 'unknown':
+                        monitor.mark_unknown()
+                    elif session_failure == 'binding':
+                        client._cookie_binding.revoked = True
+                    return PassiveResponse(url, body)
                 return document(url)
 
             monkeypatch.setattr(Route, "fetch", fetch_document)
@@ -214,9 +240,9 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                 request = route.request
                 if request.method == "POST" and request.url == POPUP_URL:
                     # Only reached after the real submit boundary admits the POST.
-                    if stale_receipt:
+                    if stale_receipt and 'vacancyId=2' in request.frame.url:
                         old_forms.append(await page.query_selector('form[name="vacancy_response"]'))
-                    submitted.add("2")
+                    submitted.add('3' if 'vacancyId=3' in request.frame.url else '2')
                     await route.fulfill(status=200, content_type="application/json", body='{"ok":true}')
                 elif request.url in NOISE_URLS:
                     await route.fulfill(status=200, content_type="text/plain", body="ok")
@@ -257,6 +283,12 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
             if noise and not continuity:
                 await page.wait_for_function("window.telemetryFinished === true")
             result = await agent.do_search()
+            second_result = None
+            if repeat_run:
+                # Same run input includes duplicate vacancy 2. The next run
+                # receives it again, through the real seen/native stores.
+                monkeypatch.setattr(agent.search_pipeline, 'collect_all', AsyncMock(return_value=vacancies))
+                second_result = await agent.do_search()
             if noise and not continuity:
                 # The happy path requires both telemetry responses. Continuity
                 # checks pipeline decisions even if navigation cancels beacons;
@@ -286,6 +318,8 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                                    entries=seen.all_entries(), requests=requests, answered=answered,
                                    fresh_gets=fresh_gets, application_posts=application_posts,
                                    dispatch_results=dispatch_results,
+                                   notices=agent.notify_needs_manual.await_args_list,
+                                   second_result=second_result,
                                    trace=trace,
                                    native_attempts=tuple(monitor.attempts.values()))
         finally:
@@ -416,7 +450,7 @@ def test_post_submit_navigation_error_without_server_proof_stays_uncertain(tmp_p
                                   confirmation_html=warning_html))
     assert gate.evidence["stale_errors"] == ["Error"], gate.evidence
     assert gate.application_posts == [("POST", POPUP_URL)], gate.evidence
-    assert len([call for call in gate.fresh_gets if call["url"] == VACANCY_URL]) == 1
+    assert len([call for call in gate.fresh_gets if call["url"] == VACANCY_URL]) == 2
     outcome = gate.dispatch_results[0]
     assert outcome["ok"] is False and outcome["uncertain"] is True, gate.evidence
     assert outcome.get("submission_status") != "success_confirmed", gate.evidence
