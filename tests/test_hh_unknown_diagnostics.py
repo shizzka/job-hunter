@@ -13,6 +13,7 @@ from hh.submit_boundary import RESPONSE_PATH, _install_popup_gate
 from state_store.native_apply import NativeApplyRepository, run_native_attempt
 from tests.test_hh_late_outcome_adversarial_e import Emitter
 from tests.test_hh_recovery_attempt_window import URL, monitored_client, request
+from tests.test_hh_post_submit_traffic import payload
 
 
 @pytest.mark.parametrize('key', ['resume_id', 'resumeId', 'resumeHash', 'resume', 'letter'])
@@ -102,7 +103,7 @@ def test_unknown_classification_is_logged_and_traced_without_private_values(
 
         @property
         def post_data(self):
-            pytest.fail('diagnostics must not read bodies: PRIVATE_BODY')
+            return None
 
     async def operation():
         attempt = client._external_attempt
@@ -116,9 +117,14 @@ def test_unknown_classification_is_logged_and_traced_without_private_values(
     assert diagnostic == {
         'reason': 'unobserved_frame' if source in {'worker', 'unmonitored'} else 'unapproved_mutating_request',
         'method': 'GET', 'path': expected_path,
+        'path_category': ('response' if path.startswith(RESPONSE_PATH) else
+                          'vacancy' if path.startswith('/vacancy/') else 'other'),
         'host': 'third_party' if host == 'PRIVATE_HOST.invalid' else 'hh',
         'frame': 'child' if source == 'unmonitored' else source,
         'query_fields': ['letter', 'resumeHash', 'resume_id'],
+        'field_sources': {'query': ['letter', 'resumeHash', 'resume_id']},
+        'body_state': 'empty',
+        'application_reason': 'none' if host == 'PRIVATE_HOST.invalid' else 'query_fields',
         'scope': 'context', 'observation': 1,
         'requires_stop': host != 'PRIVATE_HOST.invalid', 'unknown_before': False,
     }
@@ -130,6 +136,44 @@ def test_unknown_classification_is_logged_and_traced_without_private_values(
     context.cookies.assert_not_called()
     assert 'PRIVATE_' not in json.dumps([diagnostic, monitor.last_unknown_diagnostic, traced])
     assert 'PRIVATE_' not in caplog.text
+
+
+@pytest.mark.parametrize('wire,source', [
+    ('form', 'form'), ('multipart', 'multipart'), ('multipart_escaped', 'multipart'),
+    ('multipart_continued', 'multipart'), ('json', 'json'), ('plain', 'body'),
+])
+def test_body_field_evidence_in_unknown_trace_and_post_accounting_is_private(tmp_path, caplog, wire, source):
+    client, context, page, monitor = monitored_client()
+    repository = NativeApplyRepository(tmp_path / 'cookies.json', 'hh')
+    event = request(page, 'https://hh.ru/analytics/PRIVATE_PATH?PRIVATE_KEY=PRIVATE_QUERY')
+    payload(event, {'resume_hash': 'PRIVATE_RESUME', 'vacancyId': 'PRIVATE_VACANCY',
+                    'letter': 'PRIVATE_LETTER', 'PRIVATE_FIELD': 'PRIVATE_BODY'}, wire)
+    event.headers['cookie'] = 'hhtoken=PRIVATE_COOKIE'
+    event.headers['authorization'] = 'PRIVATE_AUTHORIZATION'
+    traced = []
+    caplog.set_level(logging.INFO, logger='hh_recovery')
+
+    async def operation():
+        attempt = client._external_attempt
+        attempt.begin()
+        attempt._hh_reconciliation_trace = SimpleNamespace(
+            event=lambda stage, **fields: traced.append({'stage': stage, **fields}))
+        context.emit('request', event)
+        post, = attempt._hh_application_posts
+        classification = post['classification']
+        assert classification['field_sources'] == {source: ['letter', 'resume_hash', 'vacancyId']}
+        assert classification['body_state'] == 'readable'
+        assert classification['path'] == '/[other]'
+        assert classification['path_category'] == 'analytics'
+        assert classification['application_reason'] == 'resume_and_vacancy_fields'
+        assert [row['scope'] for row in traced] == ['page', 'context']
+        assert all(row['field_sources'] == classification['field_sources'] for row in traced)
+        assert all(row['requires_stop'] for row in traced)
+        assert 'PRIVATE_' not in json.dumps([classification, traced]) + caplog.text
+        assert monitor.unknown and context._hh_action_watch.unknown
+        return {'ok': False}
+
+    asyncio.run(run_native_attempt(client, repository, URL, operation))
 
 
 @pytest.mark.parametrize('event,reason,frame', [

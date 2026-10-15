@@ -335,7 +335,11 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
     ("await fetch('/analytics/pageview',{method:'POST',body:'pageview=applied'});", True, 1),
     ("await fetch('/applicant/vacancy_response',{method:'POST',body:'vacancy_id=2'}).catch(()=>{});", False, 2),
     ("await fetch('/unknown?resume_id=other&letter=').catch(()=>{});", False, 2),
-    ("await fetch('/unknown',{method:'POST',body:new URLSearchParams({resume_hash:'other'})}).catch(()=>{});", False, 2),
+    ("await fetch('/unknown',{method:'POST',body:new URLSearchParams({resume_hash:'other'})}).catch(()=>{});", True, 1),
+    ("await fetch('/analytics/pageview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nested:{resumeHash:'other'}})});", True, 1),
+    ("const data=new FormData();data.append('resume_id','other');await fetch('/analytics/pageview',{method:'POST',body:data});", True, 1),
+    ("await fetch('/unknown',{method:'POST',body:new URLSearchParams({resume_hash:'other',vacancy_id:'2'})}).catch(()=>{});", False, 2),
+    ("const data=new FormData();Object.entries({_xsrf:'fixture',vacancy_id:'2',resume_hash:'other',letter:'',lux:'true',withoutTest:'no',ignore_postponed:'true',incomplete:'false',mark_applicant_visible_in_vacancy_country:'false',country_ids:'[]',hhtmFromLabel:'',hhtmSourceLabel:''}).forEach(([k,v])=>data.append(k,v));await fetch('/analytics/pageview',{method:'POST',body:data});", False, 2),
 ])
 def test_post_submit_hh_traffic_preserves_only_owned_application(
         tmp_path, monkeypatch, effect, expected_applied, expected_sequence):
@@ -351,7 +355,9 @@ def test_post_submit_hh_traffic_preserves_only_owned_application(
     assert gate.entries['2']['action'] == ('applied' if expected_applied else 'apply_uncertain'), gate.evidence
     assert attempt.repository.get(VACANCY_URL)['status'] == ('completed' if expected_applied else 'uncertain')
     if expected_applied:
-        assert ('POST', ANALYTICS_URL) in gate.answered
+        assert any(method == 'POST' and url in {ANALYTICS_URL, 'https://hh.ru/unknown'}
+                   for method, url in gate.answered)
+        assert len(attempt._hh_application_posts) == 1
         assert watch.last_unknown_diagnostic['requires_stop'] is False
         assert len([call for call in gate.fresh_gets if call['url'] == VACANCY_URL]) == 1
         assert gate.dispatch_results[0]['submission_status'] == 'success_confirmed'
@@ -451,6 +457,13 @@ def test_post_submit_lifecycle_error_uses_fresh_receipt_before_recovery(tmp_path
     assert failure["native_acting"] is True
     assert failure["proven_no_action"] is False
     assert failure["application_posts"] == [{"owned": True, "status": 200}]
+    classification, = failure['application_post_classifications']
+    assert classification['application_reason'] == 'response_path'
+    assert classification['path_category'] == 'response'
+    assert classification['body_state'] == 'readable'
+    assert {'_xsrf', 'vacancy_id', 'resume_hash', 'letter', 'lux', 'withoutTest',
+            'ignore_postponed', 'incomplete', 'mark_applicant_visible_in_vacancy_country',
+            'country_ids', 'hhtmFromLabel', 'hhtmSourceLabel'} <= set(classification['field_sources']['multipart'])
     assert gate.application_posts == [("POST", POPUP_URL)], gate.evidence
     assert len(gate.native_attempts) == 1
     attempt = gate.native_attempts[0]

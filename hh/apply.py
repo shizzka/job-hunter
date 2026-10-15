@@ -827,6 +827,8 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
                                 previous_stage=trace.last_stage, native_acting=bool(attempt.acting),
                                 proven_no_action=bool(attempt.proven_no_action),
                                 application_posts=[{key: post[key] for key in ('owned', 'status')}
+                                                   for post in getattr(attempt, '_hh_application_posts', [])],
+                                application_post_classifications=[post.get('classification', {})
                                                    for post in getattr(attempt, '_hh_application_posts', [])])
                 except Exception as trace_error:
                     logger.warning("HH apply exception trace unavailable: %s", type(trace_error).__name__)

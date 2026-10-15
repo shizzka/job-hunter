@@ -23,6 +23,14 @@ from hh.ui import CHALLENGE_SELECTOR, CHALLENGE_TEXT, HHUIGuard, HHUnexpectedUI
 AUTH_URL = 'https://hh.ru/applicant/resumes'
 log = logging.getLogger('hh_recovery')
 RESPONSE_FIELDS = {'resume_id', 'resumeId', 'resumeHash', 'resume_hash', 'resume', 'letter'}
+RESUME_FIELDS = RESPONSE_FIELDS - {'letter'}
+VACANCY_FIELDS = {'vacancy_id', 'vacancyId'}
+PAYLOAD_FIELDS = RESPONSE_FIELDS | VACANCY_FIELDS | {
+    '_xsrf', 'ignore_postponed', 'incomplete', 'mark_applicant_visible_in_vacancy_country',
+    'country_ids', 'lux', 'withoutTest', 'hhtmFromLabel', 'hhtmSourceLabel',
+}
+PAYLOAD_FIELD_PATTERN = re.compile(
+    r'(?<!\w)(?:' + '|'.join(re.escape(name) for name in sorted(PAYLOAD_FIELDS)) + r')(?!\w)')
 
 
 async def install_frame_observation(session, context):
@@ -165,11 +173,13 @@ def _event_url(source):
 
 def _unknown_classification(request, reason, frame_kind, event_url):
     """Allowlisted categories only; never retain a URL, arbitrary path or payload."""
-    diagnostic = {'reason': reason, 'method': 'none', 'path': 'none',
-                  'host': 'unknown', 'frame': frame_kind or 'unknown', 'query_fields': []}
+    diagnostic = {'reason': reason, 'method': 'none', 'path': 'none', 'path_category': 'none',
+                  'host': 'unknown', 'frame': frame_kind or 'unknown', 'query_fields': [],
+                  'field_sources': {}, 'body_state': 'absent', 'application_reason': 'none'}
     if request is None and event_url is None:
         return diagnostic
     diagnostic['path'] = 'unknown'
+    diagnostic['path_category'] = 'unknown'
     if request is not None:
         diagnostic['method'] = 'unknown'
     with contextlib.suppress(Exception):
@@ -184,6 +194,13 @@ def _unknown_classification(request, reason, frame_kind, event_url):
         # Even a path may contain a resume hash or personal data. Keep only
         # known static routes, template the rest, and never emit the hostname.
         path = parsed.path
+        root = path.lstrip('/').split('/', 1)[0]
+        diagnostic['path_category'] = (
+            'response' if path.startswith(RESPONSE_PATH) else
+            'analytics' if root in {'analytics', 'telemetry', 'metrics', 'collect', 'track',
+                                   'events', 'counter', 'stat', 'stats', 'hhtm'} else
+            'applicant' if path.startswith('/applicant/') else
+            'vacancy' if path.startswith('/vacancy/') else 'other')
         if path in {RESPONSE_PATH, RESPONSE_PATH + '/popup', '/applicant/resumes'}:
             diagnostic['path'] = path
         elif path.startswith(RESPONSE_PATH):
@@ -194,6 +211,11 @@ def _unknown_classification(request, reason, frame_kind, event_url):
             diagnostic['path'] = '/[other]'
         keys = set(parse_qs(parsed.query, keep_blank_values=True))
         diagnostic['query_fields'] = sorted(keys & RESPONSE_FIELDS)
+    if request is not None:
+        with contextlib.suppress(Exception):
+            evidence = _response_evidence(request)
+            diagnostic.update(evidence)
+            diagnostic['application_reason'] = _application_reason(request, evidence)
     if frame_kind is None:
         with contextlib.suppress(Exception):
             if getattr(request, 'service_worker', None) is not None:
@@ -293,43 +315,71 @@ def _request_matches(proof, request):
         return False
 
 
-def _response_fields_present(request):
-    """Conservative payload check; unreadable/opaque bodies cannot prove safety."""
-    if set(parse_qs(urlsplit(request.url).query, keep_blank_values=True)) & RESPONSE_FIELDS:
-        return True
+def _response_evidence(request):
+    """Extract only allowlisted field names and body categories, never values."""
+    query = set(parse_qs(urlsplit(request.url).query, keep_blank_values=True))
+    sources = {'query': sorted(query & PAYLOAD_FIELDS)} if query & PAYLOAD_FIELDS else {}
+    evidence = {'query_fields': sorted(query & RESPONSE_FIELDS),
+                'field_sources': sources, 'body_state': 'empty'}
     try:
         body = getattr(request, 'post_data', None)
         if body is None:
-            return bool(getattr(request, 'post_data_buffer', None))
+            if getattr(request, 'post_data_buffer', None):
+                evidence['body_state'] = 'opaque'
+            return evidence
         if not body:
-            return False
+            return evidence
         content_header = request.headers.get('content-type', '')
         content_type = content_header.split(';', 1)[0].strip().lower()
-        if (content_type not in {'application/x-www-form-urlencoded', 'multipart/form-data',
-                                 'application/json', 'text/plain'}
-                or request.headers.get('content-encoding', 'identity').lower() != 'identity'):
-            return True
+        if request.headers.get('content-encoding', 'identity').lower() != 'identity':
+            evidence['body_state'] = 'encoded'
+            return evidence
+        if content_type not in {'application/x-www-form-urlencoded', 'multipart/form-data',
+                                'application/json', 'text/plain'}:
+            evidence['body_state'] = 'opaque'
+            return evidence
+        source = 'form' if content_type == 'application/x-www-form-urlencoded' else 'body'
+        fields = set()
+        evidence['body_state'] = 'malformed'
         if content_type == 'application/json' or body.lstrip().startswith(('{', '[')):
             # Decode escaped JSON keys, including nested objects. Matching values
             # too is deliberately conservative and never authorizes an action.
+            source = 'json'
             body = json.dumps(json.loads(body), ensure_ascii=False)
         elif content_type == 'multipart/form-data':
+            source = 'multipart'
             message = Parser(policy=policy.default).parsestr(
                 'Content-Type: ' + content_header + '\r\nMIME-Version: 1.0\r\n\r\n' + body)
             if not message.is_multipart() or message.defects or message['content-type'].defects:
-                return True
+                return evidence
             for part in message.iter_parts():
                 disposition = part['content-disposition']
                 if (part.is_multipart() or part.defects or disposition is None or disposition.defects
                         or part.get_content_disposition() != 'form-data'):
-                    return True
+                    return evidence
                 name = part.get_param('name', header='content-disposition')
-                if not isinstance(name, str) or name in RESPONSE_FIELDS:
-                    return True
-        fields = '|'.join(re.escape(name) for name in RESPONSE_FIELDS)
-        return bool(re.search(r'(?<!\w)(?:' + fields + r')(?!\w)', unquote_plus(body)))
+                if not isinstance(name, str):
+                    return evidence
+                if name in PAYLOAD_FIELDS:
+                    fields.add(name)
+        fields.update(PAYLOAD_FIELD_PATTERN.findall(unquote_plus(body)))
+        if fields:
+            sources[source] = sorted(fields)
+        evidence['body_state'] = 'readable'
     except Exception:
-        return True
+        if evidence['body_state'] != 'malformed':
+            evidence['body_state'] = 'unreadable'
+    return evidence
+
+
+def _response_fields_present(request, evidence=None):
+    """Off-route bodies need resume AND vacancy evidence; opacity fails closed."""
+    evidence = evidence if evidence is not None else _response_evidence(request)
+    fields = {name for names in evidence['field_sources'].values() for name in names}
+    # Retain the existing conservative query rule, including blank controls.
+    return bool(evidence['query_fields']
+                or evidence['body_state'] not in {'empty', 'readable'}
+                or (fields & RESUME_FIELDS and fields & VACANCY_FIELDS))
 
 
 def _mutating_request(request):
@@ -337,12 +387,24 @@ def _mutating_request(request):
     return request.method.upper() not in {'GET', 'HEAD'} or _response_fields_present(request)
 
 
+def _application_reason(request, evidence):
+    if not _hh_target(request.url):
+        return 'none'
+    if (request.method.upper() not in {'GET', 'HEAD'}
+            and urlsplit(request.url).path.startswith(RESPONSE_PATH)):
+        return 'response_path'
+    if evidence['query_fields']:
+        return 'query_fields'
+    if evidence['body_state'] not in {'empty', 'readable'}:
+        return evidence['body_state'] + '_body'
+    if _response_fields_present(request, evidence):
+        return 'resume_and_vacancy_fields'
+    return 'none'
+
+
 def _application_request(request):
     """Share the stop decision and sequence fence for every possible HH submit."""
-    return (_hh_target(request.url)
-            and ((request.method.upper() not in {'GET', 'HEAD'}
-                  and urlsplit(request.url).path.startswith(RESPONSE_PATH))
-                 or _response_fields_present(request)))
+    return _application_reason(request, _response_evidence(request)) != 'none'
 
 
 def monitor_page(session, page):
@@ -363,7 +425,9 @@ def monitor_page(session, page):
                     if (attempt is not None and attempt.client is session
                             and attempt.context is context and attempt.repository.source == 'hh'
                             and isinstance(posts, list) and request.method.upper() == 'POST'):
-                        posts.append({'request': request, 'owned': False, 'status': None})
+                        posts.append({'request': request, 'owned': False, 'status': None,
+                                      'classification': _unknown_classification(
+                                          request, 'application_request', None, None)})
                 if not _mutating_request(request):
                     return
                 try:
