@@ -10,6 +10,7 @@ import uuid
 import aiohttp
 
 import config
+from reporting import format_run_losses
 import profile as profile_mod
 import telegram_access
 from telegram_app.formatting import limit_telegram_text
@@ -476,6 +477,7 @@ async def notify_needs_manual(
     note: str | None = None,
     reply_markup: dict | None = None,
     screenshot_path: str | None = None,
+    *, uncertain: bool = False,
 ):
     """Уведомить о подходящей вакансии, где нужен ручной отклик."""
     extra_note = note or "Работодатель требует ответить на вопросы"
@@ -484,8 +486,10 @@ async def notify_needs_manual(
     company = _html(vacancy.get("company", "—"), 300)
     salary = _html(vacancy.get("salary", "не указана"), 200)
     url = _html(vacancy.get("url", ""), 2000)
+    heading = "❔ Исход отклика не подтверждён — нужна ручная сверка" if uncertain else "📝 Подходящая вакансия (нужен ручной отклик)"
+    link_label = "Открыть и проверить" if uncertain else "Открыть и откликнуться"
     text = (
-        f"📝 <b>Подходящая вакансия (нужен ручной отклик)</b>\n\n"
+        f"<b>{heading}</b>\n\n"
         f"<b>{title}</b>\n"
         f"🌐 {source}\n"
         f"🏢 {company}\n"
@@ -493,7 +497,7 @@ async def notify_needs_manual(
         f"📊 Совпадение: {score}/100\n\n"
         f"⚠️ {_html(extra_note, 600)}\n"
         f"💡 {_html(reason[:250] if reason else 'Нужно проверить вакансию вручную', 300)}\n\n"
-        f"<a href=\"{url}\">Открыть и откликнуться</a>"
+        f"<a href=\"{url}\">{link_label}</a>"
     )
     if screenshot_path and os.path.exists(screenshot_path):
         return await send_photo(
@@ -571,7 +575,7 @@ async def notify_summary(total_found: int, applied: int, skipped: int, source_st
     """Итог прогона поиска."""
     if not _telegram_flag("TELEGRAM_NOTIFY_SEARCH_SUMMARY", False):
         return
-    has_source_stop = any((bucket or {}).get("stop_reason") for bucket in (source_stats or {}).values())
+    has_source_stop = bool(format_run_losses({"source_stats": source_stats or {}}))
     if total_found == 0 and applied == 0 and not has_source_stop:
         return  # не спамить если ничего нового
 
@@ -589,6 +593,9 @@ async def notify_summary(total_found: int, applied: int, skipped: int, source_st
     if uncertain_total:
         text += f"\n⚠️ Исход отклика не подтверждён: {uncertain_total}; нужна ручная сверка, автоматического повтора нет."
     text += _format_source_stats(source_stats)
+    losses = format_run_losses({"source_stats": source_stats or {}})
+    if losses:
+        text += "\n" + html.escape("\n".join(losses))
     await send_message(text)
 
 

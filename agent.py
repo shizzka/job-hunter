@@ -781,7 +781,7 @@ async def do_manual_apply_token(token: str) -> dict:
         if apply_result_is_uncertain(apply_result):
             apply_result = {**apply_result, "ok": False, "uncertain": True}
             manual_note = record_manual_uncertain()
-            await notify_needs_manual(vacancy, score, reason, note=manual_note)
+            await notify_needs_manual(vacancy, score, reason, note=manual_note, uncertain=True)
             return {**apply_result, "ok": False, "uncertain": True, "message": manual_note}
         _record_hh_questionnaire_analytics(
             run_id=run_id,
@@ -848,7 +848,7 @@ async def do_manual_apply_token(token: str) -> dict:
 
     except _HHApplyUncertain:
         message = record_manual_uncertain()
-        await notify_needs_manual(vacancy, score, reason, note=message)
+        await notify_needs_manual(vacancy, score, reason, note=message, uncertain=True)
         return {**manual_result, "ok": False, "uncertain": True, "message": message}
     except HHUnexpectedUI as exc:
         uncertain = bool(getattr(exc, "hh_uncertain", False) or
@@ -857,7 +857,7 @@ async def do_manual_apply_token(token: str) -> dict:
         uncertain = apply_result_is_uncertain(manual_result)
         if uncertain:
             message = record_manual_uncertain()
-            await notify_needs_manual(vacancy, score, reason, note=message)
+            await notify_needs_manual(vacancy, score, reason, note=message, uncertain=True)
         else:
             message = "Нестандартный UI: вакансия оставлена для ручной проверки."
             seen.mark_seen(vacancy.get("id", token), vacancy, "manual_hh_guard_stop")
@@ -890,9 +890,10 @@ async def do_manual_apply_token(token: str) -> dict:
             score,
             reason,
             note=message if uncertain else f"ИИ-отклик упал: {message}. Открой вручную.",
+            uncertain=uncertain,
         )
         log.warning("Manual AI apply failed: error_kind=%s", type(exc).__name__)
-        print(f"❌ ИИ-отклик упал: {message}")
+        print(f"⚠ {message}" if uncertain else f"❌ ИИ-отклик упал: {message}")
         return {**result, "ok": False, "uncertain": uncertain, "message": message}
     finally:
         if not shutdown_started:
@@ -1025,7 +1026,8 @@ async def _mark_manual(
         ),
         "medium",
     )
-    await wait(notify_needs_manual(v, score, reason, note=manual_note, reply_markup=reply_markup))
+    await wait(notify_needs_manual(v, score, reason, note=manual_note, reply_markup=reply_markup,
+                                 **({"uncertain": True} if decision == DECISION_APPLY_UNCERTAIN else {})))
 
 
 def _build_hh_retry_cover_letter(v: dict, resume_variant: dict | None = None) -> str:
@@ -1479,7 +1481,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 create_task(f"Ручная сверка: {v['title']} @ {v['company']}",
                             f"URL: {v.get('url', '')}\n{note}", "medium")
                 try:
-                    await observe_hh_receipts(notify_needs_manual(v, score, reason, note=note))
+                    await observe_hh_receipts(notify_needs_manual(v, score, reason, note=note, uncertain=True))
                 finally:
                     receipt.reconcile()
             finally:
@@ -3135,7 +3137,7 @@ async def main():
                 raise SystemExit(1)
         elif args.search:
             result = await do_search()
-            print(f"\n✅ Найдено: {result['found']} | Откликов: {result['applied']} | Пропущено: {result['skipped']}")
+            print("\n" + reporting.format_search_console(result))
             if result.get("note"):
                 print(f"ℹ️ {result['note']}")
         elif args.check:
@@ -3192,6 +3194,8 @@ async def main():
                                                approval_revision=args.google_form_approval_revision)
         elif args.manual_apply_token:
             result = await do_manual_apply_token(args.manual_apply_token)
+            if result.get("uncertain"):
+                print(f"⚠ Исход отклика не подтверждён; нужна ручная сверка. {result.get('message', '')}")
             if not result.get("ok"):
                 sys.exit(1)
         elif args.trace_apply:
@@ -3231,7 +3235,7 @@ async def main():
                 print('\n❌ Анализ не завершён; предыдущий результат сохранён.')
         elif args.dry_run:
             result = await do_search(dry_run=True)
-            print(f"\n🔍 [DRY RUN] Найдено: {result['found']} | Подходящих: {result['applied']} | Отфильтровано: {result['skipped']}")
+            print("\n" + reporting.format_search_console(result, dry_run=True))
             if result.get("note"):
                 print(f"ℹ️ {result['note']}")
     finally:

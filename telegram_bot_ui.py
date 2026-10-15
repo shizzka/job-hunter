@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import analytics
+from reporting import format_run_observation, format_run_losses
 
 import json
 import os
@@ -1740,15 +1741,22 @@ def build_stats_text(
 def format_run_summary(run: dict) -> str:
     status = "не завершён" if run.get("status") == "incomplete" else ("успешно" if run.get("ok") else "с ошибкой")
     funnel = run.get("funnel") or {}
-    has_losses = bool(run.get("stage_failures")) and run.get("status") != "incomplete"
+    losses = format_run_losses(run)
+    has_losses = bool(run.get("stage_failures") or losses) and run.get("status") != "incomplete"
     if has_losses and run.get("ok"):
         status = "завершён с потерями"
     elif run.get("status") != "incomplete" and run.get("ok") and funnel.get("applied", run.get("applied")) == 0:
         status = "штатно; откликов нет" if run.get("mode") != "dry-run" else "штатно; dry-run"
-    icon = "⚠" if has_losses else _ok_icon(run.get('ok', False))
+    fields = analytics.run_observation_fields(run)
+    if fields["application_outcome"] == "uncertain" and run.get("ok") and not has_losses:
+        status = "исход отклика не подтверждён"
+    icon = "⚠" if has_losses or fields["application_outcome"] == "uncertain" else (
+        "✅" if fields["execution_status"] == "completed" and fields["application_outcome"] == "sent"
+        else "❌" if fields["execution_status"] == "failed" else "ℹ️")
     lines = [
         f"{icon} {run.get('run_id') or _pretty_value(run.get('created_at'))} | {_pretty_runtime_mode(run.get('mode', 'search'))} | {status}",
     ]
+    lines.extend([format_run_observation(run), *losses])
     if funnel:
         lines.extend([
             f"Новых: {funnel.get('new', 0)} | Keyword pass: {funnel.get('keyword_pass', 0)}",
@@ -1854,10 +1862,14 @@ def build_run_summary_text(summary, *, profile_name):
               "incomplete": "⏳ не завершён / прерван", "unknown": "❔ неизвестно"}
     if summary.get("application_outcome") in {"no_applications", "dry_run"}:
         states["success"] = "штатно; откликов нет" if summary["application_outcome"] == "no_applications" else "штатно; dry-run"
+    if summary.get("application_outcome") == "uncertain" and summary.get("execution_status") == "completed":
+        states.update({key: "❔ требуется ручная сверка" for key in ("success", "partial", "failed")})
     lines = ["📊 Последний / выбранный запуск", f"Run: {safe(summary['run_id'])}",
              f"Профиль: {safe(_pretty_profile_name(profile_name))}",
              f"Источники: {safe(', '.join(summary['sources']) or None)}",
              f"Итог: {states.get(summary['status'], '❔ неизвестно')}"]
+    lines.append(html.escape(format_run_observation(summary)))
+    lines.extend(html.escape(line) for line in format_run_losses(summary))
     lines.append(f"Начало: {safe(summary['started_at'])}")
     if summary.get("stop_reason") == "RUN_LIMIT":
         lines.append("Остановлен по лимиту прогона.")
@@ -1878,7 +1890,8 @@ def build_run_summary_text(summary, *, profile_name):
     if summary.get("zero_apply_diagnosis"):
         lines += ["", html.escape(summary["zero_apply_diagnosis"])]
     if failure:
-        lines += ["", "❌ Основная проблема", safe(failure['reason_code']),
+        problem = "❔ Требуется ручная сверка" if failure.get("reason_code") == "apply_uncertain" else "❌ Основная проблема"
+        lines += ["", problem, safe(failure['reason_code']),
             f"Этап: {safe(failure['stage'])}", f"Источник: {safe(failure['source'])}"]
         if failure.get("provider"):
             lines.append(f"Провайдер: {safe(failure['provider'])}")
@@ -2010,7 +2023,13 @@ def format_command_result(label: str, result: dict, *, role: str = ROLE_ADMIN) -
     ok = bool(result.get("ok", False))
     stdout = _sanitize_command_output(label, (result.get("stdout") or "").strip())
     stderr = (result.get("stderr") or "").strip()
-    lines = [f"{_ok_icon(ok)} {pretty_label} {'завершён' if ok else 'завершён с ошибкой'}"]
+    uncertain = label == "manual AI apply" and "Исход отклика не подтверждён" in stdout
+    if uncertain:
+        lines = [f"❔ {pretty_label}: исход отклика не подтверждён; нужна ручная сверка"]
+    elif label in {"search", "dry-run"} and ok:
+        lines = [f"ℹ️ {pretty_label}: команда завершена; исход отклика указан ниже"]
+    else:
+        lines = [f"{_ok_icon(ok)} {pretty_label} {'завершён' if ok else 'завершён с ошибкой'}"]
 
     if stdout:
         lines.extend(["", stdout[-3200:]])

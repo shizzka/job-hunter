@@ -26,6 +26,63 @@ SOURCE_SHORT_LABELS = {
 }
 
 
+def format_run_observation(run: dict) -> str:
+    fields = {**analytics.run_observation_fields(run), **{
+        key: run[key] for key in ("execution_status", "application_outcome") if run.get(key)}}
+    execution = {"completed": "завершён", "incomplete": "неполный", "failed": "упал"}
+    outcome = {"sent": "отправлен", "uncertain": "не подтверждён; нужна ручная сверка",
+               "no_applications": "нет откликов", "dry_run": "dry-run"}
+    return (f"Выполнение: {execution.get(fields['execution_status'], 'неизвестно')}\n"
+            f"Исход отклика: {outcome.get(fields['application_outcome'], 'неизвестен')}")
+
+
+def format_run_losses(run: dict) -> list[str]:
+    """Show only recorded source/page losses, without inferring missing work."""
+    sources = dict(run.get("source_stats") or {})
+    for failure in run.get("stage_failures") or []:
+        if failure.get("source_stopped") or failure.get("collection"):
+            source = failure.get("source", "unknown")
+            sources[source] = {**sources.get(source, {}),
+                "source_stopped": failure.get("source_stopped"),
+                "collection": {**(failure.get("collection") or {}),
+                               **(sources.get(source, {}).get("collection") or {})}}
+    lines = []
+    for source, bucket in sources.items():
+        collection = bucket.get("collection") or {}
+        parts = []
+        if bucket.get("stop_reason") or bucket.get("source_stopped") or collection.get("source_stopped"):
+            parts.append("источник остановлен")
+        if collection.get("source_discarded"):
+            parts.append("результаты источника отброшены")
+        for value, label in ((bucket.get("pages_failed"), "страниц не опрошено"),
+                             (collection.get("combinations_unattempted"), "комбинаций не опрошено"),
+                             (collection.get("vacancies_discarded"), "вакансий отброшено"),
+                             ((bucket.get("funnel") or bucket).get("not_processed"), "вакансий не обработано")):
+            if value:
+                parts.append(f"{label}: {value}")
+        if parts:
+            lines.append(f"⚠ {source}: " + "; ".join(parts))
+    return lines
+
+
+def format_search_console(result: dict, *, dry_run: bool = False) -> str:
+    run = {**result, "mode": "dry-run" if dry_run else "search"}
+    fields = analytics.run_observation_fields(run)
+    losses = format_run_losses(run)
+    icon = ("✅" if fields["execution_status"] == "completed" and
+            fields["application_outcome"] == "sent" and not losses and not run.get("stage_failures")
+            else "❌" if fields["execution_status"] == "failed" else "⚠" if losses or
+            fields["application_outcome"] == "uncertain" else "ℹ️")
+    counts = (f"Подходящих: {result['applied']} | Отфильтровано: {result['skipped']}" if dry_run else
+              f"Подтверждено откликов: {analytics.format_run_count(run)} | Пропущено: {result['skipped']}")
+    lines = [f"{icon} {'[DRY RUN] ' if dry_run else ''}Найдено: {result['found']} | {counts}",
+             format_run_observation({**run, **fields}), *losses]
+    diagnosis = analytics.zero_apply_diagnosis(run)
+    if diagnosis:
+        lines.append(diagnosis)
+    return "\n".join(lines)
+
+
 def source_label(source: str, short: bool = False) -> str:
     labels = SOURCE_SHORT_LABELS if short else SOURCE_LABELS
     return labels.get(source, source)

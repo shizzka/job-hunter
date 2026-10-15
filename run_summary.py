@@ -217,7 +217,8 @@ def build_run_summary(run, events=(), *, profile=""):
                                          "funnel": {**funnel, **counters}, "stage_failures": failures})
     return {"run_id": run_id, "profile": profile, "profile_id": data.get("profile_id") or started.get("profile_id"),
         "started_at": start_at, "finished_at": finish_at, "duration_seconds": duration,
-        "sources": sources, "status": status, "counters": counters,
+        "sources": sources, "source_stats": data.get("source_stats") or {},
+        "stage_failures": failures, "status": status, "counters": counters,
         "counter_status": "minimum_or_unknown" if incomplete else "recorded",
         "primary_failure": next(iter(roots.values()), None), "failure_count": len(roots),
         "stop_reason": "RUN_LIMIT" if limited else None,
