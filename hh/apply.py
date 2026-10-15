@@ -817,12 +817,31 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
         from hh.verification import confirmed_result, reconcile_post_submit
         attempt = session._external_attempt
         owned_attempt = attempt
+
+        async def reconcile_exception(exc):
+            if trace is not None:
+                try:
+                    trace.event("APPLY_EXCEPTION", ok=False, error_kind=type(exc).__name__,
+                                previous_stage=trace.last_stage, native_acting=bool(attempt.acting),
+                                proven_no_action=bool(attempt.proven_no_action),
+                                application_posts=[{key: post[key] for key in ('owned', 'status')}
+                                                   for post in getattr(attempt, '_hh_application_posts', [])])
+                except Exception as trace_error:
+                    logger.warning("HH apply exception trace unavailable: %s", type(trace_error).__name__)
+            await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter)
+            # A destroyed form/renderer can fail the click helper after dispatch.
+            # Close only this owner's proven success before recovery can stop the
+            # browser and NativeAttempt persists a terminal uncertain receipt.
+            return confirmed_result(session, url, {'ok': False}, owned_attempt=attempt, close_attempt=True)
+
         try:
             result = await _apply_to_vacancy(session, url, cover_letter, response_url,
                 preferred_resume_title, preferred_resume_id, vacancy_context, trace,
                 absolute_hh_url=absolute_hh_url, anti_bot_message=anti_bot_message, logger=logger)
         except HHVacancyNavigationError as exc:
-            await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter)
+            confirmed = await reconcile_exception(exc)
+            if confirmed is not None:
+                return confirmed
             session._hh_recovery_stop_reason = (getattr(session, '_hh_recovery_stop_reason', '')
                                                 or 'vacancy_navigation_failed')
             uncertain = bool(attempt.uncertain or attempt.acting or attempt.command_started
@@ -840,11 +859,15 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
                 'native_acting': bool(attempt.acting), 'command_started': bool(attempt.command_started),
                 'application_posts': getattr(watch, 'application_post_sequence', None),
             }
-            await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter)
+            confirmed = await reconcile_exception(exc)
+            if confirmed is not None:
+                return confirmed
             await recover_unexpected_ui(session, exc, attempt=attempt)
             raise
         except Exception as exc:
-            await reconcile_post_submit(session, attempt, str(preferred_resume_id).strip(), cover_letter)
+            confirmed = await reconcile_exception(exc)
+            if confirmed is not None:
+                return confirmed
             # A preparation exception can leave the same stale response DOM
             # as a normal manual exit. Resolve ownership before NativeAttempt
             # finally clears it, and never navigate that old page afterward.

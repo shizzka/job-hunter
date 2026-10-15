@@ -134,12 +134,11 @@ async def reconcile_post_submit(session, attempt, resume_id, letter):
         if {dict(cookie)['value'] for cookie in before} != {sent_tokens[0]}:
             return
         sequence = context._hh_action_watch.application_post_sequence
-        target = urlsplit(page.url)
-        path = '/vacancy/' + proof['fields']['vacancy_id']
-        if (target.scheme != 'https' or target.netloc not in {'hh.ru', 'spb.hh.ru'}
-                or target.path != path or target.query or target.fragment):
-            return
-        url = target.geturl()
+        # The form may disappear without a redirect, or navigation may destroy
+        # its renderer. The exact owned POST supplies the vacancy and origin;
+        # the current browser URL is not a receipt of the remote result.
+        target = urlsplit(proof['url'])
+        url = target._replace(path='/vacancy/' + proof['fields']['vacancy_id']).geturl()
         response = await request_context.get(url, max_redirects=0, timeout=15000,
                                              headers={'Cache-Control': 'no-cache'})
         fresh()
