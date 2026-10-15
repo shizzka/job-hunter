@@ -1148,7 +1148,7 @@ def analyze_cover_letter(
         "overclaim_guard": bool(overclaim_guard),
         "grounding_status": status,
         "grounding_check_failed": status in {"verifier_error", "incomplete_check", "invalid_check",
-            "invalid_evidence", "missing_sources", "invalid_draft", "source_mismatch"},
+            "invalid_evidence", "missing_sources", "invalid_draft", "nonliteral_quote"},
     }
 
 
@@ -1548,6 +1548,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
 ## ЖЁСТКИЕ ОГРАНИЧЕНИЯ ПРОТИВ ВЫДУМЫВАНИЯ:
 - Используй ТОЛЬКО резюме, подтвержденные факты и базу знаний текущего кандидата выше. Если факт отсутствует, не додумывай его.
 - ЗАПРЕЩЕНО упоминать технологии, языки, фреймворки, инструменты, которых нет в данных кандидата, даже если они в вакансии.
+- ЗАПРЕЩЕНО переносить из вакансии график, занятость, часы, зарплату, условия и требования в свой опыт или готовность. Вакансия описывает работу, а НЕ факты о кандидате. Даже «готов работать 4-6 часов» требует подтверждения в данных кандидата.
 - ЗАПРЕЩЕНО завышать стаж. Бери срок строго из данных кандидата.
 - ЗАПРЕЩЕНО приписывать достижения, цифры, проекты и технический бэкграунд, которых нет в данных кандидата.
 - Знание Postman НЕ означает, что кандидат находил ошибки регистрации, биллинга или кодов статуса. Не добавляй такой сценарий без прямого подтверждения.
@@ -1579,57 +1580,64 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
 одного-двух подтвержденных фактов и разрешенного окончания; дополнительный смысл
 ради убедительности не нужен. Напиши ТОЛЬКО текст письма, без заголовков и пояснений."""
 
+    from cover_grounding import (
+        GroundingResult, build_rewrite_prompt, check_draft_numbers, split_sentences,
+        verify_cover_letter,
+    )
+    overclaim_reasons = {
+        "unsupported_claims", "number_mismatch", "missing_evidence", "unknown_source",
+        "unconfirmed_number", "overstatement_rejected",
+    }
+    grounding = GroundingResult(False, "generation_error")
     try:
         client = _get_client()
-        resp = await client.chat.completions.create(
-            model=config.HH_COVER_LETTER_MODEL or config.LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=2000,
-        )
-        if getattr(resp.choices[0], "finish_reason", None) != "stop":
-            log.warning("Cover letter generation incomplete; using fallback")
-            return _remember_cover_letter_meta(
-                _fallback_cover_letter(vacancy, details, cover_style),
-                cover_style=cover_style, fallback=True, grounding_status="incomplete_response",
+        # A full re-audit of a nonliteral quote and the rewritten draft share
+        # the same two-call budget; neither path can start a third audit.
+        verifier_budget = 2
+        for attempt in range(2):
+            resp = await client.chat.completions.create(
+                model=config.HH_COVER_LETTER_MODEL or config.LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=2000,
             )
-        cover = _clean_cover_letter_output(resp.choices[0].message.content or "")
-        if not cover:
-            log.warning("Cover letter generation returned empty response; using fallback")
-            fallback_cover = _fallback_cover_letter(vacancy, details, cover_style)
-            return _remember_cover_letter_meta(
-                fallback_cover,
-                cover_style=cover_style,
-                fallback=True,
-                grounding_status="empty_response",
-            )
-        overstatements = _detect_candidate_claim_overstatements(cover)
-        if overstatements:
-            log.warning("cover letter overclaim guard triggered: count=%d", len(overstatements))
-            fallback_cover = _fallback_cover_letter(vacancy, details, cover_style)
-            return _remember_cover_letter_meta(
-                fallback_cover,
-                cover_style=cover_style,
-                fallback=True,
-                overclaim_guard=True,
-                grounding_status="overstatement_rejected",
-            )
-        from cover_grounding import verify_cover_letter
-        grounding = await verify_cover_letter(
-            cover, sources, client, config.HH_COVER_LETTER_MODEL or config.LLM_MODEL,
-            constraints=fact_constraints,
-        )
-        if not grounding.ok:
-            overclaim = grounding.reason in {"unsupported_claims", "number_mismatch", "missing_evidence"}
-            log.warning("Cover letter grounding: status=%s overclaim_guard=%s check_failed=%s fallback=true",
-                        grounding.reason, str(overclaim).lower(), str(not overclaim).lower())
-            return _remember_cover_letter_meta(
-                _fallback_cover_letter(vacancy, details, cover_style),
-                cover_style=cover_style, fallback=True, overclaim_guard=overclaim,
-                grounding_status=grounding.reason,
-            )
+            if getattr(resp.choices[0], "finish_reason", None) != "stop":
+                if attempt == 0:
+                    grounding = GroundingResult(False, "incomplete_response")
+                break
+            cover = _clean_cover_letter_output(resp.choices[0].message.content or "")
+            if not cover:
+                if attempt == 0:
+                    grounding = GroundingResult(False, "empty_response")
+                break
+            grounding = check_draft_numbers(cover, sources, title=vacancy.get("title", ""))
+            if grounding.ok:
+                overstatements = _detect_candidate_claim_overstatements(cover)
+                if overstatements:
+                    grounding = GroundingResult(False, "overstatement_rejected", tuple(split_sentences(cover)))
+                else:
+                    grounding = await verify_cover_letter(
+                        cover, sources, client, config.HH_COVER_LETTER_MODEL or config.LLM_MODEL,
+                        constraints=fact_constraints, max_attempts=verifier_budget,
+                    )
+                    verifier_budget -= grounding.verifier_calls
+            if grounding.ok:
+                return _remember_cover_letter_meta(
+                    cover, cover_style=cover_style, grounding_status=grounding.reason,
+                )
+            if attempt == 1 or verifier_budget == 0 or grounding.reason not in overclaim_reasons:
+                break
+            log.warning("Cover letter rewriting: status=%s rejected_count=%d",
+                        grounding.reason, len(grounding.rejected_sentences))
+            prompt = build_rewrite_prompt(cover, grounding, sources, fact_constraints)
+
+        overclaim = grounding.reason in overclaim_reasons
+        log.warning("Cover letter grounding: status=%s overclaim_guard=%s fallback=true",
+                    grounding.reason, str(overclaim).lower())
         return _remember_cover_letter_meta(
-            cover, cover_style=cover_style, grounding_status=grounding.reason,
+            _fallback_cover_letter(vacancy, details, cover_style),
+            cover_style=cover_style, fallback=True, overclaim_guard=overclaim,
+            grounding_status=grounding.reason,
         )
 
     except Exception as e:
@@ -1639,5 +1647,6 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
             fallback_cover,
             cover_style=cover_style,
             fallback=True,
-            grounding_status="generation_error",
+            overclaim_guard=grounding.reason in overclaim_reasons,
+            grounding_status=grounding.reason,
         )

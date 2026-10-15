@@ -58,7 +58,7 @@ def test_typographic_variants_preserve_literal_evidence(original, quote):
 def test_normalization_does_not_accept_absent_or_spliced_quotes(quote):
     sources = {"resume": "Есть опыт работы с:\n- Postman;\n- Swagger;\n"
                          "- Chrome DevTools;\n- Charles Proxy"}
-    assert grounding.validate_check(approved(quote), SENTENCES, sources).reason == "source_mismatch"
+    assert grounding.validate_check(approved(quote), SENTENCES, sources).reason == "nonliteral_quote"
 
 
 @pytest.mark.parametrize("quote,source,reason", [
@@ -121,7 +121,7 @@ def test_spliced_evidence_is_rejected_but_separate_literal_quotes_are_allowed():
     sources = {"resume": "Проверяю REST API. Использую DevTools. Работаю в Postman."}
     sentences = ["Проверяю REST API и работаю в Postman.", "Обсудим детали?"]
     payload = approved("Проверяю REST API. Работаю в Postman.")
-    assert grounding.validate_check(payload, sentences, sources).reason == "source_mismatch"
+    assert grounding.validate_check(payload, sentences, sources).reason == "nonliteral_quote"
     payload["sentences"][0]["evidence"] = [
         {"source": "resume", "quote": "Проверяю REST API."},
         {"source": "resume", "quote": "Работаю в Postman."},
@@ -156,14 +156,15 @@ def test_constraints_cannot_supply_evidence_even_if_verifier_cites_them():
     client = client_for(json.dumps(approved(claim, "constraints")))
     result = asyncio.run(grounding.verify_cover_letter(
         " ".join(SENTENCES), SOURCES, client, "model", constraints=claim))
-    assert not result.ok and result.reason == "source_mismatch"
+    assert not result.ok and result.reason == "unknown_source"
+    assert len(client.calls) == 1
     request = json.loads(client.calls[0]["messages"][1]["content"])
     assert request["constraints"] == claim
     assert "constraints" not in request["sources"]
     assert "даже при дословной цитате" in client.calls[0]["messages"][0]["content"]
 
 
-def test_source_mismatch_retries_full_audit_with_identical_snapshot():
+def test_nonliteral_quote_retries_full_audit_with_identical_snapshot():
     client = client_for(json.dumps(approved("Invented quote")), json.dumps(approved()))
     result = asyncio.run(grounding.verify_cover_letter(
         " ".join(SENTENCES), SOURCES, client, "model", constraints="Keep constraints"))
@@ -250,14 +251,15 @@ def test_actual_generator_keeps_a_verified_letter(isolated_candidate, monkeypatc
     "У меня технический бэкграунд. Обсудим детали?",
 ])
 def test_actual_generator_blocks_unsupported_stories(isolated_candidate, monkeypatch, draft):
-    client = client_for(draft, '{"verdict":"unsupported","sentences":[]}')
+    client = client_for(draft, '{"verdict":"unsupported","sentences":[]}',
+                        draft, '{"verdict":"unsupported","sentences":[]}')
     monkeypatch.setattr(matcher, "_get_client", lambda: client)
     result = asyncio.run(matcher.generate_cover_letter({"title": "Manual QA", "snippet": draft, "id": "unit-only"}))
     assert result == matcher._fallback_cover_letter({})
     meta = matcher.analyze_cover_letter(result)
     assert meta["overclaim_guard"] and meta["fallback_cover_letter"]
     assert meta["grounding_status"] == "unsupported_claims"
-    assert len(client.calls) == 2
+    assert len(client.calls) == 4
 
 
 def test_actual_generator_rejects_unverifiable_draft(isolated_candidate, monkeypatch):
@@ -268,13 +270,13 @@ def test_actual_generator_rejects_unverifiable_draft(isolated_candidate, monkeyp
     assert result == matcher._fallback_cover_letter({})
 
 
-def test_source_mismatch_is_check_failure_not_overclaim(isolated_candidate, monkeypatch):
+def test_nonliteral_quote_is_check_failure_not_overclaim(isolated_candidate, monkeypatch):
     client = client_for(" ".join(SENTENCES), json.dumps(approved("Absent quote")))
     monkeypatch.setattr(matcher, "_get_client", lambda: client)
     result = asyncio.run(matcher.generate_cover_letter({"title": "QA", "id": "unit-only"}))
     meta = matcher.analyze_cover_letter(result)
     assert result == matcher._fallback_cover_letter({})
-    assert meta["grounding_status"] == "source_mismatch"
+    assert meta["grounding_status"] == "nonliteral_quote"
     assert meta["grounding_check_failed"] and meta["fallback_cover_letter"]
     assert not meta["overclaim_guard"]
     assert len(client.calls) == 3
@@ -286,3 +288,143 @@ def test_hh_retry_fallback_does_not_bypass_grounding_with_invented_skills():
     assert "Электрик" in text
     for unsupported in ("QA", "web/API", "DevTools", "Postman", "автотест", "бэкграунд"):
         assert unsupported not in text
+
+
+def unsupported_first():
+    return {"verdict": "unsupported", "sentences": [
+        {"index": 0, "supported": False, "evidence": []},
+        {"index": 1, "supported": True, "evidence": []},
+    ]}
+
+
+def test_vacancy_only_hours_skip_verifier_and_trigger_one_rewrite(isolated_candidate, monkeypatch):
+    draft = "Готов работать 4-6 часов в день. Обсудим детали?"
+    revised = " ".join(SENTENCES)
+    client = client_for(draft, revised, json.dumps(approved()))
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    result = asyncio.run(matcher.generate_cover_letter({"title": "QA", "snippet": "4-6 часов в день"}))
+    assert result == revised
+    assert len(client.calls) == 3
+    assert [call["max_tokens"] for call in client.calls] == [2000, 2000, 2500]
+    rewrite = client.calls[1]["messages"][0]["content"]
+    assert draft.split(" Обсудим")[0] in rewrite
+    assert '"rejection_reason": "unconfirmed_number"' in rewrite
+    assert json.loads(client.calls[2]["messages"][1]["content"])["sentences"] == SENTENCES
+    assert matcher.analyze_cover_letter(result)["grounding_status"] == "verified"
+
+
+@pytest.mark.parametrize("second", ["Готов работать 6 часов в день. Обсудим детали?",
+                                    "Ускорил проверку API. Обсудим детали?"])
+def test_failed_rewrite_falls_back_without_third_author_attempt(isolated_candidate, monkeypatch, second):
+    first = "Готов работать 4-6 часов в день. Обсудим детали?"
+    client = client_for(first, second, json.dumps(unsupported_first()))
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    result = asyncio.run(matcher.generate_cover_letter({"title": "QA", "snippet": first}))
+    assert result == matcher._fallback_cover_letter({})
+    assert matcher.analyze_cover_letter(result)["overclaim_guard"]
+    assert sum(call["max_tokens"] == 2000 for call in client.calls) == 2
+    assert sum(call["max_tokens"] == 2500 for call in client.calls) == (0 if "6 часов" in second else 1)
+
+
+def test_semantic_rejection_is_rewritten_with_exact_rejected_sentences(isolated_candidate, monkeypatch):
+    draft = "Создаю чек-листы и проверяю REST API в Postman. Обсудим детали?"
+    client = client_for(draft, json.dumps(unsupported_first()), " ".join(SENTENCES), json.dumps(approved()))
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    result = asyncio.run(matcher.generate_cover_letter({"title": "QA", "snippet": "VACANCY_ONLY"}))
+    assert result == " ".join(SENTENCES)
+    rewrite = client.calls[2]["messages"][0]["content"]
+    data = json.loads(rewrite[rewrite.index('{'):])
+    assert data["rejected_sentences"] == [draft.split(" Обсудим")[0]]
+    assert data["sources"]["resume"] == SOURCES["resume"]
+    assert "VACANCY_ONLY" not in rewrite
+    first_audit, second_audit = client.calls[1], client.calls[3]
+    assert first_audit["messages"][0] == second_audit["messages"][0]
+    for key in ("sources", "constraints", "neutral_sentences"):
+        assert json.loads(first_audit["messages"][1]["content"])[key] == json.loads(second_audit["messages"][1]["content"])[key]
+    assert not matcher.analyze_cover_letter(result)["fallback_cover_letter"]
+
+
+@pytest.mark.parametrize("second_check,reason", [
+    (approved("Invented quote"), "nonliteral_quote"),
+    (approved("Postman", "extraction"), "unknown_source"),
+    ({"verdict": "supported", "sentences": []}, "incomplete_check"),
+    (unsupported_first(), "unsupported_claims"),
+    ({"verdict": "supported", "sentences": [
+        {"index": 0, "supported": True, "evidence": []},
+        {"index": 1, "supported": True, "evidence": []},
+    ]}, "missing_evidence"),
+])
+def test_rewritten_letter_has_no_grounding_exemptions_or_extra_audit(
+        isolated_candidate, monkeypatch, second_check, reason):
+    draft = "Создаю чек-листы. Обсудим детали?"
+    client = client_for(draft, json.dumps(unsupported_first()), " ".join(SENTENCES), json.dumps(second_check))
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    result = asyncio.run(matcher.generate_cover_letter({"title": "QA"}))
+    assert result == matcher._fallback_cover_letter({})
+    assert matcher.analyze_cover_letter(result)["grounding_status"] == reason
+    assert len(client.calls) == 4  # Two authors, two auditors, even on a nonliteral quote.
+
+
+def test_unknown_source_is_overclaim_and_does_not_retry_same_audit(isolated_candidate, monkeypatch):
+    client = client_for(" ".join(SENTENCES), json.dumps(approved("Postman", "extraction")), "")
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    result = asyncio.run(matcher.generate_cover_letter({"title": "QA"}))
+    meta = matcher.analyze_cover_letter(result)
+    assert meta["grounding_status"] == "unknown_source"
+    assert meta["overclaim_guard"] and not meta["grounding_check_failed"]
+    assert [call["max_tokens"] for call in client.calls] == [2000, 2500, 2000]
+
+
+def test_mechanical_audit_retry_and_author_rewrite_share_two_call_budget(isolated_candidate, monkeypatch):
+    client = client_for(" ".join(SENTENCES), json.dumps(approved("Absent")), json.dumps(unsupported_first()))
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    result = asyncio.run(matcher.generate_cover_letter({"title": "QA"}))
+    assert result == matcher._fallback_cover_letter({})
+    assert len(client.calls) == 3
+    assert matcher.analyze_cover_letter(result)["grounding_status"] == "unsupported_claims"
+
+
+def test_rewritten_numbers_still_require_literal_numeric_evidence(isolated_candidate, monkeypatch):
+    monkeypatch.setattr(matcher, "_load_resume", lambda: SOURCES["resume"] + " Проверил 30 сценариев.")
+    first = "Создаю чек-листы. Обсудим детали?"
+    revised = "Проверил 30 сценариев. Обсудим детали?"
+    # 30 exists in candidate sources, but the supplied quote omits it.
+    client = client_for(first, json.dumps(unsupported_first()), revised, json.dumps(approved()))
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    result = asyncio.run(matcher.generate_cover_letter({"title": "QA"}))
+    assert result == matcher._fallback_cover_letter({})
+    assert matcher.analyze_cover_letter(result)["grounding_status"] == "number_mismatch"
+    assert len(client.calls) == 4
+
+
+@pytest.mark.parametrize("claim", [
+    "Работаю 4-6 часов в день.", "Работаю четыре часа в день.",
+    "Стаж 5 лет.", "Стаж полгода.", "Готов работать 3 дня в неделю.",
+    "Снизил число ошибок на 30%.", "Ожидаю 120 000 рублей.",
+    "Проверил 47 сценариев.", "Ожидаю $4.", "Стаж двадцать один месяц.",
+])
+def test_local_number_guard_rejects_unconfirmed_quantities(claim):
+    result = grounding.check_draft_numbers(claim, {"resume": "Postman. Стаж 4 года. 6 проектов."})
+    assert not result.ok
+    assert result.rejected_sentences == (claim,)
+
+
+@pytest.mark.parametrize("claim,source", [
+    ("Стаж 1 год.", "Около 1 года практики."),
+    ("Стаж два года.", "Стаж 2 года."),
+    ("Ожидаю 120000 рублей.", "Зарплата 120 000 руб."),
+    ("Ожидаю 120 тыс. рублей.", "Зарплата 120 000 руб."),
+    ("Ожидаю $1000.", "Зарплата 1000 USD."),
+    ("Стаж двадцать один месяц.", "Стаж 21 месяц."),
+    ("Работаю 4–6 часов в день.", "Готов работать 4-6 часов в день."),
+    ("Поддерживаю более 360 тест-кейсов в TestIT.", "Более 360 тест-кейсов в TestIT."),
+    ("Снизил число ошибок на 30%.", "Снижение ошибок на 30 процентов."),
+    ("Проверяю API в Postman. Обсудим детали?", SOURCES["resume"]),
+    ("Направляю резюме на вакансию «QA 2».", SOURCES["resume"]),
+])
+def test_local_number_guard_keeps_supported_and_neutral_phrases(claim, source):
+    assert grounding.check_draft_numbers(claim, {"resume": source}, title="QA 2").ok
+
+
+def test_number_in_job_title_cannot_excuse_candidate_claim():
+    assert not grounding.check_draft_numbers("Работаю QA 2 года.", SOURCES, title="QA 2").ok
