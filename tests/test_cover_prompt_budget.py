@@ -13,13 +13,14 @@ import prompt_blocks
 from tests.test_cover_grounding import approved, client_for
 
 
-def test_selected_sections_survive_oversized_common_knowledge(monkeypatch, caplog):
+@pytest.mark.parametrize("limit", [6000, 12000])
+def test_selected_sections_survive_oversized_common_knowledge(monkeypatch, caplog, limit):
     sections = [{"num": n, "title": f"QA {n}", "content": f"SELECTED_{n}_" * 60} for n in range(1, 7)]
     monkeypatch.setattr(prompt_blocks, "_load_kb_filterable", lambda: ("common " * 3000, sections))
     monkeypatch.setattr(prompt_blocks, "select_kb_sections", AsyncMock(return_value=list(range(1, 7))))
     with caplog.at_level(logging.INFO):
-        block = asyncio.run(prompt_blocks.build_filtered_kb_block("QA", None, max_sections=6, limit_chars=12000))
-    assert len(block) <= 12000
+        block = asyncio.run(prompt_blocks.build_filtered_kb_block("QA", None, max_sections=6, limit_chars=limit))
+    assert len(block) <= limit
     for section in sections:
         assert section["content"] in block
     assert block.index(sections[-1]["content"]) < block.index("common ")
@@ -37,6 +38,25 @@ def test_selected_sections_alone_over_budget_are_kept_and_logged(monkeypatch, ca
     assert "COMMON" not in block
     assert "sections_full=[1]" in caplog.text
     assert "over_budget=true" in caplog.text
+
+
+@pytest.mark.parametrize("selector_failed", [False, True])
+def test_cover_unfiltered_fallback_has_reduced_kb_budget(tmp_path, monkeypatch, selector_failed):
+    (tmp_path / "answering_rules.md").write_text("COMMON " * 3000)
+    monkeypatch.setattr(prompt_blocks, "_knowledge_dir", lambda *args: str(tmp_path))
+    monkeypatch.setattr(prompt_blocks, "build_cover_facts_blocks", lambda: ("", ""))
+    monkeypatch.setattr(prompt_blocks, "build_profile_note_block", lambda: "")
+    monkeypatch.setattr(matcher, "_load_resume", lambda: "Junior QA")
+    if selector_failed:
+        monkeypatch.setattr(prompt_blocks, "build_filtered_kb_block", AsyncMock(side_effect=RuntimeError))
+    client = client_for("")
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    asyncio.run(matcher.generate_cover_letter({"title": "QA", "id": "unit-only"}))
+    author = client.calls[0]["messages"][0]["content"]
+    expected = prompt_blocks.build_knowledge_base_block(limit_chars=6000)
+    assert len(expected) == 6000
+    assert expected in author
+    assert "COMMON " * 1000 not in author
 
 
 @pytest.mark.parametrize("limit", [0, 1, 2, 100, 12000])
@@ -100,6 +120,7 @@ def test_cover_author_and_checker_share_confirmed_snapshot_including_late_interv
     checker = json.loads(client.calls[1]["messages"][1]["content"])
     assert checker["sources"]["facts"] in author
     assert checker["sources"]["knowledge"] in author
+    assert len(checker["sources"]["knowledge"]) <= 6000
     for section in sections:
         assert section["content"] in author
     for text in (claim, "Стаж 8 месяцев, junior."):

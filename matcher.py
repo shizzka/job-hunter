@@ -1497,7 +1497,10 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     profile_note = build_profile_note_block()
     evidence_facts, fact_constraints = build_cover_facts_blocks()
     facts = evidence_facts + fact_constraints
-    knowledge_fallback = build_knowledge_base_block(limit_chars=12000)
+    # Leave room for instructions, candidate facts and output under provider TPM.
+    # Selected sections remain whole; only common KB filler loses its budget.
+    knowledge_limit_chars = 6000
+    knowledge_fallback = build_knowledge_base_block(limit_chars=knowledge_limit_chars)
     # 2-pass: фильтруем KB-секции под конкретную вакансию через LLM
     vacancy_summary = (
         f"Должность: {vacancy.get('title', '')}\n"
@@ -1507,7 +1510,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     try:
         client = _get_client()
         knowledge = await build_filtered_kb_block(
-            vacancy_summary, client, max_sections=6, limit_chars=12000,
+            vacancy_summary, client, max_sections=6, limit_chars=knowledge_limit_chars,
         )
     except Exception as exc:
         log.warning("filtered KB selection failed, fallback to full: %s", type(exc).__name__)
