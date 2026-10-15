@@ -10,6 +10,11 @@ from decimal import Decimal
 
 from llm_utils import parse_llm_json
 
+
+def _grounding_timeout() -> int:
+    import config
+    return max(1, int(getattr(config, "LLM_GROUNDING_TIMEOUT_SECONDS", 40)))
+
 log = logging.getLogger(__name__)
 
 # Typography only: never remove list markers, words or intervening content.
@@ -268,7 +273,7 @@ neutral_sentences. Никакие другие фразы нельзя само�
                 temperature=0,
                 max_tokens=2500,
                 response_format={"type": "json_object"},
-            ), timeout=40)
+            ), timeout=_grounding_timeout())
             payload = parse_llm_json(response.choices[0].message.content or "")
             result = validate_check(payload, sentences, sources)
             if result.reason != "nonliteral_quote" or calls == max_attempts:

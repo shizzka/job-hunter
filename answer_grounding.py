@@ -5,6 +5,7 @@ import asyncio
 import copy
 import json
 import os
+from cover_grounding import _grounding_timeout
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -208,7 +209,7 @@ Constraints — запреты кандидата, НЕ источник цит�
             model=model, messages=[{'role': 'system', 'content': instructions},
                                   {'role': 'user', 'content': json.dumps(
                                       {'sources': sources, 'answers': answers, 'constraints': constraints}, ensure_ascii=False)}],
-            temperature=0, max_tokens=5000, response_format={'type': 'json_object'}), timeout=40)
+            temperature=0, max_tokens=5000, response_format={'type': 'json_object'}), timeout=_grounding_timeout())
         choice = response.choices[0]
         if choice.finish_reason != 'stop':
             return set()

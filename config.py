@@ -95,6 +95,9 @@ if HH_APPLICATION_MODE not in {"preview", "confirm", "auto"}:
     HH_APPLICATION_MODE = "auto"
 SEARCH_PAGES = 3                 # сколько страниц листать (hh.ru даёт ~50 на страницу)
 HH_FRESH_SEARCH_ENABLED = _env_flag("HH_FRESH_SEARCH_ENABLED", "1")
+# Verification calls carry the whole knowledge base, so a cloud provider can
+# legitimately need far longer than a short chat completion.
+LLM_GROUNDING_TIMEOUT_SECONDS = _env_int("LLM_GROUNDING_TIMEOUT_SECONDS", "40")
 HH_FRESH_SEARCH_INTERVAL_MIN = _env_int("HH_FRESH_SEARCH_INTERVAL_MIN", "120")
 HH_FRESH_SEARCH_PAGES = _env_int("HH_FRESH_SEARCH_PAGES", "1")
 HH_FRESH_SEARCH_QUERIES = _env_list("HH_FRESH_SEARCH_QUERIES", [
