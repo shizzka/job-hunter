@@ -261,6 +261,10 @@ def _gemini_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
     strong = provider_env.get("GEMINI_STRONG_MODEL", "gemini-3.1-flash-lite")
     coder = provider_env.get("GEMINI_CODER_MODEL", strong)
     return {
+        # Chains reach gemini with whatever name the previous provider used, so
+        # accept the groq-style identifiers too instead of forwarding them verbatim.
+        "openai/gpt-oss-20b": fast,
+        "openai/gpt-oss-120b": strong,
         "gpt-oss:20b": fast,
         "gpt-oss:120b": strong,
         "qwen3-coder:480b": coder,
