@@ -295,6 +295,7 @@ def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -
     entry = {**result, "kind": "search", "run_id": result.get("_run_id", ""),
              "ok": ok, "mode": mode, "error_kind": error,
              "created_at": datetime.now().isoformat(timespec="seconds")}
+    entry.update(analytics.run_observation_fields(entry))
     _append_run_history(entry)
     analytics.record_search_finished(run_id=entry["run_id"], mode=mode, result=entry)
 
@@ -325,7 +326,8 @@ def _observe_search(function):
                     entry = observation.entry()
                     observation.result.update({field: entry[field] for field in
                         ("run_id", "started_at", "finished_at", "ok", "new", "manual", "funnel",
-                         "reason_breakdown", "failure_stage", "error_kind", "stage_failures", "source_stats")})
+                         "reason_breakdown", "failure_stage", "error_kind", "stage_failures", "source_stats",
+                         "execution_status", "application_outcome", "zero_apply_diagnosis")})
                     _append_run_history(entry, path=observation.history_file)
                     analytics.record_search_finished(run_id=run_id, mode=mode, result=entry)
                 except Exception as exc:
@@ -2004,6 +2006,8 @@ async def do_search(dry_run: bool = False) -> dict:
                     generated=bool(cover.strip()),
                     chars=len(cover),
                     grounding_status=cover_meta["grounding_status"],
+                    overclaim_guard=cover_meta["overclaim_guard"],
+                    grounding_check_failed=cover_meta["grounding_check_failed"],
                     fallback=cover_meta["fallback_cover_letter"] or cover_fallback_used,
                 )
             cover_evaluation = _evaluation_with_cover_letter(
@@ -2955,6 +2959,8 @@ async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> d
             generated=bool(cover.strip()),
             chars=len(cover),
             grounding_status=cover_meta["grounding_status"],
+            overclaim_guard=cover_meta["overclaim_guard"],
+            grounding_check_failed=cover_meta["grounding_check_failed"],
             fallback=cover_meta["fallback_cover_letter"],
         )
         if not cover.strip():
@@ -2987,7 +2993,9 @@ async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> d
             log.warning("Trace apply HH client shutdown failed: %s", type(exc).__name__)
         print("\nTRACE RESULT")
         print(f"  Trace ID: {trace.trace_id}")
-        print(f"  Result:   {'OK' if result.get('ok') else 'FAIL'}")
+        from outcome import application_outcome
+        print(f"  Processing result: {'OK' if result.get('ok') else 'FAIL'}")
+        print(f"  Application outcome: {application_outcome(result)}")
         if not result.get("ok"):
             print(f"  Failure:  {trace.failure_stage or trace.last_stage}")
         print(f"  Message:  {result.get('message', '')}")

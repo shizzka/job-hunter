@@ -261,11 +261,29 @@ def _format_kb_block(about_text: str, sections: list[dict], limit_chars: int | N
     parts = ["📚 БАЗА ЗНАНИЙ КАНДИДАТА (приоритетный источник фактов, перекрывает резюме):"]
     if about_text:
         parts.append(about_text)
+    spans = []
+    offset = len("\n\n".join(parts))
     for s in sections:
-        parts.append(f"### {s['num']}. {s['title']}\n{s['content']}")
+        part = f"### {s['num']}. {s['title']}\n{s['content']}"
+        start = offset + 2
+        offset = start + len(part)
+        spans.append((s["num"], start, offset))
+        parts.append(part)
     block = "\n\n".join(parts) + "\n"
-    if limit_chars is not None and len(block) > limit_chars:
+    original_chars = len(block)
+    content_end = original_chars
+    truncated = limit_chars is not None and len(block) > limit_chars
+    if truncated:
         block = block[:limit_chars - 1] + "…\n"
+        content_end = len(block) - 2
+    full = [num for num, start, end in spans if end <= content_end]
+    partial = [num for num, start, end in spans if start < content_end < end]
+    dropped = len(spans) - len(full) - len(partial)
+    emit = log.warning if truncated else log.info
+    emit("KB prompt: truncated=%s chars_limit=%s chars_original=%d chars_included=%d chars_removed=%d "
+         "sections_requested=%d sections_full=%s sections_partial=%s sections_dropped=%d",
+         str(truncated).lower(), limit_chars, original_chars, len(block), max(0, original_chars - content_end),
+         len(sections), full, partial, dropped)
     return block
 
 
@@ -356,7 +374,6 @@ async def build_filtered_kb_block(
     picked = [by_num[n] for n in selected_nums if n in by_num]
     if not picked:
         return _format_kb_block(about_text, sections, limit_chars=limit_chars)
-    log.info("KB filter picked sections: %s", [f"{s['num']}.{s['title'][:30]}" for s in picked])
     return _format_kb_block(about_text, picked, limit_chars=limit_chars)
 
 

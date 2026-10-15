@@ -1138,6 +1138,7 @@ def analyze_cover_letter(
     if overclaim_guard is None:
         overclaim_guard = cached.get("overclaim_guard", False)
     style = cover_style or cached.get("cover_style", "")
+    status = grounding_status or cached.get("grounding_status", "not_checked")
     return {
         "cover_style": style,
         "cover_letter_hash": digest,
@@ -1145,7 +1146,9 @@ def analyze_cover_letter(
         "cover_letter_features": _cover_letter_features(text),
         "fallback_cover_letter": bool(fallback),
         "overclaim_guard": bool(overclaim_guard),
-        "grounding_status": grounding_status or cached.get("grounding_status", "not_checked"),
+        "grounding_status": status,
+        "grounding_check_failed": status in {"verifier_error", "incomplete_check", "invalid_check",
+            "invalid_evidence", "missing_sources", "invalid_draft"},
     }
 
 
@@ -1614,10 +1617,12 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
             cover, sources, client, config.HH_COVER_LETTER_MODEL or config.LLM_MODEL,
         )
         if not grounding.ok:
-            log.warning("Cover letter grounding rejected draft")
+            overclaim = grounding.reason in {"unsupported_claims", "number_mismatch", "missing_evidence", "source_mismatch"}
+            log.warning("Cover letter grounding: status=%s overclaim_guard=%s check_failed=%s fallback=true",
+                        grounding.reason, str(overclaim).lower(), str(not overclaim).lower())
             return _remember_cover_letter_meta(
                 _fallback_cover_letter(vacancy, details, cover_style),
-                cover_style=cover_style, fallback=True, overclaim_guard=True,
+                cover_style=cover_style, fallback=True, overclaim_guard=overclaim,
                 grounding_status=grounding.reason,
             )
         return _remember_cover_letter_meta(

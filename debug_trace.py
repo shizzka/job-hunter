@@ -196,6 +196,7 @@ class ApplyTrace:
         self.last_stage = "TRACE_STARTED"
         self.failure_stage = ""
         self.finished = False
+        self.application_outcome = "unknown"
         self.revision = _git_revision(project_root)
         import analytics
         self.run_context = analytics.current_context()
@@ -314,7 +315,7 @@ class ApplyTrace:
             self.event("ARTIFACT_CAPTURED", ok=False, name=artifact_name, error=type(exc).__name__)
         return saved
 
-    def finish(self, *, ok: bool, message: str = "", failure_stage: str = "") -> None:
+    def finish(self, *, ok: bool, message: str = "", failure_stage: str = "", application_outcome: str = "unknown") -> None:
         if self.finished:
             return
         previous_stage = failure_stage or self.last_stage
@@ -323,6 +324,7 @@ class ApplyTrace:
         self.event(
             terminal_stage,
             ok=ok,
+            application_outcome=application_outcome,
             result_message=message,
             failure_stage="" if ok else previous_stage,
             artifacts=list(dict.fromkeys(self._artifacts)),
@@ -335,7 +337,8 @@ class ApplyTrace:
             f"Vacancy: {self.vacancy_id}",
             f"Mode: {self.mode}",
             f"Revision: {self.revision}",
-            f"Result: {'OK' if ok else 'FAIL'}",
+            f"Processing result: {'OK' if ok else 'FAIL'}",
+            f"Application outcome: {application_outcome}",
         ]
         if not ok:
             lines.append(f"Failure stage: {self.failure_stage}")
@@ -365,6 +368,7 @@ class ApplyTrace:
         except Exception as exc:
             log.warning("Trace summary write failed: %s", type(exc).__name__)
         self.finished = True
+        self.application_outcome = application_outcome
         # Only a reference enters the run journal; trace/DOM contents stay local.
         import analytics
         token = analytics._event_destination.set(self.event_destination)
@@ -373,8 +377,24 @@ class ApplyTrace:
                 analytics.record_event({"event": "debug_artifact", "source": self.source,
                     "vacancy_id": self.vacancy_id, "stage": self.failure_stage or self.last_stage,
                     "outcome": "success" if ok else "error", "artifact_type": "apply_trace",
+                    "application_outcome": application_outcome,
                     "artifact_ref": str(self.jsonl_path), "trace_id": self.trace_id})
         except Exception as exc:
             log.warning("Trace reference observation failed: error_kind=%s", type(exc).__name__)
         finally:
             analytics._event_destination.reset(token)
+
+    def update_application_outcome(self, outcome: str) -> None:
+        """Reflect late uncertainty observed while finishing diagnostic writes."""
+        if not self.finished or outcome == self.application_outcome:
+            return
+        try:
+            previous = self.application_outcome
+            summary = self.summary_path.read_text(encoding="utf-8")
+            summary = summary.replace(f"Application outcome: {previous}\n",
+                                      f"Application outcome: {outcome}\n", 1)
+            _private_write_text(self.summary_path, summary)
+            self.application_outcome = outcome
+            self.event("APPLICATION_OUTCOME_CORRECTED", application_outcome=outcome, previous_outcome=previous)
+        except Exception as exc:
+            log.warning("Trace outcome correction failed: error_kind=%s", type(exc).__name__)

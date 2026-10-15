@@ -7,6 +7,44 @@ Existing funnel counters and decision semantics remain unchanged. `evaluated`
 counts completed scored calls through the matcher observation boundary; deferred
 results and reused retry evaluations are not counted as scored calls.
 
+Execution and target actions are separate: `ok` describes coroutine completion,
+`execution_status` is `completed`, `failed`, `incomplete` or `unknown`, and
+`application_outcome` is `sent`, `no_applications`, `uncertain`, `dry_run` or
+`unknown`. A completed run with zero applications includes `zero_apply_diagnosis`
+from counters, classified decisions and stage failures. The UI says that the run
+completed without applications, and shows the reasons. Summary `status=success`
+remains an execution diagnostic, not a delivery receipt.
+
+The two history rows for a run are intentional append-only checkpoints: the
+initial row survives process death; the final row describes completion. New
+initial rows use `ok=null` and unknown action counts. Readers fold them by run ID;
+legacy rows are not rewritten.
+
+Collection stops use `continued=false`, `source_stopped=true` and
+`SOURCE_STOPPED` (buffer retained) or `SOURCE_DISCARDED` (buffer lost).
+`collection` records query/profile combinations planned and started, combinations
+never attempted, pages attempted, and vacancies buffered, retained and discarded.
+Combinations count query/profile pairs for HH and SuperJob, paths for Habr, and
+one feed for GeekJob; pages are counted separately. Unobserved counts are null.
+`fetched` still counts raw fetched data; discarded buffers do not count as run
+progress. `continued=true` on a failed HH page means the loop continues.
+
+KB logging happens after assembly and truncation, in one record containing
+character counts and section IDs: full, partial, and dropped. Neither section
+titles nor content enter this record. The existing truncation output is retained,
+including its `limit + 1` length when the ellipsis and newline are appended.
+
+Apply traces show `Processing result` separately from `Application outcome`.
+`already_applied` means no new application was sent, even if processing was OK.
+Late uncertainty observed during diagnostic writes corrects the summary and adds
+an explicit correction event. A trace without action evidence reports `unknown`.
+
+`overclaim_guard` records a rejected claim: unsupported, missing/mismatched
+source evidence, or a number mismatch.
+`grounding_check_failed` records unavailable or incomplete checking, including
+verifier errors and malformed evidence. Both retain `grounding_status`; the draft
+fallback policy is unchanged.
+
 ## Interfaces
 
 - Telegram: **📊 Последний запуск**, `/log`, or `/log <run_id>`.

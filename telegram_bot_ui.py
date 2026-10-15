@@ -1740,8 +1740,14 @@ def build_stats_text(
 def format_run_summary(run: dict) -> str:
     status = "не завершён" if run.get("status") == "incomplete" else ("успешно" if run.get("ok") else "с ошибкой")
     funnel = run.get("funnel") or {}
+    has_losses = bool(run.get("stage_failures")) and run.get("status") != "incomplete"
+    if has_losses and run.get("ok"):
+        status = "завершён с потерями"
+    elif run.get("status") != "incomplete" and run.get("ok") and funnel.get("applied", run.get("applied")) == 0:
+        status = "штатно; откликов нет" if run.get("mode") != "dry-run" else "штатно; dry-run"
+    icon = "⚠" if has_losses else _ok_icon(run.get('ok', False))
     lines = [
-        f"{_ok_icon(run.get('ok', False))} {run.get('run_id') or _pretty_value(run.get('created_at'))} | {_pretty_runtime_mode(run.get('mode', 'search'))} | {status}",
+        f"{icon} {run.get('run_id') or _pretty_value(run.get('created_at'))} | {_pretty_runtime_mode(run.get('mode', 'search'))} | {status}",
     ]
     if funnel:
         lines.extend([
@@ -1846,6 +1852,8 @@ def build_run_summary_text(summary, *, profile_name):
         return html.escape(str(value if value is not None else "неизвестно")[:180])
     states = {"success": "✅ успешно", "partial": "⚠ частично", "failed": "❌ ошибка",
               "incomplete": "⏳ не завершён / прерван", "unknown": "❔ неизвестно"}
+    if summary.get("application_outcome") in {"no_applications", "dry_run"}:
+        states["success"] = "штатно; откликов нет" if summary["application_outcome"] == "no_applications" else "штатно; dry-run"
     lines = ["📊 Последний / выбранный запуск", f"Run: {safe(summary['run_id'])}",
              f"Профиль: {safe(_pretty_profile_name(profile_name))}",
              f"Источники: {safe(', '.join(summary['sources']) or None)}",
@@ -1858,7 +1866,7 @@ def build_run_summary_text(summary, *, profile_name):
     if summary.get("duration_seconds") is not None:
         lines.append(f"Длительность: {summary['duration_seconds']:.0f} с")
     counters = summary['counters']
-    for key, label in (("fetched", "✅ собрано"), ("already_seen", "♻ уже просмотрено"),
+    for key, label in (("fetched", "📥 получено"), ("already_seen", "♻ уже просмотрено"),
                        ("evaluated", "🔎 оценено"), ("matcher_pass", "🎯 подходит"),
                        ("applied", "📨 подтверждено откликов"), ("skipped", "⏭ пропущено"),
                        ("deferred_unscored", "⚠ оценка отложена"), ("not_processed", "⚠ не обработано"),
@@ -1867,6 +1875,8 @@ def build_run_summary_text(summary, *, profile_name):
         prefix = "≥" if summary['counter_status'] == 'minimum_or_unknown' and value else ""
         lines.append(f"{label}: {prefix}{safe(value)}")
     failure = summary.get("primary_failure")
+    if summary.get("zero_apply_diagnosis"):
+        lines += ["", html.escape(summary["zero_apply_diagnosis"])]
     if failure:
         lines += ["", "❌ Основная проблема", safe(failure['reason_code']),
             f"Этап: {safe(failure['stage'])}", f"Источник: {safe(failure['source'])}"]

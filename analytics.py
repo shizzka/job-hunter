@@ -140,7 +140,7 @@ class SearchObservation:
         entry = {"kind": "search", "run_id": self.run_id, "mode": self.mode,
                 "started_at": self.started_at, "finished_at": None if incomplete else now,
                 "created_at": now, "status": "incomplete" if incomplete else "finished",
-                "ok": False if incomplete else self.ok, "found": self.result.get("found", 0),
+                "ok": None if incomplete else self.ok, "found": self.result.get("found", 0),
                 "new": totals["new"], "applied": totals["applied"], "manual": totals["manual"],
                 "skipped": self.result.get("skipped", 0), "deferred": self.result.get("deferred", 0),
                 "source_stats": sources, "funnel": dict(totals), "reason_breakdown": dict(self.reasons),
@@ -151,8 +151,9 @@ class SearchObservation:
         if self.result.get("hh_recovery"):
             entry["hh_recovery"] = dict(self.result["hh_recovery"])
         if incomplete:
-            return incomplete_run_counts(entry, totals["applied"],
+            entry = incomplete_run_counts(entry, totals["applied"],
                 {source: bucket["funnel"]["applied"] for source, bucket in sources.items()})
+        entry.update(run_observation_fields(entry))
         return entry
 
 
@@ -226,13 +227,15 @@ def _diagnostic_context(*, vacancy=True):
 @best_effort
 def record_failure(stage, error, *, source=None, continued=False, reason_code="UNKNOWN_ROOT_CAUSE",
                    provider=None, retryable=None, fallback_status=None, model=None, group=False,
-                   source_stopped=False):
+                   source_stopped=False, collection=None):
     context = current_context()
     source = source or context.get("source") or "unknown"
     fields = {"source": source, "stage": stage, "error_kind": type(error).__name__, "continued": continued,
               "reason_code": reason_code, "retryable": retryable, "outcome": "error", "severity": "error"}
     if source_stopped:
         fields["source_stopped"] = True
+    if collection is not None:
+        fields["collection"] = dict(collection)
     if provider is not None:
         fields["provider"] = provider
     if fallback_status is not None:
@@ -293,16 +296,39 @@ def zero_apply_diagnosis(run):
     found = run.get("found", 0)
     retries = funnel.get("retry_existing", 0)
     applied = funnel.get("applied", run.get("applied"))
-    if applied is None or not (new or found or retries) or applied or run.get("mode") == "dry-run":
+    if applied is None or applied:
         return ""
+    if run.get("mode") == "dry-run":
+        return "0 откликов: dry-run — отправка отключена"
     reasons = run.get("reason_breakdown") or {}
+    failures = run.get("stage_failures") or []
+    collection_failures = [f for f in failures if f.get("stage") == "collection"]
+    stopped = [source for source, bucket in (run.get("source_stats") or {}).items() if bucket.get("stop_reason")]
     uncertain = funnel.get("uncertain", run.get("uncertain", 0)) or reasons.get("apply_uncertain", 0)
+    if not (new or found or retries or uncertain or reasons or failures or stopped) and run.get("ok") is not False:
+        if new == 0 or run.get("found") == 0:
+            return "0 откликов: новых кандидатов нет"
     if uncertain:
         lines = [f"Подтверждено откликов: 0; требуется ручная сверка: {uncertain}"]
     else:
         lines = [f"0 откликов: новых {new}" if new is not None else f"0 откликов: найдено {found}"]
     if retries:
         lines.append(f"• повторных кандидатов: {retries}")
+    displayed_failures = set()
+    for failure in failures:
+        signature = (failure.get("source"), failure.get("stage"), failure.get("reason_code"))
+        if signature in displayed_failures:
+            continue
+        displayed_failures.add(signature)
+        lines.append(f"• {failure.get('source', 'unknown')}: этап {failure.get('stage', 'unknown')}, "
+                     f"{failure.get('reason_code', 'UNKNOWN_ROOT_CAUSE')}")
+        collection = failure.get("collection") or {}
+        if collection:
+            lines.append(f"• комбинаций не опрошено: {collection.get('combinations_unattempted')}; "
+                         f"вакансий отброшено: {collection.get('vacancies_discarded')}")
+    for source in stopped:
+        if not any(f.get("source") == source for f in collection_failures):
+            lines.append(f"• источник {source} пропущен/остановлен")
     labels = (("keyword_filter", "keyword filter"), ("low_score", "matcher: low score"),
               ("red_flags", "matcher: red flags"), ("manual_required", "manual"),
               ("guard_stop", "guard stop"), ("apply_failed", "apply failed"),
@@ -316,9 +342,24 @@ def zero_apply_diagnosis(run):
         if isinstance(count, int) and count > 0:
             classified += count
             lines.append(f"• {label}: {count}")
-    if not classified or reasons.get("unclassified") or classified < ((new if new is not None else found) + retries):
+    if (not classified and not failures and not stopped or reasons.get("unclassified")
+            or classified < ((new if new is not None else found) + retries)):
         lines.append("• причина не классифицирована")
     return "\n".join(lines)
+
+
+def run_observation_fields(run):
+    """Execution completion and application delivery are independent facts."""
+    funnel = run.get("funnel") or {}
+    applied = funnel.get("applied", run.get("applied"))
+    incomplete = run.get("status") == "incomplete"
+    uncertain = funnel.get("uncertain") or run.get("uncertain") or (run.get("reason_breakdown") or {}).get("apply_uncertain")
+    outcome = ("unknown" if incomplete else "uncertain" if uncertain else
+               "sent" if applied else "dry_run" if run.get("mode") == "dry-run" else
+               "no_applications" if applied == 0 else "unknown")
+    return {"execution_status": "incomplete" if incomplete else
+            "completed" if run.get("ok") is True else "failed" if run.get("ok") is False else "unknown",
+            "application_outcome": outcome, "zero_apply_diagnosis": zero_apply_diagnosis(run)}
 
 
 async def tracked_call(stage, run_id, vacancy, function, *args, **kwargs):
@@ -765,7 +806,8 @@ def record_search_finished(
         "source_stats": result.get("source_stats", {}),
         "ok": result.get("ok", True),
         **{field: result.get(field) for field in ("started_at", "finished_at", "status", "new",
-            "funnel", "reason_breakdown", "failure_stage", "error_kind", "stage_failures", "hh_recovery") if field in result},
+            "funnel", "reason_breakdown", "failure_stage", "error_kind", "stage_failures", "hh_recovery",
+            "execution_status", "application_outcome", "zero_apply_diagnosis") if field in result},
     })
 
 
@@ -891,6 +933,8 @@ def record_decision(
         "cover_letter_features": dict(evaluation.get("cover_letter_features", {}) or {}),
         "fallback_cover_letter": bool(evaluation.get("fallback_cover_letter", False)),
         "overclaim_guard": bool(evaluation.get("overclaim_guard", False)),
+        "grounding_status": evaluation.get("grounding_status", "not_checked"),
+        "grounding_check_failed": bool(evaluation.get("grounding_check_failed", False)),
         "preferred_resume_variant": evaluation.get("preferred_resume_variant", ""),
         "should_apply": bool(evaluation.get("should_apply", False)),
         "evaluation_status": evaluation.get("evaluation_status", "scored"),

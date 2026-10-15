@@ -53,7 +53,7 @@ def test_collect_all_continues_when_single_source_fails(monkeypatch):
     )
 
     assert [item["id"] for item in vacancies] == ["hh-1", "habr-1"]
-    assert ("superjob_collect_failed", "SuperJob пропущен: proxy down", "warning") in office_events
+    assert ("superjob_collect_failed", "SuperJob: источник отброшен (RuntimeError)", "warning") in office_events
     assert any("продолжаю без источника" in msg for _, msg, _ in statuses)
 
 

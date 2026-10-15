@@ -381,7 +381,7 @@ def test_actual_search_alternate_decisions_and_counter_points(search_home, monke
         assert sum(1 for item in trace if item[0] == "apply") == 1
 
 
-def test_source_failure_journal_is_safe_correlated_and_records_continuation(search_home, monkeypatch):
+def test_source_failure_journal_is_safe_correlated_and_records_source_discard(search_home, monkeypatch):
     async def bad(*a, **k):
         raise TimeoutError(PRIVATE)
     monkeypatch.setattr(search_pipeline, "collect_hh_vacancies", bad)
@@ -397,7 +397,8 @@ def test_source_failure_journal_is_safe_correlated_and_records_continuation(sear
     failure = next(event for event in events if event["event"] == "stage_failed")
     assert failure["run_id"] == "run-failed-source" and failure["source"] == "hh"
     assert failure["stage"] == "collection" and failure["error_kind"] == "TimeoutError"
-    assert failure["continued"] is True and events[-1]["ok"] is True
+    assert failure["continued"] is False and failure["source_stopped"] is True
+    assert failure["reason_code"] == "SOURCE_DISCARDED" and events[-1]["ok"] is True
     assert PRIVATE not in json.dumps(events)
 
 

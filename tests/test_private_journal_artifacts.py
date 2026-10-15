@@ -282,5 +282,10 @@ def test_hh_search_and_resume_diagnostics_do_not_use_raw_browser_writers():
     from hh_client import HHClient
     for method in (HHClient._search_vacancies, HHClient.download_resume_by_id):
         source = inspect.getsource(method)
-        assert 'await self._save_debug_snapshot(' in source
         assert '.screenshot(' not in source and 'with open(' not in source
+    # SSR search no longer captures a browser page. Resume diagnostics still
+    # go through the private artifact writer; never require raw SSR body dumps.
+    assert 'await self._save_debug_snapshot(' in inspect.getsource(HHClient.download_resume_by_id)
+    from hh.search import read_search_html
+    search = inspect.getsource(read_search_html)
+    assert '.screenshot(' not in search and 'with open(' not in search

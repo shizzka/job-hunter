@@ -77,7 +77,8 @@ def test_apply_trace_writes_redacted_jsonl_and_human_summary(tmp_path, monkeypat
     assert rows[1]["page_url"] == "https://hh.ru/applicant/vacancy_response?vacancyId=123456"
     assert SECRET_LIKE not in serialized
     assert "Failure stage: RESULT_CHECK" in summary
-    assert "Result: FAIL" in summary
+    assert "Processing result: FAIL" in summary
+    assert "Application outcome: unknown" in summary
     assert oct(trace.jsonl_path.stat().st_mode & 0o777) == "0o600"
     assert oct(trace.summary_path.stat().st_mode & 0o777) == "0o600"
 
@@ -141,7 +142,8 @@ def test_dispatch_apply_passes_and_finishes_existing_trace(tmp_path, monkeypatch
     assert result["trace_dir"] == str(trace.trace_dir)
     assert trace.finished is True
     assert client.apply_to_vacancy.await_args.kwargs["trace"] is trace
-    assert "Result: OK" in trace.summary_path.read_text()
+    assert "Processing result: OK" in trace.summary_path.read_text()
+    assert "Application outcome: sent" in trace.summary_path.read_text()
 
 
 def test_trace_cleanup_caps_finished_runs_without_deleting_live_trace(tmp_path, monkeypatch):

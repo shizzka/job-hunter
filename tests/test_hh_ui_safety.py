@@ -339,8 +339,10 @@ def test_details_and_collector_preserve_ui_stop_signal(monkeypatch):
         assert isinstance(failure['created_at'], str)
         datetime.fromisoformat(failure['created_at'])
         assert failure == {
-            'source': 'hh', 'stage': 'collection', 'error_kind': 'HHUnexpectedUI', 'continued': True,
-            'reason_code': 'UNKNOWN_ROOT_CAUSE', 'retryable': None,
+            'source': 'hh', 'stage': 'collection', 'error_kind': 'HHUnexpectedUI', 'continued': False,
+            'reason_code': 'SOURCE_DISCARDED', 'retryable': None, 'source_stopped': True,
+            'collection': {'combinations_unattempted': None, 'source_stopped': True,
+                'source_discarded': True, 'vacancies_retained': 0, 'vacancies_discarded': None},
             'outcome': 'error', 'severity': 'error',
             'failure_id': failure['failure_id'], 'created_at': failure['created_at'],
         }

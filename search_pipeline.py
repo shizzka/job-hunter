@@ -75,6 +75,31 @@ def vacancy_match_key(title: str, company: str) -> str:
 
 # ── Сбор вакансий ──
 
+def _collection_progress(bucket: dict | None, combinations: int) -> dict:
+    progress = {"combinations_planned": combinations, "combinations_started": 0,
+                "pages_attempted": 0, "vacancies_buffered": 0}
+    if bucket is not None:
+        bucket["collection"] = progress
+    return progress
+
+
+def _record_collection_stop(source: str, bucket: dict, error: Exception, *, discarded: bool) -> None:
+    progress = bucket.setdefault("collection", {})
+    planned, started = progress.get("combinations_planned"), progress.get("combinations_started")
+    progress["combinations_unattempted"] = max(0, planned - started) if planned is not None and started is not None else None
+    buffered = progress.get("vacancies_buffered")
+    progress.update(source_stopped=True, source_discarded=discarded,
+                    vacancies_retained=0 if discarded else buffered,
+                    vacancies_discarded=buffered if discarded else 0)
+    analytics.record_failure("collection", error, source=source, continued=False, source_stopped=True,
+                             reason_code="SOURCE_DISCARDED" if discarded else "SOURCE_STOPPED",
+                             collection=progress)
+    log.warning("source=%s stage=collection error_kind=%s source_stopped=true source_discarded=%s "
+                "combinations_unattempted=%s pages_attempted=%s vacancies_retained=%s vacancies_discarded=%s",
+                source, type(error).__name__, str(discarded).lower(), progress["combinations_unattempted"],
+                progress.get("pages_attempted"), progress["vacancies_retained"], progress["vacancies_discarded"])
+
+
 async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | None = None) -> list[dict]:
     if client is None:
         return []
@@ -116,13 +141,16 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
     search_profiles = config.SEARCH_PROFILES
     if getattr(config, "HH_SEARCH_REMOTE_ONLY", False):
         search_profiles = [profile for profile in search_profiles if profile.get("schedule") == "remote"]
+    progress = _collection_progress(bucket, len(search_profiles) * len(clean_query_list(config.SEARCH_QUERIES)))
     for profile in search_profiles:
         area = profile["area"]
         schedule = profile.get("schedule", "")
         area_label = f"area={area}" + (f",schedule={schedule}" if schedule else "")
         for query in clean_query_list(config.SEARCH_QUERIES):
+            progress["combinations_started"] += 1
             for page_num in range(config.SEARCH_PAGES):
                 log.info("HH search: %s [%s] page %d", query, area_label, page_num)
+                progress["pages_attempted"] += 1
                 page_error = None
                 try:
                     vacancies = await client.search_vacancies(
@@ -134,8 +162,7 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
                     collect_note = f"HH: поиск остановлен: {exc}"
                     if bucket is not None:
                         bucket["stop_reason"] = collect_note
-                    analytics.record_failure("collection", exc, source="hh", continued=True, source_stopped=True)
-                    log.warning("Stopping hh.ru collection: %s", collect_note)
+                    _record_collection_stop("hh", bucket if bucket is not None else {"collection": progress}, exc, discarded=False)
                     await office_log("hh_skipped", collect_note, "warning")
                     if isinstance(exc, HHSearchAuthError):
                         await _notify_hh_auth_required_once(str(exc))
@@ -152,7 +179,8 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
                     collect_note = hh_guard.format_block_note(status)
                     if bucket is not None:
                         bucket["stop_reason"] = collect_note
-                    log.warning("Stopping hh.ru collection after anti-bot signal: %s", collect_note)
+                    _record_collection_stop("hh", bucket if bucket is not None else {"collection": progress},
+                                            RuntimeError("antibot"), discarded=False)
                     await office_log("hh_skipped", collect_note, "thinking")
                     return all_vacancies
                 if page_error is not None:
@@ -181,6 +209,7 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
                     vacancy["_search_query"] = query
                     vacancy["_search_profile"] = area_label
                     all_vacancies.append(vacancy)
+                    progress["vacancies_buffered"] = len(all_vacancies)
 
                 if not vacancies:
                     break
@@ -213,11 +242,14 @@ async def collect_superjob_vacancies(client: SuperJobClient | None, *, scan_stat
                 "rejected": 0,
             },
         )
+    progress = _collection_progress(bucket, len(config.SUPERJOB_SEARCH_PROFILES) * len(clean_query_list(config.SUPERJOB_SEARCH_QUERIES)))
     for profile in config.SUPERJOB_SEARCH_PROFILES:
         profile_label = profile.get("label", "default")
         for query in clean_query_list(config.SUPERJOB_SEARCH_QUERIES):
+            progress["combinations_started"] += 1
             for page_num in range(config.SUPERJOB_SEARCH_PAGES):
                 log.info("SuperJob search: %s [%s] page %d", query, profile_label, page_num)
+                progress["pages_attempted"] += 1
                 vacancies, more = await client.search_vacancies(query, page=page_num, profile=profile)
                 if bucket is not None:
                     bucket["fetched"] += len(vacancies)
@@ -233,6 +265,7 @@ async def collect_superjob_vacancies(client: SuperJobClient | None, *, scan_stat
                     vacancy["_search_query"] = query
                     vacancy["_search_profile"] = profile_label
                     all_vacancies.append(vacancy)
+                    progress["vacancies_buffered"] = len(all_vacancies)
 
                 if not more:
                     break
@@ -262,13 +295,16 @@ async def collect_habr_vacancies(client: HabrCareerClient | None, *, scan_stats:
                 "rejected": 0,
             },
         )
+    progress = _collection_progress(bucket, len(config.HABR_SEARCH_PATHS))
     for path in config.HABR_SEARCH_PATHS:
+        progress["combinations_started"] += 1
         total_pages = 1
         for page_num in range(1, config.HABR_SEARCH_PAGES + 1):
             if page_num > total_pages:
                 break
 
             log.info("Habr Career search: %s page %d", path, page_num)
+            progress["pages_attempted"] += 1
             vacancies, total_pages = await client.search_vacancies(path=path, page=page_num)
             if bucket is not None:
                 bucket["fetched"] += len(vacancies)
@@ -284,6 +320,7 @@ async def collect_habr_vacancies(client: HabrCareerClient | None, *, scan_stats:
                 vacancy["_search_path"] = path
                 vacancy["_search_profile"] = path
                 all_vacancies.append(vacancy)
+                progress["vacancies_buffered"] = len(all_vacancies)
 
     return all_vacancies
 
@@ -310,12 +347,15 @@ async def collect_geekjob_vacancies(client: GeekJobClient | None, *, scan_stats:
                 "rejected": 0,
             },
         )
+    progress = _collection_progress(bucket, 1)
+    progress["combinations_started"] = int(config.GEEKJOB_SEARCH_PAGES > 0)
     total_pages = 1
     for page_num in range(1, config.GEEKJOB_SEARCH_PAGES + 1):
         if page_num > total_pages:
             break
 
         log.info("GeekJob search: page %d", page_num)
+        progress["pages_attempted"] += 1
         vacancies, total_pages = await client.search_vacancies(page=page_num)
         if bucket is not None:
             bucket["fetched"] += len(vacancies)
@@ -330,6 +370,7 @@ async def collect_geekjob_vacancies(client: GeekJobClient | None, *, scan_stats:
                 continue
             vacancy["_search_profile"] = f"page={page_num}"
             all_vacancies.append(vacancy)
+            progress["vacancies_buffered"] = len(all_vacancies)
 
     return all_vacancies
 
@@ -446,19 +487,24 @@ async def collect_all(
             await _status("search_collect", f"Собираю {label}", "working")
         try:
             with analytics.event_context(source=source_key, stage="collection", vacancy_id=""):
-                return await collector()
+                vacancies = await collector()
+                bucket = scan_stats.get(source_key, {})
+                if "collection" in bucket:
+                    bucket["collection"]["vacancies_retained"] = len(vacancies)
+                return vacancies
         except HHUnexpectedUI as exc:
             if source_key != "hh":
                 raise
             bucket = scan_stats.setdefault("hh", {})
             bucket["stop_reason"] = "HH: нестандартный UI при сборе вакансий; источник остановлен"
             bucket["stop_fingerprint"] = getattr(exc, "fingerprint", "")
-            analytics.record_failure("collection", exc, source="hh", continued=True)
+            _record_collection_stop("hh", bucket, exc, discarded=True)
             return []
         except Exception as exc:
-            analytics.record_failure("collection", exc, source=source_key, continued=True)
-            log.warning("source=%s stage=collection error_kind=%s continued=true", source_key, type(exc).__name__)
-            await office_log(f"{source_key}_collect_failed", f"{label} пропущен: {exc}", "warning")
+            bucket = scan_stats.setdefault(source_key, {})
+            bucket["stop_reason"] = "SOURCE_DISCARDED"
+            _record_collection_stop(source_key, bucket, exc, discarded=True)
+            await office_log(f"{source_key}_collect_failed", f"{label}: источник отброшен ({type(exc).__name__})", "warning")
             if enabled:
                 await _status("search_collect_error", f"{label}: ошибка, продолжаю без источника", "working")
             return []

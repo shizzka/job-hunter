@@ -40,6 +40,14 @@ def apply_result_is_uncertain(result: dict) -> bool:
     return bool(result.get("uncertain")) or result.get("submission_status") in {"uncertain", "preparing", "acting"}
 
 
+def application_outcome(result: dict) -> str:
+    """Diagnostic target-action outcome, independent of processing success."""
+    return ("uncertain" if apply_result_is_uncertain(result) else
+            "already_applied" if result.get("already_applied") else
+            "blocked" if result.get("reason") == "company_blacklisted" else
+            "sent" if result.get("ok") else "failed")
+
+
 # ── Negotiation status buckets ──
 
 STATUS_POSITIVE = "positive"

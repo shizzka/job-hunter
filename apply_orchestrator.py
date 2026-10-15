@@ -18,7 +18,7 @@ from hh_client import HHClient
 from hh.resume_target import exact_title_resume_id
 from hh.ui import HHUnexpectedUI
 from hh.vacancy_details import HHVacancyNavigationError, HHVacancyUnavailable, classify_vacancy_forbidden
-from outcome import apply_result_is_uncertain
+from outcome import application_outcome, apply_result_is_uncertain
 from superjob_client import SuperJobClient
 from habr_career_client import HabrCareerClient
 from geekjob_client import GeekJobClient
@@ -330,6 +330,7 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
                         result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
                         trace.finish(
                             ok=False,
+                            application_outcome=application_outcome(result),
                             message=str(result.get("message")),
                             failure_stage=failure_stage,
                         )
@@ -340,6 +341,8 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
                 analytics.record_event({"event": "application_result",
                     "outcome": "uncertain" if apply_result_is_uncertain(result) else "error",
                     "error_kind": type(exc).__name__})
+                if isinstance(trace, ApplyTrace):
+                    trace.update_application_outcome(application_outcome(result))
             if apply_result_is_uncertain(result):
                 return result
             raise
@@ -358,6 +361,7 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
                     result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
                     trace.finish(
                         ok=bool(result.get("ok")),
+                        application_outcome=application_outcome(result),
                         message=str(result.get("message") or "apply result"),
                         failure_stage=failure_stage,
                     )
@@ -368,14 +372,13 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
             # The awaited capture and synchronous finish may deliver a late
             # browser action, even when the NativeAttempt has already returned.
             result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
-            outcome = ("uncertain" if apply_result_is_uncertain(result) else
-                       "already_applied" if result.get("already_applied") else
-                       "blocked" if result.get("reason") == "company_blacklisted" else
-                       "sent" if result.get("ok") else "failed")
+            outcome = application_outcome(result)
             analytics.record_event({"event": "application_result", "outcome": outcome,
                 "cover_letter_status": result.get("cover_letter_status", "unknown"),
                 "resume_selection_verified": result.get("resume_selection_verified", False),
                 "selected_resume_id": result.get("selected_resume_id", "")})
+            if isinstance(trace, ApplyTrace):
+                trace.update_application_outcome(outcome)
         return result
 
 

@@ -130,6 +130,8 @@ def build_run_summary(run, events=(), *, profile=""):
                 "continued": root.get("continued", False)}
             if root.get("correlation_origin"):
                 roots[fid]["correlation_origin"] = root["correlation_origin"]
+            if root.get("collection"):
+                roots[fid]["collection"] = dict(root["collection"])
         affected.setdefault(fid, set())
         downstream.setdefault(fid, Counter())
         if failure.get("vacancy_id"):
@@ -175,7 +177,12 @@ def build_run_summary(run, events=(), *, profile=""):
     roots = dict(sorted(roots.items(), key=failure_order))
     progress = sum(counters.get(key) or 0 for key in ("evaluated", "applied", "matcher_pass"))
     if any(root['stage'] == 'collection' for root in roots.values()):
-        progress += counters.get("fetched") or 0
+        stats = data.get("source_stats") or {}
+        if any(bucket.get("collection") for bucket in stats.values()):
+            progress += sum((bucket.get("collection") or {}).get("vacancies_retained", bucket.get("fetched", 0)) or 0
+                            for bucket in stats.values())
+        else:
+            progress += counters.get("fetched") or 0
     if incomplete:
         status = "incomplete"
     elif roots or problems or data.get("ok") is False:
@@ -205,10 +212,13 @@ def build_run_summary(run, events=(), *, profile=""):
                                   if key in affected[fid] and roots[fid].get("failure_id")]
             if ref not in artifacts:
                 artifacts.append(ref)
+    from analytics import run_observation_fields
+    observation = run_observation_fields({**data, "status": "incomplete" if incomplete else data.get("status"),
+                                         "funnel": {**funnel, **counters}, "stage_failures": failures})
     return {"run_id": run_id, "profile": profile, "profile_id": data.get("profile_id") or started.get("profile_id"),
         "started_at": start_at, "finished_at": finish_at, "duration_seconds": duration,
         "sources": sources, "status": status, "counters": counters,
         "counter_status": "minimum_or_unknown" if incomplete else "recorded",
         "primary_failure": next(iter(roots.values()), None), "failure_count": len(roots),
         "stop_reason": "RUN_LIMIT" if limited else None,
-        "artifacts": artifacts}
+        "artifacts": artifacts, **observation}
