@@ -65,8 +65,7 @@ def add_fact(text: str, *, topic: str = "общий", profile_dir: str | None = 
     return item
 
 
-def prompt_block(limit_chars: int = 3000, profile_dir: str | None = None) -> str:
-    confirmed = facts(profile_dir)
+def _format_prompt_facts(confirmed: list[dict[str, str]]) -> str:
     if not confirmed:
         return ""
     lines = [
@@ -74,8 +73,29 @@ def prompt_block(limit_chars: int = 3000, profile_dir: str | None = None) -> str
         "Используй только в указанной точности; не усиливай уровень навыка и не переносись в другую профессию.",
     ]
     lines.extend(f"- [{item.get('topic', 'общий')}] {item['text']}" for item in confirmed)
-    result = "\n".join(lines) + "\n\n"
-    return result if len(result) <= limit_chars else result[:limit_chars - 1].rstrip() + "…\n\n"
+    return "\n".join(lines) + "\n\n"
+
+
+def prompt_block(limit_chars: int = 3000, profile_dir: str | None = None) -> str:
+    result = _format_prompt_facts(facts(profile_dir))
+    if len(result) <= limit_chars:
+        return result
+    marker = "…\n\n"[:max(0, limit_chars)]
+    return result[:max(0, limit_chars - len(marker))].rstrip() + marker
+
+
+def cover_prompt_blocks(limit_chars: int = 3000, profile_dir: str | None = None) -> tuple[str, str]:
+    """Budget whole interview facts; explicit boundaries are never truncated."""
+    selected: list[dict[str, str]] = []
+    constraints = []
+    for item in facts(profile_dir):
+        if str(item.get("topic", "")).strip().casefold() in {"границы", "ограничения"}:
+            constraints.append(f"- {item['text']}")
+        elif len(_format_prompt_facts([*selected, item])) <= limit_chars:
+            selected.append(item)
+    limits = ("ПОДТВЕРЖДЁННЫЕ ОГРАНИЧЕНИЯ ИЗ ИНТЕРВЬЮ (не являются доказательствами опыта):\n"
+              + "\n".join(constraints) + "\n\n") if constraints else ""
+    return _format_prompt_facts(selected), limits
 
 
 def _fallback_plan(resume_text: str) -> dict[str, Any]:

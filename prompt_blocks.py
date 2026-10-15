@@ -83,6 +83,8 @@ def get_candidate_contacts() -> dict[str, str]:
 
 
 def _truncate(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 1)].rstrip() + "…"
@@ -125,6 +127,20 @@ def build_facts_block() -> str:
     except Exception as exc:
         log.debug("candidate interview facts load failed: %s", exc)
     return "".join(blocks)
+
+
+def build_cover_facts_blocks() -> tuple[str, str]:
+    """One confirmed snapshot for author/checker, plus unabridged restrictions.
+
+    Covers use confirmed data only. Structured facts and explicit interview
+    boundaries stay whole; other interview entries share a bounded budget.
+    """
+    import candidate_interview
+    import facts
+    personal = facts.load_facts()
+    evidence = facts.confirmed_facts_for_prompt(personal, limit_chars=None)
+    interview, limits = candidate_interview.cover_prompt_blocks()
+    return evidence + interview, facts.format_fact_constraints(personal) + limits
 
 
 def build_profile_note_block() -> str:
@@ -202,12 +218,21 @@ def _parse_kb_sections(md_text: str) -> list[dict]:
     if not matches:
         return []
     out = []
+    reserved = {int(match.group(1)) for match in matches}
+    used: set[int] = set()
+    next_num = max(reserved) + 1
     for i, m in enumerate(matches):
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(md_text)
         content = md_text[start:end].strip()
+        num = int(m.group(1))
+        if num in used:
+            log.warning("KB duplicate section number: original=%d assigned=%d", num, next_num)
+            num = next_num
+            next_num += 1
+        used.add(num)
         out.append({
-            "num": int(m.group(1)),
+            "num": num,
             "title": m.group(2).strip(),
             "content": content,
         })
@@ -256,10 +281,17 @@ def _load_kb_filterable() -> tuple[str, list[dict]]:
     return ("\n\n".join(about_parts), qa_sections)
 
 
-def _format_kb_block(about_text: str, sections: list[dict], limit_chars: int | None = 10000) -> str:
-    """Собрать финальный блок из about_text + перечня секций."""
+def _format_kb_block(
+    about_text: str, sections: list[dict], limit_chars: int | None = 10000,
+    *, preserve_sections: bool = False,
+) -> str:
+    """Reserve selected sections first; common files fill the remaining budget.
+
+    Explicit selections stay whole even when they alone exceed the budget.
+    Unfiltered fallbacks remain bounded and report any partial/dropped sections.
+    """
     parts = ["📚 БАЗА ЗНАНИЙ КАНДИДАТА (приоритетный источник фактов, перекрывает резюме):"]
-    if about_text:
+    if about_text and not preserve_sections:
         parts.append(about_text)
     spans = []
     offset = len("\n\n".join(parts))
@@ -269,20 +301,27 @@ def _format_kb_block(about_text: str, sections: list[dict], limit_chars: int | N
         offset = start + len(part)
         spans.append((s["num"], start, offset))
         parts.append(part)
-    block = "\n\n".join(parts) + "\n"
-    original_chars = len(block)
-    content_end = original_chars
-    truncated = limit_chars is not None and len(block) > limit_chars
-    if truncated:
-        block = block[:limit_chars - 1] + "…\n"
-        content_end = len(block) - 2
+    selected_text = "\n\n".join(parts)
+    original = selected_text + ("\n\n" + about_text if about_text and preserve_sections else "") + "\n"
+    block = original
+    if limit_chars is not None:
+        if preserve_sections:
+            remaining = max(0, limit_chars - len(selected_text) - 3)
+            common = _truncate(about_text, remaining)
+            block = selected_text + ("\n\n" + common if common else "") + "\n"
+        else:
+            block = _truncate(original, limit_chars)
+    original_chars = len(original)
+    truncated = len(block) < original_chars
+    over_budget = limit_chars is not None and len(block) > limit_chars
+    content_end = len(block) - (1 if truncated and not preserve_sections else 0)
     full = [num for num, start, end in spans if end <= content_end]
     partial = [num for num, start, end in spans if start < content_end < end]
     dropped = len(spans) - len(full) - len(partial)
-    emit = log.warning if truncated else log.info
-    emit("KB prompt: truncated=%s chars_limit=%s chars_original=%d chars_included=%d chars_removed=%d "
+    emit = log.warning if truncated or over_budget else log.info
+    emit("KB prompt: truncated=%s over_budget=%s chars_limit=%s chars_original=%d chars_included=%d chars_removed=%d "
          "sections_requested=%d sections_full=%s sections_partial=%s sections_dropped=%d",
-         str(truncated).lower(), limit_chars, original_chars, len(block), max(0, original_chars - content_end),
+         str(truncated).lower(), str(over_budget).lower(), limit_chars, original_chars, len(block), max(0, original_chars - len(block)),
          len(sections), full, partial, dropped)
     return block
 
@@ -351,7 +390,7 @@ async def build_filtered_kb_block(
     vacancy_context: str,
     llm_client,
     max_sections: int = 5,
-    limit_chars: int = 10000,
+    limit_chars: int | None = 10000,
     selector_model: str | None = None,
 ) -> str:
     """2-pass: парсим KB → выбираем релевантные секции через LLM → формируем блок.
@@ -371,10 +410,10 @@ async def build_filtered_kb_block(
     if not selected_nums:
         return _format_kb_block(about_text, sections, limit_chars=limit_chars)
     by_num = {s["num"]: s for s in sections}
-    picked = [by_num[n] for n in selected_nums if n in by_num]
+    picked = [by_num[n] for n in dict.fromkeys(selected_nums) if n in by_num]
     if not picked:
         return _format_kb_block(about_text, sections, limit_chars=limit_chars)
-    return _format_kb_block(about_text, picked, limit_chars=limit_chars)
+    return _format_kb_block(about_text, picked, limit_chars=limit_chars, preserve_sections=True)
 
 
 def build_knowledge_base_block(limit_chars: int = 12000, *, profile_dir: str | None = None) -> str:
@@ -389,7 +428,6 @@ def build_knowledge_base_block(limit_chars: int = 12000, *, profile_dir: str | N
     if not os.path.isdir(knowledge_dir):
         return ""
     parts = []
-    total = 0
     preferred = [
         "answering_rules.md", "constraints.md", "candidate_facts.md",
         "projects.md", "about_me.md", "qa_kb.md",
@@ -411,15 +449,7 @@ def build_knowledge_base_block(limit_chars: int = 12000, *, profile_dir: str | N
         if not content:
             continue
         chunk = f"### {fname}\n{content}\n"
-        if total + len(chunk) > limit_chars:
-            # обрезать chunk до оставшегося лимита
-            remaining = limit_chars - total
-            if remaining > 200:
-                chunk = chunk[:remaining - 1] + "…\n"
-                parts.append(chunk)
-            break
         parts.append(chunk)
-        total += len(chunk)
     if not parts:
         return ""
     block = (
@@ -427,4 +457,4 @@ def build_knowledge_base_block(limit_chars: int = 12000, *, profile_dir: str | N
         + "\n".join(parts)
         + "\n"
     )
-    return block
+    return _truncate(block, limit_chars)

@@ -63,8 +63,8 @@ def test_kb_logs_only_sections_surviving_final_cut(monkeypatch, caplog, limit):
     with caplog.at_level(logging.INFO):
         block = asyncio.run(prompt_blocks.build_filtered_kb_block("QA", None, max_sections=6, limit_chars=limit))
     record, = [r for r in caplog.records if "KB prompt" in r.message]
-    assert ("sections_full=[]" if limit else "sections_full=[1, 2, 3, 4, 5, 6]") in record.message
-    assert f"sections_dropped={6 if limit else 0}" in record.message
+    assert "sections_full=[1, 2, 3, 4, 5, 6]" in record.message
+    assert "sections_dropped=0" in record.message
     assert f"chars_included={len(block)}" in record.message
     assert (record.levelno == logging.WARNING) is bool(limit)
     assert "PRIVATE_" not in record.message and "picked sections" not in caplog.text

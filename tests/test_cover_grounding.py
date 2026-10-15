@@ -115,6 +115,18 @@ def test_verifier_has_independent_context_and_zero_temperature():
     assert "vacancy" not in payload
 
 
+def test_constraints_cannot_supply_evidence_even_if_verifier_cites_them():
+    claim = "Проверяю REST API в Postman."
+    client = client_for(json.dumps(approved(claim, "constraints")))
+    result = asyncio.run(grounding.verify_cover_letter(
+        " ".join(SENTENCES), SOURCES, client, "model", constraints=claim))
+    assert not result.ok and result.reason == "source_mismatch"
+    request = json.loads(client.calls[0]["messages"][1]["content"])
+    assert request["constraints"] == claim
+    assert "constraints" not in request["sources"]
+    assert "даже при дословной цитате" in client.calls[0]["messages"][0]["content"]
+
+
 def test_verifier_failure_rejects_without_leaking_transport_body(caplog):
     client = client_for(RuntimeError("PRIVATE_CANDIDATE_EMAIL"))
     result = asyncio.run(grounding.verify_cover_letter(" ".join(SENTENCES), SOURCES, client, "model"))
@@ -139,6 +151,7 @@ def test_local_fast_paths_do_not_call_api(text, sources, reason):
 def isolated_candidate(monkeypatch):
     monkeypatch.setattr(matcher, "_load_resume", lambda: SOURCES["resume"])
     monkeypatch.setattr(prompt_blocks, "build_facts_block", lambda: "")
+    monkeypatch.setattr(prompt_blocks, "build_cover_facts_blocks", lambda: ("", ""))
     monkeypatch.setattr(prompt_blocks, "build_profile_note_block", lambda: "")
     monkeypatch.setattr(prompt_blocks, "build_knowledge_base_block", lambda **kwargs: "")
 

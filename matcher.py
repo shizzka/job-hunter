@@ -1489,15 +1489,14 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     resume = _load_resume()
     resume_versions.record_input(vacancy, resume, "cover_letter")
     from prompt_blocks import (
-        build_facts_block,
+        build_cover_facts_blocks,
         build_profile_note_block,
         build_filtered_kb_block,
         build_knowledge_base_block,
     )
     profile_note = build_profile_note_block()
-    facts = build_facts_block()
-    import facts as candidate_facts
-    evidence_facts = candidate_facts.confirmed_facts_for_prompt()
+    evidence_facts, fact_constraints = build_cover_facts_blocks()
+    facts = evidence_facts + fact_constraints
     knowledge_fallback = build_knowledge_base_block(limit_chars=12000)
     # 2-pass: фильтруем KB-секции под конкретную вакансию через LLM
     vacancy_summary = (
@@ -1615,6 +1614,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
         from cover_grounding import verify_cover_letter
         grounding = await verify_cover_letter(
             cover, sources, client, config.HH_COVER_LETTER_MODEL or config.LLM_MODEL,
+            constraints=fact_constraints,
         )
         if not grounding.ok:
             overclaim = grounding.reason in {"unsupported_claims", "number_mismatch", "missing_evidence", "source_mismatch"}

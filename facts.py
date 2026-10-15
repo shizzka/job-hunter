@@ -83,7 +83,19 @@ def _append_fact_section(lines: list[str], title: str, value: Any) -> None:
     lines.append(f"- {_format_fact_value(value)}")
 
 
-def format_facts_for_prompt(facts: dict[str, Any], limit_chars: int = 3000) -> str:
+def format_fact_constraints(facts: dict[str, Any]) -> str:
+    """Keep bans and skill/experience limits outside the factual text budget."""
+    lines: list[str] = []
+    _append_fact_section(lines, "WEAK / LIMITED — только мягкие формулировки:", facts.get("weak"))
+    _append_fact_section(lines, "ALLOWED WORDING — безопасные формулировки:", facts.get("allowed_wording"))
+    for key in ("do_not_claim", "forbidden_claims"):
+        _append_fact_section(lines, "DO NOT CLAIM — запрещено писать или подразумевать:", facts.get(key))
+    if not lines:
+        return ""
+    return "ОГРАНИЧЕНИЯ КАНДИДАТА (не являются доказательствами опыта):\n" + "\n".join(lines) + "\n\n"
+
+
+def format_facts_for_prompt(facts: dict[str, Any], limit_chars: int | None = 3000) -> str:
     """Превратить facts.json в prompt-блок с явными claim guardrails.
 
     Поддерживает новую схему:
@@ -93,6 +105,7 @@ def format_facts_for_prompt(facts: dict[str, Any], limit_chars: int = 3000) -> s
     - do_not_claim / forbidden_claims: запреты, нельзя писать как факт;
     - allowed_wording: безопасные формулировки.
 
+    limit_chars ограничивает фактическую часть, ограничения добавляются целиком.
     Старые плоские facts.json остаются видимыми, но требуют подтверждения.
     """
     if not facts:
@@ -118,11 +131,6 @@ def format_facts_for_prompt(facts: dict[str, Any], limit_chars: int = 3000) -> s
         _append_fact_section(lines, "CONFIRMED — можно утверждать прямо:", facts.get("confirmed"))
         _append_fact_section(lines, "UNCONFIRMED — нужна проверка кандидатом; не использовать как доказательство:", facts.get("unconfirmed"))
         _append_fact_section(lines, "INFERRED — можно использовать аккуратно, без усиления:", facts.get("inferred"))
-        _append_fact_section(lines, "WEAK / LIMITED — только мягкие формулировки:", facts.get("weak"))
-        _append_fact_section(lines, "ALLOWED WORDING — безопасные формулировки:", facts.get("allowed_wording"))
-        forbidden = facts.get("do_not_claim") or facts.get("forbidden_claims")
-        _append_fact_section(lines, "DO NOT CLAIM — запрещено писать или подразумевать:", forbidden)
-
         extra = {key: value for key, value in facts.items() if key not in known_sections and not _is_empty_fact(value)}
         _append_fact_section(lines, "OTHER FACTS:", extra)
     else:
@@ -133,18 +141,19 @@ def format_facts_for_prompt(facts: dict[str, Any], limit_chars: int = 3000) -> s
             lines.append(f"- {key}: {_format_fact_value(value)}")
 
     block = "\n".join(lines) + "\n\n"
-    if len(block) > limit_chars:
-        block = block[:limit_chars - 1] + "…\n\n"
-    return block
+    if limit_chars is not None and len(block) > limit_chars:
+        marker = "…\n\n"[:max(0, limit_chars)]
+        block = block[:max(0, limit_chars - len(marker))] + marker
+    return block + format_fact_constraints(facts)
 
 
-def confirmed_facts_for_prompt(value=None) -> str:
+def confirmed_facts_for_prompt(value=None, *, limit_chars: int | None = 3000) -> str:
     """Only explicit confirmation can prove a personal claim; legacy is unknown."""
     value = load_facts() if value is None else value
     confirmed = value.get('confirmed') if isinstance(value, dict) else None
     if not isinstance(confirmed, dict) or not confirmed:
         return ''
-    return format_facts_for_prompt({'confirmed': confirmed})
+    return format_facts_for_prompt({'confirmed': confirmed}, limit_chars=limit_chars)
 
 
 # ---------- извлечение через LLM ----------
