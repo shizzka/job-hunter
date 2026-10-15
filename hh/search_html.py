@@ -132,6 +132,22 @@ def search_antibot_kind(html: str) -> str:
     return ""
 
 
+def _empty_search_results(tree):
+    for node in tree.root.walk():
+        if _qa(node, {"empty-vacancy-search-block"}):
+            return True
+        if not _qa(node, {"vacancy-serp__results"}):
+            continue
+        # Beyond the last page HH renders an explicitly empty list, without
+        # the zero-results placeholder. Ignore the CSS build hash.
+        for child in node.walk():
+            if (child.tag == "ol"
+                    and any(c.startswith("vacancies-list--") for c in child.attrs.get("class", "").split())
+                    and not any(child.walk()) and not child.text()):
+                return True
+    return False
+
+
 def parse_hh_search_html(html: str, *, base_url: str) -> list[dict]:
     """Parse known SSR cards. Unknown search/challenge/modal states fail closed."""
     if not _trusted_url(base_url, base_url) or urlsplit(base_url).path != "/search/vacancy":
@@ -206,6 +222,6 @@ def parse_hh_search_html(html: str, *, base_url: str) -> list[dict]:
                           "salary": salary.text() if salary else "не указана",
                           "url": url, "snippet": "\n".join(n.text() for n in (requirement, responsibility) if n is not None and n.text()),
                           "response_url": response_url})
-    if not vacancies:
+    if not vacancies and (cards or not _empty_search_results(tree)):
         raise ValueError("unrecognized HH search results")
     return vacancies

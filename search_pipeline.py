@@ -4,6 +4,7 @@
 Извлечено из agent.py (A-001).
 """
 from query_normalization import clean_query_list
+from hh.search import HHSearchAuthError, HHSearchStopped
 from hh.ui import HHUnexpectedUI
 
 import inspect
@@ -122,9 +123,25 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
         for query in clean_query_list(config.SEARCH_QUERIES):
             for page_num in range(config.SEARCH_PAGES):
                 log.info("HH search: %s [%s] page %d", query, area_label, page_num)
-                vacancies = await client.search_vacancies(
-                    query, page=page_num, area=area, schedule=schedule,
-                )
+                page_error = None
+                try:
+                    vacancies = await client.search_vacancies(
+                        query, page=page_num, area=area, schedule=schedule,
+                    )
+                except HHUnexpectedUI:
+                    raise
+                except HHSearchStopped as exc:
+                    collect_note = f"HH: поиск остановлен: {exc}"
+                    if bucket is not None:
+                        bucket["stop_reason"] = collect_note
+                    analytics.record_failure("collection", exc, source="hh", continued=True, source_stopped=True)
+                    log.warning("Stopping hh.ru collection: %s", collect_note)
+                    await office_log("hh_skipped", collect_note, "warning")
+                    if isinstance(exc, HHSearchAuthError):
+                        await _notify_hh_auth_required_once(str(exc))
+                    return all_vacancies
+                except Exception as exc:
+                    page_error = exc
                 anti_bot_signal = client.consume_antibot_signal()
                 if anti_bot_signal:
                     status = hh_guard.record_antibot(
@@ -138,6 +155,15 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
                     log.warning("Stopping hh.ru collection after anti-bot signal: %s", collect_note)
                     await office_log("hh_skipped", collect_note, "thinking")
                     return all_vacancies
+                if page_error is not None:
+                    if bucket is not None:
+                        bucket["pages_failed"] = bucket.get("pages_failed", 0) + 1
+                    analytics.record_failure("collection", page_error, source="hh", continued=True)
+                    log.warning(
+                        "source=hh stage=collection query=%r [%s] page=%d error_kind=%s continued=true",
+                        query, area_label, page_num, type(page_error).__name__,
+                    )
+                    continue
                 if bucket is not None:
                     bucket["fetched"] += len(vacancies)
 

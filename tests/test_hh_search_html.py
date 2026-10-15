@@ -33,6 +33,38 @@ def test_classic_card_and_id_deduplication():
     assert result[0]["salary"] == "100"
 
 
+@pytest.mark.parametrize("name", ["hh_search_empty_page.html", "hh_search_no_results.html"])
+def test_observed_empty_search_returns_empty_list(name):
+    assert parse(FIXTURE.with_name(name).read_text()) == []
+
+
+def test_empty_search_list_allows_css_build_hash_changes_and_whitespace():
+    assert parse('<section data-qa="vacancy-serp__results"><ol class="vacancies-list--newhash">\n </ol></section>') == []
+
+
+@pytest.mark.parametrize("html", [
+    '<html><body>Unknown result</body></html>',
+    '<section data-qa="vacancy-serp__results"></section>',
+    '<ol class="vacancies-list--newhash"></ol>',
+    '<section data-qa="vacancy-serp__results"><ol class="vacancies-list--newhash"><li>Redesigned card</li></ol></section>',
+    '<section data-qa="vacancy-serp__results"><ol class="vacancies-list--newhash">Loading failed</ol></section>',
+    '<template><div data-qa="empty-vacancy-search-block"></div></template>',
+])
+def test_missing_or_nonempty_results_structure_is_not_an_empty_search(html):
+    with pytest.raises(ValueError, match="unrecognized HH search results"):
+        parse(html)
+
+
+@pytest.mark.parametrize("unsafe", [
+    '<div id="captcha">Check</div>',
+    '<div role="dialog">Unknown</div>',
+    '<div data-qa="serp-item">Broken card</div>',
+])
+def test_empty_search_marker_does_not_hide_challenges_dialogs_or_broken_cards(unsafe):
+    with pytest.raises(ValueError):
+        parse(FIXTURE.with_name("hh_search_empty_page.html").read_text() + unsafe)
+
+
 @pytest.mark.parametrize("tag", ["script", "style", "template", "noscript", "iframe", "object"])
 def test_inert_fake_cards_are_ignored(tag):
     result = parse(f'<{tag}>{card("/vacancy/999")}</{tag}>' + card())

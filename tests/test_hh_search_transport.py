@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from hh.search import read_search_html
+from hh.search import HHSearchAuthError, HHSearchStopped, read_search_html
 
 URL='https://hh.ru/search/vacancy?text=synthetic'
 
@@ -76,3 +76,24 @@ def test_redirect_chain_is_bounded():
     client,get=session(items)
     with pytest.raises(ValueError): asyncio.run(read_search_html(client,URL))
     assert get.await_count==4 and all(r.dispose.await_count==1 for r in items)
+
+
+@pytest.mark.parametrize('case,error_type', [
+    ({'status': 401}, HHSearchAuthError),
+    ({'status': 403}, HHSearchStopped),
+    ({'status': 429}, HHSearchStopped),
+    ({'body': '<script>{"userType":"anonymous"}</script>'}, HHSearchAuthError),
+    ({'body': '<script>{"luxPageName":"ForbiddenPage"}</script>'}, HHSearchAuthError),
+    ({'status': 302, 'location': '/account/login'}, HHSearchAuthError),
+    ({'status': 302, 'location': '/auth/login'}, HHSearchAuthError),
+    ({'status': 302, 'location': '/captcha'}, HHSearchStopped),
+    ({'status': 302, 'location': 'https://evil.test/account/login'}, HHSearchStopped),
+    ({'url': 'https://evil.test/search/vacancy?text=synthetic'}, HHSearchStopped),
+])
+def test_access_and_untrusted_redirects_are_source_stops(case, error_type):
+    item = response(**case)
+    client, get = session([item])
+    with pytest.raises(error_type):
+        asyncio.run(read_search_html(client, URL))
+    assert get.await_count == 1
+    item.dispose.assert_awaited_once()

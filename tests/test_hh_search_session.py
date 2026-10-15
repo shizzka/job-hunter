@@ -1,5 +1,6 @@
 """Offline reproduction of the observed search action-monitor latch."""
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -105,6 +106,21 @@ def test_search_reads_observed_ssr_without_background_events(tmp_path):
         response.dispose.assert_awaited_once()
         client._context.request.get.assert_awaited_once_with(URL,max_redirects=0,timeout=30000)
     asyncio.run(browser_scenario(tmp_path, check))
+
+
+@pytest.mark.parametrize('fixture', ['hh_search_empty_page.html', 'hh_search_no_results.html'])
+def test_search_reads_observed_empty_ssr_without_recovery(tmp_path, fixture):
+    body = (Path(__file__).parent / 'fixtures' / fixture).read_text()
+
+    async def check(client, requests, response):
+        assert await client._search_vacancies('synthetic', page=1, url=URL) == []
+        assert requests == [] and client._page.url == 'about:blank'
+        assert not client._page._hh_action_monitor.unknown
+        assert not client._context._hh_action_watch.unknown
+        response.dispose.assert_awaited_once()
+        client._context.request.get.assert_awaited_once_with(URL, max_redirects=0, timeout=30000)
+
+    asyncio.run(browser_scenario(tmp_path, check, body))
 
 
 @pytest.mark.parametrize('during',['before','get','text','dispose'])

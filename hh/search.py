@@ -8,6 +8,14 @@ _SEARCH_KEYS = {'text', 'area', 'page', 'per_page', 'order_by', 'experience',
                 'schedule', 'salary', 'only_with_salary'}
 
 
+class HHSearchStopped(ValueError):
+    """Search cannot continue safely after an access or redirect refusal."""
+
+
+class HHSearchAuthError(HHSearchStopped):
+    """The search response no longer proves an authenticated HH session."""
+
+
 async def read_search_html(session, url):
     """Only trusted GET redirects; action uncertainty is never cleared/retried."""
     context, page = session._context, session._page
@@ -19,9 +27,16 @@ async def read_search_html(session, url):
         raise ValueError('Unknown HH search query payload')
 
     def trusted(target):
-        _trusted_url(target, '/search/vacancy')
+        try:
+            path = urlsplit(target).path
+            login = path.startswith(('/account/login', '/auth/'))
+            _trusted_url(target, path if login else '/search/vacancy')
+        except ValueError as exc:
+            raise HHSearchStopped('HH search redirected outside trusted search') from exc
+        if login:
+            raise HHSearchAuthError('HH search authentication unavailable')
         if sorted(parse_qsl(urlsplit(target).query, keep_blank_values=True)) != query:
-            raise ValueError('HH changed the search query during redirect')
+            raise HHSearchStopped('HH changed the search query during redirect')
 
     async def fresh():
         if (session._context is not context or session._page is not page
@@ -46,6 +61,10 @@ async def read_search_html(session, url):
                 url = target
                 body = None
             else:
+                if response.status == 401:
+                    raise HHSearchAuthError('HH search authentication unavailable')
+                if response.status in (403, 429):
+                    raise HHSearchStopped(f'HH search access refused: HTTP {response.status}')
                 if response.status != 200:
                     raise ValueError('HH search server response unavailable')
                 if response.headers.get('content-type', '').split(';', 1)[0].strip().casefold() != 'text/html':
@@ -53,7 +72,7 @@ async def read_search_html(session, url):
                 body = await response.text()
                 await fresh()
                 if re.search(r'"userType"\s*:\s*"anonymous"|"luxPageName"\s*:\s*"ForbiddenPage"', body, re.I):
-                    raise ValueError('HH search authentication unavailable')
+                    raise HHSearchAuthError('HH search authentication unavailable')
         finally:
             await response.dispose()
         await fresh()
