@@ -64,6 +64,6 @@ def test_hidden_frame_only_becomes_uncertain_on_unowned_post(side_effect, caplog
                 assert monitor.unknown is True
                 assert context._hh_action_watch.unknown is True
                 assert session._hh_recovery_uncertain is True
-                assert context._hh_action_watch.application_post_sequence == (1 if side_effect == 'post' else 0)
+                assert context._hh_action_watch.application_post_sequence == (1 if side_effect in {'post', 'get'} else 0)
             await browser.close()
     asyncio.run(run())

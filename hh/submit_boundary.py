@@ -142,7 +142,7 @@ async def _install_popup_gate(session, boundary_id, descriptor):
         if not fresh:
             monitor = getattr(page, '_hh_action_monitor', None)
             if monitor is not None:
-                monitor.mark_unknown(request)
+                monitor.mark_unknown(request, reason='popup_gate_rejected')
             await route.abort()
             return
         used = True

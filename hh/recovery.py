@@ -29,7 +29,8 @@ async def install_frame_observation(session, context):
         if (source.get('context') is context and watch is not None
                 and watch.session is session and page in watch.pages
                 and frame is not page.main_frame):
-            watch.pages[page].mark_unknown()
+            watch.pages[page].mark_unknown(reason='child_frame_interaction', frame_kind='child',
+                                           event_url=_event_url(frame))
 
     await context.expose_binding('__jhHHFrameInteraction', interaction)
     await context.add_init_script(script=r'''(() => {
@@ -72,6 +73,7 @@ class PageActions:
     last_attempt: object = None
     attempts: dict[str, object] = field(default_factory=dict)
     observations: int = 0
+    last_unknown_diagnostic: dict = field(default_factory=dict)
 
     def register(self, attempt):
         watch = getattr(self.page.context, '_hh_action_watch', None)
@@ -87,18 +89,20 @@ class PageActions:
         attempt._hh_application_posts = []
         watch.last_attempt = attempt
 
-    def mark_unknown(self, request=None):
+    def mark_unknown(self, request=None, *, reason='unclassified_event', frame_kind=None, event_url=None):
         self.observations += 1
-        log.debug('HH unowned page event; observations=%s', self.observations)
         watch = getattr(self.page.context, '_hh_action_watch', None)
-        if _unknown_requires_stop(self.session, request, watch):
+        requires_stop = _unknown_requires_stop(self.session, request, watch)
+        with contextlib.suppress(Exception):
+            _record_unknown(self, 'page', request, reason, frame_kind, event_url, requires_stop)
+        if requires_stop:
             self.unknown = True
             self.session._hh_recovery_stop_reason = 'possible_external_action'
             self.session._hh_recovery_uncertain = True
         # A callback on the current document may name an earlier vacancy or
         # one formerly shown on another Page in this same authenticated context.
         if watch is not None and watch.session is self.session and watch.context is self.page.context:
-            watch.mark_unknown(request)
+            watch.mark_unknown(request, reason=reason, frame_kind=frame_kind, event_url=event_url)
 
     def observe(self, request):
         attempt = getattr(self.session, '_external_attempt', None)
@@ -113,7 +117,7 @@ class PageActions:
                 if post['request'] is request:
                     post['owned'] = True
         else:
-            self.mark_unknown(request)
+            self.mark_unknown(request, reason='unapproved_mutating_request')
 
 
 @dataclass
@@ -123,13 +127,17 @@ class ContextActions:
     pages: dict = field(default_factory=dict)
     unknown: bool = False
     last_attempt: object = None
+    # Historical name: counts every mutating response-form request, including GET.
     application_post_sequence: int = 0
     observations: int = 0
+    last_unknown_diagnostic: dict = field(default_factory=dict)
 
-    def mark_unknown(self, request=None):
+    def mark_unknown(self, request=None, *, reason='unclassified_event', frame_kind=None, event_url=None):
         self.observations += 1
-        log.debug('HH unowned context event; observations=%s', self.observations)
-        if not _unknown_requires_stop(self.session, request, self):
+        requires_stop = _unknown_requires_stop(self.session, request, self)
+        with contextlib.suppress(Exception):
+            _record_unknown(self, 'context', request, reason, frame_kind, event_url, requires_stop)
+        if not requires_stop:
             return
         self.unknown = True
         self.session._hh_recovery_stop_reason = 'possible_external_action'
@@ -143,6 +151,70 @@ class ContextActions:
                         and attempt.page is page and attempt.context is self.context
                         and attempt.repository.source == 'hh'):
                     _preserve_unknown_attempt(attempt)
+
+
+def _event_url(source):
+    with contextlib.suppress(Exception):
+        return getattr(source, 'url', None)
+    return None
+
+
+def _unknown_classification(request, reason, frame_kind, event_url):
+    """Allowlisted categories only; never retain a URL, arbitrary path or payload."""
+    diagnostic = {'reason': reason, 'method': 'none', 'path': 'none',
+                  'host': 'unknown', 'frame': frame_kind or 'unknown', 'query_fields': []}
+    if request is None and event_url is None:
+        return diagnostic
+    diagnostic['path'] = 'unknown'
+    if request is not None:
+        diagnostic['method'] = 'unknown'
+    with contextlib.suppress(Exception):
+        method = request.method.upper()
+        diagnostic['method'] = method if method in {
+            'GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'CONNECT', 'TRACE'} else 'other'
+    with contextlib.suppress(Exception):
+        url = request.url if request is not None else event_url
+        parsed = urlsplit(url)
+        diagnostic['host'] = ('unknown' if parsed.hostname is None else
+                              'hh' if _hh_target(url) else 'third_party')
+        # Even a path may contain a resume hash or personal data. Keep only
+        # known static routes, template the rest, and never emit the hostname.
+        path = parsed.path
+        if path in {RESPONSE_PATH, RESPONSE_PATH + '/popup', '/applicant/resumes'}:
+            diagnostic['path'] = path
+        elif path.startswith(RESPONSE_PATH):
+            diagnostic['path'] = RESPONSE_PATH + '/[other]'
+        elif path.startswith('/vacancy/'):
+            diagnostic['path'] = '/vacancy/[id]'
+        else:
+            diagnostic['path'] = '/[other]'
+        keys = set(parse_qs(parsed.query, keep_blank_values=True))
+        diagnostic['query_fields'] = sorted(keys & {'resume_id', 'resumeId', 'resumeHash', 'resume', 'letter'})
+    if frame_kind is None:
+        with contextlib.suppress(Exception):
+            if getattr(request, 'service_worker', None) is not None:
+                diagnostic['frame'] = 'worker'
+            else:
+                frame = request.frame
+                page = frame.page
+                if page is not None:
+                    diagnostic['frame'] = 'main' if frame is page.main_frame else 'child'
+    return diagnostic
+
+
+def _record_unknown(monitor, scope, request, reason, frame_kind, event_url, requires_stop):
+    diagnostic = {**_unknown_classification(request, reason, frame_kind, event_url),
+                  'scope': scope, 'observation': monitor.observations,
+                  'requires_stop': requires_stop, 'unknown_before': monitor.unknown}
+    monitor.last_unknown_diagnostic = diagnostic
+    log.info('HH unowned event classification=%s', diagnostic)
+    attempt = monitor.last_attempt
+    if (attempt is not None and attempt.client is monitor.session
+            and attempt.context is (monitor.context if scope == 'context' else monitor.page.context)):
+        trace = getattr(attempt, '_hh_reconciliation_trace', None)
+        if trace is not None:
+            with contextlib.suppress(Exception):
+                trace.event('HH_UNKNOWN_ACTION', **diagnostic)
 
 
 def _unknown_requires_stop(session, request, watch):
@@ -225,29 +297,34 @@ def monitor_page(session, page):
         context._hh_action_watch = watch
         def request_seen(request):
             try:
-                # Observation only: neither admission nor the unknown-action guard
-                # changes. Retain duplicate/unapproved POSTs too for reconciliation.
-                if (request.method.upper() == 'POST'
+                # GET/HEAD successful controls are possible form actions even on
+                # an unknown path. POST receipts keep their existing meaning.
+                if (_mutating_request(request)
                         and _hh_target(request.url)
-                        and urlsplit(request.url).path.startswith(RESPONSE_PATH)):
+                        and (urlsplit(request.url).path.startswith(RESPONSE_PATH)
+                             or request.method.upper() in {'GET', 'HEAD'})):
                     watch.application_post_sequence += 1
                     attempt = getattr(session, '_external_attempt', None) or watch.last_attempt
                     posts = getattr(attempt, '_hh_application_posts', None)
                     if (attempt is not None and attempt.client is session
                             and attempt.context is context and attempt.repository.source == 'hh'
-                            and isinstance(posts, list)):
+                            and isinstance(posts, list) and request.method.upper() == 'POST'):
                         posts.append({'request': request, 'owned': False, 'status': None})
                 if not _mutating_request(request):
                     return
-                observed_page = request.frame.page
+                try:
+                    observed_page = request.frame.page
+                except Exception:
+                    watch.mark_unknown(request, reason='unobserved_frame')
+                    return
                 monitor = watch.pages.get(observed_page)
                 if monitor is None:
-                    watch.mark_unknown(request)
+                    watch.mark_unknown(request, reason='unobserved_frame')
                 else:
                     monitor.observe(request)
             except Exception:
-                # Worker-originated requests have no owning Frame/Page.
-                watch.mark_unknown(request)
+                # Unreadable requests or failed observers still fail closed.
+                watch.mark_unknown(request, reason='request_observation_error')
         context.on('request', request_seen)
         def response_seen(response):
             if not (_hh_target(response.url) and urlsplit(response.url).path.startswith(RESPONSE_PATH)):
@@ -258,7 +335,8 @@ def monitor_page(session, page):
                         if post['request'] is response.request:
                             post['status'] = response.status
         context.on('response', response_seen)
-        context.on('serviceworker', lambda worker: watch.mark_unknown())
+        context.on('serviceworker', lambda worker: watch.mark_unknown(
+            reason='service_worker_created', frame_kind='worker', event_url=_event_url(worker)))
     if watch.session is not session:
         raise RuntimeError('HH BrowserContext action ownership changed')
     if page in watch.pages:
@@ -267,7 +345,8 @@ def monitor_page(session, page):
     watch.pages[page] = monitor
     page._hh_action_monitor = monitor
     def socket_seen(socket):
-        socket.on('framesent', lambda frame: monitor.mark_unknown())
+        socket.on('framesent', lambda frame: monitor.mark_unknown(
+            reason='websocket_frame_sent', event_url=_event_url(socket)))
     page.on('websocket', socket_seen)
     # Presence alone proves no action. Child gestures, mutating requests,
     # workers, popups and socket sends remain independently observed.
@@ -275,8 +354,10 @@ def monitor_page(session, page):
         monitor.embedded_history = True
         log.warning('HH frame attached; observation only')
     page.on('frameattached', frame_seen)
-    page.on('popup', lambda popup: monitor.mark_unknown())
-    page.on('worker', lambda worker: monitor.mark_unknown())
+    page.on('popup', lambda popup: monitor.mark_unknown(
+        reason='popup_created', frame_kind='main', event_url=_event_url(popup)))
+    page.on('worker', lambda worker: monitor.mark_unknown(
+        reason='page_worker_created', frame_kind='worker', event_url=_event_url(worker)))
     return monitor
 
 

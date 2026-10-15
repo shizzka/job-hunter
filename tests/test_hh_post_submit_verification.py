@@ -37,6 +37,7 @@ APPLIED_HTML = """<!doctype html><html><body>
     ("cookie_changed_before_get", False),
     ("cookie_changed_during_get", False),
     ("late_second_post", False),
+    ("late_second_get", False),
     ("new_attempt_registered", False),
     ("context_swapped", False),
     ("inert_markers", False),
@@ -125,6 +126,9 @@ def test_owned_popup_frame_race_requires_unambiguous_fresh_applied_get(
                 await page.evaluate("""() => fetch('/applicant/vacancy_response/popup', {
                   method: 'POST', body: new URLSearchParams({vacancy_id: '2'})
                 }).catch(() => null)""")
+            elif variant == "late_second_get":
+                await page.evaluate("""() => fetch('/applicant/vacancy_response?resume_id=other')
+                  .catch(() => null)""")
             elif variant == "new_attempt_registered":
                 from state_store.native_apply import NativeAttempt
                 other = NativeAttempt(repository, "https://hh.ru/vacancy/3", "fixture-new-owner", client=client)
@@ -267,7 +271,7 @@ def test_owned_popup_frame_race_requires_unambiguous_fresh_applied_get(
                 assert monitor.unknown is False
                 assert context._hh_action_watch.unknown is False
             else:
-                mutated = variant in {"late_second_post", "post_success_late_post"}
+                mutated = variant in {"late_second_post", "late_second_get", "post_success_late_post"}
                 assert monitor.unknown is mutated
                 assert context._hh_action_watch.unknown is mutated
             assert repository.get(VACANCY_URL)["status"] in {"completed", "uncertain"}
@@ -291,6 +295,11 @@ def test_owned_popup_frame_race_requires_unambiguous_fresh_applied_get(
                 assert len(registered_attempt._hh_application_posts) == 2
                 assert registered_attempt._hh_application_posts[0]["status"] == 200
                 assert registered_attempt._hh_application_posts[1]["owned"] is False
+            if variant == "late_second_get":
+                assert context._hh_action_watch.application_post_sequence == 2
+                registered_attempt = next(iter(monitor.attempts.values()))
+                assert len(registered_attempt._hh_application_posts) == 1
+                assert registered_attempt._hh_reconciliation_diagnostic['step'] == 'post_sequence_changed'
             if variant == "new_attempt_registered":
                 assert context._hh_action_watch.last_attempt is not next(iter(monitor.attempts.values()))
             if variant == "post_success_late_post":
