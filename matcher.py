@@ -1632,8 +1632,8 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
             prompt = build_rewrite_prompt(cover, grounding, sources, fact_constraints)
 
         overclaim = grounding.reason in overclaim_reasons
-        log.warning("Cover letter grounding: status=%s overclaim_guard=%s fallback=true",
-                    grounding.reason, str(overclaim).lower())
+        log.warning("Cover letter grounding: status=%s overclaim_guard=%s check_failed=%s fallback=true",
+                    grounding.reason, str(overclaim).lower(), str(not overclaim).lower())
         return _remember_cover_letter_meta(
             _fallback_cover_letter(vacancy, details, cover_style),
             cover_style=cover_style, fallback=True, overclaim_guard=overclaim,
