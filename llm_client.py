@@ -588,6 +588,18 @@ def _is_retryable_provider_error(exc: Exception) -> bool:
     )
 
 
+def _is_transient_provider_error(exc: Exception) -> bool:
+    """Narrow same-provider retry policy; SDK retries remain disabled."""
+    if _is_quota_or_rate_limit(exc) or getattr(exc, "code", None) in {
+            "rate_limit_exceeded", "insufficient_quota", "quota_exceeded",
+            "quota_exhausted", "resource_exhausted"}:
+        return False
+    status = _status_code(exc)
+    if status is not None:
+        return 500 <= status <= 599
+    return isinstance(exc, (APIConnectionError, TransportError, ConnectionError, TimeoutError))
+
+
 def _failure_reason(exc):
     status = _status_code(exc)
     if _is_quota_or_rate_limit(exc):
@@ -722,6 +734,17 @@ class FallbackLLMClient:
         role_client = self._role_clients.get(llm_role)
         if role_client is not None:
             return await role_client.create_chat_completion(llm_role=llm_role, **kwargs)
+        if llm_role in proxy_utils.LONG_LLM_ROLES:
+            timeout = proxy_utils.llm_http_timeout(llm_role).read
+            deadline = self._clock() + timeout
+            # Covers all providers and the one extra attempt, including authors
+            # which do not have a caller-side wait_for. Cancellation propagates.
+            async with asyncio.timeout(timeout):
+                return await self._create_chat_completion(llm_role=llm_role, deadline=deadline, **kwargs)
+        return await self._create_chat_completion(llm_role=llm_role, **kwargs)
+
+    async def _create_chat_completion(self, *, llm_role: str | None = None,
+                                      deadline: float | None = None, **kwargs):
         if not self.providers:
             raise RuntimeError("No LLM providers configured")
 
@@ -734,23 +757,68 @@ class FallbackLLMClient:
         total = len(self.providers)
         start = self._start_index_for_model(cache_key, total)
         sticky_index = start
+        retry_used = False
 
         for offset in range(total):
+            if deadline is not None and self._clock() >= deadline:
+                raise TimeoutError("LLM role deadline exhausted")
             index = (start + offset) % total
             provider = self.providers[index]
             if provider.text_fallback_model and vision:
                 continue  # Never send CAPTCHA/images to emergency text-only models.
             provider_kwargs = self._kwargs_for_provider(provider, kwargs)
+            if deadline is not None and not provider.text_fallback_model:
+                # SDK per-request timeout reaches the shared HTTP client without
+                # mutating its defaults for concurrent matcher/unroled calls.
+                provider_kwargs["timeout"] = proxy_utils.llm_http_timeout(llm_role)
             attempted.append(provider.name)
             call_id = uuid.uuid4().hex if provider.quality_log_file else ""
             attempt_started = time.monotonic()
             quality_meta = {"call_id": call_id, "requested_model": requested_model,
                             "actual_model": str(provider_kwargs.get("model") or "")}
             ollama_quality_log.record(provider, event="request", request=provider_kwargs, **quality_meta)
+            retry_started = False
             try:
-                call = self._client_for(index).chat.completions.create(**provider_kwargs)
-                response = (await asyncio.wait_for(call, timeout=provider.timeout_seconds)
-                            if provider.timeout_seconds is not None else await call)
+                while True:
+                    try:
+                        call_started = self._clock()
+                        call = self._client_for(index).chat.completions.create(**provider_kwargs)
+                        response = (await asyncio.wait_for(call, timeout=provider.timeout_seconds)
+                                    if provider.timeout_seconds is not None else await call)
+                        if retry_started:
+                            choices = getattr(response, "choices", None)
+                            finish = getattr(choices[0], "finish_reason", None) if choices else None
+                            log.info("LLM provider %s role=%s transient_retry=succeeded finish_reason=%s",
+                                     provider.name, llm_role, finish)
+                        break
+                    except Exception as exc:
+                        if retry_started:
+                            log.warning("LLM provider %s role=%s transient_retry=failed reason=%s error=%s",
+                                        provider.name, llm_role, _failure_reason(exc), type(exc).__name__)
+                            raise
+                        if deadline is None or not _is_transient_provider_error(exc):
+                            raise
+                        now = self._clock()
+                        remaining = deadline - now
+                        # A useful retry needs at least the connect allowance and
+                        # as much time as the failed attempt. The outer timeout
+                        # enforces the hard limit even if this estimate is wrong.
+                        connect = (min(3, provider.timeout_seconds or 60) if provider.text_fallback_model
+                                   else provider_kwargs["timeout"].connect)
+                        needed = max(connect, now - call_started)
+                        if retry_used or remaining < needed:
+                            log.warning(
+                                "LLM provider %s role=%s transient_retry=skipped reason=%s "
+                                "skip=%s remaining=%.3f needed=%.3f",
+                                provider.name, llm_role, _failure_reason(exc),
+                                "retry_budget_exhausted" if retry_used else "deadline_budget", remaining, needed)
+                            raise
+                        retry_used = retry_started = True
+                        _record_usage(provider.name, str(provider_kwargs.get("model") or ""),
+                                      error_kind=type(exc).__name__)
+                        log.warning(
+                            "LLM provider %s role=%s transient_retry=started reason=%s error=%s remaining=%.3f",
+                            provider.name, llm_role, _failure_reason(exc), type(exc).__name__, remaining)
                 ollama_quality_log.record(provider, event="response", response=response,
                     latency_seconds=time.monotonic() - attempt_started, **quality_meta)
                 if provider.text_fallback_model and not kwargs.get("stream"):
@@ -774,6 +842,8 @@ class FallbackLLMClient:
                 _record_usage(provider.name, str(provider_kwargs.get("model") or ""), response=response)
                 return response
             except asyncio.CancelledError:
+                if retry_started:
+                    log.warning("LLM provider %s role=%s transient_retry=cancelled", provider.name, llm_role)
                 ollama_quality_log.record(provider, event="cancelled",
                     latency_seconds=time.monotonic() - attempt_started, **quality_meta)
                 raise
@@ -796,10 +866,11 @@ class FallbackLLMClient:
                 retryable = _is_retryable_provider_error(exc)
                 log.warning(
                     "LLM provider %s rejected model %s (%s); role=%s reason=%s status=%s "
-                    "sticky_activated=%s fallback=%s",
+                    "sticky_activated=%s fallback=%s transient_retry=%s",
                     provider.name, str(provider_kwargs.get("model") or requested_model),
                     type(exc).__name__, llm_role or "default", _failure_reason(exc), _status_code(exc),
                     str(sticky_activated).lower(), "continue" if retryable else "raise",
+                    "failed" if retry_started else "not_attempted",
                 )
                 if not retryable:
                     _observe_provider_failure(exc, provider.name, model=requested_model)

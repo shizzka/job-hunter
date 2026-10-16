@@ -43,10 +43,22 @@ def is_proxy_error(exc: BaseException) -> bool:
     )
 
 
+LONG_LLM_ROLES = frozenset({
+    "cover_letter", "cover_grounding", "cover_letter_rewrite", "answer_grounding",
+})
+
+
+def llm_http_timeout(llm_role: str | None = None) -> httpx.Timeout:
+    """Allow long cloud reads within the role deadline; keep connects short."""
+    read = (max(1, int(getattr(config, "LLM_GROUNDING_TIMEOUT_SECONDS", 40)))
+            if llm_role in LONG_LLM_ROLES else 60.0)
+    return httpx.Timeout(60.0, connect=10.0, read=read)
+
+
 def llm_http_client() -> httpx.AsyncClient:
     """Use only the explicit LLM proxy, never inherited system proxies."""
     return httpx.AsyncClient(
-        timeout=httpx.Timeout(60.0, connect=10.0),
+        timeout=llm_http_timeout(),
         trust_env=False,
         proxy=config.LLM_PROXY or None,
     )
