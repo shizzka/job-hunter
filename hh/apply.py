@@ -1299,6 +1299,12 @@ async def _apply_to_vacancy(
     except Exception:
         dom_ready = False
 
+    try:
+        from hh.vacancy_metrics import record
+        record(page_html if dom_ready else '', expected_vacancy_id, 'apply_before')
+    except Exception:
+        pass
+
     # Reuse already-loaded markup. Observation never supplies readiness evidence.
     try:
         observation.snapshot(getattr(session, '_external_attempt', None), page_html if dom_ready else '',

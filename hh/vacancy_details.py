@@ -324,7 +324,14 @@ async def passive_details_navigation(session, vacancy_url, *, stage="vacancy_det
             if response.status != 200 or content_type != 'text/html':
                 raise HHVacancyNavigationError(vacancy_url, response_url=response.url,
                     status=response.status, content_type=content_type, redirect_chain=redirect_chain, method=request.method)
-            body = inert_details_html(await response.text())
+            page_html = await response.text()
+            body = inert_details_html(page_html)
+            if stage == 'vacancy_details':
+                try:
+                    from hh.vacancy_metrics import record
+                    record(page_html, path.rstrip('/').split('/')[-1], 'details')
+                except Exception:
+                    pass
             fresh()
             existing = headers.get('content-security-policy', '')
             headers['content-security-policy'] = (existing + ', ' if existing else '') + DETAILS_CSP

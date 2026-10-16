@@ -9,6 +9,7 @@ umask 077
 #   ./run.sh geekjob-login — ручной логин в GeekJob
 #   ./run.sh search      — один прогон
 #   ./run.sh check       — проверка приглашений
+#   ./run.sh negotiations-snapshot [--archived] [--max-pages N] — HTTP-снимок откликов
 #   ./run.sh daemon      — демон (в фоне)
 #   ./run.sh bot         — Telegram bot (foreground)
 #   ./run.sh bot-daemon  — Telegram bot (в фоне)
@@ -75,6 +76,9 @@ if [ "$PROFILE_EXPLICIT" -eq 0 ] && [ -n "$DEFAULT_PROFILE" ]; then
 fi
 
 case "$MODE" in
+    negotiations-snapshot)
+        $VENV -m hh.negotiation_snapshot $PROFILE_ARG "${@:2}"
+        ;;
     login)
         $VENV agent.py $PROFILE_ARG --login
         ;;
@@ -251,7 +255,7 @@ case "$MODE" in
         $VENV job_hunter_ctl.py $PROFILE_ARG daemon-stop
         ;;
     *)
-        echo "Usage: $0 [--profile <name>] {login|google-login|search|trace-apply|fresh-search|check|daemon|bot|bot-daemon|status|bot-status|stats|analytics|filter-audit|digest|dry-run|grab-resume|resume-status|resume-boost|google-form-preview|google-form-submit|chat-respond|chat-respond-one|retry-preview|retry-block-company|retry-unblock-company|retry-blocked-companies|create-profile|profiles|bot-stop|stop}"
+        echo "Usage: $0 [--profile <name>] {login|google-login|search|trace-apply|fresh-search|check|negotiations-snapshot|daemon|bot|bot-daemon|status|bot-status|stats|analytics|filter-audit|digest|dry-run|grab-resume|resume-status|resume-boost|google-form-preview|google-form-submit|chat-respond|chat-respond-one|retry-preview|retry-block-company|retry-unblock-company|retry-blocked-companies|create-profile|profiles|bot-stop|stop}"
         exit 1
         ;;
 esac
