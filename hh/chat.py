@@ -253,7 +253,8 @@ async def extract_messages(
             const raw_text = b.innerText || '';
             // author label inside the bubble
             const authorEl = b.querySelector('[data-qa="chat-bubble-author-name"]');
-            const author = authorEl ? authorEl.innerText.trim() : '';
+            const raw_author = authorEl ? authorEl.innerText : '';
+            const author = raw_author.trim();
             // Avatar can be an img or an icon with aria-label (robot recruiter).
             const avatarImg = b.querySelector('img[alt]');
             const avatarLabelEl = b.querySelector(
@@ -282,12 +283,13 @@ async def extract_messages(
                 text,
                 raw_text,
                 author,
+                raw_author,
                 avatar_alt: avatarAlt,
                 avatar_src: avatarSrc,
                 links,
                 controls,
                 time: timeEl ? (timeEl.getAttribute('datetime') || timeEl.innerText || '') : '',
-                is_me_evidence: is_me ? ['outgoing_css_marker'] : [],
+                is_me_evidence: [is_me ? 'outgoing_css_marker' : 'no_outgoing_css_marker'],
                 is_ai: false,
                 is_me,
                 is_other: !is_me,
@@ -302,7 +304,12 @@ async def extract_messages(
             url: vacancyLink ? vacancyLink.href : '',
             company: headerCompany.trim(),
         };
-        return {messages: out, vacancy, history_complete: false};
+        // Some quick replies live beside the composer, outside message bubbles.
+        // Record visible button labels only; never inspect form values or click.
+        const thread_controls = [...document.querySelectorAll('button, [role="button"]')]
+            .filter(el => el.getClientRects().length)
+            .map(el => (el.innerText || el.getAttribute('aria-label') || '').trim()).filter(Boolean);
+        return {messages: out, vacancy, thread_controls, history_complete: false};
     }""")
     for message in data.get("messages", []):
         classify_author(message)

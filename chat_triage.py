@@ -11,7 +11,7 @@ from state_store.chat_responder import get_google_form_previews, google_form_see
 def external_invitation(message):
     text = message.get("text") or ""
     urls = [link.get("href") or "" for link in message.get("links") or []]
-    urls += re.findall(r"(?:https?://|tg://|(?:www\.)?(?:t\.me|telegram\.me)/)[^\s<>\"']+", text, re.I)
+    urls += re.findall(r"(?<![\w.-])(?:https?://|tg://|(?:www\.)?(?:t\.me|telegram\.me)/)[^\s<>\"']+", text, re.I)
     google_urls = extract_google_form_urls(text, message.get("links") or [])
     found = []
     kind = "внешний этап"
@@ -26,8 +26,10 @@ def external_invitation(message):
             continue
         if parsed.scheme not in {"http", "https", "tg"}:
             continue
+        if parsed.scheme in {"http", "https"} and not host:
+            continue
         telegram = host in {"t.me", "www.t.me", "telegram.me", "www.telegram.me"} or parsed.scheme == "tg"
-        if url in google_urls or host in {"forms.gle", "docs.google.com"}:
+        if url in google_urls or host == "forms.gle":
             continue
         if host == "hh.ru" or host.endswith(".hh.ru"):
             continue

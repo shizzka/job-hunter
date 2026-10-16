@@ -12,6 +12,8 @@ import hh_chat_responder as cr
 from hh.chat import ChatList
 from runtime_context import ChatResponderLimits, RuntimePaths
 
+native_get_messages = cr.get_messages
+
 
 @pytest.fixture
 def chat_run(tmp_path, monkeypatch):
@@ -230,3 +232,34 @@ def test_chat_diagnostic_flag_captures_hr_and_ours_once_without_extra_opens(chat
     for path in root.glob("*.json"):
         if path.name != "state.json":
             assert json.loads(path.read_text())["snapshot_ref"] in refs
+
+
+def test_chat_review_card_escapes_task_name_and_bounds_telegram_html(chat_run):
+    message = chat_run.messages["42"]["messages"][0]
+    message["text"] = 'Пройдите тест <Python> & SQL: https://example.org/test/42 ' + '"' * 2000
+    chat_run.messages["42"]["vacancy"] = dict(title='"' * 200, company='"' * 200)
+    asyncio.run(chat_run.run())
+    text, markup = chat_run.notifications[0]
+    assert "тест &lt;Python&gt; &amp; SQL" in text and "<Python>" not in text
+    assert len(text) <= 4096
+    assert all("callback_data" not in button for row in markup["inline_keyboard"] for button in row)
+
+
+def test_chat_existing_freshness_read_is_journalled_without_extra_navigation(chat_run, monkeypatch):
+    from chat_observation import active_chat_journal
+    calls = []
+    async def read(page, chat_id, **kwargs):
+        calls.append(chat_id)
+        return dict(messages=[dict(id="1", text="Old question?" if len(calls) == 1 else "New question?",
+                                   is_ai=True, is_me=False)], vacancy={})
+    monkeypatch.setattr(cr, "get_messages", native_get_messages)
+    monkeypatch.setattr(cr, "_chat_get_messages", read)
+    monkeypatch.setattr(cr, "generate_answer", AsyncMock(return_value="Synthetic answer"))
+    result = asyncio.run(chat_run.run())
+    assert result["answers_sent"] == 0 and calls == ["42", "42"]
+    snapshots = [event for event in chat_run.events() if event["event"] == "chat_thread_snapshot"]
+    assert [event["messages"][0]["text"] for event in snapshots] == ["Old question?", "New question?"]
+    decision = [event for event in chat_run.events() if event["event"] == "chat_decision"][0]
+    assert decision["reason"] == "stale_question" and decision["snapshot_ref"] == snapshots[-1]["snapshot_id"]
+    assert active_chat_journal.get() is None
+    chat_run.send.assert_not_awaited()

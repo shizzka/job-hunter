@@ -5,11 +5,15 @@ import hashlib
 import json
 import os
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 
 from state_store.json_store import file_lock, atomic_write_bytes, atomic_write_text
 from state_store.protected import ProtectedJsonStore
+
+
+active_chat_journal = ContextVar("active_chat_journal", default=None)
 
 
 def private_directory(path):
@@ -25,6 +29,7 @@ class ChatJournal:
         self.path = self.home / "chat_journal.jsonl"
         self.profile = profile
         self.run_id = uuid.uuid4().hex
+        self.latest_threads = {}
 
     def write(self, event, **fields):
         snapshot_id = uuid.uuid4().hex
@@ -54,7 +59,8 @@ class ChatJournal:
             messages.append({
                 "id": str(msg.get("id") or ""), "dom_index": msg.get("dom_index", index),
                 "text": msg.get("text") or "", "raw_text": msg.get("raw_text", msg.get("text") or ""),
-                "author": msg.get("author") or "", "avatar_alt": msg.get("avatar_alt") or "",
+                "author": msg.get("raw_author", msg.get("author") or ""),
+                "avatar_alt": msg.get("avatar_alt") or "",
                 "direction": "outgoing" if msg.get("is_me") else "incoming",
                 "is_me": bool(msg.get("is_me")), "is_ai": bool(msg.get("is_ai")),
                 "is_ai_suspect": bool(msg.get("is_ai_suspect")),
@@ -63,8 +69,11 @@ class ChatJournal:
                 "links": msg.get("links") or [], "controls": msg.get("controls") or [],
                 "time": msg.get("time") or "",
             })
-        return self.write("chat_thread_snapshot", chat_id=chat_id,
-                          vacancy=data.get("vacancy") or {}, history_complete=False, messages=messages)
+        ref = self.write("chat_thread_snapshot", chat_id=chat_id,
+                         vacancy=data.get("vacancy") or {}, history_complete=False, messages=messages,
+                         controls=data.get("thread_controls") or [])
+        self.latest_threads[chat_id] = ref
+        return ref
 
 
 def select_chat_batch(home, chats, limit):

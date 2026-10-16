@@ -37,7 +37,7 @@ import time
 from typing import Any
 
 import config
-from chat_observation import ChatJournal, diagnostic_snapshot, select_chat_batch
+from chat_observation import ChatJournal, active_chat_journal, diagnostic_snapshot, select_chat_batch
 from chat_triage import decide_chat, external_invitation, question_reason
 from hh.ui import HHUnexpectedUI
 from llm_client import get_llm_client
@@ -213,7 +213,7 @@ async def _extract_messages(page) -> dict[str, Any]:
 
 async def get_messages(page, chat_id: str) -> dict[str, Any]:
     """Открыть chat прямой URL, вернуть messages+vacancy."""
-    return await _chat_get_messages(
+    data = await _chat_get_messages(
         page,
         chat_id,
         chatik_root=CHATIK_ROOT,
@@ -221,6 +221,10 @@ async def get_messages(page, chat_id: str) -> dict[str, Any]:
         open_page=_open_chatik_page,
         extract_current_messages=_extract_messages,
     )
+    journal = active_chat_journal.get()
+    if journal is not None:
+        data["_journal_snapshot_id"] = journal.thread(str(chat_id), data)
+    return data
 
 
 async def get_messages_safe(
@@ -1314,6 +1318,7 @@ async def process_all(
     decided_chat_ids = set()
 
     def record_decision(chat_id, message_id, decision, reason, snapshot_ref):
+        snapshot_ref = journal.latest_threads.get(chat_id, snapshot_ref)
         journal.write("chat_decision", chat_id=chat_id, message_id=message_id,
                       decision=decision, reason=reason, snapshot_ref=snapshot_ref)
         decided_chat_ids.add(chat_id)
@@ -1350,6 +1355,7 @@ async def process_all(
         notifier = None
     diagnostic_budget = max(0, int(os.environ.get("HH_CHAT_DIAGNOSTIC_SNAPSHOTS", "0")))
 
+    journal_token = active_chat_journal.set(journal)
     try:
         for chat in scan_chats:
             chat_id = str(chat["chat_id"])
@@ -1367,7 +1373,7 @@ async def process_all(
                     summary["read_failures"] += 1
                     continue
                 msgs = data.get("messages", [])
-                snapshot_ref = journal.thread(chat_id, data)
+                snapshot_ref = data.get("_journal_snapshot_id") or journal.thread(chat_id, data)
                 import hiring_research
                 hiring_research.record_screening(data.get("vacancy") or {}, msgs)
                 vac = dict(data.get("vacancy", {}) or {})
@@ -1499,6 +1505,7 @@ async def process_all(
                 record_decision(chat_id, message_id, decision, reason, snapshot_ref)
 
     finally:
+        active_chat_journal.reset(journal_token)
         for chat in scan_chats:
             chat_id = str(chat["chat_id"])
             if chat_id not in decided_chat_ids:

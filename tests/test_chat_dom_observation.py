@@ -60,7 +60,8 @@ def test_chat_dom_messages_capture_evidence_controls_links_and_full_text():
         <div data-qa="chatik-chat-message-2"><div class="chat-bubble_outgoing">
           <div data-qa="chatik-chat-message-2-text">Synthetic answer</div></div></div>
         <div data-qa="chatik-chat-message-3"><div data-qa="chat-bubble-author-name">ИИ-помощник</div>
-          <div data-qa="chatik-chat-message-3-text">Работодатель хотел бы узнать: опыт?</div></div>''')
+          <div data-qa="chatik-chat-message-3-text">Работодатель хотел бы узнать: опыт?</div></div>
+        <button data-qa="synthetic-quick-reply">Связаться завтра</button>''')
         result = await extract_messages(page)
         first, ours, ai = result["messages"]
         assert result["history_complete"] is False
@@ -68,6 +69,7 @@ def test_chat_dom_messages_capture_evidence_controls_links_and_full_text():
         assert first["dom_index"] == 0 and ai["dom_index"] == 2
         assert first["author"] == "HR" and not first["is_me"] and not first["is_ai"]
         assert first["controls"] == ["Да", "Нет"]
+        assert result["thread_controls"] == ["Да", "Нет", "Связаться завтра"]
         assert first["links"][0]["href"] == "https://t.me/synthetic_bot"
         assert first["time"] == "2026-10-16T12:00:00Z"
         assert ours["is_me"] and ours["classification_evidence"] == ["outgoing_css_marker"]

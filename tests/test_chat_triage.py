@@ -39,9 +39,16 @@ def test_chat_telegram_invites_in_text_and_link_only_cards(url):
 
 
 @pytest.mark.parametrize("url", ["javascript:alert(1)", "https://t.me.evil.example/hello",
-    "https://hh.ru/vacancy/42", "https://forms.gle/synthetic", "https://example.org/about"])
+    "https://hh.ru/vacancy/42", "https://forms.gle/synthetic", "https://example.org/about", "not.me/synthetic"])
 def test_chat_not_every_link_is_an_external_invite(url):
     assert external_invitation(incoming(url, links=[{"href": url}])) == {}
+
+
+def test_chat_external_test_document_is_not_misclassified_as_google_form():
+    message = incoming("Пройдите тест по Python: https://docs.google.com/document/d/synthetic")
+    invite = external_invitation(message)
+    assert invite["kind"] == "тест по Python"
+    assert invite["urls"] == ["https://docs.google.com/document/d/synthetic"]
 
 
 def test_chat_missing_id_and_limits_fail_closed():
