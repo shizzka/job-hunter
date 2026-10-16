@@ -149,6 +149,22 @@ def classify_message_author(message: dict[str, Any]) -> dict[str, Any]:
         and looks_like_suspicious_screening_text(message.get("text") or "")
     )
     message["is_other"] = not is_ai and not is_me
+    # Evidence is observational; it must not broaden the existing AI whitelist.
+    evidence = []
+    if is_me:
+        evidence.extend(message.get("is_me_evidence") or ["outgoing_dom_flag"])
+    else:
+        if avatar_src in AI_ASSISTANT_AVATAR_URLS:
+            evidence.append("known_ai_avatar")
+        if looks_like_ai_label(message.get("avatar_alt") or ""):
+            evidence.append("ai_avatar_label")
+        if looks_like_ai_label(message.get("author") or ""):
+            evidence.append("ai_author_label")
+        if looks_like_ai_recruiter_text(message.get("text") or ""):
+            evidence.append("ai_text_pattern")
+        if message["is_ai_suspect"]:
+            evidence.append("screening_text_pattern")
+    message["classification_evidence"] = evidence
     return message
 
 __all__ = [

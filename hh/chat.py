@@ -26,6 +26,15 @@ CHATIK_CHAT_READY_SELECTOR = (
 )
 
 
+class ChatList(list):
+    """Rows in discovery order, with honest DOM traversal completeness."""
+
+    def __init__(self, rows=(), *, list_complete=False, stop_reason="unknown"):
+        super().__init__(rows)
+        self.list_complete = list_complete
+        self.stop_reason = stop_reason
+
+
 def normalize_sent_message_text(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").replace("\xa0", " ")).strip()
 
@@ -175,33 +184,50 @@ async def list_chats(
                 if (!idMatch) continue;
                 const id = idMatch[1];
                 if (seen.has(id)) continue;
-                const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
-                seen.set(id, {chat_id: id, preview: text.slice(0, 300)});
+                const raw_text = el.innerText || '';
+                const text = raw_text.replace(/\\s+/g, ' ').trim();
+                const unreadMarker = el.querySelector(
+                    '[data-qa*="unread"], [data-unread="true"], [aria-label*="непрочитан" i]'
+                );
+                const unread = el.getAttribute('data-unread') === 'true' || Boolean(unreadMarker);
+                seen.set(id, {chat_id: id, raw_text, preview: text.slice(0, 300),
+                    unread, unread_evidence: unread ? 'explicit_dom_marker' : ''});
             }
         };
 
-        collect();
+        let list_complete = false;
+        let stop_reason = 'no_scroll_container';
         if (scroller) {
             scroller.scrollTop = 0;
             await new Promise(r => setTimeout(r, 500));
             collect();
             let last = -1;
             let bottomPasses = 0;
+            stop_reason = 'step_limit';
             // Виртуальный список HH бывает длиннее десяти экранов. Идём до
             // устойчивого низа, чтобы вопросы не терялись между окнами.
             for (let i = 0; i < 60; i++) {
-                scroller.scrollTop += Math.max(320, Math.floor(scroller.clientHeight * 0.75));
+                scroller.scrollTop += Math.max(1, Math.floor(scroller.clientHeight * 0.75));
                 await new Promise(r => setTimeout(r, 250));
                 collect();
                 const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4;
                 bottomPasses = atBottom ? bottomPasses + 1 : 0;
-                if (scroller.scrollTop === last && bottomPasses >= 2) break;
+                if (scroller.scrollTop === last && bottomPasses >= 2) {
+                    list_complete = true;
+                    stop_reason = 'stable_bottom';
+                    break;
+                }
                 last = scroller.scrollTop;
             }
+        } else {
+            collect();
         }
-        return [...seen.values()];
+        return {chats: [...seen.values()], list_complete, stop_reason};
     }""")
-    return chats
+    if isinstance(chats, list):  # Compatibility with callers supplying synthetic rows.
+        return ChatList(chats)
+    return ChatList(chats["chats"], list_complete=chats["list_complete"],
+                    stop_reason=chats["stop_reason"])
 
 
 async def extract_messages(
@@ -224,6 +250,7 @@ async def extract_messages(
             const textEl = b.querySelector('[data-qa$="-text"]')
                        || b.querySelector('[data-qa="chatik-chat-message-' + mid + '-text"]');
             const text = textEl ? (textEl.innerText || '').trim() : '';
+            const raw_text = b.innerText || '';
             // author label inside the bubble
             const authorEl = b.querySelector('[data-qa="chat-bubble-author-name"]');
             const author = authorEl ? authorEl.innerText.trim() : '';
@@ -246,13 +273,21 @@ async def extract_messages(
                 href: a.href || '',
                 text: (a.innerText || '').trim(),
             }));
+            const controls = [...b.querySelectorAll('button, [role="button"]')]
+                .map(el => (el.innerText || el.getAttribute('aria-label') || '').trim()).filter(Boolean);
+            const timeEl = b.querySelector('time, [data-qa$="-time"]');
             out.push({
                 id: mid,
+                dom_index: out.length,
                 text,
+                raw_text,
                 author,
                 avatar_alt: avatarAlt,
                 avatar_src: avatarSrc,
                 links,
+                controls,
+                time: timeEl ? (timeEl.getAttribute('datetime') || timeEl.innerText || '') : '',
+                is_me_evidence: is_me ? ['outgoing_css_marker'] : [],
                 is_ai: false,
                 is_me,
                 is_other: !is_me,
@@ -267,7 +302,7 @@ async def extract_messages(
             url: vacancyLink ? vacancyLink.href : '',
             company: headerCompany.trim(),
         };
-        return {messages: out, vacancy};
+        return {messages: out, vacancy, history_complete: false};
     }""")
     for message in data.get("messages", []):
         classify_author(message)
