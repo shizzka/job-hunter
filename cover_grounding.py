@@ -4,9 +4,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, replace
 from decimal import Decimal
+from difflib import SequenceMatcher
 
 from llm_utils import parse_llm_json
 
@@ -39,6 +41,55 @@ NEUTRAL_SENTENCES = (
 
 def _normalize(value: str) -> str:
     return re.sub(r"\s+", " ", value.translate(_TYPOGRAPHY)).strip().casefold()
+
+
+def _quote_min_similarity(value) -> float:
+    """Invalid thresholds disable approximate matching (including NaN/inf)."""
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return threshold if 0 <= threshold <= 1 else 1.0
+
+
+_MIN_NEAR_QUOTE_WORDS = 8
+_NEGATIONS = {"не", "нет", "ни", "без", "никогда", "no", "not", "never", "without"}
+
+
+def _near_quote_fragment(quote: str, source: str) -> tuple[str, float]:
+    """Best continuous normalized source window, with 80-120% as many tokens.
+
+    Whitespace tokens retain punctuation (C++ and C# remain distinct). SequenceMatcher
+    counts ordered exact token matches, with autojunk disabled for determinism on
+    repeated words. This measures copying fidelity, not semantic entailment.
+    """
+    quote_tokens = quote.split()
+    # Punctuation/list markers do not count towards the short-quote safeguard.
+    if sum(bool(re.search(r"\w", token)) for token in quote_tokens) < _MIN_NEAR_QUOTE_WORDS:
+        return "", 0.0
+    spans = list(re.finditer(r"\S+", source))
+    source_tokens = [span.group() for span in spans]
+    size = len(quote_tokens)
+    minimum = (4 * size + 4) // 5  # ceil(0.8 * size)
+    maximum = min(len(spans), 6 * size // 5)
+    best_score, best_start, best_size = 0.0, 0, 0
+    for start in range(len(spans) - minimum + 1):
+        for length in range(minimum, min(maximum, len(spans) - start) + 1):
+            matcher = SequenceMatcher(None, quote_tokens, source_tokens[start:start + length], autojunk=False)
+            if matcher.real_quick_ratio() <= best_score or matcher.quick_ratio() <= best_score:
+                continue
+            score = matcher.ratio()
+            if score > best_score:
+                best_score, best_start, best_size = score, start, length
+    if not best_size:
+        return "", best_score
+    fragment = source[spans[best_start].start():spans[best_start + best_size - 1].end()]
+    # A high lexical score must not erase or introduce an explicit negation.
+    def negations(text):
+        return sorted(word for word in re.findall(r"\w+", text) if word in _NEGATIONS)
+    if negations(quote) != negations(fragment):
+        return "", best_score
+    return fragment, best_score
 
 
 def split_sentences(text: str) -> list[str]:
@@ -142,9 +193,11 @@ constraints. Удали неподтвержденные детали из rejec
                  ensure_ascii=False)
 
 
-def validate_check(payload: dict, sentences: list[str], sources: dict[str, str]) -> GroundingResult:
-    """Require full coverage and literal evidence from this request's snapshot."""
-    result = _validate_check(payload, sentences, sources)
+def validate_check(payload: dict, sentences: list[str], sources: dict[str, str], *,
+                   quote_min_similarity: float = 1.0) -> GroundingResult:
+    """Require full coverage; callers must explicitly opt into near-literal quotes."""
+    result = _validate_check(payload, sentences, sources,
+                             quote_min_similarity=_quote_min_similarity(quote_min_similarity))
     if result.ok:
         return result
     rows = payload.get("sentences", []) if isinstance(payload, dict) else []
@@ -154,7 +207,8 @@ def validate_check(payload: dict, sentences: list[str], sources: dict[str, str])
     return replace(result, rejected_sentences=rejected or tuple(sentences))
 
 
-def _validate_check(payload: dict, sentences: list[str], sources: dict[str, str]) -> GroundingResult:
+def _validate_check(payload: dict, sentences: list[str], sources: dict[str, str], *,
+                    quote_min_similarity: float = 1.0) -> GroundingResult:
     if not isinstance(payload, dict) or payload.get("verdict") != "supported":
         return GroundingResult(False, "unsupported_claims")
     rows = payload.get("sentences")
@@ -184,17 +238,32 @@ def _validate_check(payload: dict, sentences: list[str], sources: dict[str, str]
             if not isinstance(source, str) or not isinstance(quote, str):
                 return GroundingResult(False, "invalid_evidence")
             normalized = _normalize(quote)
-            if len(normalized) < 3 or source not in sources or normalized not in _normalize(sources[source]):
+            fragment = ""
+            similarity = 0.0
+            if len(normalized) >= 3 and source in sources:
+                normalized_source = _normalize(sources[source])
+                if normalized in normalized_source:
+                    fragment = normalized
+                elif quote_min_similarity < 1.0:
+                    fragment, similarity = _near_quote_fragment(normalized, normalized_source)
+                    if similarity < quote_min_similarity:
+                        fragment = ""
+            # Source names returned by a model may themselves contain PII.
+            safe_source = source if source in {
+                "resume", "profile_note", "facts", "knowledge", "salary", "contacts",
+            } else "unknown"
+            if not fragment:
                 reason = ("unknown_source" if source not in sources else
                           "quote_too_short" if len(normalized) < 3 else "nonliteral_quote")
-                # Source names returned by a model may themselves contain PII.
-                safe_source = source if source in {
-                    "resume", "profile_note", "facts", "knowledge", "salary", "contacts",
-                } else "unknown"
                 log.warning("Grounding evidence rejected: source=%s quote_chars=%d reason=%s",
                             safe_source, len(quote), reason)
                 return GroundingResult(False, "unknown_source" if source not in sources else "nonliteral_quote")
-            quotes.append(normalized)
+            if fragment != normalized:
+                log.info("Grounding near-literal evidence accepted: source=%s quote_chars=%d similarity=%.3f",
+                         safe_source, len(quote), similarity)
+            # Approximate model quotes cannot supply digits absent from the
+            # actual continuous source fragment selected above.
+            quotes.append(fragment)
         # Even an incorrectly optimistic verifier cannot approve invented digits.
         numbers = set(re.findall(r"\b\d+(?:[.,]\d+)?\b", sentences[index]))
         evidence_numbers = set(re.findall(r"\b\d+(?:[.,]\d+)?\b", " ".join(quotes)))
@@ -254,6 +323,7 @@ evidence=[] допустим только для предложения из
 neutral_sentences. Никакие другие фразы нельзя самостоятельно объявлять нейтральными.
 Только JSON, без пояснений."""
     calls = 0
+    quote_min_similarity = _quote_min_similarity(os.getenv("COVER_GROUNDING_QUOTE_MIN_SIMILARITY", "0.85"))
     max_attempts = max(1, min(max_attempts, 2))
     try:
         data = json.dumps({"sources": sources, "sentences": sentences,
@@ -276,7 +346,7 @@ neutral_sentences. Никакие другие фразы нельзя само�
                 response_format={"type": "json_object"},
             ), timeout=_grounding_timeout())
             payload = parse_llm_json(response.choices[0].message.content or "")
-            result = validate_check(payload, sentences, sources)
+            result = validate_check(payload, sentences, sources, quote_min_similarity=quote_min_similarity)
             if result.reason != "nonliteral_quote" or calls == max_attempts:
                 return replace(result, verifier_calls=calls)
             log.warning("Cover grounding: retrying full audit after nonliteral_quote")

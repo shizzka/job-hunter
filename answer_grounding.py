@@ -159,7 +159,7 @@ def validate_answer_check(payload, answers, sources):
             continue
         text = expected[index]['answer']
         result = validate_check({'verdict': 'supported', 'sentences': row.get('sentences')},
-                                split_sentences(text), sources)
+                                split_sentences(text), sources, quote_min_similarity=1.0)
         if result.ok:
             accepted.add(index)
     # A contradictory all-unsupported verdict cannot grant local approval.
