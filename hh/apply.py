@@ -4,6 +4,7 @@ import hashlib
 from urllib.parse import urlsplit
 
 from hh.response_path import is_response_path
+from hh import observation
 
 from state_store.native_apply import NativeApplyRepository, run_native_attempt
 import os
@@ -1296,6 +1297,14 @@ async def _apply_to_vacancy(
         dom_ready = bool(re.search(r"<body\b", page_html or "", flags=re.I))
     except Exception:
         dom_ready = False
+
+    # Reuse already-loaded markup. Observation never supplies readiness evidence.
+    try:
+        observation.snapshot(getattr(session, '_external_attempt', None), page_html if dom_ready else '',
+                             expected_vacancy_id, str(preferred_resume_id or '').strip(), 'before', trace=trace)
+    except Exception as exc:
+        observation.snapshot_error(getattr(session, '_external_attempt', None), 'before',
+                                   type(exc).__name__, trace=trace)
 
     if await session._page_closed_or_archived():
         trace_event(

@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from hh.recovery import AUTH_URL, _auth_cookies, _authenticated_server_html, _request_matches
 from hh.ui import CHALLENGE_TEXT, HHUIGuard
+from hh import observation
 
 log = logging.getLogger('hh_verification')
 
@@ -123,6 +124,8 @@ async def reconcile_post_submit(session, attempt, resume_id, letter, *, trace=No
     response = None
     step = 'reentry'
     read_number = 0
+    get_started = False
+    observed_reads = set()
     try:
         if getattr(attempt, '_hh_reconciliation_started', False):
             _diagnose(attempt, trace, step)
@@ -190,6 +193,7 @@ async def reconcile_post_submit(session, attempt, resume_id, letter, *, trace=No
                     _diagnose(attempt, trace, 'cookies_changed', read_number=read_number)
                     return
             step = 'vacancy_get'
+            get_started = True
             response = await request_context.get(url, max_redirects=0, timeout=15000,
                                                  headers={'Cache-Control': 'no-cache'})
             fresh()
@@ -201,6 +205,13 @@ async def reconcile_post_submit(session, attempt, resume_id, letter, *, trace=No
                 return
             step = 'vacancy_html'
             html = await response.text()
+            try:
+                observation.snapshot(attempt, html, proof['fields']['vacancy_id'], resume_id,
+                                     'after', trace=trace, read_number=read_number)
+            except Exception as exc:
+                observation.snapshot_error(attempt, 'after', type(exc).__name__, trace=trace,
+                                           read_number=read_number)
+            observed_reads.add(read_number)
             fresh()
             parser = _AppliedHTML()
             parser.feed(html)
@@ -252,15 +263,33 @@ async def reconcile_post_submit(session, attempt, resume_id, letter, *, trace=No
         # Verification failure preserves the original uncertain result.
         if not (isinstance(exc, RuntimeError) and str(exc) == 'HH reconciliation ownership changed'):
             _diagnose(attempt, trace, step, error_kind=type(exc).__name__, read_number=read_number)
+        if get_started and response is None and read_number not in observed_reads:
+            observation.snapshot_error(attempt, 'after', type(exc).__name__, trace=trace, read_number=read_number)
         return
     finally:
         if response is not None:
+            # On rejected responses the original verifier never reads HTML.
+            # Collect it only during teardown, after its decision is fixed.
+            if read_number not in observed_reads:
+                try:
+                    observation.snapshot(attempt, await response.text(), proof['fields']['vacancy_id'],
+                                         resume_id, 'after', trace=trace, read_number=read_number)
+                except Exception as exc:
+                    observation.snapshot_error(attempt, 'after', type(exc).__name__, trace=trace,
+                                               read_number=read_number)
             try:
                 await response.dispose()
             except Exception:
                 # A failed read lifecycle must not publish verification.
                 attempt._hh_verified_receipt = None
                 _diagnose(attempt, trace, 'response_dispose', read_number=read_number)
+        # This separate read cannot set a receipt, diagnostic, continuation or stop latch.
+        try:
+            await observation.finish_receipts(attempt)
+            if not get_started and step != 'reentry':
+                await observation.after_observation(session, attempt, resume_id, trace=trace)
+        except Exception as exc:
+            observation.snapshot_error(attempt, 'after_observation', type(exc).__name__, trace=trace)
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ import contextlib
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from email import policy
 from email.parser import Parser
@@ -18,6 +19,7 @@ from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlsplit
 
 from browser_action_boundary import RUNTIME, bootstrap_boundary
 from hh.response_path import RESPONSE_PATH, canonical_path, is_response_path
+from hh import observation
 from hh.ui import CHALLENGE_SELECTOR, CHALLENGE_TEXT, HHUIGuard, HHUnexpectedUI
 
 AUTH_URL = 'https://hh.ru/applicant/resumes'
@@ -453,7 +455,25 @@ def monitor_page(session, page):
                     for post in getattr(attempt, '_hh_application_posts', []):
                         if post['request'] is response.request:
                             post['status'] = response.status
+                            try:
+                                observation.schedule_receipt(attempt, post, response)
+                            except Exception as exc:
+                                observation.snapshot_error(attempt, 'post_receipt', type(exc).__name__)
         context.on('response', response_seen)
+        def request_finished(request):
+            # Network completion time, independent of asynchronous body decoding.
+            try:
+                for monitor in watch.pages.values():
+                    for attempt in monitor.attempts.values():
+                        for post in getattr(attempt, '_hh_application_posts', []):
+                            if post['request'] is request and post['owned'] and post.get('_receipt_scheduled'):
+                                post['_completed_monotonic'] = time.monotonic()
+                                observation.event(getattr(attempt, '_hh_reconciliation_trace', None),
+                                                  'HH_POST_COMPLETED',
+                                                  post_completed_monotonic=post['_completed_monotonic'])
+            except Exception as exc:
+                observation.snapshot_error(watch.last_attempt, 'post_receipt', type(exc).__name__)
+        context.on('requestfinished', request_finished)
         context.on('serviceworker', lambda worker: watch.mark_unknown(
             reason='service_worker_created', frame_kind='worker', event_url=_event_url(worker)))
     if watch.session is not session:
