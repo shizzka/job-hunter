@@ -10,7 +10,8 @@ import profile
 
 
 @pytest.fixture
-def letter_path(tmp_path):
+def letter_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
     return tmp_path / "cover_letter_fallback.md"
 
 
@@ -103,6 +104,7 @@ def test_named_profile_activation_selects_own_letter(tmp_path, monkeypatch, styl
         if key.isupper():
             monkeypatch.setattr(config, key, value)
     monkeypatch.delenv("JOB_HUNTER_HOME", raising=False)
+    monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
     monkeypatch.setattr(profile, "_profiles_root_home", str(tmp_path))
     monkeypatch.setattr(profile, "_active_profile", None)
     monkeypatch.setattr(profile, "_default_candidate_settings", None)
