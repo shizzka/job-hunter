@@ -38,7 +38,7 @@ def state(page=0, pages=1, *, archived=False):
         'applicantEmployerManagersActivity': [] if archived else [
             {'@managerHhid': 9, '@inactiveMinutes': 999},
             {'@managerHhid': '99', '@inactiveMinutes': '90', 'inactive_days': 1,
-             'trl_code': 2, 'name': 'PRIVATE RECRUITER'}],
+             'trl_code': 'online', 'name': 'PRIVATE RECRUITER'}],
         'applicantNegotiationsCounters': {'total': {'all': pages, 'archived': 0},
                                          'new': {'all': 0}, 'letter': 'PRIVATE LETTER'},
         'vacanciesShort': {'vacanciesList': [{
@@ -86,7 +86,7 @@ def test_parse_active_joins_and_public_vacancy_fields():
     row = result['records'][0]
     assert row['employer_politeness'] == {'allTopicCount': 30, 'readTopicPercent': 80,
                                          'replyTotalWorkingTimeDays': 2}
-    assert row['manager_activity'] == {'inactive_days': 1, 'inactiveMinutes': 90, 'trl_code': 2}
+    assert row['manager_activity'] == {'inactive_days': 1, 'inactiveMinutes': 90, 'trl_code': 'online'}
     assert {key: row[key] for key in ns.VACANCY_FIELDS} == {
         'vacancy_name': 'Synthetic vacancy', 'company_id': 8, 'company_name': 'Synthetic company',
         'company_trusted': True, 'company_accredited_it': True,
@@ -113,12 +113,27 @@ def test_manager_activity_requires_complete_bridge(missing):
 
 
 @pytest.mark.parametrize('value', ['PRIVATE NAME', {'@firstName': 'PRIVATE FIRST'}, True, None])
-def test_manager_activity_retains_only_numbers(value):
+def test_manager_activity_durations_retain_only_numbers(value):
     payload = state()
     payload['applicantEmployerManagersActivity'][-1].update(
-        inactive_days=value, **{'@inactiveMinutes': value, 'trl_code': value})
+        inactive_days=value, **{'@inactiveMinutes': value})
     row = ns.parse_page(html(payload))['records'][0]
-    assert row['manager_activity'] == dict.fromkeys(ns.MANAGER_FIELDS)
+    assert row['manager_activity'] == {
+        'inactive_days': None, 'inactiveMinutes': None, 'trl_code': 'online'}
+
+
+@pytest.mark.parametrize('code,expected', [
+    ('online', 'online'), ('offline', 'offline'), ('PRIVATE NAME', 'other'),
+    ({'name': 'PRIVATE NAME'}, None), (True, None), (2, None), (None, None),
+])
+def test_manager_activity_status_in_jsonl(tmp_path, monkeypatch, code, expected):
+    payload = state()
+    payload['applicantEmployerManagersActivity'][-1]['trl_code'] = code
+    collect, _, _ = transport(tmp_path, monkeypatch,
+        lambda req: httpx.Response(200, text=html(payload)))
+    assert collect()['complete']
+    assert rows(tmp_path)[0]['manager_activity'] == {
+        'inactive_days': 1, 'inactiveMinutes': 90, 'trl_code': expected}
 
 
 @pytest.mark.parametrize('last_state', ['DISCARD', 'RESPONSE', 'INTERVIEW'])

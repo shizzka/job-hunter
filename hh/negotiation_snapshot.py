@@ -43,6 +43,12 @@ def _scalar(value):
     return value if type(value) in (str, int, float, bool) else None
 
 
+def _activity_code(value):
+    if not isinstance(value, str):
+        return None
+    return value if value in ('online', 'offline') else 'other'
+
+
 def _pick(value, fields):
     value = _object(value)
     return {key: _scalar(value.get(key)) for key in fields}
@@ -94,7 +100,7 @@ def parse_page(html, *, expected_filter='active'):
             row['manager_activity'] = ({
                 'inactive_days': _number(manager.get('inactive_days')),
                 'inactiveMinutes': _number(manager.get('@inactiveMinutes')),
-                'trl_code': _number(manager.get('trl_code')),
+                'trl_code': _activity_code(manager.get('trl_code')),
             } if manager is not None else None)
             vacancy = _object(vacancies.get(str(topic.get('vacancyId'))))
             company = _object(vacancy.get('company'))
