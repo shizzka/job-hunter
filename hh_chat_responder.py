@@ -42,6 +42,7 @@ from typing import Any
 import config
 from chat_observation import ChatJournal, active_chat_journal, diagnostic_snapshot, select_chat_batch
 from chat_triage import decide_chat, external_invitation, question_reason
+from cover_grounding import _quote_min_similarity
 from hh.ui import HHUnexpectedUI
 from hh.negotiation_links import chat_link
 from llm_client import get_llm_client
@@ -313,6 +314,7 @@ async def generate_answer(
     question_kind: str = "AI-помощника",
     alternative: bool = False,
     diagnostics: dict | None = None,
+    quote_min_similarity: float = 1.0,
 ) -> str | None:
     """Сгенерировать ответ на вопрос AI-помощника или approved suspicious HR message."""
     diagnostics = diagnostics if diagnostics is not None else {}
@@ -343,7 +345,7 @@ async def generate_answer(
     if deterministic_answer:
         supported = await verify_answers([{'index': 0, 'question': question, 'answer': deterministic_answer}],
                                          snapshot.sources, client, model, constraints=snapshot.fact_constraints,
-                                         diagnostics=diagnostics)
+                                         diagnostics=diagnostics, quote_min_similarity=quote_min_similarity)
         return deterministic_answer if 0 in supported else None
     # 2-pass: фильтруем KB под вакансию (используем title+company как контекст)
     vacancy_summary = f"Должность: {vacancy.get('title','')}\nКомпания: {vacancy.get('company','')}\n"
@@ -447,7 +449,7 @@ async def generate_answer(
         return None
     supported = await verify_answers([{'index': 0, 'question': question, 'answer': answer}],
                                      snapshot.sources, client, model, constraints=snapshot.fact_constraints,
-                                     diagnostics=diagnostics)
+                                     diagnostics=diagnostics, quote_min_similarity=quote_min_similarity)
     return answer if 0 in supported else None
 
 
@@ -1138,11 +1140,14 @@ async def _execute_reply(
     repository, page, chat_id, target, messages, vacancy, resume_text, paths,
     *, dry_run, max_replies=None, repeat_preview=False, answer_kwargs=None, notify=None,
     draft_revision="", require_draft=False, notify_preflight=None,
+    quote_min_similarity=1.0,
 ) -> dict:
     """Claim before model/browser waits; persist only the owning chat's result."""
     chat_id, target_id = str(chat_id), str(target.get("id") or "")
     target_revision = _message_revision(target)
     kind = "preview" if dry_run else "reply"
+    # New replies without a stored human-approved draft must always be strict.
+    quote_min_similarity = _quote_min_similarity(quote_min_similarity) if dry_run else 1.0
     candidate_revision = _candidate_revision()
     source_revision = _revision_hash([target_revision, messages, vacancy])
     draft = repository.load().get(chat_id, {}).get("draft")
@@ -1167,9 +1172,13 @@ async def _execute_reply(
             draft = repository.load().get(chat_id, {}).get("draft")
             if not matching_draft(draft):
                 return {"ok": False, "reason": "stale_draft", "stale": True, "chat_id": chat_id}
+            # Reuse the already grounded, approved text. Revision/source/profile
+            # checks below replace regeneration/re-audit; do not apply today's
+            # threshold to a draft prepared under a different threshold.
             answer = draft["answer"]
         else:
             answer = await generate_answer(messages, vacancy, resume_text, diagnostics=diagnostics,
+                                           quote_min_similarity=quote_min_similarity,
                                            **copy.deepcopy(answer_kwargs or {}))
         if not answer:
             return {"ok": False, "reason": diagnostics.get('reason', 'empty_answer'),
@@ -1194,7 +1203,7 @@ async def _execute_reply(
                 chat["last_previewed_at"] = time.time()
             draft = {"message_id": target_id, "answer": answer, "answer_hash": hashlib.sha256(answer.encode()).hexdigest(),
                      "revision": uuid.uuid4().hex[:12], "candidate_revision": candidate_revision,
-                     "source_revision": source_revision}
+                     "source_revision": source_revision, "quote_min_similarity": quote_min_similarity}
             repository.set_draft(chat_id, owner, draft)
             detail["draft_revision"] = draft["revision"]
             # Reserve delivery before await. Uncertain notifications are not replayed.
@@ -1337,6 +1346,10 @@ async def process_one(
         repeat_preview=True, notify=notify_result if notify else None,
         notify_preflight=prepare_notification if notify else None,
         draft_revision=draft_revision, require_draft=bool(separator),
+        # Only this preview flow exposes Send / Another variant for approval.
+        # The automatic scan keeps the default strict policy, even in dry-run.
+        quote_min_similarity=_quote_min_similarity(os.getenv("CHAT_DRAFT_QUOTE_MIN_SIMILARITY", "0.85"))
+        if dry_run else 1.0,
         answer_kwargs={
             "question_message": target if (is_approved_suspicious or is_manual_any) else None,
             "question_kind": (

@@ -209,6 +209,35 @@ def test_local_citation_guards_reject_optimistic_verifier(failure):
     assert validate_answer_check(payload, [{'index': 0, 'answer': answer}], sources) == set()
 
 
+@pytest.mark.parametrize('source,quote', [
+    ('Базовая планка: 80000 ₽ на руки', 'Базовая планка: 80000 рублей на руки'),
+    ('Я не рассматриваю полную занятость в офисе и предпочитаю удалённую работу.',
+     'Я рассматриваю полную занятость в офисе и предпочитаю удалённую работу.'),
+    ('Проверяю REST API в Postman и составляю подробные отчеты о найденных ошибках.',
+     'Разрабатываю облачные сервисы в Postman и составляю подробные отчеты о найденных ошибках.'),
+])
+def test_explicit_near_answer_threshold_preserves_short_negation_and_similarity_guards(source, quote):
+    from answer_grounding import validate_answer_check
+    diagnostics = {}
+    assert validate_answer_check(evidence(source, quote), [{'index': 0, 'answer': source}],
+                                 {'resume': source}, quote_min_similarity=0.85,
+                                 diagnostics=diagnostics) == set()
+    assert diagnostics['reason'] == 'nonliteral_quote'
+
+
+def test_hh_application_answer_stays_strict_with_relaxed_chat_draft_setting(monkeypatch):
+    monkeypatch.setenv('CHAT_DRAFT_QUOTE_MIN_SIMILARITY', '0.85')
+    source = ('Базовая планка: 80000 ₽ на руки при полной занятости; '
+              'конечные ожидания зависят от загрузки и задач.')
+    answer = 'Рассматриваю 80000 ₽ на руки.'
+    client = ScriptedResponses(({'status': 'answer', 'answer': answer}, 'stop'),
+                               (evidence(answer, source.replace('₽', 'рублей')), 'stop'))
+    assert asyncio.run(forms.answer_question_with_llm(
+        {'question_text': 'What salary level are you considering?', 'input_type': 'textarea'},
+        source, **question_dependencies(client))) is None
+    assert len(client.calls) == 2
+
+
 def test_verifier_captures_sources_and_models_before_await():
     from answer_grounding import verify_answers
     answer = 'У меня 2 года опыта SQL.'

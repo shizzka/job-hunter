@@ -12,6 +12,11 @@ from runtime_context import ChatResponderLimits, RuntimePaths
 
 REAL_GENERATE_ANSWER = cr.generate_answer
 
+SALARY_SOURCE = ('Базовая планка: 80000 ₽ на руки при полной занятости; '
+                 'конечные ожидания зависят от загрузки и задач.')
+SALARY_QUOTE = SALARY_SOURCE.replace('₽', 'рублей')
+SALARY_ANSWER = 'Рассматриваю 80000 ₽ на руки.'
+
 
 @pytest.fixture
 def workflow(tmp_path, monkeypatch):
@@ -72,6 +77,110 @@ def workflow(tmp_path, monkeypatch):
 
 def attempt_status(workflow):
     return next(iter(workflow.repo.load()["chat"]["attempts"].values()))["status"]
+
+
+@pytest.fixture
+def salary_workflow(workflow, monkeypatch):
+    import prompt_blocks
+    from tests.test_answer_grounding_regressions import ScriptedResponses, evidence
+
+    monkeypatch.delenv('CHAT_DRAFT_QUOTE_MIN_SIMILARITY', raising=False)
+    # Preview must require approval even when automatic sending is enabled.
+    monkeypatch.setattr(cr.config, 'HH_CHAT_AUTOSEND', True)
+    for name in ('build_profile_note_block', 'build_facts_block', 'build_knowledge_base_block'):
+        monkeypatch.setattr(prompt_blocks, name, lambda *a, **k: '')
+    monkeypatch.setattr(prompt_blocks, 'get_candidate_contacts', lambda: {})
+    # 90000 elsewhere in the source must not certify the matched salary fragment.
+    monkeypatch.setattr(prompt_blocks, 'build_salary_rule_block', lambda:
+                        SALARY_SOURCE + ' Посторонний раздел.' * 20 + ' Пример суммы вакансии: 90000 ₽.')
+    monkeypatch.setattr(cr, 'generate_answer', REAL_GENERATE_ANSWER)
+    workflow.data['messages'][-1]['text'] = 'What salary level are you considering for this position?'
+
+    def model_for(answer=SALARY_ANSWER, quote=SALARY_QUOTE):
+        model = ScriptedResponses(({'status': 'answer', 'answer': answer}, 'stop'),
+                                  (evidence(answer, quote, source='salary'), 'stop'))
+        monkeypatch.setattr(cr, '_get_llm_client', lambda: model)
+        return model
+    workflow.model_for = model_for
+    return workflow
+
+
+@pytest.mark.parametrize('kind', ['ai', 'hr_question', 'suspicious'])
+def test_human_chat_salary_preview_accepts_near_quote_and_sends_saved_revision(
+        salary_workflow, monkeypatch, kind):
+    w = salary_workflow
+    w.data['messages'][-1].update(is_ai=kind == 'ai', is_ai_suspect=kind == 'suspicious')
+    model = w.model_for()
+    options = dict(allow_any=kind == 'hr_question', allow_suspicious=kind == 'suspicious')
+
+    async def run():
+        preview = await cr.process_one(w.client, 'chat', message_id='m1', dry_run=True,
+                                       runtime_paths=w.paths, **options)
+        assert preview['ok'] and not preview['sent']
+        assert 'click' not in w.calls
+        draft = w.repo.load()['chat']['draft']
+        assert draft['answer'] == SALARY_ANSWER
+        assert draft['quote_min_similarity'] == 0.85
+        assert len(model.calls) == 2
+        # Approval survives config changes: send reuses the exact grounded text,
+        # without another generation or a stricter factual audit.
+        monkeypatch.setenv('CHAT_DRAFT_QUOTE_MIN_SIMILARITY', '1.0')
+        sent = await cr.process_one(w.client, 'chat',
+                                   message_id='m1~' + preview['draft_revision'], dry_run=False,
+                                   runtime_paths=w.paths, **options)
+        assert sent['ok'] and sent['sent'] and sent['answer'] == draft['answer']
+        assert len(model.calls) == 2
+
+    asyncio.run(run())
+    assert w.calls.count('click') == 1
+
+
+@pytest.mark.parametrize('quote', [SALARY_QUOTE, SALARY_QUOTE.replace('80000', '90000')])
+def test_human_chat_salary_draft_rejects_number_outside_real_fragment(salary_workflow, quote):
+    w = salary_workflow
+    w.model_for(answer=SALARY_ANSWER.replace('80000', '90000'), quote=quote)
+    result = asyncio.run(w.run(dry_run=True))
+    assert not result['ok'] and result['reason'] == 'number_mismatch'
+    assert w.repo.load()['chat']['draft'] is None
+    assert 'preview' not in w.calls and 'click' not in w.calls
+
+
+@pytest.mark.parametrize('dry_run', [False, True])
+def test_automatic_ai_chat_salary_keeps_strict_grounding(salary_workflow, monkeypatch, dry_run):
+    w = salary_workflow
+    # Even the loosest draft setting must not affect the automatic scan.
+    monkeypatch.setenv('CHAT_DRAFT_QUOTE_MIN_SIMILARITY', '0')
+    model = w.model_for()
+    result = asyncio.run(w.run_all(dry_run=dry_run))
+    assert result['answers_drafted'] == result['answers_sent'] == 0
+    assert len(model.calls) == 2
+    assert 'preview' not in w.calls and 'click' not in w.calls
+
+
+def test_direct_chat_send_without_saved_draft_keeps_strict_grounding(salary_workflow):
+    w = salary_workflow
+    w.model_for()
+    result = asyncio.run(w.run(dry_run=False))
+    assert not result['ok'] and result['reason'] == 'nonliteral_quote'
+    assert 'click' not in w.calls
+
+
+@pytest.mark.parametrize('threshold', ['1.0', 'invalid', 'nan', 'inf', '-1', '2', ''])
+def test_strict_or_invalid_chat_draft_threshold_rejects_near_quote(salary_workflow, monkeypatch, threshold):
+    w = salary_workflow
+    monkeypatch.setenv('CHAT_DRAFT_QUOTE_MIN_SIMILARITY', threshold)
+    w.model_for()
+    result = asyncio.run(w.run(dry_run=True))
+    assert not result['ok'] and result['reason'] == 'nonliteral_quote'
+    assert 'preview' not in w.calls and 'click' not in w.calls
+
+
+def test_strict_chat_draft_threshold_accepts_literal_salary_quote(salary_workflow, monkeypatch):
+    w = salary_workflow
+    monkeypatch.setenv('CHAT_DRAFT_QUOTE_MIN_SIMILARITY', '1.0')
+    w.model_for(quote=SALARY_SOURCE)
+    assert asyncio.run(w.run(dry_run=True))['ok']
+    assert w.repo.load()['chat']['draft']['quote_min_similarity'] == 1.0
 
 
 def test_process_one_preserves_concurrent_other_chat(workflow, monkeypatch):

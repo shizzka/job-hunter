@@ -136,8 +136,8 @@ def candidate_operation(operation=None, *, client_factory=None):
     return wrapped
 
 
-def validate_answer_check(payload, answers, sources, *, diagnostics=None):
-    """Full index/sentence coverage and literal current-source evidence required."""
+def validate_answer_check(payload, answers, sources, *, diagnostics=None, quote_min_similarity=1.0):
+    """Full coverage; near-literal evidence requires an explicit caller opt-in."""
     if diagnostics is not None:
         diagnostics['reason'] = 'invalid_grounding_check'
     if (not isinstance(payload, dict) or not isinstance(payload.get('verdict'), str)
@@ -163,7 +163,7 @@ def validate_answer_check(payload, answers, sources, *, diagnostics=None):
             continue
         text = expected[index]['answer']
         result = validate_check({'verdict': 'supported', 'sentences': row.get('sentences')},
-                                split_sentences(text), sources, quote_min_similarity=1.0)
+                                split_sentences(text), sources, quote_min_similarity=quote_min_similarity)
         if result.ok:
             accepted.add(index)
         elif diagnostics is not None:
@@ -177,7 +177,8 @@ def validate_answer_check(payload, answers, sources, *, diagnostics=None):
     return accepted if payload['verdict'] != 'unsupported' else set()
 
 
-async def verify_answers(answers, sources, client, model, *, constraints='', diagnostics=None):
+async def verify_answers(answers, sources, client, model, *, constraints='', diagnostics=None,
+                         quote_min_similarity=1.0):
     """Model-assisted semantic entailment, plus deterministic citation guards.
 
     Questions/options provide meaning, never evidence. Missing experience is
@@ -236,7 +237,8 @@ Constraints — запреты кандидата, НЕ источник цит�
         return set()
     try:
         payload = parse_llm_json(choice.message.content or '')
-        return validate_answer_check(payload, answers, sources, diagnostics=diagnostics)
+        return validate_answer_check(payload, answers, sources, diagnostics=diagnostics,
+                                     quote_min_similarity=quote_min_similarity)
     except Exception:
         if diagnostics is not None:
             diagnostics['reason'] = 'invalid_grounding_check'
