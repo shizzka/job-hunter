@@ -120,7 +120,13 @@ async def response_navigation(session, target_url):
                 raise ValueError('Response redirect limit exceeded')
             if response.status != 200 or headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'text/html':
                 raise ValueError('Unknown response document')
-            body = inert_details_html(await response.text())
+            html = await response.text()
+            # Reuse this existing GET before artifact sanitization. No selected
+            # control or application permission is inferred from this map.
+            with contextlib.suppress(Exception):
+                from hh.delivery import capture_resume_hashes
+                capture_resume_hashes(getattr(session, '_external_attempt', None), html, vacancy_id)
+            body = inert_details_html(html)
             fresh()
             old = headers.get('content-security-policy', '')
             headers['content-security-policy'] = (old + ', ' if old else '') + RESPONSE_CSP

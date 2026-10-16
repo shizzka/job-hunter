@@ -53,24 +53,53 @@ def _number(value):
     return None
 
 
+def initial_state(html):
+    parser = _InitialState()
+    parser.feed(html)
+    parser.close()
+    if not parser.found:
+        raise ValueError('template_missing')
+    if not parser.closed:
+        raise ValueError('template_unclosed')
+    raw = ''.join(parser.parts)
+    try:
+        return json.loads(raw)
+    except ValueError:
+        try:
+            return json.loads(unescape(raw))
+        except ValueError:
+            raise ValueError('invalid_json') from None
+
+
+def resume_hashes(state, vacancy_id):
+    """Only explicit numeric identity plus hash; usedResumeIds has no hash."""
+    containers = [state.get('resumes', {})]
+    status = state.get('applicantVacancyResponseStatuses', {}).get(str(vacancy_id), {})
+    containers.append(status.get('resumes', {}))
+    hashes = {}
+    for container in containers:
+        items = container.items() if isinstance(container, dict) else enumerate(container) if isinstance(container, list) else []
+        for key, value in items:
+            if not isinstance(value, dict) or not isinstance(value.get('hash'), str) or not value['hash']:
+                continue
+            identity = _number(value.get('id'))
+            if identity is None and isinstance(container, dict):
+                identity = _number(key)
+            if identity is not None:
+                key = str(identity)
+                if key in hashes and hashes[key] != value['hash']:
+                    raise ValueError('resume_identity_conflict')
+                hashes[key] = value['hash']
+    return hashes
+
+
 def negotiations_from_html(html, vacancy_id):
     """Return an explicit absence; hashes are for in-memory comparison only."""
     try:
-        parser = _InitialState()
-        parser.feed(html)
-        parser.close()
-        if not parser.found:
-            return {'found': False, 'reason': 'template_missing'}
-        if not parser.closed:
-            return {'found': False, 'reason': 'template_unclosed'}
         try:
-            raw = ''.join(parser.parts)
-            try:
-                state = json.loads(raw)
-            except ValueError:
-                state = json.loads(unescape(raw))
-        except (ValueError, TypeError):
-            return {'found': False, 'reason': 'invalid_json'}
+            state = initial_state(html)
+        except ValueError as exc:
+            return {'found': False, 'reason': str(exc)}
         statuses = state.get('applicantVacancyResponseStatuses', {})
         if not isinstance(statuses, dict) or str(vacancy_id) not in statuses:
             return {'found': False, 'reason': 'vacancy_missing'}
@@ -93,9 +122,7 @@ def negotiations_from_html(html, vacancy_id):
             topic.update({key: item.get(key) if type(item.get(key)) is bool else None
                           for key in ('archived', 'discarded', 'hasResponseLetter')})
             topics.append(topic)
-        resumes = state.get('resumes', {})
-        hashes = {str(_number(key)): value['hash'] for key, value in resumes.items()
-                  if _number(key) is not None and isinstance(value, dict) and isinstance(value.get('hash'), str)}
+        hashes = resume_hashes(state, vacancy_id)
         return {'found': True, 'total': _number(negotiations['total']), 'topicList': topics, 'resume_hashes': hashes}
     except Exception:
         return {'found': False, 'reason': 'invalid_state'}
@@ -115,16 +142,28 @@ def event(trace, stage, **fields):
 
 
 def snapshot_error(attempt, phase, error_kind, *, trace=None, read_number=None):
+    with contextlib.suppress(Exception):
+        from hh.delivery import record_snapshot_error
+        record_snapshot_error(attempt, phase, error_kind)
     event(trace if trace is not None else getattr(attempt, '_hh_reconciliation_trace', None),
           'HH_NEGOTIATIONS_SNAPSHOT', phase=phase, found=False, error_kind=error_kind,
-          read_number=read_number, read_completed_monotonic=time.monotonic())
+          read_number=read_number, read_completed_monotonic=time.monotonic(), read_wall_time=time.time())
 
 
-def snapshot(attempt, html, vacancy_id, resume_hash, phase, *, trace=None, read_number=None):
+def snapshot(attempt, html, vacancy_id, resume_hash, phase, *, trace=None, read_number=None,
+             response=None, target_url=None):
     try:
         trace = trace if trace is not None else getattr(attempt, '_hh_reconciliation_trace', None)
         read_time = time.monotonic()
+        wall_time = time.time()
         result = negotiations_from_html(html, vacancy_id)
+        from hh.delivery import record_snapshot
+        try:
+            record_snapshot(attempt, result, vacancy_id, phase, read_time, wall_time,
+                            response=response, html=html, target_url=target_url)
+        except Exception:
+            if attempt is not None:
+                attempt._hh_delivery_error = 'snapshot_exception'
         if phase == 'before':
             attempt._hh_negotiations_before = result
         before = getattr(attempt, '_hh_negotiations_before', {'found': False})
@@ -137,7 +176,8 @@ def snapshot(attempt, html, vacancy_id, resume_hash, phase, *, trace=None, read_
             for topic in result.get('topicList', [])]
         event(trace, 'HH_NEGOTIATIONS_SNAPSHOT', phase=phase, read_number=read_number,
               vacancy_id=_number(vacancy_id), found=result['found'], reason=result.get('reason'),
-              read_completed_monotonic=read_time, total=result.get('total'), topics=topics,
+              read_completed_monotonic=read_time, read_wall_time=wall_time,
+              total=result.get('total'), topics=topics,
               before_ids=before_ids, after_ids=after_ids if phase != 'before' else None,
               new_ids=new_ids if phase != 'before' else None,
               new_topics=[topic for topic in topics if new_ids is not None and topic['id'] in new_ids])
@@ -240,11 +280,16 @@ async def finish_receipts(attempt):
 
 async def after_observation(session, attempt, resume_hash, *, trace=None):
     """One inert GET in an isolated cookie jar; never publish verification."""
+    if getattr(attempt, '_hh_after_observation_started', False):
+        return
+    attempt._hh_after_observation_started = True
+    await isolated_observation(session, attempt, resume_hash, trace=trace, read_number=1)
+
+
+async def isolated_observation(session, attempt, resume_hash, *, trace=None, read_number):
+    """One inert GET; copy cookies, never mutate the browser or its stop flags."""
     response = isolated = None
     try:
-        if getattr(attempt, '_hh_after_observation_started', False):
-            return
-        attempt._hh_after_observation_started = True
         context, page = attempt.context, attempt.page
         binding = getattr(session, '_cookie_binding', None)
         def owned():
@@ -281,13 +326,21 @@ async def after_observation(session, attempt, resume_hash, *, trace=None):
         if not owned():
             snapshot_error(attempt, 'after_observation', 'ownership_changed', trace=trace)
             return
+        from hh.delivery import note_read
+        note_read(attempt)
         response = await isolated.get(url, max_redirects=0, max_retries=0, timeout=15000,
                                       headers={'Cache-Control': 'no-cache'})
-        # The response is solely diagnostic, including challenge/login responses.
-        snapshot(attempt, await response.text(), vacancy_id, resume_hash, 'after_observation',
-                 trace=trace, read_number=1)
+        if not owned():
+            snapshot_error(attempt, 'after_observation', 'ownership_changed', trace=trace)
+            return
+        html = await response.text()
+        if not owned():
+            snapshot_error(attempt, 'after_observation', 'ownership_changed', trace=trace)
+            return
+        snapshot(attempt, html, vacancy_id, resume_hash, 'after_observation',
+                 trace=trace, read_number=read_number, response=response, target_url=url)
     except Exception as exc:
-        snapshot_error(attempt, 'after_observation', type(exc).__name__, trace=trace, read_number=1)
+        snapshot_error(attempt, 'after_observation', type(exc).__name__, trace=trace, read_number=read_number)
     finally:
         for resource in (response, isolated):
             if resource is not None:

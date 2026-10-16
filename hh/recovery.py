@@ -130,6 +130,14 @@ class PageActions:
             for post in getattr(attempt, '_hh_application_posts', []):
                 if post['request'] is request:
                     post['owned'] = True
+                    # Delivery keeps the approval belonging to this request,
+                    # independently of later browser/session safety evidence.
+                    with contextlib.suppress(Exception):
+                        post['_approval'] = {**proof}
+                        if 'fields' in proof:
+                            post['_approval']['fields'] = dict(proof['fields'])
+                        if 'entries' in proof:
+                            post['_approval']['entries'] = [list(item) for item in proof['entries']]
         else:
             self.mark_unknown(request, reason='unapproved_mutating_request')
 
@@ -429,6 +437,7 @@ def monitor_page(session, page):
                             and attempt.context is context and attempt.repository.source == 'hh'
                             and isinstance(posts, list) and request.method.upper() == 'POST'):
                         posts.append({'request': request, 'owned': False, 'status': None,
+                                      '_started_monotonic': time.monotonic(),
                                       'classification': _unknown_classification(
                                           request, 'application_request', None, None)})
                 if not _mutating_request(request):

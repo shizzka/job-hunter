@@ -925,18 +925,19 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
                         result.update(ok=False, uncertain=True)
         return result
     result = await run_native_attempt(session, repository, url, operation)
+    from hh.delivery import result_with_delivery
     from hh.verification import can_continue_uncertain, confirmed_result
     confirmed = (confirmed_result(session, url, result, owned_attempt=owned_attempt)
                  if owned_attempt is not None else None)
     if confirmed is not None:
-        return confirmed
+        return result_with_delivery(confirmed, owned_attempt)
     if bool(result.get('uncertain')) or result.get('submission_status') in {'uncertain', 'preparing', 'acting'}:
         if can_continue_uncertain(session, owned_attempt):
             # Retire only this known request from the live action window. Its
             # durable uncertain receipt and sticky attempt flag remain intact;
             # all late unapproved actions still trip the context monitor.
             owned_attempt.page._hh_action_monitor.owners.discard(owned_attempt.owner)
-            return {**result, 'ok': False, 'uncertain': True, 'hh_hard_stop': False}
+            return result_with_delivery({**result, 'ok': False, 'uncertain': True, 'hh_hard_stop': False}, owned_attempt)
         failure = getattr(owned_attempt, '_hh_guard_failure', None)
         if failure:
             failure = {**failure, 'native_acting': bool(owned_attempt.acting),
@@ -950,8 +951,8 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
                      'browser_preflight' if failure['application_posts'] == 0 else 'unproven')
             result = {**result, 'hh_guard_failure': failure, 'hh_failure_stage': failure['stage'],
                       'hh_uncertainty_scope': scope}
-        return {**result, 'ok': False, 'uncertain': True, 'hh_hard_stop': True}
-    return result
+        return result_with_delivery({**result, 'ok': False, 'uncertain': True, 'hh_hard_stop': True}, owned_attempt)
+    return result_with_delivery(result, owned_attempt)
 
 
 async def _apply_to_vacancy(

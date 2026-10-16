@@ -194,6 +194,11 @@ async def reconcile_post_submit(session, attempt, resume_id, letter, *, trace=No
                     return
             step = 'vacancy_get'
             get_started = True
+            try:
+                from hh.delivery import note_read
+                note_read(attempt)
+            except Exception:
+                pass
             response = await request_context.get(url, max_redirects=0, timeout=15000,
                                                  headers={'Cache-Control': 'no-cache'})
             fresh()
@@ -207,7 +212,8 @@ async def reconcile_post_submit(session, attempt, resume_id, letter, *, trace=No
             html = await response.text()
             try:
                 observation.snapshot(attempt, html, proof['fields']['vacancy_id'], resume_id,
-                                     'after', trace=trace, read_number=read_number)
+                                     'after', trace=trace, read_number=read_number,
+                                     response=response, target_url=url)
             except Exception as exc:
                 observation.snapshot_error(attempt, 'after', type(exc).__name__, trace=trace,
                                            read_number=read_number)
@@ -273,7 +279,8 @@ async def reconcile_post_submit(session, attempt, resume_id, letter, *, trace=No
             if read_number not in observed_reads:
                 try:
                     observation.snapshot(attempt, await response.text(), proof['fields']['vacancy_id'],
-                                         resume_id, 'after', trace=trace, read_number=read_number)
+                                         resume_id, 'after', trace=trace, read_number=read_number,
+                                         response=response, target_url=url)
                 except Exception as exc:
                     observation.snapshot_error(attempt, 'after', type(exc).__name__, trace=trace,
                                                read_number=read_number)
@@ -286,10 +293,23 @@ async def reconcile_post_submit(session, attempt, resume_id, letter, *, trace=No
         # This separate read cannot set a receipt, diagnostic, continuation or stop latch.
         try:
             await observation.finish_receipts(attempt)
-            if not get_started and step != 'reentry':
+            if (not get_started and step != 'reentry'
+                    and not any(p.get('owned') is True and p.get('status') == 200
+                                for p in getattr(attempt, '_hh_application_posts', []))):
                 await observation.after_observation(session, attempt, resume_id, trace=trace)
         except Exception as exc:
             observation.snapshot_error(attempt, 'after_observation', type(exc).__name__, trace=trace)
+        # Independent delivery evidence runs after every reconciliation exit,
+        # including reentry and exceptions. It never supplies a safety receipt.
+        from hh import delivery
+        try:
+            await delivery.check_delivery(session, attempt, resume_id, letter, trace=trace)
+        except Exception:
+            # Also contain a failure of the entry point itself.
+            try:
+                delivery._publish(attempt, 'unknown', 'delivery_exception', trace=trace)
+            except Exception:
+                pass
 
 
 @dataclass(frozen=True)
