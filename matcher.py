@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import re
+import unicodedata
 from datetime import datetime
 
 import config
@@ -1041,6 +1042,29 @@ def _clean_cover_letter_output(value: str) -> str:
 
 
 def _fallback_cover_letter(vacancy: dict, details: str = "", cover_style: str = "") -> str:
+    # Activation sets JOB_HUNTER_HOME to the active profile's home_dir.
+    path = os.path.join(config.JOB_HUNTER_HOME, "cover_letter_fallback.md")
+    try:
+        with open(path, encoding="utf-8", newline="") as source:
+            raw = source.read()
+    except FileNotFoundError:
+        pass
+    except UnicodeDecodeError:
+        log.warning("Profile fallback letter rejected: invalid_utf8")
+    except OSError:
+        log.warning("Profile fallback letter rejected: unreadable")
+    else:
+        text = raw.strip()
+        if any(unicodedata.category(char) == "Cc" and char != "\n" for char in raw):
+            log.warning("Profile fallback letter rejected: control_characters")
+        elif not text:
+            log.warning("Profile fallback letter rejected: empty")
+        elif len(text) > 1500:
+            log.warning("Profile fallback letter rejected: too_long length=%d", len(text))
+        else:
+            # Owner-authored, resume-checked text; never send it to the LLM.
+            return text
+
     # A provider failure must not turn a shared template into invented biography.
     subject = "другой вариант резюме" if cover_style == "short_retry" else "резюме"
     return (

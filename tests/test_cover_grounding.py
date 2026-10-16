@@ -270,6 +270,32 @@ def test_actual_generator_rejects_unverifiable_draft(isolated_candidate, monkeyp
     assert result == matcher._fallback_cover_letter({})
 
 
+@pytest.mark.parametrize("generation_fails", [False, True])
+def test_profile_fallback_keeps_metadata_without_leaking_text(
+    isolated_candidate, monkeypatch, tmp_path, caplog, generation_fails,
+):
+    import config
+
+    letter = "Вымышленное личное письмо SYNTHETIC_PRIVATE_LETTER."
+    (tmp_path / "cover_letter_fallback.md").write_text(letter, encoding="utf-8")
+    monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
+    if generation_fails:
+        client = client_for(RuntimeError("synthetic generation failure"))
+    else:
+        client = client_for(" ".join(SENTENCES), RuntimeError("synthetic verifier failure"))
+    monkeypatch.setattr(matcher, "_get_client", lambda: client)
+    result = asyncio.run(matcher.generate_cover_letter({"title": "QA", "id": "unit-only"}))
+    assert result == letter
+    meta = matcher.analyze_cover_letter(result)
+    assert meta["fallback_cover_letter"] is True
+    assert meta["grounding_status"] == ("generation_error" if generation_fails else "verifier_error")
+    for fragment in (letter, "SYNTHETIC_PRIVATE_LETTER", "Вымышленное личное"):
+        assert fragment not in caplog.text
+        assert fragment not in json.dumps(meta, ensure_ascii=False)
+        assert fragment not in json.dumps(client.calls, ensure_ascii=False)
+        assert fragment not in json.dumps(matcher._COVER_LETTER_META_BY_HASH, ensure_ascii=False)
+
+
 def test_nonliteral_quote_is_check_failure_not_overclaim(isolated_candidate, monkeypatch):
     client = client_for(" ".join(SENTENCES), json.dumps(approved("Absent quote")))
     monkeypatch.setattr(matcher, "_get_client", lambda: client)

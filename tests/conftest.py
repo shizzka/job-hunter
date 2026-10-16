@@ -6,6 +6,12 @@ import config
 
 
 @pytest.fixture(autouse=True)
+def isolated_profile_home(tmp_path, monkeypatch):
+    """Fallback reads must never reach an owner's real profile letter."""
+    monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
+
+
+@pytest.fixture(autouse=True)
 def deny_test_network(monkeypatch):
     """Ordinary tests use fake transports, never real IP connections.
 
