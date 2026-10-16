@@ -182,32 +182,35 @@ def test_parse_failure_is_explicit(markup, reason):
 
 
 def test_jsonl_allowlist_and_append_only_without_state_writes(tmp_path, monkeypatch):
-    collect, calls, pauses = transport(tmp_path, monkeypatch, lambda req: httpx.Response(200, text=html(state())))
-    guard = tmp_path / 'hh_guard_state.json'
+    # Keep the collector's file inventory separate from harness-owned directories.
+    home = tmp_path / 'collector'
+    home.mkdir()
+    collect, calls, pauses = transport(home, monkeypatch, lambda req: httpx.Response(200, text=html(state())))
+    guard = home / 'hh_guard_state.json'
     guard.write_text(json.dumps({'blocked_until': ''}))
-    before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode) for p in tmp_path.iterdir()}
+    before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode) for p in home.iterdir()}
     assert collect()['complete']
-    previous = (tmp_path / 'negotiation_snapshots.jsonl').read_bytes()
+    previous = (home / 'negotiation_snapshots.jsonl').read_bytes()
     assert collect()['complete']
-    assert (tmp_path / 'negotiation_snapshots.jsonl').read_bytes().startswith(previous)
+    assert (home / 'negotiation_snapshots.jsonl').read_bytes().startswith(previous)
     assert len(calls) == 2 and not pauses
-    row, summary = rows(tmp_path)[:2]
+    row, summary = rows(home)[:2]
     assert set(row) == set(ns.TOPIC_FIELDS + ns.VACANCY_FIELDS) | {
         'snapshot_id', 'fetched_at', 'filter', 'page', 'employer_politeness', 'manager_activity'}
     assert set(row['employer_politeness']) == set(ns.POLITENESS_FIELDS)
     assert set(row['manager_activity']) == set(ns.MANAGER_FIELDS)
     assert set(summary) == {'kind', 'snapshot_id', 'fetched_at', 'filter', 'counters', 'total',
                             'pages_read', 'complete', 'stop_reason'}
-    assert 'PRIVATE' not in json.dumps(rows(tmp_path))
+    assert 'PRIVATE' not in json.dumps(rows(home))
     assert '@firstName' not in previous.decode() and '@lastName' not in previous.decode()
     assert row['employerSubState'] == 'NEW' and row['lastFunnelStage'] == 'SCREENING'
     assert row['vacancy_name'] == 'Synthetic vacancy' and row['company_name'] == 'Synthetic company'
     assert summary['counters'] == {'total': {'all': 1, 'archived': 0}, 'new': {'all': 0}}
     assert summary['snapshot_id'] == row['snapshot_id'] and summary['stop_reason'] is None
-    assert (tmp_path / 'negotiation_snapshots.jsonl').stat().st_mode & 0o777 == 0o600
-    assert set(p.name for p in tmp_path.iterdir()) == set(before) | {'negotiation_snapshots.jsonl'}
+    assert (home / 'negotiation_snapshots.jsonl').stat().st_mode & 0o777 == 0o600
+    assert set(p.name for p in home.iterdir()) == set(before) | {'negotiation_snapshots.jsonl'}
     for name, values in before.items():
-        p = tmp_path / name
+        p = home / name
         assert (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode) == values
 
 

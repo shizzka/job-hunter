@@ -1,22 +1,24 @@
 """Passive metrics must not change details or application outcomes."""
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
+import config
 from hh import vacancy_metrics as metrics
 from tests.test_hh_negotiation_snapshot import html
 
 
 @pytest.mark.parametrize('present', [True, False])
-def test_metrics_numeric_allowlist_and_nulls(tmp_path, present):
+def test_metrics_numeric_allowlist_and_nulls(present):
     state = {'vacancyView': {'vacancyFull': {'extraVacancyFields': {
         'totalResponsesCount': 7, 'vacancyResponsesCount': 7, 'letter': 'PRIVATE'}}},
         'vacancyOnlineUsersCounters': {'42': {'includingCurrent': 3, 'excludingCurrent': 2,
                                              'name': 'PRIVATE'}}} if present else {}
     metrics.record(html(state), '42', 'apply_before')
     metrics.record(html(state), '42', 'details')
-    path = tmp_path / 'vacancy_metrics.jsonl'
+    path = Path(config.JOB_HUNTER_HOME) / 'vacancy_metrics.jsonl'
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     assert path.stat().st_mode & 0o777 == 0o600
     assert len(rows) == 2
@@ -48,7 +50,7 @@ def test_apply_records_metrics_from_existing_markup(tmp_path, monkeypatch):
         '</body>', html(state) + '</body>'))
     gate = asyncio.run(harness.run_hh_gate(tmp_path, monkeypatch))
     assert gate.result['applied'] == 1 and len(gate.application_posts) == 1
-    rows = [json.loads(line) for line in (tmp_path / 'vacancy_metrics.jsonl').read_text().splitlines()]
+    rows = [json.loads(line) for line in (Path(config.JOB_HUNTER_HOME) / 'vacancy_metrics.jsonl').read_text().splitlines()]
     assert len(rows) == 1
     assert rows[0]['stage'] == 'apply_before' and rows[0]['vacancy_id'] == 2
     assert rows[0]['total_responses'] == rows[0]['vacancy_responses'] == 7
@@ -80,7 +82,7 @@ def test_details_outcome_and_get_count_unchanged(tmp_path, monkeypatch, failure)
         assert all(method == 'GET' for method, _ in requests)
         assert not client._page._hh_action_monitor.unknown
         if not failure:
-            row = json.loads((tmp_path / 'vacancy_metrics.jsonl').read_text())
+            row = json.loads((Path(config.JOB_HUNTER_HOME) / 'vacancy_metrics.jsonl').read_text())
             assert row['stage'] == 'details' and row['vacancy_id'] == 123
             assert row['total_responses'] == row['vacancy_responses'] == 7
     asyncio.run(browser_scenario(tmp_path, monkeypatch, check, HTML.replace('</body>', html(state) + '</body>')))

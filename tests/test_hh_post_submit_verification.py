@@ -171,7 +171,8 @@ def test_owned_popup_frame_race_requires_unambiguous_fresh_applied_get(
           });
         }""")
 
-        repository = NativeApplyRepository(tmp_path / "native-cookies.json", "hh")
+        # Inspect the same isolated receipt file captured by HHClient.
+        repository = NativeApplyRepository(config.HH_COOKIES_FILE, "hh")
         apply_core_calls = []
         cookie_before = await context.cookies([RESPONSE_URL])
         vacancy = {

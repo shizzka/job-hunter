@@ -134,11 +134,14 @@ def test_artifacts_are_unique_private_and_html_is_sanitized(tmp_path):
 
 
 def test_capture_cancellation_cleans_only_own_new_directory(tmp_path):
-    existing = tmp_path / 'existing'; existing.mkdir(); (existing / 'keep').write_text('retain')
+    # Check cleanup within the artifact root, independent of harness state.
+    root = tmp_path / 'artifacts'; root.mkdir()
+    existing = root / 'existing'; existing.mkdir(); (existing / 'keep').write_text('retain')
     class Page(FakePage):
         async def content(self): raise asyncio.CancelledError
-    with pytest.raises(asyncio.CancelledError): asyncio.run(capture_artifacts(Page(), tmp_path, 'cancel'))
-    assert list(tmp_path.iterdir()) == [existing]
+    with pytest.raises(asyncio.CancelledError): asyncio.run(capture_artifacts(Page(), root, 'cancel'))
+    assert list(root.iterdir()) == [existing]
+    assert (existing / 'keep').read_text() == 'retain'
 
 
 def test_screenshot_does_not_change_process_umask_over_await(tmp_path):
