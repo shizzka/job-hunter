@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from openai import AsyncOpenAI, APIConnectionError
+from openai import AsyncOpenAI, APIConnectionError, APITimeoutError
 import httpx
 from httpx import TransportError
 
@@ -351,7 +351,7 @@ def _siliconflow_model_aliases(provider_env: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _build_provider_specs() -> list[ProviderSpec]:
+def _build_provider_specs(role: str | None = None) -> list[ProviderSpec]:
     specs: list[ProviderSpec] = []
 
     def add(
@@ -488,7 +488,12 @@ def _build_provider_specs() -> list[ProviderSpec]:
                 result.append(provider)
         return result
 
-    order = os.getenv("LLM_PROVIDER_ORDER", provider_env.get("LLM_PROVIDER_ORDER", "")).strip()
+    order_key = "LLM_PROVIDER_ORDER"
+    if role:
+        role_key = f"LLM_PROVIDER_ORDER_{role.upper()}"
+        if os.getenv(role_key, provider_env.get(role_key, "")).strip():
+            order_key = role_key
+    order = os.getenv(order_key, provider_env.get(order_key, "")).strip()
     if order:
         requested = list(dict.fromkeys(name.strip().lower() for name in order.split(",") if name.strip()))
         known = {
@@ -496,11 +501,11 @@ def _build_provider_specs() -> list[ProviderSpec]:
             "groq", "groq2", "sambanova", "gemini", "deepseek", "cloudflare", "huggingface", "siliconflow",
         }
         if not requested or any(name not in known for name in requested):
-            raise ValueError("Invalid LLM_PROVIDER_ORDER; use configured provider names separated by commas")
+            raise ValueError(f"Invalid {order_key}; use configured provider names separated by commas")
         available = {provider.name: provider for provider in specs}
         selected = [available[name] for name in requested if name in available]
         if not selected:
-            raise RuntimeError("No configured LLM providers match LLM_PROVIDER_ORDER")
+            raise RuntimeError(f"No configured LLM providers match {order_key}")
         return unique(selected)
 
     if not specs:
@@ -523,17 +528,24 @@ def _is_quota_or_rate_limit(exc: Exception) -> bool:
     status = _status_code(exc)
     if status == 429:
         return True
+    if (status == 408 or (status is not None and 500 <= status <= 599)
+            or isinstance(exc, (APIConnectionError, TransportError, ConnectionError, TimeoutError))):
+        return False
 
     text = str(exc).casefold()
     return any(
         marker in text
         for marker in (
-            "429",
             "too many requests",
             "weekly usage limit",
             "rate limit",
             "rate_limit_exceeded",  # Groq also uses this code for HTTP 413 TPM limits.
-            "quota",
+            "quota exceeded",
+            "quota exhausted",
+            "quota_exceeded",
+            "quota_exhausted",
+            "exceeded your current quota",
+            "resource_exhausted",
             "insufficient_quota",
         )
     )
@@ -578,18 +590,18 @@ def _is_retryable_provider_error(exc: Exception) -> bool:
 
 def _failure_reason(exc):
     status = _status_code(exc)
-    if status in {401, 403} and not _is_model_unavailable(exc):
-        return "LLM_AUTH_FAILED"
     if _is_quota_or_rate_limit(exc):
         return "LLM_QUOTA_OR_RATE_LIMIT"
-    if _is_model_unavailable(exc):
-        return "LLM_MODEL_UNAVAILABLE"
-    if status == 408 or isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+    if status == 408 or isinstance(exc, (TimeoutError, httpx.TimeoutException, APITimeoutError)):
         return "LLM_TIMEOUT"
     if isinstance(exc, (APIConnectionError, TransportError, ConnectionError)):
         return "LLM_TRANSPORT_ERROR"
     if status is not None and 500 <= status <= 599:
         return "LLM_SERVICE_ERROR"
+    if status in {401, 403} and not _is_model_unavailable(exc):
+        return "LLM_AUTH_FAILED"
+    if _is_model_unavailable(exc):
+        return "LLM_MODEL_UNAVAILABLE"
     return "UNKNOWN_ROOT_CAUSE"
 
 
@@ -648,6 +660,19 @@ class FallbackLLMClient:
         self._fallback_ttl_seconds = max(0.0, fallback_ttl_seconds)
         self._clock = clock or time.monotonic
         self._fallback_until_by_model: dict[str, float] = {}
+        # Explicit role orders replace the global allowlist and own their fallback
+        # state. Children receive specs, so they do not recursively load roles.
+        self._role_clients: dict[str, FallbackLLMClient] = {}
+        if providers is None:
+            settings = {**_load_provider_env(), **os.environ}
+            prefix = "LLM_PROVIDER_ORDER_"
+            for key, value in settings.items():
+                if key.startswith(prefix) and key[len(prefix):] and value.strip():
+                    role = key[len(prefix):].lower()
+                    self._role_clients[role] = FallbackLLMClient(
+                        _build_provider_specs(role), fallback_ttl_seconds=self._fallback_ttl_seconds,
+                        clock=self._clock,
+                    )
 
     def _start_index_for_model(self, requested_model: str, total: int) -> int:
         index = self._active_index_by_model.get(requested_model, 0)
@@ -693,7 +718,10 @@ class FallbackLLMClient:
             provider_kwargs.setdefault("reasoning_effort", "none")
         return provider_kwargs
 
-    async def create_chat_completion(self, **kwargs):
+    async def create_chat_completion(self, *, llm_role: str | None = None, **kwargs):
+        role_client = self._role_clients.get(llm_role)
+        if role_client is not None:
+            return await role_client.create_chat_completion(llm_role=llm_role, **kwargs)
         if not self.providers:
             raise RuntimeError("No LLM providers configured")
 
@@ -705,6 +733,7 @@ class FallbackLLMClient:
         attempted: list[str] = []
         total = len(self.providers)
         start = self._start_index_for_model(cache_key, total)
+        sticky_index = start
 
         for offset in range(total):
             index = (start + offset) % total
@@ -734,12 +763,6 @@ class FallbackLLMClient:
                     if index == 0 or self._fallback_ttl_seconds == 0:
                         self._active_index_by_model.pop(cache_key, None)
                         self._fallback_until_by_model.pop(cache_key, None)
-                    else:
-                        self._active_index_by_model[cache_key] = index
-                        if start == 0 or cache_key not in self._fallback_until_by_model:
-                            self._fallback_until_by_model[cache_key] = (
-                                self._clock() + self._fallback_ttl_seconds
-                            )
                 mapped_model = str(provider_kwargs.get("model") or "")
                 if mapped_model != requested_model:
                     log.info(
@@ -759,15 +782,28 @@ class FallbackLLMClient:
                     latency_seconds=time.monotonic() - attempt_started, **quality_meta)
                 _record_usage(provider.name, str(provider_kwargs.get("model") or ""), error_kind=type(exc).__name__)
                 last_exc = exc
-                if not _is_retryable_provider_error(exc):
+                sticky_activated = False
+                # Only skip a prefix of rate-limited providers. A transient or
+                # unavailable provider in that prefix must be tried next time,
+                # even if a later provider was rate-limited as well.
+                if (_is_quota_or_rate_limit(exc) and index == sticky_index
+                        and index + 1 < total and requested_model and self._fallback_ttl_seconds > 0):
+                    sticky_index = index + 1
+                    self._active_index_by_model[cache_key] = sticky_index
+                    if cache_key not in self._fallback_until_by_model:
+                        self._fallback_until_by_model[cache_key] = self._clock() + self._fallback_ttl_seconds
+                    sticky_activated = True
+                retryable = _is_retryable_provider_error(exc)
+                log.warning(
+                    "LLM provider %s rejected model %s (%s); role=%s reason=%s status=%s "
+                    "sticky_activated=%s fallback=%s",
+                    provider.name, str(provider_kwargs.get("model") or requested_model),
+                    type(exc).__name__, llm_role or "default", _failure_reason(exc), _status_code(exc),
+                    str(sticky_activated).lower(), "continue" if retryable else "raise",
+                )
+                if not retryable:
                     _observe_provider_failure(exc, provider.name, model=requested_model)
                     raise
-                log.warning(
-                    "LLM provider %s rejected model %s (%s); continuing allowed fallback chain",
-                    provider.name,
-                    str(provider_kwargs.get("model") or requested_model),
-                    type(exc).__name__,
-                )
 
         if last_exc is not None:
             failure_id = _observe_provider_failure(last_exc, ",".join(attempted), exhausted=True,
@@ -784,6 +820,8 @@ class FallbackLLMClient:
         clients, self._clients = self._clients, {}
         self._active_index_by_model.clear()
         self._fallback_until_by_model.clear()
+        for role_client in self._role_clients.values():
+            await role_client.aclose()
         for client in clients.values():
             try:
                 await client.close()

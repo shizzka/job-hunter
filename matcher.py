@@ -196,6 +196,7 @@ async def _parse_evaluation_json_with_repair(client, raw_text: str, prompt: str,
             parse_error=parse_error,
             schema=_EVALUATION_JSON_SCHEMA,
             max_tokens=700,
+            llm_role="matcher",
         )
     except Exception as repair_exc:
         log.warning("LLM evaluation JSON repair failed, retrying evaluation: %s", repair_exc)
@@ -206,6 +207,7 @@ async def _parse_evaluation_json_with_repair(client, raw_text: str, prompt: str,
         "Верни только валидный JSON-объект ровно по указанной схеме, без markdown и текста вне JSON."
     )
     retry = await client.chat.completions.create(
+        llm_role="matcher",
         model=model,
         messages=[{"role": "user", "content": retry_prompt}],
         temperature=0.1,
@@ -1396,6 +1398,7 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
         client = _get_client()
         model = config.HH_MATCHER_MODEL or config.LLM_MODEL
         resp = await client.chat.completions.create(
+            llm_role="matcher",
             model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
@@ -1596,6 +1599,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
         verifier_budget = 2
         for attempt in range(2):
             resp = await client.chat.completions.create(
+                llm_role="cover_letter" if attempt == 0 else "cover_letter_rewrite",
                 model=config.HH_COVER_LETTER_MODEL or config.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,

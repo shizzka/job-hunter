@@ -206,6 +206,7 @@ Constraints — запреты кандидата, НЕ источник цит�
 предложения нейтральными, не склеивай/не перефразируй цитаты. Только JSON."""
     try:
         response = await asyncio.wait_for(client.chat.completions.create(
+            llm_role="answer_grounding",
             model=model, messages=[{'role': 'system', 'content': instructions},
                                   {'role': 'user', 'content': json.dumps(
                                       {'sources': sources, 'answers': answers, 'constraints': constraints}, ensure_ascii=False)}],

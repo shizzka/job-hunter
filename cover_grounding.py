@@ -267,6 +267,7 @@ neutral_sentences. Никакие другие фразы нельзя само�
                           "Не исправляй письмо и не пропускай неподтверждённые предложения.")
             calls += 1
             response = await asyncio.wait_for(client.chat.completions.create(
+                llm_role="cover_grounding",
                 model=model,
                 messages=[{"role": "system", "content": instructions + correction},
                           {"role": "user", "content": data}],

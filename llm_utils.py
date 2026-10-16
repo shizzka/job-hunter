@@ -76,6 +76,7 @@ async def repair_llm_json(
     parse_error: str = "",
     schema: str = "",
     max_tokens: int = 600,
+    llm_role: str | None = None,
 ) -> dict:
     """Попросить LLM преобразовать почти-JSON в валидный JSON и распарсить результат."""
     prompt = (
@@ -89,6 +90,7 @@ async def repair_llm_json(
     prompt += f"\nИсходный ответ:\n{(raw_text or '')[:4000]}"
 
     response = await client.chat.completions.create(
+        **({"llm_role": llm_role} if llm_role else {}),
         model=model,
         messages=[
             {"role": "system", "content": "Ты исправляешь JSON. Ответь только валидным JSON-объектом."},
