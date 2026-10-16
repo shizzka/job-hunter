@@ -34,7 +34,12 @@ def chain(monkeypatch):
     def build(outcomes, elapsed=None):
         calls = []
         now = [0.0]
+        sleeps = []
         real_http_client = httpx.AsyncClient
+
+        async def sleep(delay):
+            sleeps.append((delay, len(calls)))
+            now[0] += delay
 
         async def handle(request):
             calls.append(request)
@@ -52,7 +57,8 @@ def chain(monkeypatch):
         client = llm.FallbackLLMClient([
             llm.ProviderSpec(name, f"https://{name}.test/v1", "synthetic")
             for name in ("gemini", "backup", "local")
-        ], clock=lambda: now[0])
+        ], clock=lambda: now[0], sleep=sleep)
+        client.test_sleeps = sleeps
         return client, calls
 
     return build
@@ -96,6 +102,72 @@ def test_transient_retries_same_provider_once(chain, caplog, role, error):
     assert "transient_retry=started" in caplog.text
     assert "transient_retry=succeeded" in caplog.text
     assert "reason=LLM_" in caplog.text
+    assert client.test_sleeps == [(3.0, 1)]
+
+
+def test_retry_waits_configured_delay_before_second_call(chain, monkeypatch):
+    monkeypatch.setenv("LLM_TRANSIENT_RETRY_DELAY_SECONDS", "4.5")
+    client, calls = chain([status(503), completion()])
+    run(client)
+    assert client.test_sleeps == [(4.5, 1)]
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("value", ["abc", "-1", "nan", "inf"])
+def test_invalid_retry_delay_uses_default(chain, monkeypatch, value):
+    monkeypatch.setenv("LLM_TRANSIENT_RETRY_DELAY_SECONDS", value)
+    client, _ = chain([status(503), completion()])
+    run(client)
+    assert client.test_sleeps == [(3.0, 1)]
+
+
+def test_retry_delay_must_fit_alongside_needed_budget(chain, monkeypatch, caplog):
+    monkeypatch.setenv("LLM_TRANSIENT_RETRY_DELAY_SECONDS", "3")
+    # The old test allowed a retry: 61 seconds left for a 59-second call.
+    client, calls = chain([status(503), completion()], elapsed=[59, 0])
+    run(client)
+    assert [r.url.host for r in calls] == ["gemini.test", "backup.test"]
+    assert client.test_sleeps == []
+    assert "skip=deadline_budget" in caplog.text
+
+
+def test_retry_rechecks_budget_after_sleep(chain, caplog):
+    client, calls = chain([status(503), completion()], elapsed=[55, 0])
+    original_sleep = client._sleep
+
+    async def delayed_sleep(delay):
+        await original_sleep(delay + 8)
+
+    client._sleep = delayed_sleep
+    run(client)
+    assert [r.url.host for r in calls] == ["gemini.test", "backup.test"]
+    assert "skip=deadline_budget" in caplog.text
+
+
+def test_cancellation_during_retry_pause_propagates(chain, caplog):
+    client, calls = chain([status(503)])
+
+    async def invoke():
+        entered = asyncio.Event()
+
+        async def sleep(delay):
+            entered.set()
+            await asyncio.Event().wait()
+
+        client._sleep = sleep
+        task = asyncio.create_task(client.chat.completions.create(
+            llm_role="cover_letter", model="synthetic", messages=[]))
+        try:
+            await entered.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            await client.aclose()
+
+    asyncio.run(invoke())
+    assert len(calls) == 1
+    assert "transient_retry=cancelled" in caplog.text
 
 
 def test_one_extra_call_budget_is_shared_across_provider_chain(chain, caplog):

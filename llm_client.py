@@ -8,7 +8,7 @@ import os
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI, APIConnectionError, APITimeoutError
@@ -653,6 +653,7 @@ class FallbackLLMClient:
         *,
         fallback_ttl_seconds: float | None = None,
         clock: Callable[[], float] | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
     ):
         self.providers = providers or _build_provider_specs()
         self.chat = _FallbackChat(self)
@@ -671,6 +672,15 @@ class FallbackLLMClient:
                 fallback_ttl_seconds = 300.0
         self._fallback_ttl_seconds = max(0.0, fallback_ttl_seconds)
         self._clock = clock or time.monotonic
+        self._sleep = sleep or asyncio.sleep
+        try:
+            delay = float(os.getenv("LLM_TRANSIENT_RETRY_DELAY_SECONDS", "3.0"))
+            if not math.isfinite(delay) or delay < 0:
+                raise ValueError
+        except ValueError:
+            log.warning("Invalid LLM_TRANSIENT_RETRY_DELAY_SECONDS; using 3 seconds")
+            delay = 3.0
+        self._transient_retry_delay_seconds = delay
         self._fallback_until_by_model: dict[str, float] = {}
         # Explicit role orders replace the global allowlist and own their fallback
         # state. Children receive specs, so they do not recursively load roles.
@@ -683,7 +693,7 @@ class FallbackLLMClient:
                     role = key[len(prefix):].lower()
                     self._role_clients[role] = FallbackLLMClient(
                         _build_provider_specs(role), fallback_ttl_seconds=self._fallback_ttl_seconds,
-                        clock=self._clock,
+                        clock=self._clock, sleep=self._sleep,
                     )
 
     def _start_index_for_model(self, requested_model: str, total: int) -> int:
@@ -806,19 +816,31 @@ class FallbackLLMClient:
                         connect = (min(3, provider.timeout_seconds or 60) if provider.text_fallback_model
                                    else provider_kwargs["timeout"].connect)
                         needed = max(connect, now - call_started)
-                        if retry_used or remaining < needed:
+                        delay = self._transient_retry_delay_seconds
+                        if retry_used or remaining < needed + delay:
                             log.warning(
                                 "LLM provider %s role=%s transient_retry=skipped reason=%s "
-                                "skip=%s remaining=%.3f needed=%.3f",
+                                "skip=%s remaining=%.3f needed=%.3f delay=%.3f",
                                 provider.name, llm_role, _failure_reason(exc),
-                                "retry_budget_exhausted" if retry_used else "deadline_budget", remaining, needed)
+                                "retry_budget_exhausted" if retry_used else "deadline_budget", remaining, needed, delay)
                             raise
                         retry_used = retry_started = True
                         _record_usage(provider.name, str(provider_kwargs.get("model") or ""),
                                       error_kind=type(exc).__name__)
                         log.warning(
-                            "LLM provider %s role=%s transient_retry=started reason=%s error=%s remaining=%.3f",
-                            provider.name, llm_role, _failure_reason(exc), type(exc).__name__, remaining)
+                            "LLM provider %s role=%s transient_retry=started reason=%s error=%s "
+                            "remaining=%.3f delay=%.3f",
+                            provider.name, llm_role, _failure_reason(exc), type(exc).__name__, remaining, delay)
+                        await self._sleep(delay)
+                        # Scheduling can take longer than requested. Recheck the
+                        # same deadline before making another provider call.
+                        remaining = deadline - self._clock()
+                        if remaining < needed:
+                            log.warning(
+                                "LLM provider %s role=%s transient_retry=skipped "
+                                "skip=deadline_budget remaining=%.3f needed=%.3f",
+                                provider.name, llm_role, remaining, needed)
+                            raise
                 ollama_quality_log.record(provider, event="response", response=response,
                     latency_seconds=time.monotonic() - attempt_started, **quality_meta)
                 if provider.text_fallback_model and not kwargs.get("stream"):
