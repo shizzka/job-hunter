@@ -50,11 +50,14 @@ def test_respond_all_preserves_summary(monkeypatch, capsys):
         "  С AI-помощником: 2\n"
         "  Подозрительных HR-сообщений: 1\n"
         "  Уведомлений на подтверждение: 1\n"
+        "  Вопросов HR: 0 | карточек: 0\n"
+        "  Внешних приглашений: 0 | карточек: 0\n"
         "  Google Forms: найдено 1 | preview 1 | ошибок 0\n"
         "  Подготовлено ответов: 2\n"
         "  Отправлено: 0\n"
         "  Пропущено: 1\n"
         "  Ошибок чтения: 0\n"
+        "  Решения: {}\n"
     )
     assert FakeClient.instances[0].stopped is True
 
@@ -113,9 +116,6 @@ def test_respond_one_preserves_options_and_preview(monkeypatch, capsys):
         "📋 Chat one-shot summary:\n"
         "  Чат: 42\n"
         "  OK: True\n"
-        "  Сообщение: preview\n"
-        "  Вопрос: Вопрос\n"
-        "  Ответ: Ответ\n"
         "  DRY-RUN скрин: /tmp/chat.png\n"
     )
     assert FakeClient.instances[0].stopped is True

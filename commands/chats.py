@@ -26,6 +26,8 @@ async def respond_all() -> None:
     print(f"  С AI-помощником: {summary.get('with_ai', 0)}")
     print(f"  Подозрительных HR-сообщений: {summary.get('suspicious', 0)}")
     print(f"  Уведомлений на подтверждение: {summary.get('suspicious_notified', 0)}")
+    print(f"  Вопросов HR: {summary.get('hr_questions', 0)} | карточек: {summary.get('hr_notified', 0)}")
+    print(f"  Внешних приглашений: {summary.get('external_invites', 0)} | карточек: {summary.get('external_notified', 0)}")
     print(
         "  Google Forms: "
         f"найдено {summary.get('google_forms_found', 0)} | "
@@ -36,26 +38,7 @@ async def respond_all() -> None:
     print(f"  Отправлено: {summary.get('answers_sent', 0)}")
     print(f"  Пропущено: {summary.get('skipped', 0)}")
     print(f"  Ошибок чтения: {summary.get('read_failures', 0)}")
-    for detail in summary.get("details", []):
-        print(f"\n  → {detail.get('vacancy')} @ {detail.get('company')} ({detail.get('chat_id')})")
-        if detail.get("google_form"):
-            print(f"    Google Form: {'preview готов' if detail.get('ok') else 'ошибка'}")
-            print(f"    Форма: {detail.get('form_url') or '-'}")
-            if detail.get("token"):
-                print(f"    Токен: {detail.get('token')}")
-            if not detail.get("ok"):
-                print(f"    Причина: {detail.get('message') or '-'}")
-            continue
-        if detail.get("suspicious"):
-            print(f"    Подозрительно: {detail.get('question', '')[:140]}")
-            print(f"    Уведомление: {'да' if detail.get('notified') else 'нет'}")
-            continue
-        print(f"    AI: {detail.get('question', '')[:140]}")
-        print(f"    Ответ: {detail.get('answer', '')[:140]}")
-        if detail.get("dry_run"):
-            print(f"    [DRY-RUN, скрин: {detail.get('preview', {}).get('screenshot_path', '-')}]")
-        elif detail.get("sent"):
-            print("    [SENT ✓]")
+    print(f"  Решения: {json.dumps(summary.get('decisions', {}), ensure_ascii=False)}")
 
 
 async def list_candidates(*, limit: int, max_scan: int) -> None:
@@ -102,13 +85,8 @@ async def respond_one(
     print("📋 Chat one-shot summary:")
     print(f"  Чат: {detail.get('chat_id', chat_id)}")
     print(f"  OK: {detail.get('ok')}")
-    print(f"  Сообщение: {detail.get('message', '')}")
     if detail.get("already_replied"):
         print("  Уже отвечали на это сообщение")
-    if detail.get("question"):
-        print(f"  Вопрос: {detail.get('question', '')[:220]}")
-    if detail.get("answer"):
-        print(f"  Ответ: {detail.get('answer', '')[:400]}")
     if detail.get("dry_run"):
         print(f"  DRY-RUN скрин: {(detail.get('preview') or {}).get('screenshot_path', '-')}")
     elif detail.get("sent"):

@@ -37,6 +37,8 @@ import time
 from typing import Any
 
 import config
+from chat_observation import ChatJournal, diagnostic_snapshot, select_chat_batch
+from chat_triage import decide_chat, external_invitation, question_reason
 from hh.ui import HHUnexpectedUI
 from llm_client import get_llm_client
 from llm_utils import parse_llm_json
@@ -641,7 +643,7 @@ async def notify_suspicious_screening_message(
         return False
     profile_name = profile_name or _active_profile_name()
     message_id = str(message.get("id") or "")
-    question = html.escape((message.get("text") or "").strip()[:900])
+    question = html.escape((message.get("text") or "").strip()[:300])
     author = html.escape((message.get("author") or "HR").strip()[:120])
     title = html.escape((vacancy.get("title") or "—").strip()[:160])
     company = html.escape((vacancy.get("company") or "—").strip()[:160])
@@ -655,6 +657,33 @@ async def notify_suspicious_screening_message(
     )
     markup = build_suspicious_chat_reply_markup(profile_name, chat_id, message_id)
     return await notifier.send_message_with_markup(text, reply_markup=markup)
+
+
+async def notify_hr_message(notifier, *, chat_id, vacancy, message, profile_name, invitation=None):
+    """Notification only. AI generation stays behind the existing manual callback."""
+    if notifier is None:
+        return False
+    title = _escaped_html(vacancy.get("title") or "—", limit=120)
+    company = _escaped_html(vacancy.get("company") or "—", limit=120)
+    # Bound *escaped* excerpts as well, so unusual HTML characters cannot exceed Telegram's limit.
+    excerpt = html.escape((message.get("text") or "").strip()[:900])
+    if len(excerpt) > 1800:
+        excerpt = html.escape((message.get("text") or "").strip()[:300])
+    rows = [[{"text": "Открыть чат", "url": f"{CHATIK_ROOT}/chat/{chat_id}"}]]
+    if invitation:
+        heading = "Приглашение пройти: " + invitation["kind"]
+        # Long URLs belong in buttons, not in Telegram's HTML text limit.
+        rows += [[{"text": f"Ссылка {i + 1}", "url": url}]
+                 for i, url in enumerate(invitation["urls"])]
+    else:
+        heading = "Вопрос HR — требуется подтверждение"
+        callback = chat_ai_manual_callback_data(profile_name, chat_id, str(message.get("id") or ""))
+        if len(callback.encode()) <= 64:
+            rows.append([{"text": "Ответить с ИИ", "callback_data": callback}])
+    return await notifier.send_message_with_markup(
+        f"<b>{_escaped_html(heading, limit=100)}</b>\n<b>Чат:</b> {title} @ {company}\n\n<i>{excerpt}</i>",
+        reply_markup={"inline_keyboard": rows},
+    )
 
 
 def _find_message(messages: list[dict], message_id: str) -> dict | None:
@@ -1268,217 +1297,213 @@ async def process_all(
         "details": [],
     }
 
+    journal = ChatJournal(repository.path.parent, profile_name)
+    summary.update(run_id=journal.run_id, decisions={}, hr_questions=0, hr_notified=0,
+                   external_invites=0, external_notified=0)
     chats = await list_chats(page)
-    eligible_chats = [
-        chat
-        for chat in chats
-        if not _is_application_only_preview(chat.get("preview") or "")
-        and not _is_blocked_company_preview(chat.get("preview") or "")
-    ]
-    scan_chats = eligible_chats[: runtime_limits.max_scan]
-    summary["chats_total"] = len(chats)
-    summary["chats_eligible"] = len(eligible_chats)
-    summary["chats_scanned"] = len(scan_chats)
-    summary["chats_read"] = 0
-    summary["max_scan"] = runtime_limits.max_scan
-    log.info(
-        "found %d chats total, %d eligible; scanning newest %d (limit=%d)",
-        len(chats),
-        len(eligible_chats),
-        len(scan_chats),
-        runtime_limits.max_scan,
+    list_ref = journal.write(
+        "chat_list_snapshot", list_complete=bool(getattr(chats, "list_complete", False)),
+        stop_reason=getattr(chats, "stop_reason", "unknown"),
+        rows=[dict(chat_id=str(row.get("chat_id") or ""), position=i,
+                   raw_text=row.get("raw_text", row.get("preview") or ""),
+                   preview=row.get("preview") or "", unread=bool(row.get("unread")),
+                   unread_evidence=row.get("unread_evidence") or "")
+              for i, row in enumerate(chats)],
     )
 
-    try:
-        from hh_client import _load_resume_text  # late import
-    except Exception:
-        _load_resume_text = lambda: ""
+    decided_chat_ids = set()
+
+    def record_decision(chat_id, message_id, decision, reason, snapshot_ref):
+        journal.write("chat_decision", chat_id=chat_id, message_id=message_id,
+                      decision=decision, reason=reason, snapshot_ref=snapshot_ref)
+        decided_chat_ids.add(chat_id)
+        counts = summary["decisions"]
+        counts[decision] = counts.get(decision, 0) + 1
+        log.info("chat decision run=%s chat=%s message=%s decision=%s reason=%s snapshot=%s",
+                 journal.run_id, chat_id, message_id, decision, reason, snapshot_ref)
+
+    eligible_chats = []
+    for chat in chats:
+        chat_id = str(chat.get("chat_id") or "")
+        preview = chat.get("preview") or ""
+        if not chat_id or _is_application_only_preview(preview) or _is_blocked_company_preview(preview):
+            reason = ("missing_chat_id" if not chat_id else "application_only_preview"
+                      if _is_application_only_preview(preview) else "blocked_company_preview")
+            record_decision(chat_id, "", "filtered", reason, list_ref)
+        else:
+            eligible_chats.append(chat)
+    scan_chats = select_chat_batch(journal.home, eligible_chats, runtime_limits.max_scan)
+    selected_ids = {str(chat["chat_id"]) for chat in scan_chats}
+    for chat in eligible_chats:
+        if str(chat["chat_id"]) not in selected_ids:
+            record_decision(str(chat["chat_id"]), "", "out_of_batch", "scan_budget", list_ref)
+    summary.update(chats_total=len(chats), chats_eligible=len(eligible_chats),
+                   chats_scanned=len(scan_chats), chats_read=0, max_scan=runtime_limits.max_scan)
+    log.info("found %d chats total, %d eligible; scanning rotating batch %d (limit=%d)",
+             len(chats), len(eligible_chats), len(scan_chats), runtime_limits.max_scan)
+
     from answer_grounding import current_candidate
     resume_text = current_candidate().resume
-
     try:
         import notifier
     except Exception:
         notifier = None
+    diagnostic_budget = max(0, int(os.environ.get("HH_CHAT_DIAGNOSTIC_SNAPSHOTS", "0")))
 
-    for chat in scan_chats:
-        chat_id = str(chat["chat_id"])
-        chat_state = repository.load().get(chat_id, {})
-        replies_so_far = int(chat_state.get("replies_count", 0))
-
-        try:
-            data = await get_messages(page, chat_id)
-            summary["chats_read"] += 1
-        except HHUnexpectedUI:
-            raise
-        except Exception as exc:
-            log.warning(
-                "get_messages(%s) failed: %s",
-                chat_id,
-                type(exc).__name__,
-            )
-            summary["read_failures"] += 1
-            continue
-        msgs = data.get("messages", [])
-        import hiring_research
-        hiring_research.record_screening(data.get("vacancy") or {}, msgs)
-
-        form_item = _find_unseen_google_form_message(msgs, chat_state)
-        if form_item:
-            form_msg = form_item["message"]
-            form_url = form_item["form_url"]
-            vac = dict(data.get("vacancy", {}) or {})
-            preview_text = (chat.get("preview") or "").strip()
-            if preview_text and (not vac.get("title") or _normalize_ai_marker_text(vac.get("title") or "") == "перейти"):
-                vac["title"] = preview_text
-            summary["google_forms_found"] += 1
-            with repository.attempt(chat_id, "form", form_item["key"]) as owner:
-                if not owner:
-                    summary["skipped"] += 1
+    try:
+        for chat in scan_chats:
+            chat_id = str(chat["chat_id"])
+            decision, reason, message_id, snapshot_ref = "unknown", "processing_interrupted", "", list_ref
+            try:
+                chat_state = repository.load().get(chat_id, {})
+                try:
+                    data = await get_messages(page, chat_id)
+                    summary["chats_read"] += 1
+                except HHUnexpectedUI:
+                    decision, reason = "read_failed", "ui_stop"
+                    raise
+                except Exception as exc:
+                    decision, reason = "read_failed", type(exc).__name__
+                    summary["read_failures"] += 1
                     continue
-                repository.mark_acting(chat_id, owner)
-                detail = await _prepare_google_form_preview_from_message(
-                    page, chat_id=chat_id, vacancy=copy.deepcopy(vac),
-                    message=copy.deepcopy(form_msg), form_url=form_url,
-                    notifier=notifier, runtime_paths=paths, profile_name=profile_name,
-                )
-                if not repository.finish(chat_id, owner, "completed", lambda current:
-                        _remember_google_form_preview(current, form_item["key"], detail)):
-                    raise RuntimeError("Chat form completion ownership lost")
-            if detail.get("ok"):
-                summary["google_forms_prepared"] += 1
-            else:
-                summary["google_forms_failed"] += 1
-            summary["details"].append({
-                "chat_id": chat_id,
-                "vacancy": vac.get("title", ""),
-                "company": vac.get("company", ""),
-                "question": (form_msg.get("text") or "")[:300],
-                "google_form": True,
-                "form_url": detail.get("form_url") or form_url,
-                "token": detail.get("token") or "",
-                "ok": bool(detail.get("ok")),
-                "message": detail.get("message") or detail.get("status") or "preview",
-            })
-            continue
+                msgs = data.get("messages", [])
+                snapshot_ref = journal.thread(chat_id, data)
+                import hiring_research
+                hiring_research.record_screening(data.get("vacancy") or {}, msgs)
+                vac = dict(data.get("vacancy", {}) or {})
 
-        if replies_so_far >= max_replies:
-            log.info("chat %s: max replies (%d) reached, skip", chat_id, max_replies)
-            summary["skipped"] += 1
-            continue
-
-        # последнее сообщение — оно должно быть входящим. Если оно похоже на
-        # автоматический HR-скрининг без явного AI-маркера, не отвечаем сами:
-        # отправляем человеку approval-карточку в Telegram.
-        last = msgs[-1] if msgs else None
-        if not last:
-            log.info("chat %s: no messages, skip", chat_id)
-            summary["skipped"] += 1
-            continue
-        if last.get("is_me"):
-            log.info("chat %s: latest message is ours, skip", chat_id)
-            summary["skipped"] += 1
-            continue
-
-        last_id = str(last.get("id") or "")
-        if chat_state.get("last_replied_msg_id") == last_id:
-            log.info("chat %s: already replied to latest message %s, skip", chat_id, last_id)
-            summary["skipped"] += 1
-            continue
-        if dry_run and chat_state.get("last_previewed_msg_id") == last_id:
-            log.info("chat %s: latest message %s already previewed, skip", chat_id, last_id)
-            summary["skipped"] += 1
-            continue
-
-        if last.get("is_ai_suspect") and not last.get("is_ai"):
-            summary["suspicious"] += 1
-            if chat_state.get("last_suspicious_msg_id") == last_id:
-                log.info("chat %s: suspicious message %s already notified, skip", chat_id, last_id)
-                summary["skipped"] += 1
-                continue
-            vac = dict(data.get("vacancy", {}) or {})
-            preview_text = (chat.get("preview") or "").strip()
-            if preview_text and (not vac.get("title") or _normalize_ai_marker_text(vac.get("title") or "") == "перейти"):
-                vac["title"] = preview_text
-            notified = False
-            with repository.attempt(chat_id, "notice", last_id) as owner:
-                if not owner:
-                    summary["skipped"] += 1
-                    continue
-                if notifier:
-                    repository.mark_acting(chat_id, owner)
-                    try:
-                        notified = await notify_suspicious_screening_message(
-                            notifier, chat_id=chat_id, vacancy=vac, message=last,
-                            profile_name=profile_name,
+                # Preserve Google Forms' existing path and precedence, including older incoming links.
+                form_item = _find_unseen_google_form_message(msgs, chat_state)
+                if form_item:
+                    form_msg, form_url = form_item["message"], form_item["form_url"]
+                    message_id = str(form_msg.get("id") or "")
+                    decision, reason = "google_form", "existing_form_preview"
+                    preview_text = (chat.get("preview") or "").strip()
+                    if preview_text and (not vac.get("title") or _normalize_ai_marker_text(vac.get("title") or "") == "перейти"):
+                        vac["title"] = preview_text
+                    summary["google_forms_found"] += 1
+                    with repository.attempt(chat_id, "form", form_item["key"]) as owner:
+                        if not owner:
+                            decision, reason = "already_handled", "form_claim_unavailable"
+                            summary["skipped"] += 1
+                            continue
+                        repository.mark_acting(chat_id, owner)
+                        detail = await _prepare_google_form_preview_from_message(
+                            page, chat_id=chat_id, vacancy=copy.deepcopy(vac),
+                            message=copy.deepcopy(form_msg), form_url=form_url,
+                            notifier=notifier, runtime_paths=paths, profile_name=profile_name,
                         )
+                        if not repository.finish(chat_id, owner, "completed", lambda current:
+                                _remember_google_form_preview(current, form_item["key"], detail)):
+                            raise RuntimeError("Chat form completion ownership lost")
+                    summary["google_forms_prepared" if detail.get("ok") else "google_forms_failed"] += 1
+                    reason = "form_prepared" if detail.get("ok") else "form_preview_failed"
+                    summary["details"].append(dict(chat_id=chat_id, google_form=True, ok=bool(detail.get("ok"))))
+                    continue
+
+                decision, reason, last = decide_chat(msgs, chat_state, dry_run=dry_run, max_replies=max_replies)
+                message_id = str((last or {}).get("id") or "")
+                if decision == "hr_question" or (decision == "ours_last" and any(
+                    not msg.get("is_me") and question_reason(msg) != "ambiguous_incoming_requires_review"
+                    for msg in msgs[:-1]
+                )):
+                    try:
+                        await diagnostic_snapshot(journal, page, chat_id, message_id,
+                                                  decision, snapshot_ref, diagnostic_budget)
                     except Exception as exc:
-                        log.warning("notify suspicious chat %s failed: %s", chat_id, type(exc).__name__)
-                if notified:
-                    def remember_notice(current):
-                        current["last_suspicious_msg_id"] = last_id
-                        current["last_suspicious_at"] = time.time()
-                    if not repository.finish(chat_id, owner, "completed", remember_notice):
-                        raise RuntimeError("Chat notification completion ownership lost")
-            if notified:
-                summary["suspicious_notified"] += 1
-            summary["details"].append({
-                "chat_id": chat_id,
-                "vacancy": vac.get("title", ""),
-                "company": vac.get("company", ""),
-                "question": (last.get("text") or "")[:300],
-                "suspicious": True,
-                "notified": notified,
-            })
-            continue
+                        log.warning("chat diagnostic failed chat=%s error=%s", chat_id, type(exc).__name__)
 
-        if not any(m.get("is_ai") for m in msgs):
-            continue
-        summary["with_ai"] += 1
+                if decision in {"hr_question", "external_invite"}:
+                    suspicious = bool(last.get("is_ai_suspect")) and decision == "hr_question"
+                    summary["hr_questions" if decision == "hr_question" else "external_invites"] += 1
+                    if suspicious:
+                        summary["suspicious"] += 1
+                    if (chat_state.get("last_notice_msg_id") == message_id
+                            or chat_state.get("last_suspicious_msg_id") == message_id):
+                        decision, reason = "already_handled", "notice_already_delivered"
+                        summary["skipped"] += 1
+                        continue
+                    notified = False
+                    with repository.attempt(chat_id, "notice", message_id) as owner:
+                        if not owner:
+                            decision, reason = "already_handled", "notice_claim_unavailable"
+                            summary["skipped"] += 1
+                            continue
+                        if notifier:
+                            repository.mark_acting(chat_id, owner)
+                            try:
+                                if suspicious:
+                                    notified = await notify_suspicious_screening_message(
+                                        notifier, chat_id=chat_id, vacancy=vac, message=last, profile_name=profile_name)
+                                else:
+                                    notified = await notify_hr_message(
+                                        notifier, chat_id=chat_id, vacancy=vac, message=last, profile_name=profile_name,
+                                        invitation=external_invitation(last) if decision == "external_invite" else None)
+                            except Exception as exc:
+                                log.warning("chat notice failed chat=%s error=%s", chat_id, type(exc).__name__)
+                        if notified:
+                            def remember_notice(current):
+                                current["last_notice_msg_id"] = message_id
+                                current["last_notice_kind"] = decision
+                                if suspicious:
+                                    current["last_suspicious_msg_id"] = message_id
+                                    current["last_suspicious_at"] = time.time()
+                            if not repository.finish(chat_id, owner, "completed", remember_notice):
+                                raise RuntimeError("Chat notification completion ownership lost")
+                    reason += ":notice_delivered" if notified else ":notice_unavailable_or_uncertain"
+                    if notified:
+                        summary["hr_notified" if decision == "hr_question" else "external_notified"] += 1
+                        if suspicious:
+                            summary["suspicious_notified"] += 1
+                    summary["details"].append(dict(chat_id=chat_id, decision=decision, notified=bool(notified)))
+                    continue
+                if decision != "ai_hh_autoreply":
+                    summary["skipped"] += 1
+                    continue
+                summary["with_ai"] += 1
 
-        if not last.get("is_ai"):
-            log.info("chat %s: latest message is not AI, skip", chat_id)
-            summary["skipped"] += 1
-            continue  # последний от человека-HR — не лезем
+                async def notify_reply(detail):
+                    if notifier is None:
+                        return
+                    if detail["dry_run"]:
+                        preview = detail.get("preview") or {}
+                        caption = _dry_run_caption(vac, last, detail["answer"])
+                        if preview.get("screenshot_path"):
+                            return await notifier.send_photo(preview["screenshot_path"], caption=caption)
+                        return await notifier.send_message_with_markup(caption)
+                    return await notifier.send_message_with_markup(_sent_caption(chat_id, vac, last, detail["answer"]))
 
-        # генерируем ответ
-        vac = copy.deepcopy(data.get("vacancy", {}))
-        async def notify_reply(detail):
-            if notifier is None:
-                return
-            if detail["dry_run"]:
-                preview = detail.get("preview") or {}
-                caption = _dry_run_caption(vac, last, detail["answer"])
-                if preview.get("screenshot_path"):
-                    return await notifier.send_photo(preview["screenshot_path"], caption=caption)
-                else:
-                    return await notifier.send_message_with_markup(caption)
-            else:
-                return await notifier.send_message_with_markup(_sent_caption(chat_id, vac, last, detail["answer"]))
+                detail = await _execute_reply(
+                    repository, page, chat_id, copy.deepcopy(last), copy.deepcopy(msgs),
+                    copy.deepcopy(vac), resume_text, paths, dry_run=dry_run, max_replies=max_replies,
+                    notify=notify_reply if notifier is not None else None,
+                )
+                if not detail.get("answer"):
+                    reason = "stale_question" if detail.get("stale") else "attempt_blocked" if detail.get("blocked") else "no_grounded_answer"
+                    summary["skipped"] += 1
+                    continue
+                summary["answers_drafted"] += 1
+                reason = "sent" if detail.get("sent") else "drafted" if detail.get("ok") else "send_or_preview_failed"
+                if detail.get("sent"):
+                    summary["answers_sent"] += 1
+                elif not detail.get("ok"):
+                    summary["skipped"] += 1
+                summary["details"].append(dict(chat_id=chat_id, decision=decision, ok=bool(detail.get("ok")),
+                                                dry_run=bool(detail.get("dry_run")), sent=bool(detail.get("sent"))))
+                await asyncio.sleep(runtime_limits.reply_cooldown_s)
+            except BaseException as exc:
+                if reason != "ui_stop":
+                    reason = "processing_interrupted:" + type(exc).__name__
+                raise
+            finally:
+                record_decision(chat_id, message_id, decision, reason, snapshot_ref)
 
-        detail = await _execute_reply(
-            repository, page, chat_id, copy.deepcopy(last), copy.deepcopy(msgs),
-            vac, resume_text, paths, dry_run=dry_run, max_replies=max_replies,
-            notify=notify_reply if notifier is not None else None,
-        )
-        if not detail.get("answer"):
-            summary["skipped"] += 1
-            continue
-        summary["answers_drafted"] += 1
-        if detail.get("sent"):
-            summary["answers_sent"] += 1
-        elif not detail.get("ok"):
-            summary["skipped"] += 1
-        detail.update(vacancy=vac.get("title", ""), company=vac.get("company", ""))
+    finally:
+        for chat in scan_chats:
+            chat_id = str(chat["chat_id"])
+            if chat_id not in decided_chat_ids:
+                record_decision(chat_id, "", "out_of_batch", "run_stopped_before_open", list_ref)
 
-        summary["details"].append(detail)
-        # cooldown между ответами в разных чатах
-        await asyncio.sleep(runtime_limits.reply_cooldown_s)
-
-    log.info(
-        "chat scan complete: read=%d/%d, failures=%d",
-        summary["chats_read"],
-        summary["chats_scanned"],
-        summary["read_failures"],
-    )
+    log.info("chat scan complete: read=%d/%d, failures=%d",
+             summary["chats_read"], summary["chats_scanned"], summary["read_failures"])
     return summary
