@@ -18,6 +18,9 @@ class ActiveCommandState:
     task: asyncio.Task | None = None
     subprocess_pid: int = 0
     cancel_requested: bool = False
+    queue_entry: object = None
+    result: dict | None = None
+    pause_reason: str = ""
 
 
 class TelegramSubprocessManager:
@@ -34,7 +37,9 @@ class TelegramSubprocessManager:
             if command.task is not None and command.task.done()
         ]
         for profile_name in stale_profiles:
-            self._active_commands.pop(profile_name, None)
+            command = self._active_commands.pop(profile_name, None)
+            if hasattr(self, "_queue_command_finished"):
+                self._queue_command_finished(profile_name, command)
 
     def _all_active_commands(self) -> list[ActiveCommandState]:
         self._prune_active_commands()
@@ -53,7 +58,12 @@ class TelegramSubprocessManager:
     def _has_active_command(self, profile_name: str | None = None) -> bool:
         if profile_name is None:
             return bool(self._all_active_commands())
-        return self._active_command(profile_name) is not None
+        if self._active_command(profile_name) is not None:
+            return True
+        if hasattr(self, "_queue_launching") and profile_name in self._queue_launching:
+            from telegram_app.command_queue import current_entry
+            return current_entry() is not self._queue_launching[profile_name]
+        return False
 
     def _active_elapsed_sec(
         self,
@@ -87,12 +97,16 @@ class TelegramSubprocessManager:
             owner_user_id=int(principal.get("user_id") or 0),
             started_at=time.monotonic(),
         )
+        if hasattr(self, "_queue_launching"):
+            command.queue_entry = self._queue_launching.get(profile_name)
         self._active_commands[profile_name] = command
         self._sync_active_runtime()
         return command
 
     def _clear_active_command(self, profile_name: str) -> None:
-        self._active_commands.pop(profile_name, None)
+        command = self._active_commands.pop(profile_name, None)
+        if hasattr(self, "_queue_command_finished"):
+            self._queue_command_finished(profile_name, command)
         self._sync_active_runtime()
 
     async def _run_active_command_capture(
@@ -102,6 +116,10 @@ class TelegramSubprocessManager:
         *,
         timeout: float | None,
     ) -> dict:
+        if hasattr(self, "_commands_stopping") and self._commands_stopping():
+            command.result = {"ok": False, "cancelled": True}
+            return command.result
+        evidence = self._queue_capture_evidence(command.profile_name) if hasattr(self, "_queue_capture_evidence") else {}
         result = await runtime_control.run_command_capture(
             argv,
             timeout=timeout,
@@ -109,7 +127,24 @@ class TelegramSubprocessManager:
         )
         if command.cancel_requested:
             result["cancelled"] = True
+        command.result = result
+        if hasattr(self, "_queue_capture_finished"):
+            self._queue_capture_finished(command, evidence)
         return result
+
+    def _create_active_task(self, command, runner):
+        """Commit a reserved launch only while the bot is accepting work."""
+        if hasattr(self, "_commands_stopping") and self._commands_stopping():
+            self._clear_active_command(command.profile_name)
+            return None
+
+        async def run_if_open():
+            if hasattr(self, "_commands_stopping") and self._commands_stopping():
+                self._clear_active_command(command.profile_name)
+                return
+            await runner()
+
+        return asyncio.create_task(run_if_open())
 
     def _request_active_command_cancel(
         self,

@@ -887,6 +887,7 @@ def build_busy_status_text(
     elapsed_sec: int,
     pid: int = 0,
     can_cancel: bool = False,
+    queue_length: int = 0,
 ) -> str:
     lines = [
         "⏳ Сейчас выполняется команда",
@@ -894,12 +895,13 @@ def build_busy_status_text(
         f"• Команда: {_pretty_command_label(active_command)}",
         f"• Профиль: {_pretty_profile_name(profile_name)}",
         f"• Прошло: {_format_elapsed(elapsed_sec)}",
+        f"• В очереди: {queue_length}",
     ]
     if pid > 0:
         lines.append(f"• PID: {pid}")
     lines.extend([
         "",
-        "Команды запуска и управления этим профилем временно заблокированы.",
+        "Новые задачи этого профиля будут поставлены в очередь.",
         "Навигация по меню, статус и статистика остаются доступны.",
         "Нажмите «⏳ Выполняется...», чтобы обновить статус.",
     ])

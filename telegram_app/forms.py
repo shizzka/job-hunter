@@ -209,7 +209,7 @@ class TelegramFormEditor:
             raise ValueError("Этот профиль вам недоступен.")
         home = self._form_home(profile)
         drafts.get_draft(home, token)
-        if self._has_active_command(profile):
+        if self._has_active_command(profile) and action not in {"check", "send"}:
             await self._send_busy_status(chat_id, principal, profile_name=profile)
             return
         if action == "view":

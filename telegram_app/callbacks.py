@@ -8,6 +8,7 @@ import manual_apply_queue
 import runtime_control
 import telegram_access
 import telegram_clients
+from telegram_app.command_queue import profile_command
 from telegram_bot_ui import (
     CALLBACK_CHAT_AI_MANUAL_REPLY,
     CALLBACK_CHAT_AI_MANUAL_SEND,
@@ -49,6 +50,7 @@ log = logging.getLogger("telegram_bot")
 class TelegramCallbackRouter:
     """Route stable callback payloads to TelegramBot operations."""
 
+    @profile_command
     async def _handle_callback_query(self, callback: dict) -> None:
         sender = callback.get("from") or {}
         callback_id = str(callback.get("id") or "")
@@ -365,8 +367,6 @@ class TelegramCallbackRouter:
                 await self._answer_callback_query(callback_id, "Не удалось определить вакансию.", show_alert=True)
                 return
             await self._answer_callback_query(callback_id, "Отправляю отклик через ИИ…")
-            if message_id > 0:
-                await self._edit_reply_markup(chat_id, message_id)
             await self._start_manual_ai_apply(
                 chat_id,
                 principal,

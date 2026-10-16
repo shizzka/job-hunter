@@ -1,0 +1,654 @@
+"""Queue admission and replay contracts, without Telegram or HH network calls."""
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from telegram_app import command_queue as queue
+from telegram_app.callbacks import TelegramCallbackRouter
+
+
+class Bot(queue.TelegramCommandQueue):
+    def __init__(self):
+        self._init_command_queue()
+        self._active_commands = {}
+        self.messages = []
+        self.edits = []
+        self.answers = []
+        self.started = []
+        self.guard = ""
+
+    def _active_command(self, profile):
+        return self._active_commands.get(profile)
+
+    def _queue_guard_reason(self, profile):
+        return self.guard
+
+    def _profile_recipient_ids(self, profile):
+        return []
+
+    def _profile_names(self):
+        return ["qa", "other"]
+
+    def _selected_profile(self, principal):
+        return principal.get("profile", "qa")
+
+    async def _send_text(self, chat_id, text, **kwargs):
+        self.messages.append((chat_id, text, kwargs))
+        entry = queue.current_entry()
+        if entry:
+            entry.last_message = text
+
+    async def _edit_reply_markup(self, chat_id, message_id, reply_markup=None):
+        self.edits.append((chat_id, message_id, reply_markup))
+
+    async def _answer_callback_query(self, callback_id, text="", **kwargs):
+        self.answers.append((callback_id, text, kwargs))
+
+    def finish(self, profile="qa", outcome="завершена"):
+        active = self._active_commands.pop(profile)
+        if getattr(active, "entry", None):
+            active.entry.outcome = outcome
+        self._schedule_queue(profile)
+
+
+def source(token="one"):
+    return {"id": token, "data": f"manual_apply:qa:{token}",
+            "from": {"id": 1}, "message": {"message_id": 7,
+            "chat": {"id": 42, "type": "private"},
+            "reply_markup": {"inline_keyboard": [[{"text": "Apply", "callback_data": f"manual_apply:qa:{token}"}]]}}}
+
+
+def entry(bot, label="manual AI apply", *, profile="qa", key="", user_id=1,
+          callback=None, refuse=False, started=None):
+    async def invoke(revalidate):
+        bot.started.append((profile, label, revalidate))
+        if started is not None:
+            started.append(label)
+        if refuse:
+            await bot._send_text(42, "Отказ: подтверждение отозвано")
+            return
+        bot._active_commands[profile] = SimpleNamespace(label=label, task=None, entry=item)
+    item = queue.QueueEntry(profile, 42, user_id, label, invoke, key, source=callback)
+    return item
+
+
+async def settle(bot):
+    for _ in range(30):
+        tasks = list(bot._queue_drainers.values())
+        if not tasks:
+            return
+        await asyncio.gather(*tasks)
+    raise AssertionError("Queue drainer did not settle")
+
+
+def test_fifo_and_profile_independence_preserve_manual_duplicates():
+    async def scenario():
+        bot = Bot()
+        first = entry(bot)
+        second = entry(bot)
+        third = entry(bot)
+        assert await bot._admit_command(first)
+        assert await bot._admit_command(second)
+        assert await bot._admit_command(third)
+        assert bot._command_queues["qa"] == [second, third]
+        assert await bot._admit_command(entry(bot, profile="other"))
+        assert set(bot._active_commands) == {"qa", "other"}
+        bot.finish()
+        await settle(bot)
+        assert bot._active_commands["qa"].entry is second
+        bot.finish()
+        await settle(bot)
+        assert bot._active_commands["qa"].entry is third
+        assert [call[2] for call in bot.started] == [False, False, True, True]
+        bot.finish()
+        bot.finish("other")
+        await settle(bot)
+        assert any("задач: 2" in text for _, text, _ in bot.messages)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("state", ["running", "waiting", "launching"])
+@pytest.mark.parametrize("label", ["search", "check invitations", "dry-run", "digest"])
+def test_periodic_coalesces_running_waiting_and_launching(state, label):
+    async def scenario():
+        bot = Bot()
+        periodic = entry(bot, label, key=label)
+        if state == "running":
+            await bot._admit_command(periodic)
+        elif state == "waiting":
+            await bot._admit_command(entry(bot))
+            await bot._admit_command(periodic)
+        else:
+            bot._queue_launching["qa"] = periodic
+        before = bot._queue_length("qa")
+        assert not await bot._admit_command(entry(bot, label, key=label))
+        assert bot._queue_length("qa") == before
+        assert "уже идёт/в очереди" in bot.messages[-1][1]
+        await bot._shutdown_command_queue()
+    asyncio.run(scenario())
+
+
+def test_ttl_expiry_restores_original_callback_and_does_not_run(monkeypatch):
+    monkeypatch.setenv("BOT_COMMAND_QUEUE_TTL_MINUTES", "1")
+    async def scenario():
+        bot = Bot()
+        await bot._admit_command(entry(bot))
+        waiting = entry(bot, callback=source())
+        await bot._admit_command(waiting)
+        waiting.created_at -= 61
+        bot.finish()
+        await settle(bot)
+        assert waiting.outcome == "снята по TTL"
+        assert len(bot.started) == 1
+        assert bot.edits[-1] == (42, 7, source()["message"]["reply_markup"])
+        assert any("TTL" in text for _, text, _ in bot.messages)
+    asyncio.run(scenario())
+
+
+def test_full_queue_keeps_rejected_callback_button(monkeypatch):
+    monkeypatch.setenv("BOT_COMMAND_QUEUE_MAX", "1")
+    async def scenario():
+        bot = Bot()
+        await bot._admit_command(entry(bot))
+        accepted = entry(bot, callback=source("accepted"))
+        assert await bot._admit_command(accepted)
+        before = list(bot.edits)
+        rejected = entry(bot, callback=source("rejected"))
+        assert not await bot._admit_command(rejected)
+        assert bot.edits == before
+        assert bot._command_queues["qa"] == [accepted]
+        assert "полна" in bot.messages[-1][1]
+        await bot._shutdown_command_queue()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("actor,allowed", [(1, True), (2, False), (99, True)])
+def test_remove_requires_owner_or_admin_and_restores_button(monkeypatch, actor, allowed):
+    monkeypatch.setattr(queue.telegram_access, "resolve_user", lambda uid: {
+        "user_id": uid, "role": "admin" if uid == 99 else "user", "profile": "qa"})
+    async def scenario():
+        bot = Bot()
+        await bot._admit_command(entry(bot))
+        waiting = entry(bot, callback=source())
+        await bot._admit_command(waiting)
+        await bot._queue_callback({"id": "cancel", "from": {"id": actor},
+                                   "data": f"queue:remove:{waiting.id}"})
+        assert (waiting not in bot._command_queues["qa"]) == allowed
+        if allowed:
+            assert waiting.outcome == "удалена пользователем"
+            assert bot.edits[-1][2] == source()["message"]["reply_markup"]
+        else:
+            assert bot.answers[-1][2]["show_alert"]
+        await bot._shutdown_command_queue()
+    asyncio.run(scenario())
+
+
+def test_guard_pause_notifies_once_and_explicit_resume_rechecks_guard(monkeypatch):
+    monkeypatch.setattr(queue.telegram_access, "resolve_user", lambda uid: {
+        "user_id": uid, "role": "user", "profile": "qa"})
+    async def scenario():
+        bot = Bot()
+        await bot._admit_command(entry(bot))
+        waiting = entry(bot)
+        await bot._admit_command(waiting)
+        bot.guard = "captcha"
+        bot.finish()
+        await settle(bot)
+        assert "qa" in bot._queue_paused
+        assert len(bot.started) == 1
+        bot._schedule_queue("qa")
+        await settle(bot)
+        assert sum("на паузе" in text for _, text, _ in bot.messages) == 1
+        assert not any("Очередь выполнена" in text for _, text, _ in bot.messages)
+        callback = {"id": "resume", "from": {"id": 1}, "data": f"queue:resume:{waiting.id}"}
+        await bot._queue_callback(callback)
+        assert "qa" in bot._queue_paused
+        assert bot.answers[-1][2]["show_alert"]
+        bot.guard = ""
+        await bot._queue_callback(callback)
+        await settle(bot)
+        assert "qa" not in bot._queue_paused
+        assert bot._active_commands["qa"].entry is waiting
+        bot.finish()
+        await settle(bot)
+    asyncio.run(scenario())
+
+
+def test_shutdown_restores_waiters_notifies_reset_and_rejects_new_work():
+    async def scenario():
+        bot = Bot()
+        await bot._admit_command(entry(bot))
+        await bot._admit_command(entry(bot, callback=source()))
+        await bot._shutdown_command_queue()
+        assert not bot._command_queues
+        assert bot.edits[-1][2] == source()["message"]["reply_markup"]
+        assert any("сброшена при перезапуске" in text for _, text, _ in bot.messages)
+        assert not await bot._admit_command(entry(bot))
+        assert len(bot.started) == 1
+        assert not any("Очередь выполнена" in text for _, text, _ in bot.messages)
+    asyncio.run(scenario())
+
+
+def test_summary_includes_success_refusal_and_ttl(monkeypatch):
+    monkeypatch.setenv("BOT_COMMAND_QUEUE_TTL_MINUTES", "1")
+    async def scenario():
+        bot = Bot()
+        await bot._admit_command(entry(bot, "blocker"))
+        success = entry(bot, "send")
+        refusal = entry(bot, "revoked", refuse=True, callback=source())
+        expired = entry(bot, "old")
+        for item in (success, refusal, expired):
+            await bot._admit_command(item)
+        expired.created_at -= 61
+        bot.finish()
+        await settle(bot)
+        bot.finish(outcome="отправлена")
+        await settle(bot)
+        summaries = [text for _, text, _ in bot.messages if "Очередь выполнена" in text]
+        assert len(summaries) == 1
+        assert "send: отправлена" in summaries[0]
+        assert "revoked: пропуск: Отказ: подтверждение отозвано" in summaries[0]
+        assert "old: снята по TTL" in summaries[0]
+        assert "задач: 3" in summaries[0]
+        assert bot.edits[-1][2] == source()["message"]["reply_markup"]
+    asyncio.run(scenario())
+
+
+class CallbackBot(Bot):
+    _handle_callback_query = queue.profile_command(TelegramCallbackRouter._handle_callback_query)
+
+    def __init__(self):
+        super().__init__()
+        self.valid_approval = True
+        self.manual_calls = []
+
+    async def _start_manual_ai_apply(self, chat_id, principal, *, profile_name, token):
+        self.manual_calls.append((principal["user_id"], profile_name, token, self.valid_approval))
+        if not self.valid_approval:
+            await self._send_text(chat_id, "Подтверждение отозвано")
+            return
+        self._active_commands[profile_name] = SimpleNamespace(
+            label="manual AI apply", task=None, entry=queue.current_entry())
+
+
+def test_original_manual_callback_only_deletes_button_after_admission_and_replays_checks(monkeypatch):
+    monkeypatch.setenv("BOT_COMMAND_QUEUE_MAX", "1")
+    monkeypatch.setattr(queue.telegram_access, "resolve_user", lambda uid: {
+        "user_id": uid, "role": "user", "profile": "qa"})
+    async def scenario():
+        bot = CallbackBot()
+        await bot._admit_command(entry(bot))
+        assert await bot._handle_callback_query(source("accepted"))
+        assert not bot.manual_calls
+        assert bot.edits[-1][2] is None
+        before = list(bot.edits)
+        assert not await bot._handle_callback_query(source("full"))
+        assert bot.edits == before
+        bot.valid_approval = False
+        bot.finish()
+        await settle(bot)
+        assert bot.manual_calls == [(1, "qa", "accepted", False)]
+        assert not bot._active_commands
+        assert bot.edits[-1][2] == source("accepted")["message"]["reply_markup"]
+    asyncio.run(scenario())
+
+
+def test_queued_callback_revalidates_current_access_before_replay(monkeypatch):
+    principals = {1: {"user_id": 1, "role": "user", "profile": "qa"}}
+    monkeypatch.setattr(queue.telegram_access, "resolve_user", principals.get)
+    async def scenario():
+        bot = CallbackBot()
+        await bot._admit_command(entry(bot))
+        await bot._handle_callback_query(source())
+        principals.clear()
+        bot.finish()
+        await settle(bot)
+        assert not bot.manual_calls
+        assert not bot._active_commands
+        assert any("доступ изменились" in text for _, text, _ in bot.messages)
+        assert bot.edits[-1][2] == source()["message"]["reply_markup"]
+    asyncio.run(scenario())
+
+
+def real_bot(monkeypatch, tmp_path):
+    import telegram_bot
+    import captcha_bridge
+    monkeypatch.setattr(captcha_bridge, "peek_pending", lambda **kwargs: None)
+    bot = telegram_bot.TelegramBot("qa")
+    messages, edits = [], []
+    profile = SimpleNamespace(home_dir=str(tmp_path),
+        run_history_file=str(tmp_path / "runs.jsonl"),
+        analytics_events_file=str(tmp_path / "events.jsonl"),
+        log_file=str(tmp_path / "hunter.log"), error_log_file=str(tmp_path / "error.log"))
+    monkeypatch.setattr(bot, "_profile", lambda name: profile)
+    monkeypatch.setattr(bot, "_profile_names", lambda: ["qa"])
+    monkeypatch.setattr(bot, "_profile_recipient_ids", lambda name: [])
+    monkeypatch.setattr(bot, "_selected_profile", lambda principal: principal.get("profile", "qa"))
+    monkeypatch.setattr(bot, "_menu_reply_markup", lambda *args, **kwargs: {})
+    monkeypatch.setattr(bot, "_sync_active_runtime", lambda: None)
+    monkeypatch.setattr(bot, "_append_debug_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(queue.telegram_access, "resolve_user", lambda uid: {
+        "user_id": uid, "role": "admin", "profile": "qa"})
+
+    async def api(method, payload, **kwargs):
+        if method == "sendMessage":
+            messages.append(payload)
+        elif method == "editMessageReplyMarkup":
+            edits.append(payload)
+        return {}
+    monkeypatch.setattr(bot, "_api_request", api)
+    return bot, profile, messages, edits
+
+
+async def spin_until(predicate):
+    for _ in range(100):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("Expected asynchronous transition did not occur")
+
+
+def test_real_bot_duplicate_manual_callbacks_run_sequentially_and_report_each_chat(monkeypatch, tmp_path):
+    import runtime_control
+    async def scenario():
+        bot, _, messages, _ = real_bot(monkeypatch, tmp_path)
+        first_release, second_release = asyncio.Event(), asyncio.Event()
+        calls, running = [], 0
+
+        async def capture(argv, *, timeout, on_start):
+            nonlocal running
+            running += 1
+            assert running == 1, "Two jobs overlapped for the same profile"
+            calls.append(list(argv))
+            index = len(calls)
+            on_start(100 + index)
+            try:
+                await (first_release if index == 1 else second_release).wait()
+                return {"ok": index == 1, "returncode": 0 if index == 1 else 1,
+                        "stdout": "Подтверждение отозвано" if index == 2 else "Отклик отправлен, подтверждено сервером hh.",
+                        "stderr": "", "timeout": False}
+            finally:
+                running -= 1
+        monkeypatch.setattr(runtime_control, "run_command_capture", capture)
+        blocker = bot._mark_active_command(principal={"user_id": 1}, label="blocker", profile_name="qa")
+        blocker.task = SimpleNamespace(done=lambda: False)
+        first = source("same-token")
+        second = source("same-token")
+        second["message"]["chat"]["id"] = 84
+        second["from"]["id"] = 2
+        assert await bot._handle_callback_query(first)
+        assert await bot._handle_callback_query(second)
+        assert bot._queue_length("qa") == 2
+        assert not calls
+        bot._clear_active_command("qa")
+        await spin_until(lambda: len(calls) == 1)
+        assert bot._queue_length("qa") == 1
+        assert any(p["chat_id"] == 42 and "manual AI apply" in p["text"] for p in messages)
+        first_release.set()
+        await spin_until(lambda: len(calls) == 2)
+        assert any(p["chat_id"] == 84 and "manual AI apply" in p["text"] for p in messages)
+        second_release.set()
+        await spin_until(lambda: not bot._active_commands and not bot._queue_drainers)
+        assert calls[0] == calls[1]
+        assert "--manual-apply-token" in calls[0]
+        assert calls[0][-1] == "same-token"
+        summaries = [p for p in messages if "Очередь выполнена" in p["text"]]
+        assert {p["chat_id"] for p in summaries} == {42, 84}
+        assert "Подтверждение отозвано" in next(p["text"] for p in summaries if p["chat_id"] == 84)
+        assert "отправлено, подтверждено сервером hh" in next(p["text"] for p in summaries if p["chat_id"] == 42)
+        await bot._shutdown_command_queue()
+    asyncio.run(scenario())
+
+
+def test_real_capture_zero_exit_new_auth_log_pauses_following_job(monkeypatch, tmp_path):
+    import runtime_control
+    async def scenario():
+        bot, profile, messages, _ = real_bot(monkeypatch, tmp_path)
+        release = asyncio.Event()
+        async def capture(argv, *, timeout, on_start):
+            on_start(101)
+            await release.wait()
+            with open(profile.log_file, "a", encoding="utf-8") as stream:
+                stream.write("ERROR Не залогинен!\n")
+            return {"ok": True, "returncode": 0, "stdout": "", "stderr": ""}
+        monkeypatch.setattr(runtime_control, "run_command_capture", capture)
+        principal = {"user_id": 1, "role": "admin", "profile": "qa"}
+        await bot._start_manual_ai_apply(42, principal, profile_name="qa", token="one")
+        await asyncio.sleep(0)
+        await bot._start_manual_ai_apply(42, principal, profile_name="qa", token="two")
+        release.set()
+        await spin_until(lambda: "qa" in bot._queue_paused)
+        assert "не залогинен" in bot._queue_paused["qa"]
+        assert bot._queue_length("qa") == 1
+        assert not any("Очередь выполнена" in p["text"] for p in messages)
+        await bot._shutdown_command_queue()
+    asyncio.run(scenario())
+
+
+def test_capture_evidence_ignores_stale_history_and_reads_new_hard_stop(monkeypatch, tmp_path):
+    import json
+    from telegram_app.subprocesses import ActiveCommandState
+    bot, profile, _, _ = real_bot(monkeypatch, tmp_path)
+    history = tmp_path / "runs.jsonl"
+    history.write_text(json.dumps({"hh_recovery": {"stopped": True, "reason": "old auth failure"}}) + "\n")
+    command = ActiveCommandState("search", "qa", 1, 0, result={"ok": True})
+    snapshot = bot._queue_capture_evidence("qa")
+    bot._queue_capture_finished(command, snapshot)
+    assert command.pause_reason == ""
+    with history.open("a") as stream:
+        stream.write(json.dumps({"hh_recovery": {"stopped": True, "reason": "auth_session_lost"}}) + "\n")
+    bot._queue_capture_finished(command, snapshot)
+    assert command.pause_reason == "auth_session_lost"
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_actual_guard_reads_only_requested_profile_and_fails_closed(monkeypatch, tmp_path, corrupt):
+    import json
+    from datetime import datetime, timedelta, timezone
+    bot, _, _, _ = real_bot(monkeypatch, tmp_path)
+    home = tmp_path / "hh_guard_state.json"
+    home.write_text("broken-json" if corrupt else json.dumps({
+        "blocked_until": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        "last_reason": "profile captcha", "successful_apply_timestamps": []}))
+    assert bot._queue_guard_reason("qa") == (
+        "Состояние HH-guard недоступно" if corrupt else "profile captcha")
+
+
+def test_authorization_await_reserves_profile_before_second_manual_arrival(monkeypatch, tmp_path):
+    async def scenario():
+        bot, _, _, _ = real_bot(monkeypatch, tmp_path)
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def authorize(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return False
+        monkeypatch.setattr(bot, "_authorize_ai_usage", authorize)
+        principal = {"user_id": 1, "role": "admin", "profile": "qa"}
+        first = asyncio.create_task(bot._start_chat_ai_reply(
+            42, principal, profile_name="qa", hh_chat_id="123", hh_message_id="456"))
+        await entered.wait()
+        assert "qa" in bot._queue_launching
+        assert not bot._active_commands
+        assert await bot._start_manual_ai_apply(42, principal, profile_name="qa", token="manual")
+        assert bot._queue_length("qa") == 1
+        assert not bot._active_commands
+        await bot._shutdown_command_queue()
+        release.set()
+        await first
+    asyncio.run(scenario())
+
+
+def test_auth_recovery_reservation_during_delivery_keeps_manual_waiting(monkeypatch, tmp_path):
+    async def scenario():
+        bot, _, _, _ = real_bot(monkeypatch, tmp_path)
+        entered, release = asyncio.Event(), asyncio.Event()
+        # Recoveries reserve the profile before their first asynchronous notification.
+        original_send = bot._send_text
+        async def send(chat_id, text, **kwargs):
+            if "Запускаю вход HH" in text:
+                entered.set()
+                await release.wait()
+            return await original_send(chat_id, text, **kwargs)
+        monkeypatch.setattr(bot, "_send_text", send)
+        principal = {"user_id": 1, "role": "admin", "profile": "qa"}
+        recovery = asyncio.create_task(bot._start_profile_hh_auth_capture(42, principal, profile_name="qa"))
+        await entered.wait()
+        assert bot._has_active_command("qa")
+        assert await bot._start_manual_ai_apply(42, principal, profile_name="qa", token="manual")
+        assert bot._queue_length("qa") == 1
+        assert bot._active_commands["qa"].label == "hh auth capture"
+        # Cancel before the browser runner is created; no subprocess can start.
+        recovery.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await recovery
+        await bot._shutdown_command_queue()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("kind", ["manual", "suggest", "auth"])
+def test_shutdown_during_progress_delivery_prevents_runner_start(monkeypatch, tmp_path, kind):
+    import runtime_control
+    import telegram_bot
+    async def scenario():
+        bot, _, _, _ = real_bot(monkeypatch, tmp_path)
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+        async def forbidden_capture(*args, **kwargs):
+            calls.append("subprocess")
+            raise AssertionError("Subprocess started after shutdown")
+        async def forbidden_suggest(*args, **kwargs):
+            calls.append("suggest")
+            raise AssertionError("AI task started after shutdown")
+        async def authorized(*args, **kwargs):
+            return True
+        original_api = bot._api_request
+        async def blocked_api(method, payload, **kwargs):
+            if method == "sendMessage" and not entered.is_set():
+                entered.set()
+                await release.wait()
+            return await original_api(method, payload, **kwargs)
+        monkeypatch.setattr(bot, "_api_request", blocked_api)
+        monkeypatch.setattr(bot, "_authorize_ai_usage", authorized)
+        monkeypatch.setattr(runtime_control, "run_command_capture", forbidden_capture)
+        monkeypatch.setattr(telegram_bot.search_query_suggester, "suggest_queries", forbidden_suggest)
+        principal = {"user_id": 1, "role": "admin", "profile": "qa"}
+        if kind == "manual":
+            invocation = bot._start_manual_ai_apply(42, principal, profile_name="qa", token="manual")
+        elif kind == "auth":
+            invocation = bot._start_profile_hh_auth_capture(42, principal, profile_name="qa")
+        else:
+            invocation = bot._start_search_query_suggestion(42, principal, profile_name="qa")
+        launch = asyncio.create_task(invocation)
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        await bot._shutdown_command_queue()
+        release.set()
+        await launch
+        await asyncio.sleep(0)
+        assert calls == []
+        assert not bot._active_commands
+        assert not bot._queue_launching
+        assert not bot._queue_drainers
+    asyncio.run(scenario())
+
+
+def test_paused_resume_button_survives_removal_of_original_head(monkeypatch):
+    monkeypatch.setattr(queue.telegram_access, "resolve_user", lambda uid: {
+        "user_id": uid, "role": "user", "profile": "qa"})
+    async def scenario():
+        bot = Bot()
+        await bot._admit_command(entry(bot))
+        first, second = entry(bot), entry(bot)
+        await bot._admit_command(first)
+        await bot._admit_command(second)
+        bot.guard = "captcha"
+        bot.finish()
+        await settle(bot)
+        paused_notice = next(kwargs for _, text, kwargs in bot.messages if "на паузе" in text)
+        resume = paused_notice["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+        await bot._queue_callback({"id": "remove", "from": {"id": 1}, "data": f"queue:remove:{first.id}"})
+        bot.guard = ""
+        await bot._queue_callback({"id": "resume", "from": {"id": 1}, "data": resume})
+        await settle(bot)
+        assert bot._active_commands["qa"].entry is second
+        bot.finish()
+        await settle(bot)
+    asyncio.run(scenario())
+
+
+def test_pruning_finished_task_wakes_waiting_profile(monkeypatch, tmp_path):
+    import runtime_control
+    async def scenario():
+        bot, _, _, _ = real_bot(monkeypatch, tmp_path)
+        done = False
+        blocker = bot._mark_active_command(principal={"user_id": 1}, label="blocker", profile_name="qa")
+        blocker.task = SimpleNamespace(done=lambda: done)
+        await bot._handle_callback_query(source())
+        calls = []
+        async def capture(argv, *, timeout, on_start):
+            calls.append(argv)
+            return {"ok": True, "stdout": "done", "stderr": ""}
+        monkeypatch.setattr(runtime_control, "run_command_capture", capture)
+        done = True
+        assert bot._active_command("qa") is None
+        await spin_until(lambda: bool(calls) and not bot._active_commands and not bot._queue_drainers)
+        assert len(calls) == 1
+    asyncio.run(scenario())
+
+
+def test_second_queued_manual_token_reaches_ordinary_agent_status_validation(monkeypatch, tmp_path):
+    import agent
+    import config
+    import runtime_control
+    import manual_apply_queue
+    candidate = {"status": "pending", "allow_ai_apply": True, "vacancy": {"source": "hh"}}
+    monkeypatch.setattr(config, "HH_APPLICATION_MODE", "auto")
+    monkeypatch.setattr(manual_apply_queue, "get_candidate", lambda token, **kwargs: dict(candidate))
+    monkeypatch.setattr(agent.company_blacklist, "is_blocked", lambda company: False)
+    def forbidden_client(*args, **kwargs):
+        raise AssertionError("Completed candidate must be refused before opening HH")
+    monkeypatch.setattr(agent, "HHClient", forbidden_client)
+
+    async def scenario():
+        bot, _, messages, _ = real_bot(monkeypatch, tmp_path)
+        blocker = bot._mark_active_command(principal={"user_id": 1}, label="blocker", profile_name="qa")
+        blocker.task = SimpleNamespace(done=lambda: False)
+        await bot._handle_callback_query(source("same-token"))
+        await bot._handle_callback_query(source("same-token"))
+        attempts = []
+        async def capture(argv, *, timeout, on_start):
+            attempts.append(argv[-1])
+            if len(attempts) == 1:
+                candidate["status"] = "applied"
+                return {"ok": True, "stdout": "Отклик отправлен, подтверждено сервером hh.", "stderr": ""}
+            rejected = await agent.do_manual_apply_token(argv[-1])
+            assert rejected == {"ok": False, "message": "Отклик для этой карточки недоступен"}
+            return {"ok": False, "stdout": "", "stderr": "", "returncode": 1}
+        monkeypatch.setattr(runtime_control, "run_command_capture", capture)
+        bot._clear_active_command("qa")
+        await spin_until(lambda: len(attempts) == 2 and not bot._active_commands and not bot._queue_drainers)
+        assert attempts == ["same-token", "same-token"]
+        summary = next(payload["text"] for payload in messages if "Очередь выполнена" in payload["text"])
+        assert "отправлено, подтверждено сервером hh" in summary
+        assert "статус карточки: applied" in summary
+    asyncio.run(scenario())
+
+
+def test_arrival_between_release_and_drain_cannot_overtake_waiter():
+    async def scenario():
+        bot = Bot()
+        await bot._admit_command(entry(bot, "A"))
+        older = entry(bot, "B")
+        await bot._admit_command(older)
+        bot.finish()
+        newer = entry(bot, "C")
+        await bot._admit_command(newer)
+        await settle(bot)
+        assert bot._active_commands["qa"].entry is older
+        assert bot._command_queues["qa"] == [newer]
+        bot.finish()
+        await settle(bot)
+        assert bot._active_commands["qa"].entry is newer
+        bot.finish()
+        await settle(bot)
+    asyncio.run(scenario())

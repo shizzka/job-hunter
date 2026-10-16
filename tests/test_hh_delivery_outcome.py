@@ -15,7 +15,7 @@ from state_store.private_journal import read_json_records
 from tests.test_hh_server_delivery import HASH, dirty, html, run_check, setup
 
 
-@pytest.mark.parametrize('vid,topic', [('138433749',5657384020), ('138473842',5657461156)])
+@pytest.mark.parametrize('vid,topic', [('130000002',5600000002), ('130000003',5600000003)])
 def test_live_cases_owner_sent_and_durable_uncertain(tmp_path, vid, topic):
     client, attempt, _, _ = setup(tmp_path, vid, topic)
     dirty(client, attempt)
@@ -36,13 +36,13 @@ def test_owner_projection_analytics_notification_and_safety(tmp_path, monkeypatc
     client, attempt, _, isolated = setup(tmp_path)
     monkeypatch.setattr(delivery.asyncio, 'sleep', AsyncMock())
     dirty(client, attempt)
-    if kind == 'not_seen': isolated.get.return_value.text.return_value = html('138433749')
-    if kind == 'ambiguous': isolated.get.return_value.text.return_value = html('138433749', [1,2])
-    if kind == 'mismatch': isolated.get.return_value.text.return_value = html('138433749', [1], resume_hash='wrong')
+    if kind == 'not_seen': isolated.get.return_value.text.return_value = html('130000002')
+    if kind == 'ambiguous': isolated.get.return_value.text.return_value = html('130000002', [1,2])
+    if kind == 'mismatch': isolated.get.return_value.text.return_value = html('130000002', [1], resume_hash='wrong')
     if kind == 'unknown': del attempt._hh_delivery_before
     if kind != 'forged': assert run_check(client, attempt).status == kind
     attempt.repository.transition(attempt.url, attempt.owner, 'uncertain')
-    vacancy = {'source':'hh','id':'138433749','url':attempt.url}
+    vacancy = {'source':'hh','id':'130000002','url':attempt.url}
     raw = {'ok':False,'uncertain':True,'hh_hard_stop':True,'server_delivery':{'status':'confirmed'}}
     result = apply_orchestrator.apply_result_with_current_uncertainty(vacancy, client, raw, owned_attempt=attempt)
     assert application_outcome(result) == ('sent' if kind=='confirmed' else 'uncertain')
@@ -76,7 +76,7 @@ def test_real_browser_dirty_receipt_stays_stopped_but_counts_sent(tmp_path, monk
     from hh_client import HHClient
     from tests.test_hh_post_submit_verification import APPLIED_HTML, VACANCY_URL
     monkeypatch.setattr(gate_module, 'VACANCY_HTML', gate_module.VACANCY_HTML + html('2'))
-    after_html = APPLIED_HTML + html('2', [5657384020])
+    after_html = APPLIED_HTML + html('2', [5600000002])
     original_init = HHClient.__init__
     isolated_get = AsyncMock(return_value=SimpleNamespace(status=200, url=VACANCY_URL,
         headers={'content-type':'text/html'}, text=AsyncMock(return_value=after_html), dispose=AsyncMock()))
@@ -145,7 +145,7 @@ def test_manual_queue_remains_uncertain_while_owner_is_told_sent(tmp_path, monke
     monkeypatch.setattr(agent, 'generate_cover_letter', AsyncMock(return_value='PRIVATE_LETTER'))
     monkeypatch.setattr(agent, 'notify_application', AsyncMock())
     monkeypatch.setattr(agent, 'notify_needs_manual', AsyncMock())
-    vacancy = {'id':'138433749','source':'hh','url':attempt.url,'title':'QA','company':'Synthetic'}
+    vacancy = {'id':'130000002','source':'hh','url':attempt.url,'title':'QA','company':'Synthetic'}
     candidate = manual_apply_queue.create_candidate(vacancy, {'score':55,'reason':'synthetic'}, details='Synthetic')
     raw = delivery.result_with_delivery({'ok':False,'uncertain':True,'hh_hard_stop':True}, attempt)
     dispatch = AsyncMock(return_value=raw)
@@ -155,7 +155,7 @@ def test_manual_queue_remains_uncertain_while_owner_is_told_sent(tmp_path, monke
     assert 'подтверждено сервером hh' in result['message']
     assert manual_apply_queue.get_candidate(candidate['token'])['status']=='uncertain'
     assert not manual_apply_queue.claim_candidate(candidate['token'])
-    assert seen.all_entries()['138433749']['action']=='apply_uncertain'
+    assert seen.all_entries()['130000002']['action']=='apply_uncertain'
     agent.notify_application.assert_awaited_once()
     agent.notify_needs_manual.assert_not_awaited()
     decisions = [e['decision'] for e in read_json_records(config.ANALYTICS_EVENTS_FILE) if e.get('event')=='decision']

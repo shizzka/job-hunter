@@ -25,7 +25,7 @@ def html(vid, ids=(), *, resume_hash=None, vacancy=None, kind='RESPONSE_BY_APPLI
     return '<html><body><template id="HH-Lux-InitialState">' + json.dumps(state) + '</template></body></html>'
 
 
-def setup(tmp_path, vid='138433749', topic=5657384020):
+def setup(tmp_path, vid='130000002', topic=5600000002):
     client, context, page, monitor = monitored_client()
     url = 'https://spb.hh.ru/vacancy/' + vid
     repository = NativeApplyRepository(tmp_path / 'cookies.json', 'hh')
@@ -77,7 +77,7 @@ def dirty(client, attempt):
         page._hh_action_monitor.mark_unknown(reason='unclassified_event')
 
 
-@pytest.mark.parametrize('vid,topic', [('138433749',5657384020), ('138473842',5657461156)])
+@pytest.mark.parametrize('vid,topic', [('130000002',5600000002), ('130000003',5600000003)])
 def test_both_live_reconstructions_confirm_without_relaxing_safety(tmp_path, vid, topic):
     client, attempt, trace, isolated = setup(tmp_path, vid, topic)
     dirty(client, attempt)
@@ -115,7 +115,7 @@ def test_diff_conditions(tmp_path, monkeypatch, case, status):
     client, attempt, trace, isolated = setup(tmp_path)
     monkeypatch.setattr(delivery.asyncio, 'sleep', AsyncMock())
     args = {}
-    ids = [5657384020]
+    ids = [5600000002]
     if case == 'two': ids.append(5657384021)
     if case == 'foreign': args['vacancy'] = '42'
     if case == 'invitation': args['kind'] = 'INVITATION'
@@ -125,10 +125,10 @@ def test_diff_conditions(tmp_path, monkeypatch, case, status):
     if case == 'missing': del attempt._hh_delivery_before
     if case == 'late_before':
         del attempt._hh_delivery_before
-        observation.snapshot(attempt, html('138433749'), '138433749', HASH, 'before')
+        observation.snapshot(attempt, html('130000002'), '130000002', HASH, 'before')
     if case == 'late_post': attempt._hh_application_posts[0]['_completed_monotonic'] = time.monotonic()+100
     if case == 'empty': ids = []
-    isolated.get.return_value.text.return_value = html('138433749', ids, **args)
+    isolated.get.return_value.text.return_value = html('130000002', ids, **args)
     record = run_check(client, attempt)
     assert record.status == status
     if case == 'empty':
@@ -173,25 +173,25 @@ def test_existing_two_topics_never_confirm(tmp_path, monkeypatch):
 
 def test_preflight_map_explicit_id_and_used_ids_are_not_positional(tmp_path):
     client, attempt, _, isolated = setup(tmp_path)
-    state = {'applicantVacancyResponseStatuses': {'138433749': {
+    state = {'applicantVacancyResponseStatuses': {'130000002': {
         'resumes': {HASH: {'id':260248350, 'hash':HASH}}, 'usedResumeIds':[123]}}}
     attempt.acting = False
-    delivery.capture_resume_hashes(attempt, '<template id="HH-Lux-InitialState">'+json.dumps(state)+'</template>', '138433749')
+    delivery.capture_resume_hashes(attempt, '<template id="HH-Lux-InitialState">'+json.dumps(state)+'</template>', '130000002')
     attempt.acting = True
     assert run_check(client, attempt).resume_verified is True
-    state['applicantVacancyResponseStatuses']['138433749']['resumes'][HASH].pop('id')
-    assert observation.resume_hashes(state, '138433749') == {}
+    state['applicantVacancyResponseStatuses']['130000002']['resumes'][HASH].pop('id')
+    assert observation.resume_hashes(state, '130000002') == {}
 
 
 @pytest.mark.parametrize('state', [
     '{broken',
     json.dumps({'resumes': {'260248350': {'hash':'wrong'}}, 'applicantVacancyResponseStatuses': {
-        '138433749': {'resumes': {HASH: {'id':260248350, 'hash':HASH}}}}}),
+        '130000002': {'resumes': {HASH: {'id':260248350, 'hash':HASH}}}}}),
 ])
 def test_broken_or_conflicting_preflight_map_is_unknown(tmp_path, state):
     client, attempt, _, _ = setup(tmp_path)
     attempt.acting = False
-    delivery.capture_resume_hashes(attempt, '<template id="HH-Lux-InitialState">'+state+'</template>', '138433749')
+    delivery.capture_resume_hashes(attempt, '<template id="HH-Lux-InitialState">'+state+'</template>', '130000002')
     attempt.acting = True
     assert run_check(client, attempt).status=='unknown'
 
@@ -239,7 +239,7 @@ def test_delivery_runs_after_every_reconciliation_exit(tmp_path, stage):
 def test_delayed_visibility_uses_at_most_three_reads(tmp_path, monkeypatch):
     client, attempt, _, isolated = setup(tmp_path)
     monkeypatch.setattr(delivery.asyncio, 'sleep', AsyncMock())
-    isolated.get.return_value.text.side_effect = [html('138433749'), html('138433749'), html('138433749', [5657384020])]
+    isolated.get.return_value.text.side_effect = [html('130000002'), html('130000002'), html('130000002', [5600000002])]
     assert run_check(client, attempt).status == 'confirmed'
     assert attempt._hh_server_delivery.reads == 3
     assert isolated.get.await_count == 3

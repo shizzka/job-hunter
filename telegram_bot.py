@@ -46,6 +46,7 @@ from telegram_app.auth_bridge import (
 from telegram_app.api import TelegramAPIClient, TelegramAPIError, telegram_error_summary
 from telegram_app.callbacks import TelegramCallbackRouter
 from telegram_app.forms import TelegramFormEditor
+from telegram_app.command_queue import TelegramCommandQueue, profile_command, current_entry
 from telegram_app.subprocesses import (
     ActiveCommandState,
     TelegramSubprocessManager,
@@ -220,6 +221,7 @@ def _build_chat_ai_candidates_markup(profile_name: str, summary: dict) -> dict |
 class TelegramBot(
     TelegramAPIClient,
     TelegramSubprocessManager,
+    TelegramCommandQueue,
     TelegramHHAuthBridge,
     TelegramCallbackRouter,
     TelegramFormEditor,
@@ -233,6 +235,7 @@ class TelegramBot(
     ):
         TelegramAPIClient.__init__(self, logger=log)
         TelegramSubprocessManager.__init__(self, admin_role=ROLE_ADMIN)
+        self._init_command_queue()
         TelegramHHAuthBridge.__init__(
             self,
             admin_role=ROLE_ADMIN,
@@ -266,7 +269,7 @@ class TelegramBot(
             nonlocal shutdown_task
             self._stop_event.set()
             if shutdown_task is None or shutdown_task.done():
-                shutdown_task = loop.create_task(self._close_sessions())
+                shutdown_task = loop.create_task(self._shutdown_command_queue())
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, _signal_handler)
@@ -292,6 +295,9 @@ class TelegramBot(
                 except Exception as exc:
                     log.warning("health check failed: %s", telegram_error_summary(exc))
         finally:
+            if shutdown_task is not None:
+                await shutdown_task
+            await self._shutdown_command_queue()
             self._poll_health = {**self._poll_health, "status": "stopped"}
             self._write_runtime("bot_stop", "Бот Telegram остановлен", "offline")
             runtime_control.unregister_current_process(self.runtime_paths.bot_pid_file)
@@ -408,7 +414,9 @@ class TelegramBot(
         if not command:
             await self._send_text(
                 chat_id,
-                f"✅ Для профиля {_pretty_profile_name(target_profile)} сейчас нет активной команды.",
+                f"✅ Для профиля {_pretty_profile_name(target_profile)} сейчас нет активной команды.\n"
+                f"В очереди: {self._queue_length(target_profile)}"
+                + (" · ⏸ на паузе" if target_profile in self._queue_paused else ""),
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
@@ -416,6 +424,7 @@ class TelegramBot(
             chat_id,
             build_busy_status_text(
                 active_command=command.label,
+                queue_length=self._queue_length(target_profile),
                 profile_name=command.profile_name,
                 elapsed_sec=self._active_elapsed_sec(command),
                 pid=command.subprocess_pid,
@@ -469,6 +478,7 @@ class TelegramBot(
                 chat_id,
                 build_busy_status_text(
                     active_command=command.label,
+                    queue_length=self._queue_length(target_profile),
                     profile_name=command.profile_name,
                     elapsed_sec=self._active_elapsed_sec(command),
                     pid=command.subprocess_pid,
@@ -1114,6 +1124,7 @@ class TelegramBot(
         )
         return True
 
+    @profile_command
     async def _start_search_query_suggestion(self, chat_id: int, principal: dict, *, profile_name: str) -> None:
         if self._has_active_command(profile_name):
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
@@ -1160,7 +1171,7 @@ class TelegramBot(
             finally:
                 self._clear_active_command(profile_name)
 
-        active_command.task = asyncio.create_task(runner())
+        active_command.task = self._create_active_task(active_command, runner)
 
     def _latest_run(self, profile_name: str) -> dict | None:
         return runtime_control.latest_run_entry(self._profile(profile_name).run_history_file)
@@ -1581,6 +1592,9 @@ class TelegramBot(
         return updates
 
     async def _send_text(self, chat_id: int, text: str, *, reply_markup: dict | None = None) -> dict | None:
+        entry = current_entry()
+        if entry is not None:
+            entry.last_message = text
         first_result: dict | None = None
         for idx, part in enumerate(split_message(text)):
             payload = {
@@ -2017,6 +2031,7 @@ class TelegramBot(
             return
         await self._dispatch(chat_id, principal, command, arg)
 
+    @profile_command
     async def _dispatch(self, chat_id: int, principal: dict, command: str, arg: str) -> None:
         role = principal.get("role", ROLE_USER)
         profile_name = self._selected_profile(principal)
@@ -2032,7 +2047,9 @@ class TelegramBot(
             parent = MENU_PARENTS.get(self._selected_menu(principal), MENU_MAIN)
             await self._send_menu(chat_id, principal, profile_name=profile_name, menu=parent)
             return
-        if active_command and _command_conflicts_with_active(command):
+        if (current_entry() is None and (active_command or self._queue_launching.get(profile_name)
+                                         or (self._queue_length(profile_name) and command not in {"/hh_auth", "/client_hh_auth"}))
+                and _command_conflicts_with_active(command)):
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
             return
 
@@ -2935,6 +2952,7 @@ class TelegramBot(
 
         await self._send_text(chat_id, f"❓ Неизвестная команда: {command}", reply_markup=self._menu_reply_markup(principal))
 
+    @profile_command
     async def _start_profile_hh_auth_capture(
         self,
         chat_id: int,
@@ -3048,8 +3066,9 @@ class TelegramBot(
             finally:
                 self._clear_active_command(profile_name)
 
-        active_command.task = asyncio.create_task(runner())
+        active_command.task = self._create_active_task(active_command, runner)
 
+    @profile_command
     async def _start_hh_auth_capture(self, chat_id: int, principal: dict, client: dict) -> None:
         role = principal.get("role", ROLE_USER)
         reply_markup = self._menu_reply_markup(principal)
@@ -3214,7 +3233,7 @@ class TelegramBot(
             finally:
                 self._clear_active_command(profile_name)
 
-        active_command.task = asyncio.create_task(runner())
+        active_command.task = self._create_active_task(active_command, runner)
 
     async def _authorize_ai_usage(self, chat_id: int, principal: dict, *, profile_name: str, action: str, consume: bool = True) -> bool:
         if principal.get("role") == ROLE_ADMIN:
@@ -3267,6 +3286,7 @@ class TelegramBot(
             argv=runtime_control.agent_command_argv(profile_name, "--google-form-submit", token),
         )
 
+    @profile_command
     async def _start_google_form_command(
         self,
         chat_id: int,
@@ -3328,8 +3348,9 @@ class TelegramBot(
             finally:
                 self._clear_active_command(profile_name)
 
-        active_command.task = asyncio.create_task(runner())
+        active_command.task = self._create_active_task(active_command, runner)
 
+    @profile_command
     async def _start_chat_ai_candidate_list(
         self,
         chat_id: int,
@@ -3432,8 +3453,9 @@ class TelegramBot(
             finally:
                 self._clear_active_command(profile_name)
 
-        active_command.task = asyncio.create_task(runner())
+        active_command.task = self._create_active_task(active_command, runner)
 
+    @profile_command
     async def _start_chat_ai_reply(
         self,
         chat_id: int,
@@ -3615,8 +3637,9 @@ class TelegramBot(
                         await progress_task
                 self._clear_active_command(profile_name)
 
-        active_command.task = asyncio.create_task(runner())
+        active_command.task = self._create_active_task(active_command, runner)
 
+    @profile_command
     async def _start_manual_ai_apply(
         self,
         chat_id: int,
@@ -3703,8 +3726,9 @@ class TelegramBot(
                         await progress_task
                 self._clear_active_command(profile_name)
 
-        active_command.task = asyncio.create_task(runner())
+        active_command.task = self._create_active_task(active_command, runner)
 
+    @profile_command
     async def _start_cli_command(
         self,
         chat_id: int,
@@ -3837,7 +3861,7 @@ class TelegramBot(
                         await progress_task
                 self._clear_active_command(profile_name)
 
-        active_command.task = asyncio.create_task(runner())
+        active_command.task = self._create_active_task(active_command, runner)
 
 
 async def main() -> None:
