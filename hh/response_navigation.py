@@ -6,6 +6,7 @@ import re
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qsl, urljoin, urlsplit
 
+from hh.response_path import RESPONSE_PATH, CANONICAL_PATH_SCRIPT, canonical_path
 from hh.vacancy_details import _MTS_SRCDOC, inert_details_html
 
 
@@ -33,7 +34,7 @@ def _exact_response_url(url, vacancy_id):
     p = urlsplit(str(url))
     return (p.scheme == 'https' and p.hostname in {'hh.ru', 'spb.hh.ru'}
             and p.netloc == p.hostname and not p.fragment
-            and p.path == '/applicant/vacancy_response'
+            and canonical_path(p.path) == RESPONSE_PATH
             and parse_qsl(p.query, keep_blank_values=True) == [('vacancyId', vacancy_id)])
 
 
@@ -43,7 +44,7 @@ def _tracker_init(vacancy_id):
     return r"""(() => {
       const id=__ID__, mts=new RegExp('^(?:'+__GRAMMAR__+')$');
       const replayVendors=__REPLAY_VENDORS__;
-      const exact=()=>location.protocol==='https:'&&['hh.ru','spb.hh.ru'].includes(location.host)&&location.pathname==='/applicant/vacancy_response'&&!location.hash&&new URLSearchParams(location.search).toString()==='vacancyId='+id;
+      const exact=()=>location.protocol==='https:'&&['hh.ru','spb.hh.ru'].includes(location.host)&&(__CANONICAL_PATH__)(location.pathname)==='/applicant/vacancy_response'&&!location.hash&&new URLSearchParams(location.search).toString()==='vacancyId='+id;
       for(const method of ['appendChild','insertBefore']) {
         const original=Node.prototype[method];
         Node.prototype[method]=function(node,...args) {
@@ -70,7 +71,7 @@ def _tracker_init(vacancy_id):
           return Reflect.apply(original,this,[node,...args]);
         };
       }
-    })();""".replace('__ID__', json.dumps(vacancy_id)).replace('__GRAMMAR__', json.dumps(grammar)).replace('__REPLAY_VENDORS__', json.dumps(REPLAY_VENDOR_URLS))
+    })();""".replace('__CANONICAL_PATH__', CANONICAL_PATH_SCRIPT).replace('__ID__', json.dumps(vacancy_id)).replace('__GRAMMAR__', json.dumps(grammar)).replace('__REPLAY_VENDORS__', json.dumps(REPLAY_VENDOR_URLS))
 
 
 @asynccontextmanager

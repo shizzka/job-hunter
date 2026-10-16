@@ -4,6 +4,8 @@ from html.parser import HTMLParser
 import re
 from urllib.parse import parse_qs, urljoin, urlsplit
 
+from hh.response_path import RESPONSE_PATH, canonical_path, is_response_path
+
 
 @dataclass
 class _Node:
@@ -207,12 +209,12 @@ def parse_hh_search_html(html: str, *, base_url: str) -> list[dict]:
         salary = _first(card, lambda n: _qa(n, {"vacancy-serp__vacancy-compensation", "serp-item__compensation"}) or "vacancy-serp-item__sidebar" in n.attrs.get("class", "").split())
         requirement = _first(card, lambda n: _qa(n, {"vacancy-serp__vacancy_snippet_requirement"}) or "g-user-content" in n.attrs.get("class", "").split())
         responsibility = _first(card, lambda n: _qa(n, {"vacancy-serp__vacancy_snippet_responsibility"}))
-        response = _first(card, lambda n: n.tag == "a" and (_qa(n, {"vacancy-serp__vacancy_response"}) or "/applicant/vacancy_response" in n.attrs.get("href", "")))
+        response = _first(card, lambda n: n.tag == "a" and (_qa(n, {"vacancy-serp__vacancy_response"}) or is_response_path(urlsplit(n.attrs.get("href", "")).path)))
         response_url = _trusted_url(response.attrs.get("href", ""), base_url) if response else ""
         if response_url:
             parts = urlsplit(response_url)
             query = parse_qs(parts.query, keep_blank_values=True)
-            if (parts.path != "/applicant/vacancy_response"
+            if (canonical_path(parts.path) != RESPONSE_PATH
                     or query.get("vacancyId") != [match[1]]
                     or set(query) - {"vacancyId", "employerId", "hhtmFrom", "hhtmFromLabel"}):
                 response_url = ""

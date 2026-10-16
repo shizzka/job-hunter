@@ -1,13 +1,13 @@
 """Recheck approved native payload synchronously at browser click/submit events."""
 
-RESPONSE_PATH = '/applicant/vacancy_response'
+from hh.response_path import RESPONSE_PATH, CANONICAL_PATH_SCRIPT, canonical_path, is_response_path
 
 # Captured HH component 501788. DOM-attached Fibers can be alternates: only
 # HostRoot.stateNode.current may supply the current selected-resume props.
 REACT_RESPONSE_STATE_SCRIPT = r'''() => {
     const url = new URL(location.href), query = [...url.searchParams];
     if (url.protocol !== 'https:' || !['hh.ru','spb.hh.ru'].includes(url.host) ||
-        url.pathname !== '/applicant/vacancy_response' || url.hash || query.length !== 1 ||
+        (__CANONICAL_PATH__)(url.pathname) !== '/applicant/vacancy_response' || url.hash || query.length !== 1 ||
         query[0][0] !== 'vacancyId' || !/^\d+$/.test(query[0][1])) return null;
     const forms = [...document.querySelectorAll('form[name="vacancy_response"]')];
     if (forms.length !== 1) return null;
@@ -55,7 +55,7 @@ REACT_RESPONSE_STATE_SCRIPT = r'''() => {
     if (!countries.every(value => Number.isSafeInteger(Number(value)))) return null;
     return {hash:resume.hash, incomplete:resume.isIncomplete, letter:props.letterValue,
         visibility:!!agreement.confirmed, countries:countries.map(Number), vacancy:id};
-}'''
+}'''.replace('__CANONICAL_PATH__', CANONICAL_PATH_SCRIPT)
 
 
 def popup_request_matches(proof, request):
@@ -73,6 +73,8 @@ def popup_request_matches(proof, request):
                 or not all(isinstance(value, str) for value in expected.values())):
             return False
         actual, approved = urlsplit(request.url), urlsplit(proof['url'])
+        actual = actual._replace(path=canonical_path(actual.path))
+        approved = approved._replace(path=canonical_path(approved.path))
         if (actual != approved or actual.scheme != 'https'
                 or actual.netloc not in {'hh.ru', 'spb.hh.ru'}
                 or actual.path != RESPONSE_PATH + '/popup'
@@ -148,7 +150,8 @@ async def _install_popup_gate(session, boundary_id, descriptor):
         used = True
         await route.continue_()
 
-    await page.route('**/applicant/vacancy_response**', gate)
+    from urllib.parse import urlsplit
+    await page.route(lambda url: is_response_path(urlsplit(url).path), gate)
 
 
 async def wait_popup_receipt_navigation(session, boundary_id):

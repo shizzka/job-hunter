@@ -1,6 +1,9 @@
 """Helpers for the HH vacancy application flow."""
 
 import hashlib
+from urllib.parse import urlsplit
+
+from hh.response_path import is_response_path
 
 from state_store.native_apply import NativeApplyRepository, run_native_attempt
 import os
@@ -1423,7 +1426,7 @@ async def _apply_to_vacancy(
             submit_btn,
         ) = await detect_response_controls()
         direct_response_flow = (
-            "/applicant/vacancy_response" in current_url
+            is_response_path(urlsplit(current_url).path)
             or response_header is not None
             or resume_select is not None
             or letter_field is not None

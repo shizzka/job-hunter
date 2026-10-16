@@ -17,7 +17,7 @@ from html.parser import HTMLParser
 from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlsplit
 
 from browser_action_boundary import RUNTIME, bootstrap_boundary
-from hh.submit_boundary import RESPONSE_PATH
+from hh.response_path import RESPONSE_PATH, canonical_path, is_response_path
 from hh.ui import CHALLENGE_SELECTOR, CHALLENGE_TEXT, HHUIGuard, HHUnexpectedUI
 
 AUTH_URL = 'https://hh.ru/applicant/resumes'
@@ -193,17 +193,17 @@ def _unknown_classification(request, reason, frame_kind, event_url):
                               'hh' if _hh_target(url) else 'third_party')
         # Even a path may contain a resume hash or personal data. Keep only
         # known static routes, template the rest, and never emit the hostname.
-        path = parsed.path
+        path = canonical_path(parsed.path)
         root = path.lstrip('/').split('/', 1)[0]
         diagnostic['path_category'] = (
-            'response' if path.startswith(RESPONSE_PATH) else
+            'response' if is_response_path(path) else
             'analytics' if root in {'analytics', 'telemetry', 'metrics', 'collect', 'track',
                                    'events', 'counter', 'stat', 'stats', 'hhtm'} else
             'applicant' if path.startswith('/applicant/') else
             'vacancy' if path.startswith('/vacancy/') else 'other')
         if path in {RESPONSE_PATH, RESPONSE_PATH + '/popup', '/applicant/resumes'}:
             diagnostic['path'] = path
-        elif path.startswith(RESPONSE_PATH):
+        elif is_response_path(path):
             diagnostic['path'] = RESPONSE_PATH + '/[other]'
         elif path.startswith('/vacancy/'):
             diagnostic['path'] = '/vacancy/[id]'
@@ -298,7 +298,8 @@ def _request_matches(proof, request):
         if not all(isinstance(item, list) and len(item) == 2 and all(isinstance(value, str) for value in item) for item in entries):
             return False
         actual, approved = urlsplit(request.url), urlsplit(proof['url'])
-        if (actual.scheme, actual.netloc, actual.path) != (approved.scheme, approved.netloc, approved.path):
+        if ((actual.scheme, actual.netloc, canonical_path(actual.path))
+                != (approved.scheme, approved.netloc, canonical_path(approved.path))):
             return False
         method = request.method.upper()
         if method != proof['method']:
@@ -391,7 +392,7 @@ def _application_reason(request, evidence):
     if not _hh_target(request.url):
         return 'none'
     if (request.method.upper() not in {'GET', 'HEAD'}
-            and urlsplit(request.url).path.startswith(RESPONSE_PATH)):
+            and is_response_path(urlsplit(request.url).path)):
         return 'response_path'
     if evidence['query_fields']:
         return 'query_fields'
@@ -445,7 +446,7 @@ def monitor_page(session, page):
                 watch.mark_unknown(request, reason='request_observation_error')
         context.on('request', request_seen)
         def response_seen(response):
-            if not (_hh_target(response.url) and urlsplit(response.url).path.startswith(RESPONSE_PATH)):
+            if not (_hh_target(response.url) and is_response_path(urlsplit(response.url).path)):
                 return
             for monitor in watch.pages.values():
                 for attempt in monitor.attempts.values():
