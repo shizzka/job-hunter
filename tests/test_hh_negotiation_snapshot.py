@@ -20,7 +20,7 @@ def state(page=0, pages=1, *, archived=False):
         'applicantNegotiations': {
             'total': pages, 'pageCount': str(pages), 'paging': {'page': page},
             'filterInUse': 'archived' if archived else 'active',
-            'topicList': [{'id': 100 + page, 'vacancyId': 42, 'employerId': 8,
+            'topicList': [{'id': 100 + page, 'chatId': 5700000002, 'vacancyId': 42, 'employerId': 8,
                            'employerManagerId': 9, 'resumeId': 10, 'viewedByOpponent': True,
                            'archived': archived, 'creationTimeMillis': 1000,
                            'lastEmployerState': None, 'lastState': 'RESPONSE',
@@ -91,6 +91,17 @@ def test_parse_active_joins_and_public_vacancy_fields():
         'vacancy_name': 'Synthetic vacancy', 'company_id': 8, 'company_name': 'Synthetic company',
         'company_trusted': True, 'company_accredited_it': True,
         'vacancy_creation_time': 100, 'vacancy_publication_time': 200, 'closed_for_applicants': False}
+
+
+@pytest.mark.parametrize('value,expected', [
+    (5700000002, 5700000002), ('5700000002', 5700000002),
+    (None, None), (True, None), ({'id': 1}, None), ('private', None),
+])
+def test_chat_id_retains_only_numbers(value, expected):
+    payload = state()
+    payload['applicantNegotiations']['topicList'][0]['chatId'] = value
+    row = ns.parse_page(html(payload))['records'][0]
+    assert row['chatId'] == expected
 
 
 @pytest.mark.parametrize('missing', ['bridge', 'manager_id', 'hhid', 'activity', 'mismatch'])
@@ -195,6 +206,8 @@ def test_jsonl_allowlist_and_append_only_without_state_writes(tmp_path, monkeypa
     assert (home / 'negotiation_snapshots.jsonl').read_bytes().startswith(previous)
     assert len(calls) == 2 and not pauses
     row, summary = rows(home)[:2]
+    assert row['chatId'] == 5700000002
+    assert type(row['chatId']) is int
     assert set(row) == set(ns.TOPIC_FIELDS + ns.VACANCY_FIELDS) | {
         'snapshot_id', 'fetched_at', 'filter', 'page', 'employer_politeness', 'manager_activity'}
     assert set(row['employer_politeness']) == set(ns.POLITENESS_FIELDS)

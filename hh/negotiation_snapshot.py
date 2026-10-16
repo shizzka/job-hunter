@@ -19,7 +19,7 @@ from state_store.hh_cookies import HHCookieRepository
 
 
 TOPIC_FIELDS = (
-    'id', 'vacancyId', 'employerId', 'employerManagerId', 'resumeId',
+    'id', 'chatId', 'vacancyId', 'employerId', 'employerManagerId', 'resumeId',
     'creationTimeMillis', 'lastModifiedMillis', 'employerLastChangeTime',
     'viewedByOpponent', 'lastEmployerState', 'lastState', 'lastSubState',
     'employerSubState', 'lastFunnelStage',
@@ -94,6 +94,7 @@ def parse_page(html, *, expected_filter='active'):
             if not isinstance(topic, dict) or _number(topic.get('id')) is None:
                 return {'ok': False, 'reason': 'invalid_topic'}
             row = _pick(topic, TOPIC_FIELDS)
+            row['chatId'] = _number(topic.get('chatId'))
             employer = politeness.get(str(topic.get('employerId')))
             manager = managers.get(manager_hhids.get(str(topic.get('employerManagerId'))))
             row['employer_politeness'] = _pick(employer, POLITENESS_FIELDS) if isinstance(employer, dict) else None

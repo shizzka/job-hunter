@@ -429,7 +429,8 @@ def test_preview_markup_contains_alternative_and_send_callbacks():
     markup = chat_responder.build_chat_answer_preview_markup("qa", "5394116371", "14410048077")
     buttons = [button for row in markup["inline_keyboard"] for button in row]
 
-    assert any(button.get("text") == "Открыть чат" and button.get("url") for button in buttons)
+    assert any(button.get("text") == "Открыть отклики"
+               and button.get("url") == "https://hh.ru/applicant/negotiations" for button in buttons)
     assert any(
         button.get("text") == "✅ Отправить"
         and button.get("callback_data") == "chat_send:qa:5394116371:14410048077"
@@ -702,7 +703,8 @@ def test_process_all_captions_escape_dynamic_html():
         assert "A&amp;B" in caption
         assert "Нужно &lt;3 лет &amp; быстро?" in caption
         assert "Готов &lt;обучаться&gt; &amp; развиваться" in caption
-    assert "42&#x27;bad" in sent_caption
+    assert "42'bad" not in sent_caption
+    assert "<a href='https://hh.ru/applicant/negotiations'>Открыть отклики</a>" in sent_caption
 
 
 def test_chat_preview_and_send_use_explicit_runtime_paths(tmp_path, monkeypatch):

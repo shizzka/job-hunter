@@ -43,6 +43,7 @@ import config
 from chat_observation import ChatJournal, active_chat_journal, diagnostic_snapshot, select_chat_batch
 from chat_triage import decide_chat, external_invitation, question_reason
 from hh.ui import HHUnexpectedUI
+from hh.negotiation_links import chat_link
 from llm_client import get_llm_client
 from llm_utils import parse_llm_json
 from google_form_filler import extract_google_form_urls
@@ -113,18 +114,37 @@ def _dry_run_caption(vacancy: dict, message: dict, answer: str) -> str:
     )
 
 
-def _sent_caption(chat_id: str, vacancy: dict, message: dict, answer: str) -> str:
+def _human_chat_button(chat_id: str, profile_name: str | None = None, *,
+                       runtime_paths: RuntimePaths | None = None) -> dict:
+    paths = runtime_paths or _runtime_paths()
+    home = paths.home_dir
+    if profile_name and profile_name != _active_profile_name():
+        try:
+            import profile as profile_mod
+            home = profile_mod.load_profile(profile_name).home_dir
+        except (OSError, ValueError):
+            return {"text": "Открыть отклики", "url": "https://hh.ru/applicant/negotiations"}
+    return chat_link(home, chat_id)
+
+
+def _human_chat_anchor(chat_id: str, profile_name: str | None = None, *,
+                       runtime_paths: RuntimePaths | None = None) -> str:
+    button = _human_chat_button(chat_id, profile_name, runtime_paths=runtime_paths)
+    return f"<a href='{button['url']}'>{button['text']}</a>"
+
+
+def _sent_caption(chat_id: str, vacancy: dict, message: dict, answer: str, *,
+                  runtime_paths: RuntimePaths | None = None) -> str:
     title = _escaped_html(vacancy.get("title") or "—", limit=300)
     company = _escaped_html(vacancy.get("company") or "—", limit=200)
     question = _escaped_html(message.get("text") or "", limit=300)
     safe_answer = _escaped_html(answer, limit=800)
-    safe_chat_id = _escaped_html(chat_id, limit=100)
     return (
         "🤖 <b>Ответил в чате</b>\n"
         f"📋 {title} @ {company}\n\n"
         f"❓ <i>{question}</i>\n\n"
         f"💬 {safe_answer}\n\n"
-        f"<a href='https://chatik.hh.ru/chat/{safe_chat_id}'>Открыть чат</a>"
+        f"{_human_chat_anchor(chat_id, runtime_paths=runtime_paths)}"
     )
 
 
@@ -620,7 +640,7 @@ def chat_manual_send_callback_data(profile_name: str, chat_id: str, message_id: 
 
 
 def build_suspicious_chat_reply_markup(profile_name: str, chat_id: str, message_id: str) -> dict:
-    rows = [[{"text": "Открою сам", "url": f"{CHATIK_ROOT}/chat/{chat_id}"}]]
+    rows = [[_human_chat_button(chat_id, profile_name)]]
     callback_data = chat_ai_callback_data(profile_name, chat_id, message_id)
     if len(callback_data.encode("utf-8")) <= 64:
         rows.append([{"text": "Ответить с ИИ", "callback_data": callback_data}])
@@ -635,7 +655,7 @@ def build_chat_answer_preview_markup(
     allow_any: bool = False,
     draft_revision: str = "",
 ) -> dict:
-    rows = [[{"text": "Открыть чат", "url": f"{CHATIK_ROOT}/chat/{chat_id}"}]]
+    rows = [[_human_chat_button(chat_id, profile_name)]]
     send_id = message_id + ("~" + draft_revision if draft_revision else "")
     callback_data = (
         chat_manual_send_callback_data(profile_name, chat_id, send_id)
@@ -694,7 +714,7 @@ async def notify_hr_message(notifier, *, chat_id, vacancy, message, profile_name
     excerpt = html.escape((message.get("text") or "").strip()[:900])
     if len(excerpt) > 1800:
         excerpt = html.escape((message.get("text") or "").strip()[:300])
-    rows = [[{"text": "Открыть чат", "url": f"{CHATIK_ROOT}/chat/{chat_id}"}]]
+    rows = [[_human_chat_button(chat_id, profile_name)]]
     if invitation:
         heading = "Приглашение пройти: " + invitation["kind"]
         # Long URLs belong in buttons, not in Telegram's HTML text limit.
@@ -850,14 +870,14 @@ def _chat_result_caption(detail: dict, *, sent=False) -> str:
     company = html.escape((vac.get("company") or "—")[:160])
     question = html.escape((detail.get("question") or "")[:450])
     answer = html.escape(detail.get("answer") or "")
-    chat_id = html.escape(str(detail.get("chat_id") or ""))
+    chat_id = str(detail.get("chat_id") or "")
     heading = "Ответил в подозрительном HR-чате" if sent else "ИИ подготовил ответ"
     return (
         f"<b>{heading}</b>\n"
         f"{title} @ {company}\n\n"
         f"<i>{question}</i>\n\n"
         f"{answer}\n\n"
-        f"<a href='{CHATIK_ROOT}/chat/{chat_id}'>Открыть чат</a>"
+        f"{_human_chat_anchor(chat_id, detail.get('profile_name'))}"
     )
 
 
@@ -933,6 +953,7 @@ async def _notify_google_form_failure(
     form_url: str,
     error: str,
     screenshot_path: str = "",
+    runtime_paths: RuntimePaths | None = None,
 ) -> bool:
     if notifier is None:
         return False
@@ -940,7 +961,6 @@ async def _notify_google_form_failure(
     company = html.escape((vacancy.get("company") or "—")[:160])
     question = html.escape((message.get("text") or "")[:500])
     safe_form_url = html.escape(form_url or "")
-    safe_chat_id = html.escape(str(chat_id or ""))
     safe_error = html.escape((error or "unknown error")[:300])
     caption = (
         "⚠️ <b>Google Form не удалось подготовить</b>\n"
@@ -948,7 +968,7 @@ async def _notify_google_form_failure(
         f"<i>{question}</i>\n\n"
         f"Ошибка: {safe_error}\n"
         f"<a href='{safe_form_url}'>Открыть форму</a> · "
-        f"<a href='{CHATIK_ROOT}/chat/{safe_chat_id}'>Открыть чат</a>"
+        f"{_human_chat_anchor(chat_id, runtime_paths=runtime_paths)}"
     )
     if screenshot_path and os.path.exists(screenshot_path):
         return await notifier.send_photo(screenshot_path, caption=caption)
@@ -999,6 +1019,7 @@ async def _prepare_google_form_preview_from_message(
                 form_url=detail.get("form_url") or form_url,
                 error=detail.get("message") or "preview failed",
                 screenshot_path=detail.get("screenshot_path") or "",
+                runtime_paths=paths,
             )
     except HHUnexpectedUI:
         raise
@@ -1030,6 +1051,7 @@ async def _prepare_google_form_preview_from_message(
             form_url=form_url,
             error=detail["message"],
             screenshot_path=screenshot_path,
+            runtime_paths=paths,
         )
     finally:
         try:
@@ -1556,7 +1578,7 @@ async def process_all(
                         if preview.get("screenshot_path"):
                             return await notifier.send_photo(preview["screenshot_path"], caption=caption)
                         return await notifier.send_message_with_markup(caption)
-                    return await notifier.send_message_with_markup(_sent_caption(chat_id, vac, last, detail["answer"]))
+                    return await notifier.send_message_with_markup(_sent_caption(chat_id, vac, last, detail["answer"], runtime_paths=paths))
 
                 detail = await _execute_reply(
                     repository, page, chat_id, copy.deepcopy(last), copy.deepcopy(msgs),
