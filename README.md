@@ -1,7 +1,7 @@
 # Job Hunter
 
-**Current version:** `v0.8.1`
-**Status:** v0.8.1 observability patch awaiting review/merge; v0.8.0 stabilization remains frozen.
+**Current version:** `v0.8.2`
+**Status:** v0.8.2 stable — HH apply and search restored; delivery is confirmed by the HH server (owner live runs 2026-10-16).
 
 Русская версия: [README.ru.md](README.ru.md)
 
