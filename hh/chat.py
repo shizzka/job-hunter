@@ -251,6 +251,9 @@ async def extract_messages(
                        || b.querySelector('[data-qa="chatik-chat-message-' + mid + '-text"]');
             const text = textEl ? (textEl.innerText || '').trim() : '';
             const raw_text = b.innerText || '';
+            // Date dividers can have numeric message IDs and outgoing CSS too.
+            const dateLabel = (text || raw_text).trim();
+            if (/^(?:сегодня|вчера|\\d{1,2}\\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(?:\\s+\\d{4})?)$/iu.test(dateLabel)) continue;
             // author label inside the bubble
             const authorEl = b.querySelector('[data-qa="chat-bubble-author-name"]');
             const raw_author = authorEl ? authorEl.innerText : '';

@@ -1,5 +1,6 @@
 """Execute production extraction JS against local, fully synthetic DOM."""
 import asyncio
+import pytest
 
 from playwright.async_api import async_playwright
 
@@ -84,4 +85,17 @@ def test_chat_list_without_proven_scroll_end_is_incomplete():
             pass
         result = await list_chats(page, open_page=no_navigation)
         assert not result.list_complete and result.stop_reason == "no_scroll_container"
+    asyncio.run(local_page(run))
+
+
+@pytest.mark.parametrize('label', ['Сегодня', 'Вчера', '5 октября', '5 октября 2026'])
+@pytest.mark.parametrize('outgoing', [False, True])
+def test_chat_date_dividers_are_neither_incoming_nor_outgoing(label, outgoing):
+    async def run(page):
+        marker = 'chat-bubble_outgoing' if outgoing else 'chat-bubble'
+        await page.set_content(f'''<div data-qa="chatik-chat-message-1">
+          <div class="{marker}"><div data-qa="chatik-chat-message-1-text">{label}</div></div></div>
+        <div data-qa="chatik-chat-message-2"><div data-qa="chatik-chat-message-2-text">Real question?</div></div>''')
+        result = await extract_messages(page)
+        assert [m['id'] for m in result['messages']] == ['2']
     asyncio.run(local_page(run))

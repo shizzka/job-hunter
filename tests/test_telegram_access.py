@@ -151,3 +151,29 @@ def test_new_diagnosis_action_uses_latest_selected_profile_run(user_bot, monkeyp
     monkeypatch.setattr(bot, "_latest_run", lambda profile: run if profile == "qa" else None)
     asyncio.run(bot._dispatch(42, principal, "/why_no_apply", ""))
     assert bot._send_text.call_args.args[1] == analytics.zero_apply_diagnosis(run)
+
+
+@pytest.mark.parametrize('reason,retryable', [('unsupported_claims', True), ('model_unavailable', True),
+                                              ('stale_question', False), ('attempt_blocked', False)])
+@pytest.mark.parametrize('allow_any', [False, True])
+def test_chat_preview_failure_is_honest_and_retry_preserves_approval_lane(user_bot, monkeypatch, reason, retryable, allow_any):
+    import json
+    from chat_reply_result import reply_result
+    bot, principal = user_bot
+    metadata = reply_result({'ok': False, 'reason': reason, 'dry_run': True})
+    bot._run_active_command_capture.return_value = {
+        'ok': True, 'returncode': 0, 'stdout': json.dumps({'chat_reply_result': metadata})}
+    async def run():
+        await bot._start_chat_ai_reply(42, principal, profile_name='qa', hh_chat_id='123',
+                                     hh_message_id='456', allow_any=allow_any)
+        await asyncio.sleep(0)
+    asyncio.run(run())
+    text = bot._send_text.call_args.args[1]
+    assert text.startswith('Не удалось подготовить ответ: ')
+    assert '✅' not in text and 'завершён' not in text
+    markup = bot._send_text.call_args.kwargs['reply_markup']
+    if retryable:
+        action = 'chat_ai_any' if allow_any else 'chat_ai'
+        assert markup == {'inline_keyboard': [[{'text': 'Повторить', 'callback_data': f'{action}:qa:123:456'}]]}
+    else:
+        assert markup == {}

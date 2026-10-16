@@ -31,6 +31,7 @@ import profile as profile_mod
 import runtime_control
 import search_query_suggester
 import seen
+from chat_reply_result import parse_reply_result
 import telegram_access
 import telegram_clients
 import telegram_resume_limits
@@ -3590,6 +3591,14 @@ class TelegramBot(
                     stderr=(result.get("stderr") or "")[-1200:],
                 )
                 message = format_command_result(label, result, role=role)
+                outcome = parse_reply_result(result.get('stdout'))
+                result_markup = reply_markup
+                if (not force_send and outcome and not outcome.get('ok')
+                        and outcome.get('retryable')):
+                    action = 'chat_ai_any' if allow_any else 'chat_ai'
+                    callback = f'{action}:{profile_name}:{hh_chat_id}:{hh_message_id.partition("~")[0]}'
+                    if len(callback.encode('utf-8')) <= 64:
+                        result_markup = {'inline_keyboard': [[{'text': 'Повторить', 'callback_data': callback}]]}
                 if progress_task:
                     progress_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -3598,7 +3607,7 @@ class TelegramBot(
                 if progress_message_id > 0:
                     await self._delete_message(chat_id, progress_message_id)
                 try:
-                    sent_message = await self._send_text(chat_id, message, reply_markup=reply_markup)
+                    sent_message = await self._send_text(chat_id, message, reply_markup=result_markup)
                     self._append_chat_ai_audit_event(
                         "delivery_ok",
                         action="send" if force_send else "preview",

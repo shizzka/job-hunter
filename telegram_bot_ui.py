@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import analytics
 from reporting import format_run_observation, format_run_losses
+from chat_reply_result import parse_reply_result, reply_failure_text
 
 import json
 import os
@@ -1908,6 +1909,20 @@ def _sanitize_command_output(label: str, stdout: str) -> str:
 
 def format_command_result(label: str, result: dict, *, role: str = ROLE_ADMIN) -> str:
     pretty_label = _pretty_command_label(label)
+    if label in {'chat AI reply', 'chat AI alternative', 'chat AI send'}:
+        outcome = parse_reply_result(result.get('stdout'))
+        if outcome is not None:
+            if outcome.get('notification_uncertain'):
+                return 'Доставка черновика в Telegram не подтверждена. Проверьте сообщения перед повтором.'
+            if not outcome.get('ok'):
+                return reply_failure_text(outcome.get('reason'))
+            if outcome.get('already_replied'):
+                return 'На этот вопрос уже ответили.'
+            if outcome.get('sent'):
+                return 'Ответ отправлен в HH-чат.'
+            return 'Черновик подготовлен. Используйте кнопки под черновиком.'
+        if not result.get('ok') and not result.get('cancelled') and not result.get('timeout'):
+            return reply_failure_text('preparation_error')
     if result.get("cancelled"):
         return "\n".join([
             f"⏹ {pretty_label} остановлен.",

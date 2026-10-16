@@ -166,3 +166,27 @@ def test_button_labels_have_no_substring_collisions():
               if name.startswith("BUTTON_") and not name.endswith("_PREFIX")]
     assert len(labels) == len(set(labels)), "Different buttons must have different labels"
     assert not [(a, b) for a in labels for b in labels if a != b and a in b]
+
+
+@pytest.mark.parametrize('role', [ui.ROLE_USER, ui.ROLE_ADMIN])
+def test_chat_old_cli_failure_is_not_process_success(role):
+    text = ui.format_command_result('chat AI reply', {
+        'ok': True, 'stdout': '📋 Chat one-shot summary:\n  Чат: 123\n  OK: False'}, role=role)
+    assert text.startswith('Не удалось подготовить ответ: ')
+    assert '✅' not in text and 'завершён' not in text
+
+
+@pytest.mark.parametrize('reason,fragment', [
+    ('model_unavailable', 'модель недоступна'),
+    ('grounding_unavailable', 'модель проверки фактов недоступна'),
+    ('invalid_grounding_check', 'некорректную проверку фактов'),
+    ('stale_question', 'вопрос изменился'),
+    ('chat_unavailable', 'чат недоступен'),
+])
+def test_chat_failure_texts_are_plain_and_do_not_expose_process_details(reason, fragment):
+    import json
+    text = ui.format_command_result('chat AI alternative', {'ok': True,
+        'stdout': json.dumps({'chat_reply_result': {'ok': False, 'reason': reason}}),
+        'stderr': 'Private transport details'})
+    assert text.startswith('Не удалось подготовить ответ: ') and fragment in text
+    assert '✅' not in text and 'Private' not in text

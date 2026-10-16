@@ -10,6 +10,8 @@ import pytest
 import hh_chat_responder as cr
 from runtime_context import ChatResponderLimits, RuntimePaths
 
+REAL_GENERATE_ANSWER = cr.generate_answer
+
 
 @pytest.fixture
 def workflow(tmp_path, monkeypatch):
@@ -375,3 +377,90 @@ def test_low_level_claim_happens_after_ui_wait_before_click(monkeypatch, quick_r
     assert asyncio.run(low.send_message(page, "chat", "Да" if quick_reply else "Synthetic answer", fill_preview=fill,
         find_quick_reply=find, before_send=before_send, extract_current_messages=extract))
     assert calls.index("fill") < calls.index("button") < calls.index("arm") < calls.index("claim") < calls.index("click")
+
+
+@pytest.mark.parametrize('supported', [False, True])
+def test_preview_grounding_outcome_reaches_cli_telegram_and_private_journal(
+        workflow, monkeypatch, capsys, caplog, supported):
+    import json
+    import logging
+    import notifier
+    import prompt_blocks
+    from commands import chats
+    from chat_reply_result import parse_reply_result
+    from tests.test_answer_grounding_regressions import ScriptedResponses, evidence
+    from telegram_bot_ui import format_command_result
+
+    # Exercise the real generator and verifier, with fixed LLM responses only.
+    answer = 'Synthetic candidate fact.'
+    proof = evidence(answer) if supported else {
+        'verdict': 'unsupported', 'answers': [{'index': 0, 'supported': False}]}
+    model = ScriptedResponses(({'status': 'answer', 'answer': answer}, 'stop'), (proof, 'stop'))
+    monkeypatch.setattr(cr, 'generate_answer', REAL_GENERATE_ANSWER)
+    monkeypatch.setattr(cr, '_get_llm_client', lambda: model)
+    monkeypatch.setattr('hh_client._load_resume_text', lambda: answer)
+    for name in ('build_profile_note_block', 'build_facts_block', 'build_salary_rule_block',
+                 'build_knowledge_base_block'):
+        monkeypatch.setattr(prompt_blocks, name, lambda *a, **k: '')
+    notices = AsyncMock(return_value=True)
+    monkeypatch.setattr(notifier, 'send_message_with_markup', notices)
+    caplog.set_level(logging.INFO, logger='chat_responder')
+    detail = asyncio.run(workflow.run(dry_run=True, notify=True))
+    assert detail['ok'] is supported
+    assert attempt_status(workflow) == ('completed' if supported else 'failed')
+    assert bool(workflow.repo.load()['chat']['draft']) is supported
+    assert 'send' not in workflow.calls
+    records = [json.loads(line) for line in (workflow.repo.path.parent / 'chat_journal.jsonl').read_text().splitlines()]
+    attempts = [row for row in records if row['event'] == 'chat_reply_attempt']
+    assert len(attempts) == 1
+    assert attempts[0]['reason'] == ('drafted' if supported else 'unsupported_claims')
+    assert attempts[0]['ok'] is supported
+    assert answer not in caplog.text
+    assert f"reason={attempts[0]['reason']}" in caplog.text
+    if supported:
+        notice = notices.call_args
+        assert answer in notice.args[0]
+        buttons = [b['text'] for row in notice.kwargs['reply_markup']['inline_keyboard'] for b in row]
+        assert '✅ Отправить' in buttons and '🔄 Другой вариант' in buttons
+    else:
+        notices.assert_not_awaited()
+
+    async def process(*args, **kwargs):
+        return detail
+    monkeypatch.setattr(cr, 'process_one', process)
+    monkeypatch.setattr(chats, 'HHClient', lambda: SimpleNamespace(stop=AsyncMock()))
+    asyncio.run(chats.respond_one('chat', message_id='m1', allow_suspicious=True,
+                                  allow_any=True, force_send=False))
+    stdout = capsys.readouterr().out
+    assert parse_reply_result(stdout)['ok'] is supported
+    # Reproduce the bug's process exit status: code 0 even when drafting failed.
+    telegram = format_command_result('chat AI reply', {'ok': True, 'returncode': 0, 'stdout': stdout})
+    if supported:
+        assert 'Черновик подготовлен' in telegram
+    else:
+        assert telegram == 'Не удалось подготовить ответ: ответ не подтверждён фактами профиля.'
+    assert '✅' not in telegram and 'завершён' not in telegram
+
+
+@pytest.mark.parametrize('failure', ['stale', 'empty', 'fill', 'exception'])
+def test_reply_attempt_records_early_and_exception_exits(workflow, monkeypatch, failure):
+    import json
+    if failure == 'stale':
+        workflow.data['messages'].append({'id': 'm2', 'text': 'New?', 'is_me': False})
+    elif failure == 'empty':
+        monkeypatch.setattr(cr, 'generate_answer', AsyncMock(return_value=None))
+    elif failure == 'fill':
+        monkeypatch.setattr(cr, 'fill_and_preview', AsyncMock(return_value={'filled': False}))
+    else:
+        monkeypatch.setattr(cr, 'get_messages', AsyncMock(side_effect=TimeoutError('Private body')))
+    if failure == 'exception':
+        with pytest.raises(TimeoutError):
+            asyncio.run(workflow.run(dry_run=True))
+    else:
+        assert not asyncio.run(workflow.run(dry_run=True))['ok']
+    records = [json.loads(line) for line in (workflow.repo.path.parent / 'chat_journal.jsonl').read_text().splitlines()]
+    attempts = [r for r in records if r['event'] == 'chat_reply_attempt']
+    assert len(attempts) == 1
+    assert attempts[0]['reason'] == {'stale': 'stale_question', 'empty': 'empty_answer',
+                                    'fill': 'chat_unavailable', 'exception': 'preparation_error'}[failure]
+    assert 'Private body' not in json.dumps(attempts)

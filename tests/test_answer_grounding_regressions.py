@@ -9,6 +9,7 @@ import pytest
 import hh_chat_responder as chat
 import hh_client
 import prompt_blocks
+from prompt_blocks import build_salary_rule_block as real_salary_rule_block
 from google_forms import answering
 from hh import forms
 
@@ -502,3 +503,61 @@ def test_custom_option_verification_includes_the_selected_label(blocks):
     assert not result['is_skip']
     checker = json.loads(client.calls[1]['messages'][1]['content'])
     assert checker['answers'][0]['answer'] == text
+
+
+@pytest.mark.parametrize('quote,reason', [
+    ('Базовая планка: 80000 ₽ на руки', 'grounded'),
+    ('Базовая планка: 80000 рублей на руки', 'nonliteral_quote'),
+])
+def test_chat_salary_rule_is_already_evidence_and_requires_literal_quotes(blocks, monkeypatch, quote, reason):
+    # The same profile.env settings feed both generation and chat verification.
+    monkeypatch.setattr(prompt_blocks.config, 'HH_AUTO_ANSWER_SALARY_BASELINE', '80000')
+    monkeypatch.setattr(prompt_blocks.config, 'HH_AUTO_ANSWER_SALARY_RULE',
+                        'Конечные ожидания зависят от загрузки и задач.')
+    monkeypatch.setattr(prompt_blocks, 'build_salary_rule_block', real_salary_rule_block)
+    answer = 'Рассматриваю 80000 ₽ на руки.'
+    client = ScriptedResponses(({'status': 'answer', 'answer': answer}, 'stop'),
+                               (evidence(answer, quote, source='salary'), 'stop'))
+    monkeypatch.setattr(chat, '_get_llm_client', lambda: client)
+    diagnostics = {}
+    result = asyncio.run(chat.generate_answer(
+        [{'text': 'What salary level are you considering for this position?', 'is_ai_suspect': True}],
+        {}, 'Unrelated resume', question_message={'text': 'What salary level are you considering for this position?'},
+        diagnostics=diagnostics))
+    assert result == (answer if reason == 'grounded' else None)
+    assert diagnostics['reason'] == reason
+    checker = json.loads(client.calls[1]['messages'][1]['content'])
+    assert 'Базовая планка: 80000 ₽ на руки' in checker['sources']['salary']
+    assert 'Конечные ожидания зависят от загрузки и задач.' in checker['sources']['salary']
+    assert checker['answers'][0]['answer'] == answer
+
+
+@pytest.mark.parametrize('response,expected', [
+    (({'verdict': 'unsupported', 'answers': [{'index': 0, 'supported': False}]}, 'stop'), 'unsupported_claims'),
+    (({}, 'stop'), 'invalid_grounding_check'),
+    (({}, 'length'), 'grounding_incomplete'),
+])
+def test_chat_grounding_failure_preserves_reason(blocks, monkeypatch, response, expected):
+    client = ScriptedResponses(({'status': 'answer', 'answer': 'Synthetic answer.'}, 'stop'), response)
+    monkeypatch.setattr(chat, '_get_llm_client', lambda: client)
+    diagnostics = {}
+    assert asyncio.run(chat.generate_answer([{'text': 'Experience?', 'is_ai': True}], {}, 'Resume',
+                                             diagnostics=diagnostics)) is None
+    assert diagnostics['reason'] == expected
+
+
+@pytest.mark.parametrize('stage,expected', [('generation', 'model_unavailable'), ('grounding', 'grounding_unavailable')])
+def test_chat_provider_failures_have_distinct_reasons(blocks, monkeypatch, stage, expected):
+    class FailingProvider:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=self)
+        async def create(self, **kwargs):
+            if stage == 'generation' or kwargs.get('llm_role') == 'answer_grounding':
+                raise RuntimeError('Private response must not be logged')
+            return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
+                message=SimpleNamespace(content=json.dumps({'status': 'answer', 'answer': 'Draft.'})))])
+    monkeypatch.setattr(chat, '_get_llm_client', FailingProvider)
+    diagnostics = {}
+    assert asyncio.run(chat.generate_answer([{'text': 'Experience?', 'is_ai': True}], {}, 'Resume',
+                                            diagnostics=diagnostics)) is None
+    assert diagnostics['reason'] == expected

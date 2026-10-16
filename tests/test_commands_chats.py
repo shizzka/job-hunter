@@ -117,6 +117,7 @@ def test_respond_one_preserves_options_and_preview(monkeypatch, capsys):
         "  Чат: 42\n"
         "  OK: True\n"
         "  DRY-RUN скрин: /tmp/chat.png\n"
+        '{"chat_reply_result": {"ok": true, "dry_run": true, "reason": "drafted", "retryable": false}}\n'
     )
     assert FakeClient.instances[0].stopped is True
 

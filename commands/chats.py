@@ -1,6 +1,7 @@
 """HH chat CLI command handlers."""
 
 import json
+from chat_reply_result import reply_result
 
 from hh_client import HHClient
 
@@ -91,3 +92,4 @@ async def respond_one(
         print(f"  DRY-RUN скрин: {(detail.get('preview') or {}).get('screenshot_path', '-')}")
     elif detail.get("sent"):
         print("  SENT: yes")
+    print(json.dumps({'chat_reply_result': reply_result(detail)}, ensure_ascii=False))

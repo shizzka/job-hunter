@@ -27,6 +27,9 @@ import copy
 import hashlib
 import json
 import uuid
+from contextvars import ContextVar
+from functools import wraps
+import inspect
 from dataclasses import asdict
 import html
 import logging
@@ -289,8 +292,11 @@ async def generate_answer(
     question_message: dict[str, Any] | None = None,
     question_kind: str = "AI-помощника",
     alternative: bool = False,
+    diagnostics: dict | None = None,
 ) -> str | None:
     """Сгенерировать ответ на вопрос AI-помощника или approved suspicious HR message."""
+    diagnostics = diagnostics if diagnostics is not None else {}
+    diagnostics['reason'] = 'missing_question'
     if not messages:
         return None
     target_message = question_message or next((m for m in reversed(messages) if m.get("is_ai")), None)
@@ -316,7 +322,8 @@ async def generate_answer(
     deterministic_answer = _deterministic_chat_answer(question)
     if deterministic_answer:
         supported = await verify_answers([{'index': 0, 'question': question, 'answer': deterministic_answer}],
-                                         snapshot.sources, client, model, constraints=snapshot.fact_constraints)
+                                         snapshot.sources, client, model, constraints=snapshot.fact_constraints,
+                                         diagnostics=diagnostics)
         return deterministic_answer if 0 in supported else None
     # 2-pass: фильтруем KB под вакансию (используем title+company как контекст)
     vacancy_summary = f"Должность: {vacancy.get('title','')}\nКомпания: {vacancy.get('company','')}\n"
@@ -386,27 +393,41 @@ async def generate_answer(
             max_tokens=600,
         )
         if resp.choices[0].finish_reason != 'stop':
+            diagnostics['reason'] = 'generation_incomplete'
             return None
         raw = (resp.choices[0].message.content or "").strip()
-        parsed = parse_llm_json(raw)
     except Exception as exc:
         log.warning("LLM chat-answer failed: %s", type(exc).__name__)
+        diagnostics['reason'] = 'model_unavailable'
         return None
 
+    try:
+        parsed = parse_llm_json(raw)
+    except Exception:
+        diagnostics['reason'] = 'invalid_model_answer'
+        return None
     if not isinstance(parsed, dict) or parsed.get("status") != "answer":
+        diagnostics['reason'] = ('needs_profile_details' if isinstance(parsed, dict)
+                                 and parsed.get('status') == 'skip' else 'invalid_model_answer')
         return None
     answer = parsed.get("answer", "")
     if not isinstance(answer, str):
+        diagnostics['reason'] = 'invalid_model_answer'
         return None
     answer = answer.strip()
     if answer and _looks_like_screening_form_artifact(answer) and not _is_screening_form_question(question):
+        diagnostics['reason'] = 'unrelated_answer'
         log.warning(
             "LLM chat-answer dropped form artifact for non-form question: chars=%d",
             len(question),
         )
         return None
+    if not answer:
+        diagnostics['reason'] = 'empty_answer'
+        return None
     supported = await verify_answers([{'index': 0, 'question': question, 'answer': answer}],
-                                     snapshot.sources, client, model, constraints=snapshot.fact_constraints) if answer else set()
+                                     snapshot.sources, client, model, constraints=snapshot.fact_constraints,
+                                     diagnostics=diagnostics)
     return answer if 0 in supported else None
 
 
@@ -1038,6 +1059,59 @@ def _live_candidate_revision():
     return _revision_hash([_active_profile_name(), asdict(capture_candidate(_load_resume_text()))])
 
 
+_reply_observation = ContextVar('chat_reply_observation', default=False)
+
+
+def _observe_reply_attempt(operation):
+    """Record one outcome, including early returns and exceptions, per operation."""
+    signature = inspect.signature(operation)
+
+    @wraps(operation)
+    async def wrapped(*args, **kwargs):
+        if _reply_observation.get():
+            return await operation(*args, **kwargs)
+        values = signature.bind(*args, **kwargs).arguments
+        paths = values.get('runtime_paths') or values.get('paths') or _runtime_paths()
+        journal = active_chat_journal.get() or ChatJournal(
+            _state_repository(paths).path.parent, _active_profile_name())
+        journal_token = active_chat_journal.set(journal)
+        token = _reply_observation.set(True)
+        detail = {'ok': False, 'reason': 'preparation_error'}
+        try:
+            detail = await operation(*args, **kwargs)
+            detail.setdefault('reason', 'already_replied' if detail.get('already_replied') else
+                              'notification_uncertain' if detail.get('notification_uncertain') else
+                              'sent' if detail.get('sent') else 'drafted' if detail.get('ok') else
+                              'preparation_error')
+            return detail
+        except asyncio.CancelledError:
+            detail['reason'] = 'cancelled'
+            raise
+        except Exception as exc:
+            detail['error_type'] = type(exc).__name__
+            raise
+        finally:
+            try:
+                chat_id = str(values.get('chat_id') or '')
+                message_id = str(detail.get('message_id') or values.get('message_id') or
+                                 (values.get('target') or {}).get('id') or '').partition('~')[0]
+                log.info('chat_reply_attempt chat=%s msg=%s ok=%s reason=%s error_type=%s',
+                         chat_id, message_id, bool(detail.get('ok')), detail['reason'],
+                         detail.get('error_type', ''))
+                journal.write('chat_reply_attempt', chat_id=chat_id, message_id=message_id,
+                              kind='preview' if (values.get('dry_run') if values.get('dry_run') is not None
+                                                 else _default_chat_dry_run()) else 'reply',
+                              ok=bool(detail.get('ok')), reason=detail['reason'],
+                              error_type=detail.get('error_type', ''),
+                              answer=(detail.get('answer') or '')[:600],
+                              snapshot_ref=journal.latest_threads.get(chat_id, ''))
+            finally:
+                _reply_observation.reset(token)
+                active_chat_journal.reset(journal_token)
+    return wrapped
+
+
+@_observe_reply_attempt
 async def _execute_reply(
     repository, page, chat_id, target, messages, vacancy, resume_text, paths,
     *, dry_run, max_replies=None, repeat_preview=False, answer_kwargs=None, notify=None,
@@ -1057,29 +1131,32 @@ async def _execute_reply(
                 and value.get("source_revision") == source_revision
                 and value.get("answer_hash") == hashlib.sha256(value.get("answer", "").encode()).hexdigest())
     if stored and not matching_draft(draft):
-        return {"ok": False, "stale": True, "message": "Approved draft missing or changed; create a new preview", "chat_id": chat_id}
+        return {"ok": False, "reason": "stale_draft", "stale": True, "message": "Approved draft missing or changed; create a new preview", "chat_id": chat_id}
     with repository.attempt(chat_id, kind, target_id, max_replies=max_replies,
                             repeat=dry_run and repeat_preview) as owner:
         if not owner:
-            return {"ok": False, "blocked": True, "message": "chat attempt blocked; inspect state", "chat_id": chat_id}
+            return {"ok": False, "reason": "attempt_blocked", "blocked": True, "message": "chat attempt blocked; inspect state", "chat_id": chat_id}
         if dry_run:
             # A new generation invalidates the previous revision immediately.
             repository.set_draft(chat_id, owner, None)
+        diagnostics = {}
         if stored:
             # Claim excludes concurrent preview generation; re-read under that owner.
             draft = repository.load().get(chat_id, {}).get("draft")
             if not matching_draft(draft):
-                return {"ok": False, "stale": True, "chat_id": chat_id}
+                return {"ok": False, "reason": "stale_draft", "stale": True, "chat_id": chat_id}
             answer = draft["answer"]
         else:
-            answer = await generate_answer(messages, vacancy, resume_text, **copy.deepcopy(answer_kwargs or {}))
+            answer = await generate_answer(messages, vacancy, resume_text, diagnostics=diagnostics,
+                                           **copy.deepcopy(answer_kwargs or {}))
         if not answer:
-            return {"ok": False, "message": "LLM did not produce answer", "chat_id": chat_id}
+            return {"ok": False, "reason": diagnostics.get('reason', 'empty_answer'),
+                    "message": "LLM did not produce answer", "chat_id": chat_id}
         # The model may have taken minutes. Never answer an obsolete question.
         fresh = await get_messages(page, chat_id)
         latest = (fresh.get("messages") or [{}])[-1]
         if _message_revision(latest) != target_revision or latest.get("is_me"):
-            return {"ok": False, "stale": True, "message": "chat message changed", "chat_id": chat_id}
+            return {"ok": False, "reason": "stale_question", "stale": True, "message": "chat message changed", "chat_id": chat_id}
         detail = {"ok": True, "chat_id": chat_id, "message_id": target_id,
                   "vacancy": vacancy, "question": (target.get("text") or "")[:500],
                   "answer": answer, "dry_run": dry_run, "sent": False}
@@ -1087,7 +1164,7 @@ async def _execute_reply(
             preview = await fill_and_preview(page, chat_id, answer, runtime_paths=paths)
             detail["preview"] = preview
             if not preview.get("filled"):
-                detail.update(ok=False, message="preview not filled")
+                detail.update(ok=False, reason="chat_unavailable", message="preview not filled")
                 return detail
             def remember(chat):
                 chat["last_previewed_msg_id"] = target_id
@@ -1106,7 +1183,7 @@ async def _execute_reply(
                     except ValueError as exc:
                         repository.set_draft(chat_id, owner, None)
                         detail.pop("draft_revision", None)
-                        detail.update(ok=False, notification_rejected=True, message=str(exc))
+                        detail.update(ok=False, reason="preview_too_long", notification_rejected=True, message=str(exc))
                         if not repository.finish(chat_id, owner, "failed"):
                             raise RuntimeError("Chat preview rejection ownership lost")
                         return detail
@@ -1137,7 +1214,7 @@ async def _execute_reply(
                                     on_no_action=lambda: repository.confirm_no_action(chat_id, owner))
             detail["sent"] = ok
             if not ok:
-                detail.update(ok=False, message="send failed or uncertain; inspect state")
+                detail.update(ok=False, reason="send_uncertain", message="send failed or uncertain; inspect state")
                 return detail
             if not repository.finish(chat_id, owner, "completed"):
                 raise RuntimeError("Chat send completion ownership lost")
@@ -1152,6 +1229,7 @@ async def _execute_reply(
 from answer_grounding import candidate_operation
 
 
+@_observe_reply_attempt
 @candidate_operation(client_factory=lambda: _get_llm_client())
 @analytics.chat_context
 async def process_one(
@@ -1171,7 +1249,7 @@ async def process_one(
     profile_name = _active_profile_name()
     message_id, separator, draft_revision = str(message_id).partition("~")
     if separator and not re.fullmatch(r"[0-9a-f]{12}", draft_revision):
-        return {"ok": False, "message": "Invalid draft revision", "chat_id": chat_id}
+        return {"ok": False, "reason": "stale_draft", "message": "Invalid draft revision", "chat_id": chat_id}
     if dry_run is None:
         dry_run = _default_chat_dry_run()
 
@@ -1185,13 +1263,13 @@ async def process_one(
     messages = data.get("messages", [])
     target = _find_message(messages, message_id)
     if not target:
-        return {"ok": False, "message": "message not found", "chat_id": chat_id}
+        return {"ok": False, "reason": "missing_question", "message": "message not found", "chat_id": chat_id}
     if target.get("is_me"):
-        return {"ok": False, "message": "target message is ours", "chat_id": chat_id}
+        return {"ok": False, "reason": "stale_question", "message": "target message is ours", "chat_id": chat_id}
 
     target_id = str(target.get("id") or "")
     if not target_id or _message_revision(target) != _message_revision(messages[-1]):
-        return {"ok": False, "message": "target message is no longer latest", "chat_id": chat_id}
+        return {"ok": False, "reason": "stale_question", "message": "target message is no longer latest", "chat_id": chat_id}
     repository = _state_repository(paths)
     chat_state = repository.load().get(str(chat_id), {})
     if chat_state.get("last_replied_msg_id") == target_id:
@@ -1203,6 +1281,7 @@ async def process_one(
     if not is_regular_ai and not is_approved_suspicious and not is_manual_any:
         return {
             "ok": False,
+            "reason": "question_not_approved",
             "message": "target message is not AI/suspicious/manual-approved screening",
             "chat_id": chat_id,
             "question": (target.get("text") or "")[:300],

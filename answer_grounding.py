@@ -136,8 +136,10 @@ def candidate_operation(operation=None, *, client_factory=None):
     return wrapped
 
 
-def validate_answer_check(payload, answers, sources):
+def validate_answer_check(payload, answers, sources, *, diagnostics=None):
     """Full index/sentence coverage and literal current-source evidence required."""
+    if diagnostics is not None:
+        diagnostics['reason'] = 'invalid_grounding_check'
     if (not isinstance(payload, dict) or not isinstance(payload.get('verdict'), str)
             or payload['verdict'] not in {'supported', 'mixed', 'unsupported'}):
         return set()
@@ -156,22 +158,33 @@ def validate_answer_check(payload, answers, sources):
             return set()
         seen.add(index)
         if row.get('supported') is not True:
+            if diagnostics is not None:
+                diagnostics['reason'] = 'unsupported_claims'
             continue
         text = expected[index]['answer']
         result = validate_check({'verdict': 'supported', 'sentences': row.get('sentences')},
                                 split_sentences(text), sources, quote_min_similarity=1.0)
         if result.ok:
             accepted.add(index)
+        elif diagnostics is not None:
+            diagnostics['reason'] = result.reason
     # A contradictory all-unsupported verdict cannot grant local approval.
+    if diagnostics is not None:
+        if payload['verdict'] == 'unsupported':
+            diagnostics['reason'] = 'unsupported_claims'
+        elif len(accepted) == len(answers):
+            diagnostics['reason'] = 'grounded'
     return accepted if payload['verdict'] != 'unsupported' else set()
 
 
-async def verify_answers(answers, sources, client, model, *, constraints=''):
+async def verify_answers(answers, sources, client, model, *, constraints='', diagnostics=None):
     """Model-assisted semantic entailment, plus deterministic citation guards.
 
     Questions/options provide meaning, never evidence. Missing experience is
     unknown, not proof of no experience; decisions/consent need candidate intent.
     """
+    if diagnostics is not None:
+        diagnostics['reason'] = 'invalid_grounding_input'
     if (not isinstance(answers, list) or not answers or len(answers) > 40
             or not isinstance(sources, dict) or not sources
             or not isinstance(constraints, str) or len(constraints) > 10000
@@ -213,8 +226,18 @@ Constraints — запреты кандидата, НЕ источник цит�
             temperature=0, max_tokens=5000, response_format={'type': 'json_object'}), timeout=_grounding_timeout())
         choice = response.choices[0]
         if choice.finish_reason != 'stop':
+            if diagnostics is not None:
+                diagnostics['reason'] = 'grounding_incomplete'
             return set()
-        return validate_answer_check(parse_llm_json(choice.message.content or ''), answers, sources)
     except Exception:
         # No rejected candidate content, quotes or raw transport exceptions.
+        if diagnostics is not None:
+            diagnostics['reason'] = 'grounding_unavailable'
+        return set()
+    try:
+        payload = parse_llm_json(choice.message.content or '')
+        return validate_answer_check(payload, answers, sources, diagnostics=diagnostics)
+    except Exception:
+        if diagnostics is not None:
+            diagnostics['reason'] = 'invalid_grounding_check'
         return set()
