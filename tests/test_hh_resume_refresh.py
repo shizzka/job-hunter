@@ -253,16 +253,62 @@ def test_telegram_refresh_button_and_command_route_to_selected_profile(tmp_path,
     assert ui._command_conflicts_with_active(command)
 
 
-def test_refresh_is_blocked_while_current_profile_has_active_command(monkeypatch):
+@pytest.mark.parametrize("recheck", ["allowed", "access_changed", "daemon_started"])
+def test_refresh_is_queued_while_current_profile_has_active_command(tmp_path, monkeypatch, recheck):
+    from unittest.mock import AsyncMock
+    import telegram_bot
+
     bot = TelegramBot(profile_name="qa")
     monkeypatch.setattr(bot, "_selected_profile", lambda principal: "qa")
-    monkeypatch.setattr(bot, "_active_command", lambda profile: {"label": "search"})
-    busy = []
-    async def report(*args, **kwargs):
-        busy.append(kwargs)
-    monkeypatch.setattr(bot, "_send_busy_status", report)
-    asyncio.run(bot._dispatch(42, {"user_id": 42, "role": ui.ROLE_USER}, "/refresh_resume", ""))
-    assert busy == [{"profile_name": "qa"}]
+    monkeypatch.setattr(bot, "_profile_names", lambda: ["qa"])
+    monkeypatch.setattr(bot, "_profile", lambda name: SimpleNamespace(home_dir=str(tmp_path)))
+    monkeypatch.setattr(bot, "_sync_active_runtime", lambda: None)
+    monkeypatch.setattr(bot, "_menu_reply_markup", lambda *a, **kw: {})
+    monkeypatch.setattr(bot, "_queue_guard_reason", lambda name: "")
+    monkeypatch.setattr(bot, "_send_text", AsyncMock(return_value={}))
+    monkeypatch.setattr(bot, "_send_busy_status", AsyncMock())
+    principal = {"user_id": 42, "role": ui.ROLE_USER, "profile": "qa"}
+    access = {42: principal}
+    daemon = {"running": False, "pid": 123}
+    monkeypatch.setattr(telegram_bot.telegram_access, "resolve_user", access.get)
+    monkeypatch.setattr(bot, "_daemon_state", lambda name: daemon)
+    calls = []
+
+    async def capture(argv, **kwargs):
+        assert bot._active_commands["qa"].label == "refresh resume"
+        calls.append(argv)
+        return {"ok": True, "stdout": "updated"}
+    monkeypatch.setattr(telegram_bot.runtime_control, "run_command_capture", capture)
+
+    async def run():
+        blocker = bot._mark_active_command(principal=principal, label="search", profile_name="qa")
+        blocker.task = SimpleNamespace(done=lambda: False)
+        assert await bot._dispatch(42, principal, "/refresh_resume", "")
+        assert bot._queue_length("qa") == 1
+        assert "В очереди" in bot._send_text.call_args.args[1]
+        assert bot._active_commands["qa"] is blocker
+        assert not calls
+        if recheck == "access_changed":
+            access.clear()
+        elif recheck == "daemon_started":
+            daemon["running"] = True
+        bot._clear_active_command("qa")
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if not bot._queue_drainers and not bot._active_commands:
+                break
+        assert not bot._active_commands
+        assert not bot._queue_drainers
+        assert bot._queue_length("qa") == 0
+        assert len(calls) == (1 if recheck == "allowed" else 0)
+        if calls:
+            assert calls == [telegram_bot.runtime_control.agent_command_argv("qa", "--refresh-resume")]
+        else:
+            expected = "доступ изменились" if recheck == "access_changed" else "Демон уже работает"
+            assert any(expected in call.args[1] for call in bot._send_text.call_args_list)
+        bot._send_busy_status.assert_not_awaited()
+        await bot._shutdown_command_queue()
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("success", [True, False])

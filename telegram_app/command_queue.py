@@ -405,6 +405,8 @@ class TelegramCommandQueue:
         for task in list(self._queue_drainers.values()):
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+        # A task cancelled before its first step never reaches _drain_queue's finally.
+        self._queue_drainers.clear()
         waiting = launching + [entry for items in self._command_queues.values() for entry in items]
         self._command_queues.clear()
         self._queue_history.clear()

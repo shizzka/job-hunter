@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import signal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ import pytest
 import telegram_bot
 from runtime_context import TelegramRuntimePaths
 from telegram_app.api import TelegramAPIError, TelegramAPIClient
+from telegram_app.command_queue import QueueEntry
 
 SENSITIVE = "synthetic-sensitive-marker"
 
@@ -193,6 +195,87 @@ def test_cancellation_does_not_claim_poll_success(bot, monkeypatch):
     final = runtime(bot)
     assert final["polling"]["status"] == "stopped"
     assert "last_success_at" not in final["polling"]
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+@pytest.mark.parametrize("bootstrap", [False, True])
+def test_signal_interrupts_pending_poll_before_closing_notification_session(bot, monkeypatch, sig, bootstrap):
+    async def scenario():
+        entered = asyncio.Event()
+        events, sent, handlers = [], [], {}
+
+        class Response:
+            status = 200
+
+            def __init__(self, method, payload):
+                self.method, self.payload = method, payload
+
+            async def __aenter__(self):
+                assert not session.closed
+                if self.method == "getUpdates":
+                    assert self.payload["timeout"] == (0 if bootstrap else 50)
+                    entered.set()
+                    try:
+                        await asyncio.Future()  # Never completes without cancellation.
+                    finally:
+                        events.append("poll_cancelled")
+                await asyncio.sleep(0)
+                assert not session.closed
+                sent.append(self.payload)
+                events.append("notice_sent")
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def json(self, **kwargs):
+                return {"ok": True, "result": {}}
+
+        class Session:
+            closed = False
+
+            def post(self, url, *, json):
+                return Response(url.rsplit("/", 1)[-1], json)
+
+            async def close(self):
+                events.append("sessions_closed")
+                self.closed = True
+
+        session = Session()
+        bot._sessions[False] = session
+        bot.drop_pending = bootstrap
+        monkeypatch.setattr(telegram_bot.config, "TELEGRAM_PROXY", "")
+        monkeypatch.setattr(telegram_bot.config, "TELEGRAM_BOT_POLL_TIMEOUT", 50)
+        monkeypatch.setattr(asyncio.get_running_loop(), "add_signal_handler", handlers.__setitem__)
+        monkeypatch.setattr(telegram_bot.runtime_control, "unregister_current_process",
+                            lambda path: events.append("pid_removed"))
+        async def forbidden(*args):
+            pytest.fail("No queued command or maintenance may start after the signal")
+        monkeypatch.setattr(bot, "_handle_update", forbidden)
+        monkeypatch.setattr(bot, "_maybe_send_daily_summary", forbidden)
+        monkeypatch.setattr(bot, "_maybe_send_health_alert", forbidden)
+        bot._active_commands["synthetic"] = SimpleNamespace(label="busy", task=None)
+        for chat in (42, 84):
+            await bot._admit_command(QueueEntry("synthetic", chat, chat, "refresh resume", forbidden))
+        sent.clear()
+        events.clear()
+        running = asyncio.create_task(bot.run())
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        handlers[sig]()
+        handlers[sig]()  # Repeated signals must not cancel queue notifications.
+        await asyncio.wait_for(running, timeout=1)
+        assert {payload["chat_id"] for payload in sent} == {42, 84}
+        assert all("очередь сброшена" in payload["text"] for payload in sent)
+        assert events.count("poll_cancelled") == 1
+        assert events.count("notice_sent") == 2
+        assert events.index("poll_cancelled") < events.index("sessions_closed")
+        assert events.index("pid_removed") < events.index("sessions_closed")
+        assert events[-1] == "sessions_closed"
+        assert not bot._sessions
+        assert not bot._command_queues
+        assert runtime(bot)["action"] == "bot_stop"
+        assert runtime(bot)["status"] == "offline"
+    asyncio.run(scenario())
 
 
 def test_stopped_owner_cannot_record_more_poll_results(bot):

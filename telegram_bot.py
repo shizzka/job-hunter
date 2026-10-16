@@ -264,21 +264,37 @@ class TelegramBot(
 
         loop = asyncio.get_running_loop()
         shutdown_task: asyncio.Task | None = None
+        polling_task: asyncio.Task | None = None
+
+        async def _poll(awaitable):
+            nonlocal polling_task
+            polling_task = loop.create_task(awaitable)
+            try:
+                return await polling_task
+            except asyncio.CancelledError:
+                if not self._stop_event.is_set():
+                    raise
+                return []
+            finally:
+                polling_task = None
 
         def _signal_handler() -> None:
             nonlocal shutdown_task
             self._stop_event.set()
-            if shutdown_task is None or shutdown_task.done():
+            # Cancel only the request: shared sessions must remain open for notices.
+            if polling_task is not None:
+                polling_task.cancel()
+            if shutdown_task is None:
                 shutdown_task = loop.create_task(self._shutdown_command_queue())
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, _signal_handler)
 
         try:
-            await self._bootstrap_offset()
+            await _poll(self._bootstrap_offset())
             while not self._stop_event.is_set():
                 try:
-                    updates = await self._get_updates()
+                    updates = await _poll(self._get_updates())
                 except Exception as exc:
                     if self._stop_event.is_set():
                         break
@@ -286,6 +302,8 @@ class TelegramBot(
                     await asyncio.sleep(5)
                     continue
 
+                if self._stop_event.is_set():
+                    break
                 self._record_poll_result()
                 for update in updates:
                     await self._handle_update(update)
@@ -1129,7 +1147,8 @@ class TelegramBot(
         if self._has_active_command(profile_name):
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
             return
-        if not await self._authorize_ai_usage(chat_id, principal, profile_name=profile_name, action="search_suggest_ai_used"):
+        if not await self._authorize_ai_usage(chat_id, principal, profile_name=profile_name,
+                                             action="search_suggest_ai_used", check_only=True):
             return
         reply_menu = reply_menu_for_command(principal.get("role", ROLE_USER), "/search_suggest")
         active_command = self._mark_active_command(
@@ -1145,6 +1164,9 @@ class TelegramBot(
 
         async def runner() -> None:
             try:
+                if not await self._authorize_ai_usage(chat_id, principal, profile_name=profile_name,
+                                                     action="search_suggest_ai_used"):
+                    return
                 profile = self._profile(profile_name)
                 client = self._client_record(principal["user_id"]) or {}
                 queries = await search_query_suggester.suggest_queries(
@@ -3235,13 +3257,24 @@ class TelegramBot(
 
         active_command.task = self._create_active_task(active_command, runner)
 
-    async def _authorize_ai_usage(self, chat_id: int, principal: dict, *, profile_name: str, action: str, consume: bool = True) -> bool:
+    async def _authorize_ai_usage(self, chat_id: int, principal: dict, *, profile_name: str, action: str,
+                                 consume: bool = True, check_only: bool = False) -> bool:
+        if self._commands_stopping():
+            return False
         if principal.get("role") == ROLE_ADMIN:
             return True
         if profile_name != self._selected_profile(principal):
             await self._send_text(chat_id, "🔒 Этот профиль вам недоступен.")
             return False
-        if not consume or telegram_resume_limits.consume_ai_usage(principal["user_id"], profile_name=profile_name, action=action):
+        # Preflight before progress delivery; charge atomically inside the runner.
+        if not consume:
+            return True
+        if check_only:
+            allowed = telegram_resume_limits.get_user_snapshot(principal["user_id"])["available_soft"] > 0
+        else:
+            allowed = telegram_resume_limits.consume_ai_usage(
+                principal["user_id"], profile_name=profile_name, action=action)
+        if allowed:
             return True
         await self._send_text(chat_id, "🎁 Лимит ИИ исчерпан. Попросите администратора добавить доступ через «Лимиты ИИ».",
                               reply_markup=self._menu_reply_markup(principal))
@@ -3303,7 +3336,7 @@ class TelegramBot(
             return
 
         if not await self._authorize_ai_usage(chat_id, principal, profile_name=profile_name, action="form_ai_used",
-                                              consume="--google-form-submit" not in argv):
+                                              consume="--google-form-submit" not in argv, check_only=True):
             return
 
         active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
@@ -3316,6 +3349,9 @@ class TelegramBot(
 
         async def runner() -> None:
             try:
+                if not await self._authorize_ai_usage(chat_id, principal, profile_name=profile_name,
+                                                      action="form_ai_used", consume="--google-form-submit" not in argv):
+                    return
                 result = await self._run_active_command_capture(
                     active_command,
                     argv,
@@ -3476,7 +3512,8 @@ class TelegramBot(
 
         label = "chat AI send" if force_send else "chat AI alternative" if alternative else "chat AI reply"
         if not await self._authorize_ai_usage(chat_id, principal, profile_name=profile_name, action="chat_ai_used",
-                                              consume=not (force_send and re.fullmatch(r"\d+~[0-9a-f]{12}", hh_message_id))):
+                                              consume=not (force_send and re.fullmatch(r"\d+~[0-9a-f]{12}", hh_message_id)),
+                                              check_only=True):
             return
 
         active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
@@ -3502,6 +3539,11 @@ class TelegramBot(
         async def runner() -> None:
             nonlocal progress_task
             try:
+                if not await self._authorize_ai_usage(
+                    chat_id, principal, profile_name=profile_name, action="chat_ai_used",
+                    consume=not (force_send and re.fullmatch(r"\d+~[0-9a-f]{12}", hh_message_id)),
+                ):
+                    return
                 argv = runtime_control.agent_command_argv(
                     profile_name,
                     "--chat-respond-one",
@@ -3754,7 +3796,7 @@ class TelegramBot(
             return
 
         if flag == "--analyze-resume" and not await self._authorize_ai_usage(
-            chat_id, principal, profile_name=profile_name, action="analyze_ai_used",
+            chat_id, principal, profile_name=profile_name, action="analyze_ai_used", check_only=True,
         ):
             return
 
@@ -3781,6 +3823,10 @@ class TelegramBot(
         async def runner() -> None:
             nonlocal progress_task
             try:
+                if flag == "--analyze-resume" and not await self._authorize_ai_usage(
+                    chat_id, principal, profile_name=profile_name, action="analyze_ai_used",
+                ):
+                    return
                 result = await self._run_active_command_capture(
                     active_command,
                     runtime_control.agent_command_argv(profile_name, flag),

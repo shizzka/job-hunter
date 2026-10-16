@@ -170,8 +170,14 @@ def test_busy_ai_commands_do_not_reserve_a_credit(menu_bot, monkeypatch, command
     monkeypatch.setattr(bot, "_has_active_command", lambda name: True)
     monkeypatch.setattr(bot, "_send_busy_status", AsyncMock())
     before = limits.get_user_snapshot(42)
-    asyncio.run(bot._dispatch(42, principal, command, ""))
-    bot._send_busy_status.assert_awaited_once()
+    async def run():
+        assert await bot._dispatch(42, principal, command, "")
+        assert bot._queue_length("qa") == 1
+        assert "В очереди №1 после «busy»" in bot._send_text.call_args.args[1]
+        assert limits.get_user_snapshot(42) == before
+        await bot._shutdown_command_queue()
+    asyncio.run(run())
+    bot._send_busy_status.assert_not_awaited()
     assert not workers
     assert limits.get_user_snapshot(42) == before
 

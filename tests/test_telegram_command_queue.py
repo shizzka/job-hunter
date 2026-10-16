@@ -652,3 +652,92 @@ def test_arrival_between_release_and_drain_cannot_overtake_waiter():
         bot.finish()
         await settle(bot)
     asyncio.run(scenario())
+
+
+def ai_invocation(bot, principal, kind):
+    if kind in {"analyze", "search_suggest"}:
+        return bot._dispatch(42, principal, "/" + kind, "")
+    if kind == "chat":
+        return bot._start_chat_ai_reply(42, principal, profile_name="qa", hh_chat_id="123", hh_message_id="456")
+    return bot._start_google_form_command(42, principal, profile_name="qa", label="google form preview",
+                                          argv=["synthetic", "--google-form-preview"])
+
+
+@pytest.mark.parametrize("kind", ["analyze", "search_suggest", "chat", "form"])
+@pytest.mark.parametrize("finish", ["launch", "ttl", "remove", "shutdown", "exhausted", "access_changed",
+                                    "shutdown_during_progress", "exhausted_during_progress"])
+def test_queued_ai_charges_only_when_runner_starts(monkeypatch, tmp_path, kind, finish):
+    import config
+    import runtime_control
+    import telegram_bot
+    import telegram_resume_limits as limits
+
+    monkeypatch.setattr(config, "TELEGRAM_AI_LIMITS_FILE", str(tmp_path / "limits.json"))
+    limits.reset_free_limit(1, free_total=1)
+    principal = {"user_id": 1, "role": "user", "profile": "qa"}
+    access = {1: principal}
+    before = limits.get_user_snapshot(1)
+
+    async def scenario():
+        bot, profile, messages, _ = real_bot(monkeypatch, tmp_path)
+        profile.resume_file = str(tmp_path / "resume.md")
+        profile.hh = SimpleNamespace(search_queries=[])
+        monkeypatch.setattr(queue.telegram_access, "resolve_user", access.get)
+        monkeypatch.setattr(bot, "_daemon_state", lambda name: {"running": False})
+        monkeypatch.setattr(bot, "_client_record", lambda uid: {})
+        monkeypatch.setattr(bot, "_set_search_settings_state", lambda *a, **kw: None)
+        calls = []
+
+        async def work(*args, **kwargs):
+            assert limits.get_user_snapshot(1)["free_used"] == 1
+            calls.append(kind)
+            return [] if kind == "search_suggest" else {"ok": False, "stdout": "synthetic result"}
+        monkeypatch.setattr(runtime_control, "run_command_capture", work)
+        monkeypatch.setattr(telegram_bot.search_query_suggester, "suggest_queries", work)
+        blocker = bot._mark_active_command(principal=principal, label="busy", profile_name="qa")
+        blocker.task = SimpleNamespace(done=lambda: False)
+        assert await ai_invocation(bot, principal, kind)
+        assert bot._queue_length("qa") == 1
+        assert bot._active_commands["qa"] is blocker
+        assert not calls
+        assert limits.get_user_snapshot(1) == before
+        queued = bot._command_queues["qa"][0]
+        if finish == "ttl":
+            queued.created_at -= 121 * 60
+        elif finish == "remove":
+            await bot._queue_callback({"id": "remove", "from": {"id": 1}, "data": f"queue:remove:{queued.id}"})
+        elif finish == "shutdown":
+            await bot._shutdown_command_queue()
+        elif finish == "exhausted":
+            limits.reset_free_limit(1, free_total=0)
+        elif finish == "access_changed":
+            access.clear()
+
+        entered, release = asyncio.Event(), asyncio.Event()
+        if finish.endswith("_during_progress"):
+            original_api = bot._api_request
+            async def blocked_api(method, payload, **kwargs):
+                if method == "sendMessage" and not entered.is_set():
+                    entered.set()
+                    await release.wait()
+                return await original_api(method, payload, **kwargs)
+            monkeypatch.setattr(bot, "_api_request", blocked_api)
+        bot._clear_active_command("qa")
+        if finish.endswith("_during_progress"):
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            assert limits.get_user_snapshot(1) == before
+            if finish == "shutdown_during_progress":
+                # Shutdown cancels the drainer while progress delivery is pending.
+                await bot._shutdown_command_queue()
+            else:
+                limits.reset_free_limit(1, free_total=0)
+            release.set()
+        await spin_until(lambda: not bot._active_commands and not bot._queue_drainers)
+        assert calls == ([kind] if finish == "launch" else [])
+        assert limits.get_user_snapshot(1)["free_used"] == (1 if finish == "launch" else 0)
+        usage = [event for event in limits.recent_events(100) if event["action"].endswith("ai_used")]
+        assert len(usage) == (1 if finish == "launch" else 0)
+        if finish.startswith("exhausted"):
+            assert any("Лимит ИИ исчерпан" in payload["text"] for payload in messages)
+        await bot._shutdown_command_queue()
+    asyncio.run(scenario())
