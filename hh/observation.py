@@ -259,12 +259,16 @@ async def after_observation(session, attempt, resume_hash, *, trace=None):
             return
         target = urlsplit(attempt.url)
         vacancy_id = target.path.removeprefix('/vacancy/')
-        if (target.scheme != 'https' or target.hostname != 'hh.ru' or target.port not in (None, 443)
+        host = target.hostname or ''
+        # Vacancies live on regional subdomains too (spb.hh.ru); read the same host
+        # directly, because redirects are disabled for this isolated request.
+        if (target.scheme != 'https' or not (host == 'hh.ru' or host.endswith('.hh.ru'))
+                or target.port not in (None, 443)
                 or target.username is not None or target.password is not None
                 or not target.path.startswith('/vacancy/') or _number(vacancy_id) is None):
             snapshot_error(attempt, 'after_observation', 'vacancy_url_unproven', trace=trace)
             return
-        url = 'https://hh.ru/vacancy/' + vacancy_id
+        url = f'https://{host}/vacancy/' + vacancy_id
         cookies = await context.cookies([url])
         if not owned():
             snapshot_error(attempt, 'after_observation', 'ownership_changed', trace=trace)

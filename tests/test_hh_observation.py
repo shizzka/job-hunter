@@ -342,3 +342,32 @@ def test_template_json_keeps_embedded_markup_and_entities_verbatim():
     html = '<template id="HH-Lux-InitialState">' + json.dumps(data) + '</template>'
     result = observation.negotiations_from_html(html, VID)
     assert result['found'] and result['total'] == 2 and result['resume_hashes']['260248350'] == HASH
+
+
+@pytest.mark.parametrize('vacancy_url,expected_get', [
+    # Regional subdomain with search parameters: read the same host, without the query.
+    ('https://spb.hh.ru/vacancy/' + VID + '?query=API+QA&hhtmFrom=vacancy_search_list',
+     'https://spb.hh.ru/vacancy/' + VID),
+    ('https://hh.ru/vacancy/' + VID, 'https://hh.ru/vacancy/' + VID),
+])
+def test_after_observation_reads_regional_vacancy_on_its_own_host(monkeypatch, vacancy_url, expected_get):
+    session, attempt, trace, isolated, factory = observation_session()
+    attempt.url = vacancy_url
+    asyncio.run(observation.after_observation(session, attempt, HASH))
+    isolated.get.assert_awaited_once_with(expected_get, max_redirects=0, max_retries=0,
+        timeout=15000, headers={'Cache-Control': 'no-cache'})
+    assert not any(e.get('error_kind') == 'vacancy_url_unproven' for e in trace.events)
+
+
+@pytest.mark.parametrize('vacancy_url', [
+    'https://evilhh.ru/vacancy/' + VID,          # not a subdomain of hh.ru
+    'https://hh.ru.evil.example/vacancy/' + VID,  # hh.ru only as a prefix
+    'http://spb.hh.ru/vacancy/' + VID,            # plain http
+    'https://spb.hh.ru/resume/' + VID,            # not a vacancy page
+])
+def test_after_observation_refuses_lookalike_or_non_vacancy_urls(monkeypatch, vacancy_url):
+    session, attempt, trace, isolated, factory = observation_session()
+    attempt.url = vacancy_url
+    asyncio.run(observation.after_observation(session, attempt, HASH))
+    isolated.get.assert_not_awaited()
+    assert trace.events[-1]['error_kind'] == 'vacancy_url_unproven'
