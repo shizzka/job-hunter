@@ -22,6 +22,7 @@ TOPIC_FIELDS = (
     'id', 'vacancyId', 'employerId', 'employerManagerId', 'resumeId',
     'creationTimeMillis', 'lastModifiedMillis', 'employerLastChangeTime',
     'viewedByOpponent', 'lastEmployerState', 'lastState', 'lastSubState',
+    'employerSubState', 'lastFunnelStage',
     'currentTopicType', 'initialTopicType', 'archived', 'hasNewMessages',
     'conversationMessagesCount', 'conversationUnreadByEmployerCount',
     'hasResponseLetter', 'declinedByApplicant', 'topicSource', 'platform',
@@ -75,18 +76,25 @@ def parse_page(html, *, expected_filter='active'):
         vacancies = {str(item.get('vacancyId', item.get('id', item.get('@id')))): item
                      for item in _object(state.get('vacanciesShort')).get('vacanciesList', []) or []
                      if isinstance(item, dict)}
+        # Topic manager IDs and activity HHIDs belong to different namespaces.
+        manager_hhids = {}
+        for vacancy in vacancies.values():
+            manager = _object(vacancy.get('employerManager'))
+            manager_id, hhid = manager.get('@managerId'), manager.get('@hhid')
+            if manager_id is not None and hhid is not None:
+                manager_hhids[str(manager_id)] = str(hhid)
         records = []
         for topic in topics:
             if not isinstance(topic, dict) or _number(topic.get('id')) is None:
                 return {'ok': False, 'reason': 'invalid_topic'}
             row = _pick(topic, TOPIC_FIELDS)
             employer = politeness.get(str(topic.get('employerId')))
-            manager = managers.get(str(topic.get('employerManagerId')))
+            manager = managers.get(manager_hhids.get(str(topic.get('employerManagerId'))))
             row['employer_politeness'] = _pick(employer, POLITENESS_FIELDS) if isinstance(employer, dict) else None
             row['manager_activity'] = ({
-                'inactive_days': _scalar(manager.get('inactive_days')),
-                'inactiveMinutes': _scalar(manager.get('@inactiveMinutes')),
-                'trl_code': _scalar(manager.get('trl_code')),
+                'inactive_days': _number(manager.get('inactive_days')),
+                'inactiveMinutes': _number(manager.get('@inactiveMinutes')),
+                'trl_code': _number(manager.get('trl_code')),
             } if manager is not None else None)
             vacancy = _object(vacancies.get(str(topic.get('vacancyId'))))
             company = _object(vacancy.get('company'))

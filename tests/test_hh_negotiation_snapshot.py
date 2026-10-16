@@ -23,6 +23,8 @@ def state(page=0, pages=1, *, archived=False):
             'topicList': [{'id': 100 + page, 'vacancyId': 42, 'employerId': 8,
                            'employerManagerId': 9, 'resumeId': 10, 'viewedByOpponent': True,
                            'archived': archived, 'creationTimeMillis': 1000,
+                           'lastEmployerState': None, 'lastState': 'RESPONSE',
+                           'employerSubState': 'NEW', 'lastFunnelStage': 'SCREENING',
                            'employerManager': {'name': 'PRIVATE RECRUITER'},
                            'text': 'PRIVATE MESSAGE', 'letter': 'PRIVATE LETTER',
                            'contacts': {'email': 'PRIVATE CONTACT'},
@@ -34,14 +36,16 @@ def state(page=0, pages=1, *, archived=False):
             '88': {'allTopicCount': 999},
         }},
         'applicantEmployerManagersActivity': [] if archived else [
-            {'@managerHhid': 99, '@inactiveMinutes': 999},
-            {'@managerHhid': 9, '@inactiveMinutes': 90, 'inactive_days': 1,
-             'trl_code': 'hours', 'name': 'PRIVATE RECRUITER'}],
+            {'@managerHhid': 9, '@inactiveMinutes': 999},
+            {'@managerHhid': '99', '@inactiveMinutes': '90', 'inactive_days': 1,
+             'trl_code': 2, 'name': 'PRIVATE RECRUITER'}],
         'applicantNegotiationsCounters': {'total': {'all': pages, 'archived': 0},
                                          'new': {'all': 0}, 'letter': 'PRIVATE LETTER'},
         'vacanciesShort': {'vacanciesList': [{
             'id': 42, 'name': 'Synthetic vacancy', 'creationTime': 100,
             'publicationTime': 200, 'closedForApplicants': False,
+            'employerManager': {'@managerId': '9', '@hhid': 99, '@userId': 123,
+                                '@firstName': 'PRIVATE FIRST', '@lastName': 'PRIVATE LAST'},
             'company': {'id': 8, 'visibleName': 'Synthetic company', 'name': 'Fallback company',
                         '@trusted': True, 'accreditedITEmployer': True,
                         'contacts': 'PRIVATE CONTACT'}, 'letter': 'PRIVATE LETTER'}]},
@@ -82,11 +86,50 @@ def test_parse_active_joins_and_public_vacancy_fields():
     row = result['records'][0]
     assert row['employer_politeness'] == {'allTopicCount': 30, 'readTopicPercent': 80,
                                          'replyTotalWorkingTimeDays': 2}
-    assert row['manager_activity'] == {'inactive_days': 1, 'inactiveMinutes': 90, 'trl_code': 'hours'}
+    assert row['manager_activity'] == {'inactive_days': 1, 'inactiveMinutes': 90, 'trl_code': 2}
     assert {key: row[key] for key in ns.VACANCY_FIELDS} == {
         'vacancy_name': 'Synthetic vacancy', 'company_id': 8, 'company_name': 'Synthetic company',
         'company_trusted': True, 'company_accredited_it': True,
         'vacancy_creation_time': 100, 'vacancy_publication_time': 200, 'closed_for_applicants': False}
+
+
+@pytest.mark.parametrize('missing', ['bridge', 'manager_id', 'hhid', 'activity', 'mismatch'])
+def test_manager_activity_requires_complete_bridge(missing):
+    payload = state()
+    vacancy = payload['vacanciesShort']['vacanciesList'][0]
+    if missing == 'bridge':
+        del vacancy['employerManager']
+    elif missing == 'manager_id':
+        del vacancy['employerManager']['@managerId']
+    elif missing == 'hhid':
+        del vacancy['employerManager']['@hhid']
+    elif missing == 'activity':
+        payload['applicantEmployerManagersActivity'].pop()
+    else:
+        vacancy['employerManager']['@managerId'] = 88
+    result = ns.parse_page(html(payload))
+    assert result['ok']
+    assert result['records'][0]['manager_activity'] is None
+
+
+@pytest.mark.parametrize('value', ['PRIVATE NAME', {'@firstName': 'PRIVATE FIRST'}, True, None])
+def test_manager_activity_retains_only_numbers(value):
+    payload = state()
+    payload['applicantEmployerManagersActivity'][-1].update(
+        inactive_days=value, **{'@inactiveMinutes': value, 'trl_code': value})
+    row = ns.parse_page(html(payload))['records'][0]
+    assert row['manager_activity'] == dict.fromkeys(ns.MANAGER_FIELDS)
+
+
+@pytest.mark.parametrize('last_state', ['DISCARD', 'RESPONSE', 'INTERVIEW'])
+def test_employer_status_allowlist(last_state):
+    payload = state()
+    payload['applicantNegotiations']['topicList'][0]['lastState'] = last_state
+    row = ns.parse_page(html(payload))['records'][0]
+    assert row['lastState'] == last_state
+    assert row['lastEmployerState'] is None
+    assert row['employerSubState'] == 'NEW'
+    assert row['lastFunnelStage'] == 'SCREENING'
 
 
 def test_parse_archived_and_company_name_fallback():
@@ -141,6 +184,8 @@ def test_jsonl_allowlist_and_append_only_without_state_writes(tmp_path, monkeypa
     assert set(summary) == {'kind', 'snapshot_id', 'fetched_at', 'filter', 'counters', 'total',
                             'pages_read', 'complete', 'stop_reason'}
     assert 'PRIVATE' not in json.dumps(rows(tmp_path))
+    assert '@firstName' not in previous.decode() and '@lastName' not in previous.decode()
+    assert row['employerSubState'] == 'NEW' and row['lastFunnelStage'] == 'SCREENING'
     assert row['vacancy_name'] == 'Synthetic vacancy' and row['company_name'] == 'Synthetic company'
     assert summary['counters'] == {'total': {'all': 1, 'archived': 0}, 'new': {'all': 0}}
     assert summary['snapshot_id'] == row['snapshot_id'] and summary['stop_reason'] is None
