@@ -1921,8 +1921,14 @@ def format_command_result(label: str, result: dict, *, role: str = ROLE_ADMIN) -
     ok = bool(result.get("ok", False))
     stdout = _sanitize_command_output(label, (result.get("stdout") or "").strip())
     stderr = (result.get("stderr") or "").strip()
+    delivered = (label == "manual AI apply"
+                 and "Отклик отправлен, подтверждено сервером hh." in stdout.splitlines())
     uncertain = label == "manual AI apply" and "Исход отклика не подтверждён" in stdout
-    if uncertain:
+    if delivered:
+        lines = [f"📨 {pretty_label}: отправлено, подтверждено сервером hh"]
+        if not ok:
+            lines.append("Выполнение команды остановлено.")
+    elif uncertain:
         lines = [f"❔ {pretty_label}: исход отклика не подтверждён; нужна ручная сверка"]
     elif label in {"search", "dry-run"} and ok:
         lines = [f"ℹ️ {pretty_label}: команда завершена; исход отклика указан ниже"]

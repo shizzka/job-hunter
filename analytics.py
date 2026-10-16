@@ -17,7 +17,7 @@ import config
 import resume_versions
 from state_store.json_store import JsonStore
 from state_store.private_journal import append_json, read_json_records
-from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket, apply_result_is_uncertain
+from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket, application_outcome
 
 log = logging.getLogger("analytics")
 
@@ -381,8 +381,7 @@ async def tracked_call(stage, run_id, vacancy, function, *args, **kwargs):
                                        "ValueError", "JSONDecodeError"} else "UNKNOWN_ROOT_CAUSE")
             elif result.get("score") is not None and current_search() is not None and current_search().run_id == run_id:
                 count_stage("evaluated", vacancy)
-        if (stage == "apply" and isinstance(result, dict) and result.get("ok")
-                and not result.get("already_applied") and not apply_result_is_uncertain(result)):
+        if stage == "apply" and isinstance(result, dict) and application_outcome(result) == 'sent':
             count_application(vacancy)
         return result
 

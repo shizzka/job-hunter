@@ -42,10 +42,45 @@ def apply_result_is_uncertain(result: dict) -> bool:
 
 def application_outcome(result: dict) -> str:
     """Diagnostic target-action outcome, independent of processing success."""
-    return ("uncertain" if apply_result_is_uncertain(result) else
+    return ("sent" if server_delivery_confirmed(result) else
+            "uncertain" if apply_result_is_uncertain(result) else
             "already_applied" if result.get("already_applied") else
             "blocked" if result.get("reason") == "company_blacklisted" else
             "sent" if result.get("ok") else "failed")
+
+
+def server_delivery_confirmed(result: dict) -> bool:
+    from hh.delivery import fact
+    record = fact(result)
+    return record is not None and record.status == 'confirmed'
+
+
+def server_delivery_note(result: dict) -> str:
+    from hh.delivery import fact
+    record = fact(result)
+    if record is None:
+        return ''
+    if record.status == 'confirmed':
+        return 'Отклик отправлен, подтверждено сервером hh.'
+    meaning = ('Новый отклик пока не виден; это не доказывает недоставку.'
+               if record.status == 'not_seen' else 'Доставка не подтверждена.')
+    return f'Сервер hh: {record.status} ({record.reason}). {meaning}'
+
+
+def application_result_for_owner(result: dict) -> dict:
+    """Present delivery without changing any safety/processing success signal."""
+    from hh.delivery import fact
+    record = fact(result)
+    note = server_delivery_note(result)
+    if not note:
+        return result
+    if server_delivery_confirmed(result):
+        result['message'] = note
+        if record.has_response_letter is True:
+            result['cover_letter_status'] = 'submitted_with_application'
+    elif note not in str(result.get('message', '')):
+        result['message'] = (str(result.get('message', '')) + ' ' + note).strip()
+    return result
 
 
 # ── Negotiation status buckets ──

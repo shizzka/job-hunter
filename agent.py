@@ -60,6 +60,8 @@ from outcome import (
     DECISION_SKIPPED_LOW_SCORE,
     DECISION_SKIPPED_RED_FLAGS,
     apply_result_is_uncertain,
+    server_delivery_confirmed,
+    server_delivery_note,
 )
 from geekjob_client import GeekJobClient
 from habr_career_client import HabrCareerClient
@@ -659,12 +661,18 @@ async def do_manual_apply_token(token: str) -> dict:
         nonlocal manual_uncertainty_note
         if manual_uncertainty_note is not None:
             return manual_uncertainty_note
-        note = "Исход отклика не подтверждён. Отклик мог быть отправлен; проверьте историю вручную. Автоматического повтора нет."
+        delivered = server_delivery_confirmed(manual_result or {})
+        note = (server_delivery_note(manual_result) if delivered else
+                "Исход отклика не подтверждён. Отклик мог быть отправлен; проверьте историю вручную. Автоматического повтора нет."
+                + (' ' + server_delivery_note(manual_result or {}) if server_delivery_note(manual_result or {}) else ''))
         seen.mark_seen(vacancy.get("id", token), vacancy, "apply_uncertain")
         hh_pipeline.mark_terminal(vacancy.get("id", token), "apply_uncertain")
         finish("uncertain", note)
-        analytics.record_decision(run_id=run_id, vacancy=vacancy, decision=DECISION_APPLY_UNCERTAIN,
-                                  evaluation=evaluation, details=details, note="manual_ai:apply_uncertain")
+        analytics.record_decision(run_id=run_id, vacancy=vacancy,
+                                  decision=DECISION_APPLIED_AUTO if delivered else DECISION_APPLY_UNCERTAIN,
+                                  evaluation={**evaluation, 'cover_letter_status': manual_result.get('cover_letter_status', 'unknown')}
+                                  if delivered else evaluation, details=details,
+                                  note="manual_ai:server_delivery_confirmed" if delivered else "manual_ai:apply_uncertain")
         manual_uncertainty_note = note
         return note
 
@@ -779,10 +787,11 @@ async def do_manual_apply_token(token: str) -> dict:
         # final queue/seen classification or any success notification.
         apply_result = await stop_manual_result(apply_result)
         if apply_result_is_uncertain(apply_result):
-            apply_result = {**apply_result, "ok": False, "uncertain": True}
+            apply_result.update(ok=False, uncertain=True)
             manual_note = record_manual_uncertain()
-            await notify_needs_manual(vacancy, score, reason, note=manual_note, uncertain=True)
-            return {**apply_result, "ok": False, "uncertain": True, "message": manual_note}
+            await _notify_hh_delivery_or_uncertain(vacancy, score, reason, apply_result, manual_note)
+            apply_result['message'] = manual_note
+            return apply_result
         _record_hh_questionnaire_analytics(
             run_id=run_id,
             vacancy=vacancy,
@@ -848,8 +857,9 @@ async def do_manual_apply_token(token: str) -> dict:
 
     except _HHApplyUncertain:
         message = record_manual_uncertain()
-        await notify_needs_manual(vacancy, score, reason, note=message, uncertain=True)
-        return {**manual_result, "ok": False, "uncertain": True, "message": message}
+        await _notify_hh_delivery_or_uncertain(vacancy, score, reason, manual_result, message)
+        manual_result.update(ok=False, uncertain=True, message=message)
+        return manual_result
     except HHUnexpectedUI as exc:
         uncertain = bool(getattr(exc, "hh_uncertain", False) or
                          (dispatch_started and getattr(exc, "hh_recovered", None) is not True))
@@ -857,7 +867,7 @@ async def do_manual_apply_token(token: str) -> dict:
         uncertain = apply_result_is_uncertain(manual_result)
         if uncertain:
             message = record_manual_uncertain()
-            await notify_needs_manual(vacancy, score, reason, note=message, uncertain=True)
+            await _notify_hh_delivery_or_uncertain(vacancy, score, reason, manual_result, message)
         else:
             message = "Нестандартный UI: вакансия оставлена для ручной проверки."
             seen.mark_seen(vacancy.get("id", token), vacancy, "manual_hh_guard_stop")
@@ -865,7 +875,8 @@ async def do_manual_apply_token(token: str) -> dict:
             finish("dismissed", message)
             analytics.record_decision(run_id=run_id, vacancy=vacancy, decision="guard_stop", note="manual_ai:hh_ui")
             await notify_needs_manual(vacancy, score, reason, note=message)
-        return {**manual_result, "ok": False, "uncertain": uncertain, "message": message}
+        manual_result.update(ok=False, uncertain=uncertain, message=message)
+        return manual_result
     except asyncio.CancelledError:
         if shutdown_failed:
             record_manual_uncertain()
@@ -885,16 +896,14 @@ async def do_manual_apply_token(token: str) -> dict:
             message = record_manual_uncertain()
         else:
             finish("failed", message)
-        await notify_needs_manual(
-            vacancy,
-            score,
-            reason,
-            note=message if uncertain else f"ИИ-отклик упал: {message}. Открой вручную.",
-            uncertain=uncertain,
-        )
+        if uncertain:
+            await _notify_hh_delivery_or_uncertain(vacancy, score, reason, result, message)
+        else:
+            await notify_needs_manual(vacancy, score, reason, note=f"ИИ-отклик упал: {message}. Открой вручную.")
         log.warning("Manual AI apply failed: error_kind=%s", type(exc).__name__)
         print(f"⚠ {message}" if uncertain else f"❌ ИИ-отклик упал: {message}")
-        return {**result, "ok": False, "uncertain": uncertain, "message": message}
+        result.update(ok=False, uncertain=uncertain, message=message)
+        return result
     finally:
         if not shutdown_started:
             await stop_manual_result({"ok": False, "uncertain": dispatch_started})
@@ -902,6 +911,16 @@ async def do_manual_apply_token(token: str) -> dict:
 
 class _HHApplyUncertain(Exception):
     """Stop consuming a preliminary HH result after its receipt changes."""
+
+
+async def _notify_hh_delivery_or_uncertain(vacancy, score, reason, result, note):
+    if server_delivery_confirmed(result):
+        await notify_application(vacancy, score, '', note=note)
+    else:
+        diagnostic = server_delivery_note(result)
+        if diagnostic and diagnostic not in note:
+            note += ' ' + diagnostic
+        await notify_needs_manual(vacancy, score, reason, note=note, uncertain=True)
 
 
 class _HHApplyReceipt:
@@ -1438,23 +1457,37 @@ async def do_search(dry_run: bool = False) -> dict:
         def consumer_receipt(v, vid, bucket, evaluation, details, resume_variant, score, reason):
             def promote(classification):
                 nonlocal applied_count
-                # Withdraw this vacancy's prior classification exactly once.
-                # Manual/skipped counters already written before a shutdown
-                # await remain in place when guard_stop becomes uncertain.
-                if classification == "applied":
-                    result["applied"] -= 1
-                    bucket["applied"] -= 1
-                    applied_count -= 1
-                    auto_applied_count_by_source["hh"] -= 1
-                elif classification == "rejected":
-                    bucket["rejected"] -= 1
-                elif classification == "guard":
-                    bucket["guard_stop"] -= 1
-                if classification not in {"manual", "guard", "rejected"}:
-                    result["skipped"] += 1
-                if classification not in {"manual", "guard"}:
-                    bucket["manual"] += 1
-                bucket["uncertain"] = bucket.get("uncertain", 0) + 1
+                delivered = server_delivery_confirmed(receipt.result)
+                # Accounting projects delivery; the safety actions below still
+                # run for every uncertain receipt, including delivered ones.
+                if delivered:
+                    if classification != 'applied':
+                        result['applied'] += 1
+                        bucket['applied'] += 1
+                        applied_count += 1
+                        auto_applied_count_by_source['hh'] += 1
+                        if classification in {'manual', 'guard', 'rejected'}:
+                            result['skipped'] -= 1
+                        if classification in {'manual', 'guard'}:
+                            bucket['manual'] -= 1
+                        elif classification == 'rejected':
+                            bucket['rejected'] -= 1
+                else:
+                    # Withdraw this vacancy's prior classification once.
+                    if classification == "applied":
+                        result["applied"] -= 1
+                        bucket["applied"] -= 1
+                        applied_count -= 1
+                        auto_applied_count_by_source["hh"] -= 1
+                    elif classification == "rejected":
+                        bucket["rejected"] -= 1
+                    elif classification == "guard":
+                        bucket["guard_stop"] -= 1
+                    if classification not in {"manual", "guard", "rejected"}:
+                        result["skipped"] += 1
+                    if classification not in {"manual", "guard"}:
+                        bucket["manual"] += 1
+                    bucket["uncertain"] = bucket.get("uncertain", 0) + 1
                 seen.mark_seen(vid, v, "apply_uncertain")
                 hh_pipeline.mark_terminal(vid, "apply_uncertain")
                 if not receipt.can_continue():
@@ -1463,9 +1496,11 @@ async def do_search(dry_run: bool = False) -> dict:
                 if hh_breaker.stopped:
                     bucket["stop_reason"] = hh_breaker.reason
                 analytics.record_decision(
-                    run_id=run_id, vacancy=v, decision=DECISION_APPLY_UNCERTAIN,
-                    evaluation=evaluation, details=details, resume_variant=resume_variant,
-                    note="hh:apply_uncertain")
+                    run_id=run_id, vacancy=v,
+                    decision=DECISION_APPLIED_AUTO if delivered else DECISION_APPLY_UNCERTAIN,
+                    evaluation={**evaluation, 'cover_letter_status': receipt.result.get('cover_letter_status', 'unknown')}
+                    if delivered else evaluation, details=details, resume_variant=resume_variant,
+                    note="hh:server_delivery_confirmed" if delivered else "hh:apply_uncertain")
             receipt = _HHApplyReceipt(v, hh_client, promote, observe_hh_receipts)
             receipt.notice = lambda: notify_hh_uncertain(receipt, v, score, reason)
             return receipt
@@ -1483,16 +1518,21 @@ async def do_search(dry_run: bool = False) -> dict:
                     finally:
                         reconcile_hh_receipts()
                 receipt.notified = True
+                delivered = server_delivery_confirmed(receipt.result)
+                if delivered:
+                    note = server_delivery_note(receipt.result)
                 try:
-                    await set_hunter_status("search_manual", "Ручная сверка: исход отклика неизвестен", "busy")
+                    await set_hunter_status("search_apply_done" if delivered else "search_manual",
+                                            note if delivered else "Ручная сверка: исход отклика неизвестен", "busy")
                 finally:
                     receipt.reconcile()
                 note += (" Сессия проверена; обработка следующих вакансий HH продолжается."
                          if receipt.can_continue() else " HH остановлен.")
-                create_task(f"Ручная сверка: {v['title']} @ {v['company']}",
-                            f"URL: {v.get('url', '')}\n{note}", "medium")
+                if not delivered:
+                    create_task(f"Ручная сверка: {v['title']} @ {v['company']}",
+                                f"URL: {v.get('url', '')}\n{note}", "medium")
                 try:
-                    await observe_hh_receipts(notify_needs_manual(v, score, reason, note=note, uncertain=True))
+                    await observe_hh_receipts(_notify_hh_delivery_or_uncertain(v, score, reason, receipt.result, note))
                 finally:
                     receipt.reconcile()
             finally:
@@ -3208,7 +3248,9 @@ async def main():
                                                approval_revision=args.google_form_approval_revision)
         elif args.manual_apply_token:
             result = await do_manual_apply_token(args.manual_apply_token)
-            if result.get("uncertain"):
+            if server_delivery_confirmed(result):
+                print(server_delivery_note(result))
+            elif result.get("uncertain"):
                 print(f"⚠ Исход отклика не подтверждён; нужна ручная сверка. {result.get('message', '')}")
             if not result.get("ok"):
                 sys.exit(1)

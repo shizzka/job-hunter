@@ -18,7 +18,7 @@ from hh_client import HHClient
 from hh.resume_target import exact_title_resume_id
 from hh.ui import HHUnexpectedUI
 from hh.vacancy_details import HHVacancyNavigationError, HHVacancyUnavailable, classify_vacancy_forbidden
-from outcome import application_outcome, apply_result_is_uncertain
+from outcome import application_outcome, apply_result_is_uncertain, application_result_for_owner
 from superjob_client import SuperJobClient
 from habr_career_client import HabrCareerClient
 from geekjob_client import GeekJobClient
@@ -120,6 +120,35 @@ async def fetch_vacancy_details(
 # ── Диспетчеризация отклика ──
 
 def apply_result_with_current_uncertainty(vacancy: dict, hh_client, result: dict, *, owned_attempt=None) -> dict:
+    """Keep the safety classification, then bind this owner's delivery fact."""
+    normalized = _apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
+    if vacancy.get('source', 'hh') != 'hh':
+        return normalized
+    from hh.delivery import fact, result_with_delivery
+    candidate = owned_attempt
+    if candidate is None:
+        record = fact(result)
+        candidate = record.attempt if record is not None else None
+    try:
+        if (candidate is None or candidate.client is not hh_client or candidate.repository.source != 'hh'
+                or candidate.repository.key(candidate.url) != candidate.repository.key(vacancy.get('url', ''))):
+            candidate = None
+    except Exception:
+        candidate = None
+    try:
+        return application_result_for_owner(result_with_delivery(normalized, candidate))
+    except Exception:
+        # Optional presentation cannot alter the pre-existing safety result.
+        try:
+            from hh.delivery import _publish
+            if candidate is not None:
+                _publish(candidate, 'unknown', 'delivery_projection_exception')
+            return result_with_delivery(normalized, candidate)
+        except Exception:
+            return {key: value for key, value in normalized.items() if key != 'server_delivery'}
+
+
+def _apply_result_with_current_uncertainty(vacancy: dict, hh_client, result: dict, *, owned_attempt=None) -> dict:
     """Recheck this HH client's sticky evidence without browser actions or writes."""
     if vacancy.get("source", "hh") != "hh":
         return result
@@ -339,7 +368,7 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
             finally:
                 result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
                 analytics.record_event({"event": "application_result",
-                    "outcome": "uncertain" if apply_result_is_uncertain(result) else "error",
+                    "outcome": application_outcome(result) if apply_result_is_uncertain(result) else "error",
                     "error_kind": type(exc).__name__})
                 if isinstance(trace, ApplyTrace):
                     trace.update_application_outcome(application_outcome(result))
