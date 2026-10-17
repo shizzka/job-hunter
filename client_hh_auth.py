@@ -457,6 +457,21 @@ async def _fill_first_visible(page, selectors: tuple[str, ...], value: str, *, g
     return True
 
 
+async def _fill_or_type(item, value: str, *, digits_only: bool = False) -> None:
+    """Programmatic fill first; hh's masked/controlled inputs may drop it — then type like a person."""
+    await item.fill(value, timeout=5000)
+    try:
+        actual = await item.input_value()
+    except Exception:
+        return
+    current = re.sub(r"\D", "", actual) if digits_only else actual
+    if current == value or not hasattr(item, "press_sequentially"):
+        return
+    await item.click(timeout=5000)
+    await item.fill("", timeout=5000)
+    await item.press_sequentially(value, delay=70)
+
+
 async def _fill_hh_auth_email(page, value: str, *, guard=None, owner_guard=None, receipts=None) -> bool:
     """Switch hh's login form to «Почта» and type the address."""
     email_input = await _first_visible_locator(page, HH_AUTH_EMAIL_INPUT_SELECTORS)
@@ -472,9 +487,7 @@ async def _fill_hh_auth_email(page, value: str, *, guard=None, owner_guard=None,
         email_input = await _first_visible_locator(page, HH_AUTH_EMAIL_INPUT_SELECTORS)
     if email_input is None or not await _mutation_allowed(guard, owner_guard):
         return False
-    await email_input.click(timeout=5000)
-    await email_input.fill("", timeout=5000)
-    await email_input.press_sequentially(value, delay=60)
+    await _fill_or_type(email_input, value)
     if receipts is not None:
         receipts.append((email_input, value))
     return True
@@ -499,9 +512,7 @@ async def _fill_hh_auth_login(page, value: str, *, guard=None, owner_guard=None,
         # hh's masked phone input ignores programmatic fill (the value resets and the form
         # reports «обязательное поле»); type the digits like a person instead.
         try:
-            await phone_input.click(timeout=5000)
-            await phone_input.fill("", timeout=5000)
-            await phone_input.press_sequentially(national, delay=80)
+            await _fill_or_type(phone_input, national, digits_only=True)
         except TypeError:
             if not await _mutation_allowed(guard, owner_guard):
                 return False
@@ -528,7 +539,14 @@ async def _click_first_visible(page, selectors: tuple[str, ...], *, guard=None, 
     except Exception as exc:
         if "captcha" in str(exc).casefold():
             raise RuntimeError("captcha_intercepted_click") from exc
-        raise
+        if "intercepts pointer events" not in str(exc):
+            raise
+        # hh's suggestion popup under the field covers the button: close it once and retry.
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(300)
+        if not await _mutation_allowed(guard, owner_guard):
+            return False
+        await item.click(timeout=5000)
     return True
 
 
@@ -621,12 +639,6 @@ async def _wait_for_hh_auth_progress(page, before_url: str, before_text: str, *,
 
 
 async def _submit_hh_auth_form(page, *, guard=None, owner_guard=None) -> dict:
-    # Close hh's suggestion popup under the field: it intercepts the click on «Дальше».
-    try:
-        await page.keyboard.press("Escape")
-        await page.wait_for_timeout(300)
-    except Exception:
-        pass
     try:
         clicked = await _click_first_visible(page, HH_AUTH_CONTINUE_SELECTORS, guard=guard, owner_guard=owner_guard)
     except RuntimeError as exc:
@@ -759,6 +771,7 @@ async def _drive_hh_auth_step(
     step_nonce = object()
     client._auth_step_nonce = step_nonce
     prompt_identity = None
+    own_input = {"typed": False}
     receipts = []
 
     def same_owner():
@@ -795,10 +808,13 @@ async def _drive_hh_auth_step(
         matches = (_looks_like_hh_auth_code_prompt(current_text, current_url) if kind == "code"
                    else (_looks_like_hh_auth_login_prompt(current_text, current_url)
                          or bool(visible_login)))
-        # Same page and still the same kind of prompt. Exact text equality is not required:
-        # typing opens hh's own suggestion/validation popups that change the visible text.
+        # Before our own input the visible text must be exactly the captured prompt (a page
+        # changed while waiting for the answer is not ours to fill). After we typed, hh's own
+        # suggestion/validation popups change the text, so only the URL and prompt kind count.
         return (same_owner() and current_url == str(getattr(page, "url", "") or "") and matches
-                and (prompt_identity is None or prompt_identity[0] == current_url))
+                and (prompt_identity is None
+                     or (prompt_identity[0] == current_url
+                         and (own_input["typed"] or prompt_identity[1] == current_text))))
 
     async def capture_prompt(kind):
         nonlocal prompt_identity
@@ -982,6 +998,7 @@ async def _drive_hh_auth_step(
                 return stale
         if login and await _fill_hh_auth_login(page, login, guard=lambda: credential_guard("login"),
                                                owner_guard=mutation_owner, receipts=receipts):
+            own_input["typed"] = True
             before_url = str(getattr(page, "url", "") or "")
             before_text = await _hh_auth_page_text(page)
             if not await current_prompt("login"):
@@ -1032,6 +1049,7 @@ async def _drive_hh_auth_step(
                 return stale
         if login and await _fill_hh_auth_login(page, login, guard=lambda: credential_guard("login"),
                                                owner_guard=mutation_owner, receipts=receipts):
+            own_input["typed"] = True
             before_url = str(getattr(page, "url", "") or "")
             before_text = await _hh_auth_page_text(page)
             if not await current_prompt("login"):

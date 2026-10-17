@@ -38,6 +38,7 @@ def test_email_login_switches_to_mail_and_types(monkeypatch):
         async def click(self, timeout=0, force=False): calls.append(("click", self.name))
         async def fill(self, value, timeout=0): calls.append(("fill", self.name, value))
         async def press_sequentially(self, value, delay=0): calls.append(("type", self.name, value))
+        async def input_value(self): return ""  # hh's controlled input drops programmatic fill
 
     class Page:
         url = "https://hh.ru/account/login"
