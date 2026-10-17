@@ -144,8 +144,9 @@ def test_full_search_defers_without_seen_rejection_and_recovers_from_queue(searc
     recovered = asyncio.run(agent.do_search(dry_run=True))
     evaluate.assert_awaited_once()
     assert recovered['applied'] == 1  # dry-run match, not a real submit
-    assert json.loads(queue_path.read_text())['items'] == {}
-    assert seen.is_seen('hh:1')
+    # A trial run keeps no durable marks: the item stays queued for a real run.
+    assert len(json.loads(queue_path.read_text())['items']) == 1
+    assert not seen.is_seen('hh:1')
 
 
 def test_multiple_unscored_vacancies_send_one_alert_per_run(search_harness, monkeypatch):
