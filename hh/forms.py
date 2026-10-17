@@ -699,10 +699,14 @@ async def answer_question_with_llm(
         f"Контекст вакансии (на неё откликаемся):\n{vacancy_context}\n\n"
         if vacancy_context else ""
     )
-    from answer_grounding import capture_candidate, current_candidate, current_answer_client, verify_answers
+    from answer_grounding import (
+        capture_candidate, current_candidate, current_answer_client,
+        verify_answers, retrieve_candidate,
+    )
     snapshot = current_candidate() or capture_candidate(resume_text, settings=settings,
         profile_builder=build_profile_note_block, facts_builder=build_facts_block,
         salary_builder=build_salary_rule_block, knowledge_builder=build_knowledge_base_block)
+    snapshot = retrieve_candidate(snapshot, question_text, limit_chars=12000)
     salary_block, facts_block, profile_note_block = snapshot.salary, snapshot.facts, snapshot.profile_note
     client = current_answer_client() or get_question_answer_client()
     model = snapshot.models['HH_QUESTION_MODEL'] or snapshot.models['LLM_MODEL']
@@ -711,10 +715,13 @@ async def answer_question_with_llm(
         supported = await verify_answers([{'index': 0, 'question': question_text, 'answer': stable_answer}],
                                          snapshot.sources, client, model, constraints=snapshot.fact_constraints)
         return stable_answer if 0 in supported else None
-    # 2-pass: фильтруем KB под конкретную вакансию (если контекст есть)
+    # LLM selection is retained only for the legacy flag-off operation.
     try:
-        knowledge_block = snapshot.knowledge[:8000] if current_candidate() else await build_filtered_kb_block(
-            vacancy_context, client, max_sections=5, limit_chars=8000)
+        if snapshot.knowledge_index or current_candidate():
+            knowledge_block = snapshot.knowledge if snapshot.knowledge_index else snapshot.knowledge[:8000]
+        else:
+            knowledge_block = await build_filtered_kb_block(
+                vacancy_context, client, max_sections=5, limit_chars=8000)
     except Exception as exc:
         logger.debug("filtered KB failed, fallback to captured: %s", type(exc).__name__)
         knowledge_block = snapshot.knowledge[:8000]
@@ -846,17 +853,24 @@ async def answer_choice_with_llm(
         f"Контекст вакансии (на неё откликаемся):\n{vacancy_context}\n\n"
         if vacancy_context else ""
     )
-    from answer_grounding import capture_candidate, current_candidate, current_answer_client, verify_answers
+    from answer_grounding import (
+        capture_candidate, current_candidate, current_answer_client,
+        verify_answers, retrieve_candidate,
+    )
     snapshot = current_candidate() or capture_candidate(resume_text, settings=settings,
         profile_builder=build_profile_note_block, facts_builder=build_facts_block,
         salary_builder=build_salary_rule_block, knowledge_builder=build_knowledge_base_block)
+    snapshot = retrieve_candidate(snapshot, question_text, limit_chars=12000)
     salary_block, facts_block, profile_note_block = snapshot.salary, snapshot.facts, snapshot.profile_note
     client = current_answer_client() or get_question_answer_client()
     model = snapshot.models['HH_CHOICE_MODEL'] or snapshot.models['LLM_MODEL']
-    # 2-pass: фильтруем KB под конкретную вакансию (если контекст есть)
+    # LLM selection is retained only for the legacy flag-off operation.
     try:
-        knowledge_block = snapshot.knowledge[:8000] if current_candidate() else await build_filtered_kb_block(
-            vacancy_context, client, max_sections=5, limit_chars=8000)
+        if snapshot.knowledge_index or current_candidate():
+            knowledge_block = snapshot.knowledge if snapshot.knowledge_index else snapshot.knowledge[:8000]
+        else:
+            knowledge_block = await build_filtered_kb_block(
+                vacancy_context, client, max_sections=5, limit_chars=8000)
     except Exception as exc:
         logger.debug("filtered KB failed, fallback to captured: %s", type(exc).__name__)
         knowledge_block = snapshot.knowledge[:8000]

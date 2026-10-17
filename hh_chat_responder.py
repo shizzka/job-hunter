@@ -335,8 +335,15 @@ async def generate_answer(
         build_knowledge_base_block,
         build_filtered_kb_block,
     )
-    from answer_grounding import capture_candidate, current_candidate, current_answer_client, verify_answers
+    from answer_grounding import (
+        capture_candidate, current_candidate, current_answer_client,
+        verify_answers, retrieve_candidate,
+    )
     snapshot = current_candidate() or capture_candidate(resume_text)
+    vacancy_summary = f"Должность: {vacancy.get('title','')}\nКомпания: {vacancy.get('company','')}\n"
+    retrieval_query = (question + '\n' + vacancy_summary
+                       + f"{vacancy.get('description', '')}\n{vacancy.get('snippet', '')}")
+    snapshot = retrieve_candidate(snapshot, retrieval_query, limit_chars=12000)
     resume_text = snapshot.resume
     profile_note, facts, salary = snapshot.profile_note, snapshot.facts, snapshot.salary
     client = current_answer_client() or _get_llm_client()
@@ -347,10 +354,9 @@ async def generate_answer(
                                          snapshot.sources, client, model, constraints=snapshot.fact_constraints,
                                          diagnostics=diagnostics, quote_min_similarity=quote_min_similarity)
         return deterministic_answer if 0 in supported else None
-    # 2-pass: фильтруем KB под вакансию (используем title+company как контекст)
-    vacancy_summary = f"Должность: {vacancy.get('title','')}\nКомпания: {vacancy.get('company','')}\n"
+    # Legacy selection remains available only for operations captured flag-off.
     try:
-        knowledge = snapshot.knowledge if current_candidate() else await build_filtered_kb_block(
+        knowledge = snapshot.knowledge if snapshot.knowledge_index or current_candidate() else await build_filtered_kb_block(
             vacancy_summary, client, max_sections=6, limit_chars=12000,
         )
     except Exception as exc:

@@ -131,6 +131,7 @@ def test_actual_cover_and_matcher_prompts_use_only_active_candidate(candidate_pr
 
 @pytest.mark.parametrize("selected", [[], [999]])
 def test_kb_selector_fallback_keeps_profile_before_await(candidate_profiles, monkeypatch, selected):
+    monkeypatch.setenv("KB_RETRIEVAL_ENABLED", "0")
     (candidate_profiles["admin"] / "knowledge" / "qa_kb.md").write_text(
         "## 1. Проверки\nSECTION_ADMIN_ONLY\n"
     )
@@ -149,6 +150,7 @@ def test_kb_selector_fallback_keeps_profile_before_await(candidate_profiles, mon
 
 
 def test_cover_selector_error_keeps_candidate_snapshot(candidate_profiles, monkeypatch):
+    monkeypatch.setenv("KB_RETRIEVAL_ENABLED", "0")
     profile.activate_no_lock("admin")
     calls = []
 

@@ -8,7 +8,7 @@ import os
 from cover_grounding import _grounding_timeout
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import wraps
 
 import config
@@ -29,13 +29,17 @@ class CandidateSnapshot:
     evidence_facts: str
     fact_constraints: str
     cookies_path: str
+    # JSON freezes the corpus and remains compatible with candidate revisions.
+    knowledge_index: str = ''
 
     @property
     def sources(self):
-        # General KB/HR/dialog/style text must never prove personal experience.
+        # The selected KB is shared with the author. General/teaching material
+        # still cannot prove personal experience (see verifier instructions).
         return {key: value for key, value in {
             'resume': self.resume, 'profile_note': self.profile_note,
             'facts': self.evidence_facts, 'salary': self.salary,
+            'knowledge': self.knowledge if self.knowledge_index else '',
             'contacts': json.dumps(self.contacts, ensure_ascii=False) if self.contacts else '',
         }.items() if isinstance(value, str) and value.strip()}
 
@@ -44,6 +48,9 @@ def capture_candidate(resume_text, *, settings=config, profile_builder=None,
                       facts_builder=None, salary_builder=None, knowledge_builder=None):
     import facts
     import prompt_blocks
+    from kb_retrieval import get_knowledge_index, retrieval_enabled
+    index = (get_knowledge_index(os.path.dirname(config.RESUME_FILE) or os.path.expanduser('~/.job-hunter'))
+             if retrieval_enabled() else None)
     personal = copy.deepcopy(facts.load_facts())
     confirmed = personal.get('confirmed', {}) if isinstance(personal, dict) else {}
     if not isinstance(confirmed, dict):
@@ -57,13 +64,29 @@ def capture_candidate(resume_text, *, settings=config, profile_builder=None,
         (profile_builder or prompt_blocks.build_profile_note_block)(),
         (facts_builder or prompt_blocks.build_facts_block)(),
         (salary_builder or prompt_blocks.build_salary_rule_block)(),
-        (knowledge_builder or prompt_blocks.build_knowledge_base_block)(limit_chars=12000),
+        (index.retrieve('', limit_chars=12000) if index is not None else
+         (knowledge_builder or prompt_blocks.build_knowledge_base_block)(limit_chars=12000)),
         copy.deepcopy(prompt_blocks.get_candidate_contacts()), copy.deepcopy(confirmed),
         {key: str(getattr(settings, key, '') or '') for key in
          ('LLM_MODEL', 'HH_QUESTION_MODEL', 'HH_CHOICE_MODEL', 'HH_CHAT_RESPONDER_MODEL')},
         evidence_facts, json.dumps({key: personal[key] for key in ('do_not_claim', 'forbidden_claims')
                                    if isinstance(personal, dict) and key in personal}, ensure_ascii=False),
-        os.path.abspath(config.HH_COOKIES_FILE))
+        os.path.abspath(config.HH_COOKIES_FILE),
+        index.to_snapshot() if index is not None else '')
+
+
+def retrieve_candidate(snapshot, query: str, *, limit_chars=12000):
+    """Select once from the bound corpus for both generation and verification.
+
+    No file/config reads: a browser await may have switched the active profile.
+    An empty index string denotes the legacy operation captured with the flag off.
+    """
+    if not snapshot.knowledge_index:
+        return snapshot
+    from kb_retrieval import KnowledgeIndex
+    knowledge = KnowledgeIndex.from_snapshot(snapshot.knowledge_index).retrieve(
+        query, limit_chars=limit_chars)
+    return replace(snapshot, knowledge=knowledge)
 
 
 _candidate_context = ContextVar('candidate_answer_context', default=None)
@@ -205,8 +228,9 @@ confirmed и явно подтверждённые сведения. Отсут�
 опыта», «не учусь» или «не работал». Не выдумывай профессию, инструменты, стаж,
 образование, результаты. Да/нет, готовность, согласие, переезд, тестовое задание,
 даты и принятие условий должны следовать из явных данных/намерения кандидата.
-Constraints — запреты кандидата, НЕ источник цитат. Их запрет имеет приоритет
-над положительной формулировкой в старом resume/profile_note: запрещённый claim
+Constraints и метки [LIMIT]/[DO_NOT_CLAIM] в knowledge — запреты кандидата,
+НЕ источник цитат об опыте. Их запрет имеет приоритет над положительной
+формулировкой в старом resume/profile_note: запрещённый claim
 должен получить supported=false даже при дословной цитате. Не выводи согласие из вакансии. Для зарплаты допустим только явно заданный
 ориентир/правило из salary; не принимай сумму вакансии за ожидание кандидата.
 Разбей answer на предложения как split: граница .!? + пробел или новая строка.
@@ -214,7 +238,7 @@ Constraints — запреты кандидата, НЕ источник цит�
 подтверждающие ВСЕ детали. При сомнении supported=false. Не переписывай ответ.
 Верни только JSON: {"verdict":"supported|mixed|unsupported", "answers":[
 {"index":0,"supported":true,"sentences":[{"index":0,"supported":true,
-"evidence":[{"source":"resume|facts|profile_note|contacts|salary","quote":"цитата"}]}]}]}.
+"evidence":[{"source":"resume|facts|profile_note|contacts|salary|knowledge","quote":"цитата"}]}]}]}.
 Каждый answer index ровно один раз; каждый sentence index ровно один раз.
 Для неподтверждённого ответа supported=false. Не объявляй произвольные
 предложения нейтральными, не склеивай/не перефразируй цитаты. Только JSON."""

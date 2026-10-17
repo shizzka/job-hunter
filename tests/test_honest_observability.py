@@ -57,6 +57,7 @@ def test_discarded_source_reports_lost_work_and_unattempted_combinations(monkeyp
 
 @pytest.mark.parametrize("limit", [12000, None])
 def test_kb_logs_only_sections_surviving_final_cut(monkeypatch, caplog, limit):
+    monkeypatch.setenv("KB_RETRIEVAL_ENABLED", "0")
     sections = [{"num": n, "title": f"PRIVATE_TITLE_{n}", "content": "PRIVATE_CONTENT"} for n in range(1, 7)]
     monkeypatch.setattr(prompt_blocks, "_load_kb_filterable", lambda: ("x" * 17344, sections))
     monkeypatch.setattr(prompt_blocks, "select_kb_sections", AsyncMock(return_value=list(range(1, 7))))

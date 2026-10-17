@@ -469,13 +469,18 @@ async def generate_form_answers(
     )
 
     resume_text = _load_resume_text()
-    from answer_grounding import capture_candidate, current_candidate, current_answer_client, verify_answers
+    from answer_grounding import (
+        capture_candidate, current_candidate, current_answer_client,
+        verify_answers, retrieve_candidate,
+    )
     snapshot = current_candidate() or capture_candidate(resume_text)
     resume_text = snapshot.resume
     profile_note, facts, salary = snapshot.profile_note, snapshot.facts, snapshot.salary
     contacts = json.dumps(snapshot.contacts, ensure_ascii=False)
     vacancy = vacancy or {}
     vacancy_summary = f"Должность: {vacancy.get('title','')}\nКомпания: {vacancy.get('company','')}\n"
+    snapshot = retrieve_candidate(
+        snapshot, '\n'.join(str(q.get('question', '')) for q in questions), limit_chars=12000)
     model = (
         snapshot.models['HH_QUESTION_MODEL']
         or snapshot.models['HH_CHAT_RESPONDER_MODEL']
@@ -483,8 +488,11 @@ async def generate_form_answers(
     ).strip() or snapshot.models['LLM_MODEL']
     client = current_answer_client() or client_factory()
     try:
-        knowledge = snapshot.knowledge[:8000] if current_candidate() else await build_filtered_kb_block(
-            vacancy_summary, client, max_sections=5, limit_chars=8000)
+        if snapshot.knowledge_index or current_candidate():
+            knowledge = snapshot.knowledge if snapshot.knowledge_index else snapshot.knowledge[:8000]
+        else:
+            knowledge = await build_filtered_kb_block(
+                vacancy_summary, client, max_sections=5, limit_chars=8000)
     except Exception as exc:
         logger.warning("google form KB filter failed, fallback to captured: %s", type(exc).__name__)
         knowledge = snapshot.knowledge[:8000]

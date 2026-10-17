@@ -56,6 +56,7 @@ def test_legacy_module_reexports_answer_preparation_helpers():
 
 
 def test_generate_form_answers_uses_injected_client_and_parser(monkeypatch):
+    monkeypatch.setenv('KB_RETRIEVAL_ENABLED', '0')
     import hh_client
     import prompt_blocks
 

@@ -258,6 +258,8 @@ def _load_kb_filterable() -> tuple[str, list[dict]]:
     names.extend(name for name in sorted(os.listdir(knowledge_dir)) if name not in names)
     has_canonical_facts = "candidate_facts.md" in names
     for fname in names:
+        if fname in {"kb_eval_questions.txt", "synonyms.txt"}:
+            continue
         if fname == "profile_note.md":
             continue  # included separately by build_profile_note_block()
         if has_canonical_facts and fname == "about_me.md":
@@ -393,9 +395,17 @@ async def build_filtered_kb_block(
     limit_chars: int | None = 10000,
     selector_model: str | None = None,
 ) -> str:
-    """2-pass: парсим KB → выбираем релевантные секции через LLM → формируем блок.
-    Если LLM-фильтр не сработал или vacancy_context пуст — fallback на полный
-    (обрезанный) блок из снимка, прочитанного до ожидания LLM."""
+    """Retrieve locally by default; flag-off preserves the legacy LLM selector.
+
+    Legacy fallback uses the truncated snapshot read before its model await.
+    Retrieval errors propagate so no mandatory boundaries can be lost.
+    """
+    from kb_retrieval import retrieval_enabled, retrieve_knowledge
+    if retrieval_enabled():
+        return retrieve_knowledge(
+            vacancy_context, profile_dir=os.path.dirname(config.RESUME_FILE) or os.path.expanduser('~/.job-hunter'),
+            limit_chars=limit_chars if limit_chars is not None else 10000,
+        )
     about_text, sections = _load_kb_filterable()
     if not about_text and not sections:
         return ""
@@ -435,6 +445,8 @@ def build_knowledge_base_block(limit_chars: int = 12000, *, profile_dir: str | N
     names = [name for name in preferred if os.path.isfile(os.path.join(knowledge_dir, name))]
     names.extend(name for name in sorted(os.listdir(knowledge_dir)) if name not in names)
     for fname in names:
+        if fname in {"kb_eval_questions.txt", "synonyms.txt"}:
+            continue  # Retrieval metadata is neither facts nor prompt material.
         if fname == "profile_note.md":
             continue  # included separately by build_profile_note_block()
         if not (fname.endswith(".md") or fname.endswith(".txt")):

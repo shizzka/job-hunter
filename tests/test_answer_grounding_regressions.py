@@ -366,6 +366,7 @@ def test_unavailable_original_answer_client_cannot_switch_after_await(blocks, mo
 
 
 def test_bound_chat_never_loads_foreign_kb_or_model_after_browser_await(blocks, monkeypatch):
+    monkeypatch.setenv('KB_RETRIEVAL_ENABLED', '0')
     from answer_grounding import capture_candidate, candidate_context
     import config
     claim = 'У меня опыт SQL.'

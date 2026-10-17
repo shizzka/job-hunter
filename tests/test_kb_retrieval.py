@@ -1,0 +1,283 @@
+import json
+import os
+from dataclasses import FrozenInstanceError
+
+import pytest
+
+from kb_retrieval import (
+    KnowledgeBudgetError, KnowledgeIndex, KnowledgeSourceError,
+    get_knowledge_index, retrieval_enabled, retrieve_knowledge,
+)
+
+
+def write(root, name, text):
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_bm25_returns_relevant_complete_chunks(tmp_path):
+    write(tmp_path, "knowledge/projects.md", "# Проекты\n## Android\nПроверял мобильные push-уведомления.\n\n## Excel\nВёл таблицы Excel.")
+    result = retrieve_knowledge("андроид", profile_dir=tmp_path)
+    assert "Проекты > Android" in result
+    assert "push-уведомления" in result
+    assert result.index("push-уведомления") < result.index("Вёл таблицы")
+
+
+def test_lowercase_yo_and_light_russian_stemming(tmp_path):
+    write(tmp_path, "knowledge/kb.md", "# Кейсы\n## Другое\nПроверял Android.\n## Отчеты\nГотовил отчёты для клиента.")
+    result = retrieve_knowledge("отчетами", profile_dir=tmp_path)
+    assert result.index("Готовил отчёты") < result.index("Проверял Android")
+
+
+@pytest.mark.parametrize("query", ["автоматизации", "автоматизацию", "автоматизацией"])
+def test_inflected_automation_alias_ranks_first(tmp_path, query):
+    write(tmp_path, "knowledge/kb.md", "# Опыт\n- [CONFIRMED] Ручная проверка.\n- [CONFIRMED] automation scripting.")
+    result = retrieve_knowledge(query, profile_dir=tmp_path)
+    assert result.index("automation") < result.index("Ручная проверка")
+
+
+@pytest.mark.parametrize("query", ["REST API", "CI/CD", "3D", "1с", "эксель", "автоматизация"])
+def test_preserves_tools_and_builtin_aliases(tmp_path, query):
+    write(tmp_path, "knowledge/tools.md", "# Другое\nНерелевантный фрагмент.\n# Инструменты\nИспользовал REST API, CI/CD, 3D, 1C, Excel, automation.")
+    result = retrieve_knowledge(query, profile_dir=tmp_path)
+    assert result.index("Использовал") < result.index("Нерелевантный")
+    assert {"rest", "api", "ci/cd", "3d"} <= set(get_knowledge_index(tmp_path).chunks[1].tokens)
+
+
+def test_optional_synonyms_are_profile_local_and_invalidate_cache(tmp_path):
+    write(tmp_path, "knowledge/tools.md", "# Другое\nНерелевантный фрагмент.\n# Инструменты\nПрименял Playwright.")
+    before = get_knowledge_index(tmp_path)
+    write(tmp_path, "knowledge/synonyms.txt", "# comment\nplaywright = драматург\n")
+    result = retrieve_knowledge("драматург", profile_dir=tmp_path)
+    assert result.index("Playwright") < result.index("Нерелевантный")
+    after = get_knowledge_index(tmp_path)
+    assert before is not after
+    assert dict(after.aliases).get("драматург") == "playwright"
+
+
+def test_tagged_items_split_even_on_one_line(tmp_path):
+    write(tmp_path, "knowledge/kb.md", "# Опыт\n- [CONFIRMED] Android проверки - [LIMIT] Не заявлять AQA - [CONFIRMED] Excel таблицы")
+    result = retrieve_knowledge("Android", profile_dir=tmp_path)
+    assert "Android проверки" in result
+    assert "[LIMIT] Не заявлять AQA" in result
+    assert result.index("Android проверки") < result.index("Excel таблицы")
+    assert len(get_knowledge_index(tmp_path).chunks) == 3
+
+
+def test_inline_numbered_topics_provide_heading_context(tmp_path):
+    write(tmp_path, "knowledge/kb.md", "# Факты\n1. Excel - [CONFIRMED] Создавал отчёты. - [LIMIT] Не аналитик. 2. Android - [CONFIRMED] Проверял уведомления.")
+    index = get_knowledge_index(tmp_path)
+    assert len(index.chunks) == 3
+    assert index.chunks[0].heading == "Факты > Excel"
+    assert index.chunks[2].heading == "Факты > Android"
+    result = index.retrieve("Android")
+    assert result.index("Проверял уведомления") < result.index("Создавал отчёты")
+    assert "2. Android" not in index.chunks[1].text
+
+
+@pytest.mark.parametrize("prefix", ["", "- ", "* ", "+ "])
+@pytest.mark.parametrize("tag", ["LIMIT", "DO_NOT_CLAIM"])
+def test_boundary_tags_without_dash_bullet_fail_closed(tmp_path, prefix, tag):
+    write(tmp_path, "knowledge/kb.md", f"# Факты\n{prefix}[{tag}] Не заявлять AQA.")
+    index = get_knowledge_index(tmp_path)
+    assert index.chunks[0].mandatory
+    with pytest.raises(KnowledgeBudgetError):
+        index.retrieve("", limit_chars=0)
+
+
+def test_all_limits_and_core_profile_always_included(tmp_path):
+    write(tmp_path, "knowledge/profile_note.md", "# Профиль\nРучной QA начинающего уровня.")
+    write(tmp_path, "knowledge/kb.md", "# Опыт\n- [DO_NOT_CLAIM] Не заявлять коммерческую автоматизацию.\n- [LIMIT] Нет SQL production.\n- [CONFIRMED] Android smoke.")
+    result = retrieve_knowledge("погода", profile_dir=tmp_path)
+    assert "Ручной QA" in result
+    assert "Не заявлять коммерческую автоматизацию" in result
+    assert "Нет SQL production" in result
+    assert result.index("Нет SQL production") < result.index("Android smoke")
+
+
+def test_mandatory_heading_propagates_through_hierarchy(tmp_path):
+    write(tmp_path, "knowledge/kb.md", "# LIMIT\n## Автоматизация\nНе заявлять самостоятельную разработку.\n# Практика\nExcel отчёты.")
+    result = retrieve_knowledge("", profile_dir=tmp_path)
+    assert "Не заявлять самостоятельную разработку" in result
+    assert result.index("Не заявлять самостоятельную разработку") < result.index("Excel отчёты")
+
+
+def test_constraints_file_and_core_alias_are_mandatory(tmp_path):
+    write(tmp_path, "knowledge/constraints.md", "Не готов к ночным сменам.")
+    write(tmp_path, "knowledge/core_profile.md", "Механик.")
+    result = retrieve_knowledge("", profile_dir=tmp_path)
+    assert "Механик" in result
+    assert "Не готов к ночным сменам" in result
+
+
+def test_long_sections_split_with_heading_context_and_bound(tmp_path):
+    text = "\n\n".join(f"Android абзац {i}. " + "проверка " * 75 for i in range(8))
+    write(tmp_path, "knowledge/kb.md", "# Проекты\n## Мобильные\n" + text)
+    index = get_knowledge_index(tmp_path)
+    assert len(index.chunks) >= 5
+    assert all(len(chunk.text) <= 1100 for chunk in index.chunks)
+    assert all(chunk.heading == "Проекты > Мобильные" for chunk in index.chunks)
+    assert all(f"Android абзац {i}" in "\n".join(chunk.text for chunk in index.chunks) for i in range(8))
+    result = index.retrieve("Android", limit_chars=1500)
+    assert len(result) <= 1500
+    assert "Проекты > Мобильные" in result
+
+
+def test_single_long_paragraph_and_unbroken_string_are_bounded(tmp_path):
+    write(tmp_path, "knowledge/kb.md", "# Android\n" + "word " * 1800 + "x" * 4000)
+    index = get_knowledge_index(tmp_path)
+    assert all(len(chunk.text) <= 1100 for chunk in index.chunks)
+    assert len(index.retrieve("Android", limit_chars=1300)) <= 1300
+
+
+def test_overflow_fails_closed_even_for_unrelated_query(tmp_path):
+    prohibition = "Нельзя заявлять коммерческий опыт. " * 100
+    write(tmp_path, "knowledge/kb.md", "# LIMIT\n" + prohibition)
+    index = get_knowledge_index(tmp_path)
+    with pytest.raises(KnowledgeBudgetError, match="boundaries cannot be omitted"):
+        index.retrieve("Excel", limit_chars=100)
+    result = index.retrieve("Excel", limit_chars=10000)
+    assert prohibition.strip() in result
+
+
+def test_exact_budget_is_deterministic_and_no_partial_chunks(tmp_path):
+    write(tmp_path, "knowledge/kb.md", "# Опыт\n- [LIMIT] Не AQA.\n- [CONFIRMED] Android smoke.\n- [CONFIRMED] Android регресс.")
+    index = get_knowledge_index(tmp_path)
+    minimum = "\n\n".join(chunk.render() for chunk in index.chunks if chunk.mandatory)
+    assert index.retrieve("Android", limit_chars=len(minimum)) == minimum
+    result = index.retrieve("Android", limit_chars=105)
+    assert len(result) <= 105
+    assert result == index.retrieve("Android", limit_chars=105)
+    assert all("### " + chunk.source in result for chunk in index.chunks if chunk.text in result)
+    with pytest.raises(KnowledgeBudgetError):
+        index.retrieve("", limit_chars=len(minimum) - 1)
+
+
+@pytest.mark.parametrize("budget", [-1, 1.5, True, None])
+def test_invalid_budget(tmp_path, budget):
+    with pytest.raises(ValueError, match="limit_chars"):
+        retrieve_knowledge("anything", profile_dir=tmp_path, limit_chars=budget)
+
+
+def test_confirmed_json_only_with_constraints_preserved(tmp_path):
+    write(tmp_path, "facts.json", json.dumps({
+        "confirmed": {"tools": "Android"}, "unconfirmed": {"tools": "Kubernetes"},
+        "inferred": {"level": "Senior"}, "legacy": "AWS",
+        "weak": ["SQL учебный"], "allowed_wording": ["Знаком с SQL"],
+        "do_not_claim": ["Нет опыта DevOps"], "forbidden_claims": ["Не руководитель"],
+    }, ensure_ascii=False))
+    result = retrieve_knowledge("Android Kubernetes Senior AWS", profile_dir=tmp_path)
+    assert "Android" in result
+    assert "Kubernetes" not in result and "Senior" not in result and "AWS" not in result
+    assert "SQL учебный" in result and "Знаком с SQL" in result
+    assert "Нет опыта DevOps" in result and "Не руководитель" in result
+
+
+def test_legacy_flat_json_is_not_evidence(tmp_path):
+    write(tmp_path, "facts.json", '{"tools": "Android"}')
+    assert not retrieve_knowledge("Android", profile_dir=tmp_path)
+
+
+def test_interview_confirmed_facts_and_unconditional_boundaries(tmp_path):
+    write(tmp_path, "candidate_interview.json", json.dumps({"facts": [
+        {"text": "Проверял Android", "topic": "мобильное", "source": "telegram_confirmed"},
+        {"text": "Не AQA", "topic": "границы", "source": "telegram_confirmed"},
+        {"text": "Нет коммерческого SQL", "topic": "ограничения"},
+        {"text": "Использовал Excel", "topic": "таблицы"},
+        {"text": 123},
+    ]}, ensure_ascii=False))
+    result = retrieve_knowledge("андроид", profile_dir=tmp_path)
+    assert "Проверял Android" in result and "Не AQA" in result
+    assert "Нет коммерческого SQL" in result
+    assert result.index("Проверял Android") < result.index("Использовал Excel")
+
+
+def test_long_interview_fact_is_chunked_and_tail_is_retrievable(tmp_path):
+    write(tmp_path, "candidate_interview.json", json.dumps({"facts": [{
+        "text": ("Выполнял ручные проверки интерфейса. " * 400) + "\n\nРазрабатывал Blender 3D модели.",
+        "topic": "проекты", "source": "telegram_confirmed",
+    }]}, ensure_ascii=False))
+    index = get_knowledge_index(tmp_path)
+    assert all(len(chunk.text) <= 1100 for chunk in index.chunks)
+    result = index.retrieve("Blender", limit_chars=1500)
+    assert "Blender 3D модели" in result
+    assert len(result) <= 1500
+
+
+def test_profile_cache_and_source_updates_no_leak(tmp_path):
+    first, second = tmp_path / "first", tmp_path / "second"
+    path = write(first, "knowledge/kb.md", "# Android\nFIRST candidate.")
+    write(second, "knowledge/kb.md", "# Android\nSECOND candidate.")
+    snapshot = get_knowledge_index(first)
+    assert get_knowledge_index(first) is snapshot
+    assert "SECOND" not in retrieve_knowledge("Android", profile_dir=first)
+    assert "FIRST" not in retrieve_knowledge("Android", profile_dir=second)
+    old_mtime = path.stat().st_mtime_ns
+    path.write_text("# Android\nTHIRD candidate.", encoding="utf-8")
+    os.utime(path, ns=(old_mtime + 1000, old_mtime + 1000))
+    updated = get_knowledge_index(first)
+    assert updated is not snapshot
+    assert "THIRD" in updated.retrieve("Android")
+    assert "FIRST" in snapshot.retrieve("Android")
+    path.unlink()
+    assert not retrieve_knowledge("Android", profile_dir=first)
+
+
+def test_eval_questions_and_unrelated_txt_are_not_indexed(tmp_path):
+    write(tmp_path, "knowledge/kb_eval_questions.txt", "Android ANSWER LEAK")
+    write(tmp_path, "knowledge/misc.txt", "Android WRONG")
+    assert not retrieve_knowledge("Android", profile_dir=tmp_path)
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "facts", "synonyms"])
+def test_symlink_escape_is_rejected(tmp_path, kind):
+    root = tmp_path / "profile"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = write(outside, "secret.md", "OTHER PROFILE SECRET")
+    if kind == "directory":
+        (root / "knowledge").symlink_to(outside, target_is_directory=True)
+    elif kind == "facts":
+        (root / "facts.json").symlink_to(target)
+    else:
+        (root / "knowledge").mkdir()
+        (root / "knowledge" / ("leak.md" if kind == "file" else "synonyms.txt")).symlink_to(target)
+    with pytest.raises(KnowledgeSourceError):
+        get_knowledge_index(root)
+
+
+def test_malformed_json_fails_closed(tmp_path):
+    write(tmp_path, "facts.json", "{not JSON}")
+    with pytest.raises(KnowledgeSourceError):
+        get_knowledge_index(tmp_path)
+
+
+def test_snapshot_roundtrip_is_immutable_and_does_not_read_files(tmp_path):
+    path = write(tmp_path, "knowledge/kb.md", "# Android\n- [LIMIT] Не AQA\n- [CONFIRMED] Smoke.")
+    index = get_knowledge_index(tmp_path)
+    serialized = index.to_snapshot()
+    assert json.loads(json.dumps({"kb": serialized}))["kb"] == serialized
+    path.unlink()
+    restored = KnowledgeIndex.from_snapshot(serialized)
+    assert restored == index
+    assert restored.retrieve("Android") == index.retrieve("Android")
+    assert "Smoke" in restored.retrieve("Android")
+    with pytest.raises(FrozenInstanceError):
+        restored.chunks = ()
+
+
+def test_flag_defaults_enabled_and_accepts_false_values(monkeypatch):
+    monkeypatch.delenv("KB_RETRIEVAL_ENABLED", raising=False)
+    assert retrieval_enabled()
+    for value in ("0", "false", "False", " no ", "OFF"):
+        monkeypatch.setenv("KB_RETRIEVAL_ENABLED", value)
+        assert not retrieval_enabled()
+    monkeypatch.setenv("KB_RETRIEVAL_ENABLED", "1")
+    assert retrieval_enabled()
+
+
+def test_missing_profile_is_empty_and_zero_budget_supported(tmp_path):
+    assert retrieve_knowledge("Android", profile_dir=tmp_path / "missing", limit_chars=0) == ""

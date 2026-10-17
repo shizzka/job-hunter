@@ -1525,10 +1525,13 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     evidence_facts, fact_constraints = build_cover_facts_blocks()
     facts = evidence_facts + fact_constraints
     # Leave room for instructions, candidate facts and output under provider TPM.
-    # Selected sections remain whole; only common KB filler loses its budget.
-    knowledge_limit_chars = 6000
-    knowledge_fallback = build_knowledge_base_block(limit_chars=knowledge_limit_chars)
-    # 2-pass: фильтруем KB-секции под конкретную вакансию через LLM
+    # Retrieval budgets whole facts, retaining all mandatory boundaries.
+    from kb_retrieval import retrieval_enabled
+    use_retrieval = retrieval_enabled()
+    # Complete boundaries can exceed the legacy 6000; never drop prohibitions.
+    knowledge_limit_chars = 12000 if use_retrieval else 6000
+    knowledge_fallback = ('' if use_retrieval else
+                          build_knowledge_base_block(limit_chars=knowledge_limit_chars))
     vacancy_summary = (
         f"Должность: {vacancy.get('title', '')}\n"
         f"Компания: {vacancy.get('company', '')}\n"
@@ -1540,6 +1543,8 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
             vacancy_summary, client, max_sections=6, limit_chars=knowledge_limit_chars,
         )
     except Exception as exc:
+        if use_retrieval:
+            raise  # Never replace missing restrictions with a truncated fallback.
         log.warning("filtered KB selection failed, fallback to full: %s", type(exc).__name__)
         knowledge = knowledge_fallback
 

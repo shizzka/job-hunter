@@ -13,6 +13,12 @@ import prompt_blocks
 from tests.test_cover_grounding import approved, client_for
 
 
+@pytest.fixture(autouse=True)
+def legacy_selection(monkeypatch):
+    """These regressions exercise the preserved LLM selector and its budgets."""
+    monkeypatch.setenv("KB_RETRIEVAL_ENABLED", "0")
+
+
 @pytest.mark.parametrize("limit", [6000, 12000])
 def test_selected_sections_survive_oversized_common_knowledge(monkeypatch, caplog, limit):
     sections = [{"num": n, "title": f"QA {n}", "content": f"SELECTED_{n}_" * 60} for n in range(1, 7)]
