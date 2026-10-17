@@ -12,7 +12,7 @@ ANATSKYTICS_FIELDS = frozenset({
     'active', 'activeTab', 'archived', 'disabled', 'elementName', 'employerId',
     'event', 'fpAppVersion', 'hhid', 'hhtmFrom', 'hhtmFromLabel', 'hhtmSource',
     'hhtmSourceLabel', 'isBrandingPreview', 'needFix', 'not_in_experiment',
-    'originalRequestId', 'requestId', 'source', 'supernova', 'userType',
+    'originalRequestId', 'position', 'requestId', 'source', 'supernova', 'type', 'userType',
     'vacancyId', 'waiting',
 })
 SENTRY_FIELDS = frozenset({'sentry_client', 'sentry_key', 'sentry_version'})

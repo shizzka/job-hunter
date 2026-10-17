@@ -208,3 +208,14 @@ def test_passive_events_preserve_typed_uncertain_session_but_second_popup_stops(
     assert len(attempt._hh_application_posts) == 2
     assert not receipt.can_continue()
     assert not attempt.repository.claim(attempt.url, '', '')
+
+
+def test_anatskytics_negotiations_list_fields_seen_live_are_passive():
+    # Observed 2026-10-17 after a confirmed delivery: the negotiations list fires these fields.
+    fields = ['active', 'activeTab', 'archived', 'disabled', 'elementName', 'event', 'hhtmFrom',
+              'hhtmFromLabel', 'hhtmSource', 'hhtmSourceLabel', 'isBrandingPreview', 'needFix',
+              'originalRequestId', 'position', 'type', 'vacancyId', 'waiting']
+    event = request(None, 'https://spb.hh.ru/anatskytics?' + urlencode({name: '1' for name in fields}))
+    event.headers = {'content-type': 'application/x-www-form-urlencoded'}
+    event.post_data = ''
+    assert telemetry.classify_request(event)
