@@ -599,3 +599,18 @@ async def test_resume_menu_keeps_unsaved_draft_and_downloaded_texts(bot):
     assert state['draft']['variants'][0]['hh_resume_hash'] == 'two'
     assert state['texts'] == {'one': 'One', 'two': 'Two'}
     assert not Path(state['home_dir']).exists()
+
+
+@run_async
+async def test_strategy_chooser_saves_existing_direction_in_one_tap(bot):
+    home = bot.profiles['client_1'].home_dir
+    make_direction(home, strategy='single')
+    directions.set_active_direction(home, 'qa')
+    await bot._dispatch_direction(1, USER, '/directions', '')
+    await bot._direction_callback(1, USER, next(a for a in inline_actions(bot) if a.endswith('choose:0')))
+    await bot._direction_callback(1, USER, next(a for a in inline_actions(bot) if a.endswith(':strategy')))
+    assert 'Каким резюме откликаться' in bot.sent[-1][1]
+    assert '✅ 1️⃣' in str(bot.sent[-1][2])
+    await bot._direction_callback(1, USER, next(a for a in inline_actions(bot) if a.endswith(':strategyset:closest')))
+    assert directions.active_direction(home)['selection_strategy'] == 'closest'
+    assert 'Направление сохранено' in bot.sent[-1][1]

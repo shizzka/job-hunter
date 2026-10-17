@@ -21,6 +21,18 @@ def _fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+STRATEGY_BUTTONS = {
+    "single": "1️⃣ Всегда первое резюме",
+    "closest": "🎯 Самое подходящее под вакансию",
+    "ab": "🅰️🅱️ По очереди (A/B-сравнение)",
+}
+STRATEGY_HELP = (
+    "Каким резюме откликаться в этом направлении?\n\n"
+    "1️⃣ Всегда первое — все отклики одним резюме (первым в списке).\n"
+    "🎯 Самое подходящее — бот сравнивает название и текст вакансии с каждым резюме и берёт ближайшее.\n"
+    "🅰️🅱️ По очереди — резюме чередуются, чтобы через пару недель сравнить, какое работает лучше.\n\n"
+    "Текущий выбор отмечен ✅."
+)
 STRATEGY_LABELS = {
     "single": "одно резюме (первое в списке)",
     "closest": "самое подходящее под вакансию",
@@ -170,11 +182,21 @@ class TelegramDirections:
                 state["mode"] = "draft"
                 await self._direction_show_draft(chat_id, principal, state)
             elif action == "strategy":
-                state.update(mode="draft", summary=False)
-                order = ["single", "closest", "ab"]
                 current = state["draft"].get("selection_strategy", "single")
-                state["draft"]["selection_strategy"] = order[(order.index(current) + 1) % len(order)] if current in order else "single"
-                await self._direction_show_draft(chat_id, principal, state)
+                rows = [[(("✅ " if key == current else "") + STRATEGY_BUTTONS[key], f"strategyset:{key}")]
+                        for key in ("single", "closest", "ab")]
+                rows.append([("Назад", "back")])
+                await self._send_text(chat_id, STRATEGY_HELP, reply_markup=self._direction_inline(state, rows))
+            elif action == "strategyset" and len(parts) > 3 and parts[3] in STRATEGY_LABELS:
+                saved_direction = bool(state.get("summary"))
+                state["draft"]["selection_strategy"] = parts[3]
+                state.update(mode="draft", summary=False)
+                if saved_direction:
+                    # One explicit choice on an existing direction: save it right away.
+                    await self._send_text(chat_id, "Выбор резюме: " + STRATEGY_LABELS[parts[3]] + ". Сохраняю…")
+                    await self._dispatch_direction(chat_id, principal, "/direction_save", "")
+                else:
+                    await self._direction_show_draft(chat_id, principal, state)
             elif action == "delete":
                 state["delete_target"] = copy.deepcopy(state["draft"])
                 await self._send_text(chat_id, "Удалить направление?", reply_markup=self._direction_inline(state,
