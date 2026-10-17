@@ -207,6 +207,9 @@ def validate_check(payload: dict, sentences: list[str], sources: dict[str, str],
     return replace(result, rejected_sentences=rejected or tuple(sentences))
 
 
+_KNOWLEDGE_CHUNK_LABELS = ("knowledge/", "facts.json", "candidate_interview.json")
+
+
 def _validate_check(payload: dict, sentences: list[str], sources: dict[str, str], *,
                     quote_min_similarity: float = 1.0) -> GroundingResult:
     if not isinstance(payload, dict) or payload.get("verdict") != "supported":
@@ -240,14 +243,33 @@ def _validate_check(payload: dict, sentences: list[str], sources: dict[str, str]
             normalized = _normalize(quote)
             fragment = ""
             similarity = 0.0
-            if len(normalized) >= 3 and source in sources:
-                normalized_source = _normalize(sources[source])
-                if normalized in normalized_source:
-                    fragment = normalized
-                elif quote_min_similarity < 1.0:
-                    fragment, similarity = _near_quote_fragment(normalized, normalized_source)
-                    if similarity < quote_min_similarity:
-                        fragment = ""
+            if quote_min_similarity < 1.0 and source not in sources and "knowledge" in sources \
+                    and source.startswith(_KNOWLEDGE_CHUNK_LABELS):
+                # Retrieved knowledge headings ("### knowledge/x.md > …", "### facts.json > …")
+                # are echoed as labels; they all live inside the knowledge source.
+                source = "knowledge"
+            if len(normalized) >= 3:
+                # In relaxed audits a KNOWN source label is only a hint: the same candidate text
+                # can sit in several blocks (allowed wording also appears in retrieved knowledge).
+                # Unknown labels (constraints, extraction, …) stay a hard rejection.
+                # Strict audits (quote_min_similarity == 1.0) keep the exact source contract.
+                ordered = ([source] if source in sources else [])
+                if quote_min_similarity < 1.0 and ordered:
+                    ordered += [name for name in sources if name != source]
+                for name in ordered:
+                    normalized_source = _normalize(sources[name])
+                    if normalized in normalized_source:
+                        fragment, similarity = normalized, 1.0
+                    elif quote_min_similarity < 1.0:
+                        fragment, similarity = _near_quote_fragment(normalized, normalized_source)
+                        if similarity < quote_min_similarity:
+                            fragment = ""
+                    if fragment:
+                        if name != source:
+                            log.info("Grounding evidence found in another source: source=%s",
+                                     name if name in {"resume", "profile_note", "facts", "knowledge",
+                                                      "salary", "contacts"} else "other")
+                        break
             # Source names returned by a model may themselves contain PII.
             safe_source = source if source in {
                 "resume", "profile_note", "facts", "knowledge", "salary", "contacts",
