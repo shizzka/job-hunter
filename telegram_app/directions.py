@@ -588,12 +588,28 @@ class TelegramDirections:
             if not active:
                 return
             mode = command.removeprefix("/search_application_")
-            state = self._direction_bind(principal, mode="draft", draft=copy.deepcopy(active), texts={})
-            state["draft"]["application_mode"] = mode
-            # One explicit choice: save it right away, no extra «Сохранить».
-            labels = {"preview": "только показать", "confirm": "подтверждать перед откликом", "auto": "автоотклик"}
-            await self._send_text(chat_id, html.escape(f"Режим откликов для «{active['title']}»: {labels.get(mode, mode)}. Сохраняю…"))
-            await self._dispatch_direction(chat_id, principal, "/direction_save", "")
+            labels = {"preview": "только показать", "confirm": "подтверждение", "auto": "автоотклик"}
+            from telegram_bot_ui import MENU_APPLICATION_MODE
+            back = self._menu_reply_markup(principal, menu=MENU_APPLICATION_MODE)
+            if self._has_active_command(profile_name):
+                await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+                return
+            # One explicit choice: saved right away, then back to the «Режим откликов» menu.
+            draft = copy.deepcopy(active)
+            draft["application_mode"] = mode
+            try:
+                directions.save_direction(profile.home_dir, draft, texts={})
+            except (ValueError, OSError) as exc:
+                await self._send_text(chat_id, html.escape(f"❌ Не удалось сохранить режим: {exc}"), reply_markup=back)
+                return
+            self._direction_sessions().pop(principal["user_id"], None)
+            try:
+                self._reload_profile_daemon(profile_name)
+            except RuntimeError:
+                pass
+            await self._send_text(chat_id, html.escape(
+                f"✅ Режим откликов: {labels.get(mode, mode)} — сохранено (направление «{active['title']}»)."),
+                reply_markup=back)
         elif command in {"/direction_single", "/direction_ab"}:
             if not active:
                 await self._send_text(chat_id, "Сначала выберите направление: /directions.")

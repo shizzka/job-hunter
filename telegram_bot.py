@@ -771,6 +771,23 @@ class TelegramBot(
         text += "\n\nОтветьте сообщением. Ничего не сохранится без подтверждения."
         await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
 
+    @staticmethod
+    def _full_facts_document(profile_dir: str) -> str:
+        """All of the profile's knowledge/*.md, unabridged, for «📋 Мои факты» as a file."""
+        folder = os.path.join(profile_dir, "knowledge")
+        parts = []
+        try:
+            names = sorted(name for name in os.listdir(folder) if name.endswith(".md"))
+        except OSError:
+            return ""
+        for name in names:
+            try:
+                with open(os.path.join(folder, name), encoding="utf-8") as stream:
+                    parts.append(f"<!-- {name} -->\n" + stream.read().strip())
+            except OSError:
+                continue
+        return "\n\n".join(parts) + "\n" if parts else ""
+
     async def _accept_facts_upload(self, chat_id: int, principal: dict, message: dict) -> bool:
         """«📥 Загрузить базу фактов»: a whole .md/.txt becomes the profile's facts base after preview."""
         from telegram_app import facts_upload
@@ -2367,6 +2384,10 @@ class TelegramBot(
                 if knowledge:
                     message += "\n\n" + knowledge
                 await self._send_text(chat_id, message, reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
+                full = self._full_facts_document(profile_dir)
+                if full:
+                    await self._send_document(chat_id, filename=f"facts_{profile_name}.md", content=full.encode("utf-8"),
+                                              caption="Полная база фактов профиля (на экране выше — сокращённо).")
                 return
             if command == "/candidate_add_fact":
                 self._set_candidate_state(principal["user_id"], {"profile_name": profile_name, "kind": "add", "mode": "add"})

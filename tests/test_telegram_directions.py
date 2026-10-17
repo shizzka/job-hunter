@@ -57,6 +57,9 @@ class Harness(TelegramDirections):
     async def _send_text(self, chat_id, text, **kwargs):
         self.sent.append((chat_id, text, kwargs))
 
+    def _menu_reply_markup(self, principal, menu=None):
+        return {"keyboard": [[{"text": str(menu)}]]}
+
     def _reload_profile_daemon(self, name):
         return False
 
@@ -246,9 +249,10 @@ async def test_refresh_texts_and_application_mode_are_drafts(bot):
     await bot._dispatch_direction(1, USER, "/direction_save", "")
     updated = directions.active_direction(home)
     assert all(Path(v["text_file"]).read_text() == "Downloaded resume" for v in updated["variants"])
-    # The application mode is one explicit choice: saved immediately (owner feedback 17.10).
+    # The application mode is one explicit choice: saved immediately, short confirmation (owner feedback 17–18.10).
     await bot._dispatch_direction(1, USER, "/search_application_preview", "")
     assert directions.active_direction(home)["application_mode"] == "preview"
+    assert "Режим откликов: только показать — сохранено" in bot.sent[-1][1]
 
 
 def test_selection_rejects_zero_negative_out_of_bounds_and_accepts_unique_multi():
