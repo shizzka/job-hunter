@@ -80,3 +80,32 @@ def test_incoming_invitation_never_establishes_an_applicant_application(tmp_path
                                   topic(2, 101, initialTopicType="INVITATION", lastState="RESPONSE")])
     assert result["rows"][0]["applied"] == 0
     assert result["rows"][0]["no_response"] == 0
+
+
+def test_resume_mismatch_detects_other_resume_in_topic(tmp_path):
+    import json as _json
+    import directions as _directions
+    import direction_stats as _stats
+    root = tmp_path / "directions" / "el"
+    root.mkdir(parents=True)
+    text = root / ("a" * 64 + ".md")
+    text.write_text("x")
+    value = {"name": "el", "title": "Электрика", "filter_policy": "generic", "search_queries": ["электрик"],
+             "relevant_keywords": [], "exclude_keywords": [],
+             "variants": [{"hh_resume_hash": "h1", "hh_resume_numeric_id": 11, "title": "Монтажник",
+                           "text_file": str(text), "text_sha256": "a" * 64, "fetched_at": "2026-10-17T10:00:00+00:00"},
+                          {"hh_resume_hash": "h2", "hh_resume_numeric_id": 22, "title": "Техник",
+                           "text_file": str(text), "text_sha256": "a" * 64, "fetched_at": "2026-10-17T10:00:00+00:00"}]}
+    events = tmp_path / "analytics_events.jsonl"
+    events.write_text("\n".join(_json.dumps(e) for e in [
+        {"event": "decision", "outcome": "applied", "vacancy_id": "100", "requested_resume_id": "h1", "title": "A", "company": "C"},
+        {"event": "decision", "outcome": "applied", "vacancy_id": "200", "requested_resume_id": "h2", "title": "B", "company": "D"},
+        {"event": "decision", "outcome": "skipped", "vacancy_id": "300", "requested_resume_id": "h1"},
+    ]))
+    snapshots = [{"id": 1, "vacancyId": 100, "resumeId": 22, "fetched_at": "2026-10-17T11:00:00"},
+                 {"id": 2, "vacancyId": 200, "resumeId": 22, "fetched_at": "2026-10-17T11:00:00"},
+                 {"id": 3, "vacancyId": 300, "resumeId": 22, "fetched_at": "2026-10-17T11:00:00"}]
+    import unittest.mock as mock
+    with mock.patch.object(_stats, "list_directions", lambda home: [_directions.validate_direction(value)]):
+        result = _stats.resume_mismatches(tmp_path, snapshots=snapshots, events_path=events)
+    assert [(r["vacancy_id"], r["requested_title"], r["actual_title"]) for r in result] == [("100", "Монтажник", "Техник")]

@@ -132,6 +132,58 @@ def summarize(home_dir, snapshots=None):
             "source": "negotiation_snapshots.jsonl"}
 
 
+def resume_mismatches(home_dir, snapshots=None, events_path=None):
+    """Applications whose hh topic carries another resume than the one requested.
+
+    Requested = ``requested_resume_id`` (hh hash) of an applied decision event,
+    mapped to a numeric id through saved direction variants. Actual = latest
+    snapshot ``resumeId`` for the same vacancy. Unmapped hashes are skipped.
+    """
+    numeric = {}
+    titles = {}
+    for direction in list_directions(home_dir):
+        for variant in direction["variants"]:
+            if variant["hh_resume_numeric_id"] is not None:
+                numeric[variant["hh_resume_hash"]] = variant["hh_resume_numeric_id"]
+                titles[variant["hh_resume_numeric_id"]] = variant["title"]
+    if not numeric:
+        return []
+    path = Path(events_path) if events_path else Path(home_dir) / "analytics_events.jsonl"
+    requested = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict) or event.get("event") != "decision" or event.get("outcome") != "applied":
+            continue
+        resume_hash = str(event.get("requested_resume_id") or "")
+        vacancy = str(event.get("vacancy_id") or "")
+        if resume_hash in numeric and vacancy:
+            requested[vacancy] = (numeric[resume_hash], str(event.get("title") or ""), str(event.get("company") or ""))
+    actual = {}
+    for index, record in enumerate(_records(home_dir, snapshots)):
+        if not isinstance(record, dict) or record.get("kind") is not None:
+            continue
+        vacancy, resume = str(record.get("vacancyId") or ""), _number(record.get("resumeId"))
+        if vacancy and resume is not None:
+            previous = actual.get(vacancy)
+            if previous is None or _time(record, index) >= previous[0]:
+                actual[vacancy] = (_time(record, index), resume)
+    result = []
+    for vacancy, (wanted, title, company) in sorted(requested.items()):
+        seen = actual.get(vacancy)
+        if seen is not None and seen[1] != wanted:
+            result.append({"vacancy_id": vacancy, "title": title, "company": company,
+                           "requested_resume_numeric_id": wanted, "actual_resume_numeric_id": seen[1],
+                           "requested_title": titles.get(wanted, ""), "actual_title": titles.get(seen[1], "")})
+    return result
+
+
 def export_csv(summary):
     """CSV text includes unmatched/ambiguous observations as dedicated rows."""
     stream = io.StringIO(newline="")

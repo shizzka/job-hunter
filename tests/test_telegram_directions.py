@@ -469,7 +469,7 @@ async def test_admin_snapshot_summary_and_csv_use_selected_profile_without_ai(bo
         documents.append(kwargs)
     monkeypatch.setattr(bot, "_send_document", document, raising=False)
     await bot._dispatch_direction(99, ADMIN, "/direction_stats", "client_2")
-    assert "отправлено 1, просмотрено 1, отказ 0, следующий этап 1, без ответа 0" in bot.sent[-1][1]
+    assert "откликов 1, просмотрели 1, отказов 0, приглашений 1 (100,0%), ждут ответа 0" in bot.sent[-1][1]
     await bot._dispatch_direction(99, ADMIN, "/direction_csv", "client_2")
     rows = list(csv.DictReader(io.StringIO(documents[0]["content"].decode("utf-8-sig"))))
     assert documents[0]["filename"] == "client_1_directions.csv"
@@ -554,7 +554,8 @@ async def test_client_stats_use_own_profile_without_ai(bot):
     home = bot.profiles['client_1'].home_dir
     make_direction(home)
     await bot._dispatch_direction(1, USER, '/direction_stats', 'client_2')
-    assert 'client_1' in bot.sent[-1][1]
+    assert 'QA · «Resume 1»' in bot.sent[-1][1]  # own profile data, argument ignored
+    assert 'client_' not in bot.sent[-1][1]  # internal profile names are not shown to clients
     assert 'Нужны права' not in bot.sent[-1][1]
     assert not bot.auth_calls
 

@@ -607,15 +607,28 @@ class TelegramDirections:
                 await self._send_document(chat_id, filename=f"{profile_name}_directions.csv", content=direction_stats.export_csv(summary).encode("utf-8-sig"))
             else:
                 rows = summary.get("rows", [])
-                lines = [f"Направления · {profile_name} · тем: {summary.get('total_topics', 0)}"]
+                owner = f" · профиль {profile_name}" if principal.get("role") == "admin" else ""
+                lines = [f"📊 Как работают ваши резюме{owner} (по данным hh, откликов всего: {summary.get('total_topics', 0)})", ""]
                 for row in rows[:12]:
                     title = str(row.get("direction_title") or row.get("direction") or "Направление")[:100]
                     variant = str(row.get("variant_title") or "Резюме")[:80]
-                    lines.append(f"{title} / {variant}: отправлено {row.get('applied', 0)}, "
-                                 f"просмотрено {row.get('viewed', 0)}, отказ {row.get('rejected', 0)}, "
-                                 f"следующий этап {row.get('next_stage', 0)}, без ответа {row.get('no_response', 0)}")
-                lines += [f"Не сопоставлено тем: {summary.get('unmatched', {}).get('topics', 0)}",
-                          f"Неоднозначных тем: {summary.get('ambiguous', {}).get('topics', 0)}"]
+                    applied = int(row.get("applied", 0) or 0)
+                    invited = int(row.get("next_stage", 0) or 0)
+                    share = f" ({invited / applied * 100:.1f}%)".replace(".", ",") if applied else ""
+                    lines.append(f"{title} · «{variant}»: откликов {applied}, просмотрели {row.get('viewed', 0)}, "
+                                 f"отказов {row.get('rejected', 0)}, приглашений {invited}{share}, "
+                                 f"ждут ответа {row.get('no_response', 0)}")
+                other = summary.get('unmatched', {}).get('topics', 0)
+                if other:
+                    lines.append(f"Другими резюме (не из направлений): откликов {other}")
+                mismatches = direction_stats.resume_mismatches(profile.home_dir)
+                if mismatches:
+                    lines += ["", f"⚠️ Ушли НЕ тем резюме: {len(mismatches)}"]
+                    for item in mismatches[:5]:
+                        lines.append(f"• {item['title'][:60]} ({item['company'][:40]}): ушло «{item['actual_title'] or item['actual_resume_numeric_id']}» "
+                                     f"вместо «{item['requested_title'] or item['requested_resume_numeric_id']}»")
+                lines.append("")
+                lines.append("Приглашение = работодатель позвал дальше (собеседование, тест, оффер).")
                 if principal.get("role") == "admin":
                     lines.append("/direction_csv — полная выгрузка")
                 state = state or self._direction_bind(principal, mode="switch", choices=[])
