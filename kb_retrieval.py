@@ -258,17 +258,30 @@ def _markdown_parts(text: str):
     yield from section()
 
 
+def _knowledge_root(root: Path) -> Path:
+    knowledge = root / "knowledge"
+    if not knowledge.is_symlink():
+        return knowledge
+    # A named direction can explicitly share this owner's common knowledge.
+    # Never follow arbitrary links or another direction's private directory.
+    shared = root.parent.parent / "knowledge"
+    if (root.parent.name != "profiles" or shared.is_symlink() or not shared.is_dir()
+            or knowledge.resolve(strict=True) != shared):
+        raise KnowledgeSourceError("Knowledge link must target the common home/knowledge directory")
+    return shared
+
+
 def _sources(root: Path) -> tuple[Path, ...]:
     knowledge = root / "knowledge"
-    if knowledge.is_symlink():
-        raise KnowledgeSourceError("Symlinked knowledge directory is not allowed")
+    knowledge_root = _knowledge_root(root)
     paths = list(knowledge.glob("*.md")) if knowledge.is_dir() else []
     paths.extend(root / name for name in ("facts.json", "candidate_interview.json") if (root / name).exists() or (root / name).is_symlink())
     synonyms = knowledge / "synonyms.txt"
     if synonyms.exists() or synonyms.is_symlink():
         paths.append(synonyms)
     for path in paths:
-        if path.is_symlink() or not path.resolve().is_relative_to(root):
+        allowed_root = knowledge_root if path.parent == knowledge else root
+        if path.is_symlink() or not path.resolve().is_relative_to(allowed_root):
             raise KnowledgeSourceError(f"Unsafe knowledge source: {path.name}")
         if not path.is_file():
             raise KnowledgeSourceError(f"Knowledge source is not a regular file: {path.name}")
@@ -290,7 +303,15 @@ def _read_source(root: Path, path: Path, expected: tuple[str, int, int]) -> str:
     directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         if path.parent != root:
-            child = os.open("knowledge", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            if (root / "knowledge").is_symlink():
+                _knowledge_root(root)  # Revalidate before opening; don't follow the link itself.
+                home = os.open("../..", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                try:
+                    child = os.open("knowledge", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=home)
+                finally:
+                    os.close(home)
+            else:
+                child = os.open("knowledge", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
             os.close(directory)
             directory = child
         descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
@@ -395,8 +416,8 @@ _CACHE_LOCK = threading.RLock()
 def get_knowledge_index(profile_dir: str | os.PathLike) -> KnowledgeIndex:
     """Capture a source snapshot; a later operation sees newly changed sources.
 
-    Every source must be local to the resolved profile root. Symlinked source
-    files are rejected, even when their target happens to be inside the root.
+    Sources are local to the resolved profile root, or its explicitly linked
+    common home/knowledge directory. Symlinked source files remain rejected.
     """
     root = Path(profile_dir).expanduser().resolve()
     try:

@@ -367,3 +367,76 @@ def test_flag_defaults_enabled_and_accepts_false_values(monkeypatch):
 
 def test_missing_profile_is_empty_and_zero_budget_supported(tmp_path):
     assert retrieve_knowledge("Android", profile_dir=tmp_path / "missing", limit_chars=0) == ""
+
+
+def test_named_directions_can_share_only_common_knowledge(tmp_path):
+    common = write(tmp_path, "knowledge/candidate_facts.md",
+                   "- [FACT] Монтаж кабеля.\n- [LIMIT] Без ночных смен.")
+    profiles = []
+    for name in ("qa", "electrician"):
+        root = tmp_path / "profiles" / name
+        root.mkdir(parents=True)
+        (root / "knowledge").symlink_to(common.parent, target_is_directory=True)
+        write(root, "facts.json", json.dumps({"confirmed": {"private": name}}))
+        profiles.append(root)
+    qa, electrician = (get_knowledge_index(root) for root in profiles)
+    assert "Монтаж кабеля" in qa.retrieve("кабеля")
+    assert "Монтаж кабеля" in electrician.retrieve("кабеля")
+    assert "[LIMIT] Без ночных смен." in electrician.retrieve("кабеля")
+    assert "private: electrician" in electrician.retrieve("")
+    assert "private: qa" not in electrician.retrieve("")
+    common.write_text("- [FACT] Монтаж щитов.", encoding="utf-8")
+    assert "Монтаж щитов" in get_knowledge_index(profiles[1]).retrieve("щитов")
+    assert "Монтаж кабеля" in electrician.retrieve("кабеля")  # Frozen original operation.
+
+
+@pytest.mark.parametrize("kind", ["other_profile", "common_link", "leaf_link", "replaced_link"])
+def test_shared_knowledge_rejects_links_to_other_sources(tmp_path, monkeypatch, kind):
+    import kb_retrieval
+    root = tmp_path / "profiles" / "electrician"
+    root.mkdir(parents=True)
+    common = write(tmp_path, "knowledge/candidate_facts.md", "- [FACT] Монтаж кабеля.")
+    foreign = write(tmp_path, "profiles/foreign/knowledge/candidate_facts.md", "FOREIGN SECRET")
+    link = root / "knowledge"
+    link.symlink_to(common.parent, target_is_directory=True)
+    if kind == "other_profile":
+        link.unlink()
+        link.symlink_to(foreign.parent, target_is_directory=True)
+    elif kind == "common_link":
+        common.unlink()
+        common.parent.rmdir()
+        common.parent.symlink_to(foreign.parent, target_is_directory=True)
+    elif kind == "leaf_link":
+        common.unlink()
+        common.symlink_to(foreign)
+    else:
+        read_source = kb_retrieval._read_source
+        def replace_before_read(*args):
+            link.unlink()
+            link.symlink_to(foreign.parent, target_is_directory=True)
+            return read_source(*args)
+        monkeypatch.setattr(kb_retrieval, "_read_source", replace_before_read)
+    with pytest.raises(KnowledgeSourceError):
+        get_knowledge_index(root)
+
+
+def test_link_swap_after_validation_cannot_read_another_profile(tmp_path, monkeypatch):
+    import kb_retrieval
+    root = tmp_path / "profiles" / "electrician"
+    root.mkdir(parents=True)
+    common = write(tmp_path, "knowledge/candidate_facts.md", "COMMON CONFIRMED FACT")
+    foreign = write(tmp_path, "profiles/foreign/knowledge/candidate_facts.md", "FOREIGN SECRET")
+    link = root / "knowledge"
+    link.symlink_to(common.parent, target_is_directory=True)
+    stat = common.stat()
+    validate = kb_retrieval._knowledge_root
+    def swap_after_validation(profile_root):
+        allowed = validate(profile_root)
+        link.unlink()
+        link.symlink_to(foreign.parent, target_is_directory=True)
+        return allowed
+    monkeypatch.setattr(kb_retrieval, "_knowledge_root", swap_after_validation)
+    text = kb_retrieval._read_source(root, link / common.name,
+                                     ("knowledge/candidate_facts.md", stat.st_mtime_ns, stat.st_size))
+    assert text == "COMMON CONFIRMED FACT"
+    assert "FOREIGN SECRET" not in text

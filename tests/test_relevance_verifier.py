@@ -79,3 +79,13 @@ def test_retry_and_other_sources_are_skipped(setup):
     for vacancy in [{'source': 'hh', '_hh_retry': True}, {'source': 'habr'}]:
         assert asyncio.run(checker.check('r', vacancy, '', {'score': 80})) is None
     create.assert_not_awaited()
+
+
+@pytest.mark.parametrize('policy', ['qa', 'generic'])
+def test_shadow_prompt_profession_example_follows_policy(setup, monkeypatch, policy):
+    create, _ = setup
+    monkeypatch.setattr(verifier.config, 'VACANCY_FILTER_POLICY', policy)
+    asyncio.run(verifier.ShadowVerifier().check('r', {'title': 'Электромонтажник'}, '', {'score': 80}))
+    prompt = create.call_args.kwargs['messages'][0]['content']
+    assert ('тестирование бытовой техники не равно QA ПО' in prompt) is (policy == 'qa')
+    assert 'подтвержденный опыт в целевой роли' in prompt if policy == 'generic' else 'QA ПО' in prompt

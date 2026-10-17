@@ -236,7 +236,7 @@ def test_matcher_routes_real_client_to_role_allowlist(isolated_settings, monkeyp
     client = llm.FallbackLLMClient()
     monkeypatch.setattr(matcher, "_get_client", lambda: client)
     monkeypatch.setattr(matcher, "_load_resume", lambda: "Synthetic candidate")
-    monkeypatch.setattr(matcher, "_build_matcher_truth_block", lambda: "")
+    monkeypatch.setattr(matcher, "_build_matcher_truth_block", lambda *args: "")
     monkeypatch.setattr(matcher.config, "VACANCY_FILTER_POLICY", "generic")
     async def run():
         try:

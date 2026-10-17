@@ -70,7 +70,7 @@ def test_profile_keyword_settings_do_not_leak_between_profiles(tmp_path, monkeyp
 def test_generic_matcher_does_not_reject_a_senior_candidate_as_junior_qa(monkeypatch):
     monkeypatch.setattr(config, "VACANCY_FILTER_POLICY", "generic")
     monkeypatch.setattr(matcher, "_load_resume", lambda: "Электрик, 15 лет опыта")
-    monkeypatch.setattr(matcher, "_build_matcher_truth_block", lambda: "Электрик, 15 лет опыта\n")
+    monkeypatch.setattr(matcher, "_build_matcher_truth_block", lambda *args: "Электрик, 15 лет опыта\n")
     monkeypatch.setattr(matcher.resume_versions, "record_input", lambda *args: None)
     prompts = []
 

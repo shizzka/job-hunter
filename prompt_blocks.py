@@ -9,6 +9,7 @@ import logging
 import os
 
 import config
+import filters
 
 log = logging.getLogger("prompt_blocks")
 
@@ -344,7 +345,14 @@ async def select_kb_sections(
     from llm_utils import parse_llm_json
     titles_block = "\n".join(f"{s['num']}. {s['title']}" for s in sections)
     selector_model = (model or "").strip() or config.LLM_MODEL
-    prompt = f"""Из списка секций базы знаний QA-кандидата выбери {max_sections} наиболее релевантных для конкретной вакансии. Релевантные — те которые помогут написать качественный ответ работодателю/cover letter.
+    qa_policy = filters.uses_qa_policy()
+    candidate_label = "QA-кандидата" if qa_policy else "кандидата"
+    direction_rules = ("""- Если в вакансии явно про API — обязательно секция «API-тестирование».
+- Если про SQL — обязательно секция «SQL».
+- Секции про инженерный/maker-бэкграунд (электрика, 3D-печать) — только если в вакансии есть hint на технический бэкграунд.""" if qa_policy else """- Выбирай секции по совпадению задач и обязательных требований вакансии с подтвержденным опытом кандидата.
+- Опыт, инструменты, оборудование, образование и допуски учитывай только из данных кандидата, без домыслов.
+- Секции других профессий не выбирай только из-за общего технического бэкграунда.""")
+    prompt = f"""Из списка секций базы знаний {candidate_label} выбери {max_sections} наиболее релевантных для конкретной вакансии. Релевантные — те которые помогут написать качественный ответ работодателю/cover letter.
 
 Контекст вакансии:
 {vacancy_context}
@@ -358,9 +366,7 @@ async def select_kb_sections(
 Правила:
 - Выбирай только из приведённых номеров.
 - Максимум {max_sections} секций.
-- Если в вакансии явно про API — обязательно секция «API-тестирование».
-- Если про SQL — обязательно секция «SQL».
-- Секции про инженерный/maker-бэкграунд (электрика, 3D-печать) — только если в вакансии есть hint на технический бэкграунд."""
+{direction_rules}"""
     try:
         resp = await llm_client.chat.completions.create(
             model=selector_model,

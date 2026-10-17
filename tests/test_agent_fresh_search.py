@@ -2,16 +2,20 @@ import asyncio
 
 import agent
 import config
+import pytest
 
 
-def test_do_fresh_search_uses_lightweight_hh_only_overrides(monkeypatch):
+@pytest.mark.parametrize("policy,queries", [("qa", ["manual QA", "QA тестировщик"]),
+                                           ("generic", ["электромонтажник", "электрик"])])
+def test_do_fresh_search_uses_lightweight_hh_only_overrides(monkeypatch, policy, queries):
     captured = {}
+    monkeypatch.setattr(config, "VACANCY_FILTER_POLICY", policy)
     monkeypatch.setattr(config, "HH_ENABLED", True, raising=False)
     monkeypatch.setattr(config, "HH_FRESH_SEARCH_ENABLED", True, raising=False)
     monkeypatch.setattr(config, "HH_FRESH_SEARCH_QUERIES", ["manual QA", "QA тестировщик"], raising=False)
     monkeypatch.setattr(config, "HH_FRESH_SEARCH_PAGES", 1, raising=False)
     monkeypatch.setattr(config, "HH_FRESH_SEARCH_INTERVAL_MIN", 120, raising=False)
-    monkeypatch.setattr(config, "SEARCH_QUERIES", ["wide query"], raising=False)
+    monkeypatch.setattr(config, "SEARCH_QUERIES", ["электромонтажник", "электрик"], raising=False)
     monkeypatch.setattr(config, "SEARCH_PAGES", 3, raising=False)
     monkeypatch.setattr(config, "SUPERJOB_ENABLED", True, raising=False)
     monkeypatch.setattr(config, "HABR_ENABLED", True, raising=False)
@@ -41,13 +45,13 @@ def test_do_fresh_search_uses_lightweight_hh_only_overrides(monkeypatch):
     assert result["found"] == 1
     assert captured == {
         "dry_run": False,
-        "queries": ["manual QA", "QA тестировщик"],
+        "queries": queries,
         "pages": 1,
         "superjob": False,
         "habr": False,
         "geekjob": False,
     }
-    assert config.SEARCH_QUERIES == ["wide query"]
+    assert config.SEARCH_QUERIES == ["электромонтажник", "электрик"]
     assert config.SEARCH_PAGES == 3
     assert config.SUPERJOB_ENABLED is True
     assert config.HABR_ENABLED is True

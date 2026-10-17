@@ -2696,7 +2696,8 @@ async def do_fresh_search() -> dict:
     if not config.HH_ENABLED or not getattr(config, "HH_FRESH_SEARCH_ENABLED", True):
         return {"found": 0, "applied": 0, "skipped": 0, "source_stats": {}, "note": "fresh hh disabled"}
 
-    queries = [str(q).strip() for q in getattr(config, "HH_FRESH_SEARCH_QUERIES", []) if str(q).strip()]
+    queries = ([str(q).strip() for q in getattr(config, "HH_FRESH_SEARCH_QUERIES", []) if str(q).strip()]
+               if filters.uses_qa_policy() else [])
     if not queries:
         queries = list(config.SEARCH_QUERIES)
     pages = max(1, int(getattr(config, "HH_FRESH_SEARCH_PAGES", 1) or 1))

@@ -22,7 +22,7 @@ def test_matcher_receives_complete_description(monkeypatch):
     client = Client('{"score":15,"should_apply":false,"reason":"Нет Linux","red_flags":[]}')
     monkeypatch.setattr(matcher, '_get_client', lambda: client)
     monkeypatch.setattr(matcher, '_load_resume', lambda: 'Junior Manual QA')
-    monkeypatch.setattr(matcher, '_build_matcher_truth_block', lambda: '')
+    monkeypatch.setattr(matcher, '_build_matcher_truth_block', lambda *args: '')
     asyncio.run(matcher.evaluate_vacancy({'title':'QA Engineer'}, DETAILS))
     assert DETAILS in client.create.call_args_list[0].kwargs['messages'][0]['content']
 

@@ -4,6 +4,7 @@ import json
 import re
 
 from hh.text import normalize_text
+from filters import uses_qa_policy
 
 
 RISKY_QUESTION_PATTERNS = [
@@ -129,14 +130,25 @@ def question_answer_item(
     return item
 
 
-def is_risky_question(question_text: str) -> bool:
+def _uses_qa_policy(settings=None) -> bool:
+    from answer_grounding import current_answer_settings
+    return uses_qa_policy(current_answer_settings() or settings)
+
+
+def is_risky_question(question_text: str, *, settings=None) -> bool:
+    if not _uses_qa_policy(settings):
+        return False
     text = normalize_text(question_text)
     return any(re.search(pattern, text) for pattern in RISKY_QUESTION_PATTERNS)
 
 
-def answer_question_from_library(question_text: str, *, max_chars: int) -> str | None:
+def answer_question_from_library(question_text: str, *, max_chars: int, settings=None) -> str | None:
+    # These templates describe a manual/API candidate, including work preferences.
+    # Other directions must answer from their own evidence and pass verification.
+    if not _uses_qa_policy(settings):
+        return None
     text = normalize_text(question_text)
-    if not text or is_risky_question(text):
+    if not text or is_risky_question(text, settings=settings):
         return None
     for patterns, answer in STABLE_ANSWER_LIBRARY:
         if all(re.search(pattern, text) for pattern in patterns):
@@ -691,7 +703,7 @@ async def answer_question_with_llm(
     if field_max_length > 0:
         max_chars = min(max_chars, field_max_length)
 
-    if is_risky_question(question_text):
+    if is_risky_question(question_text, settings=settings):
         logger.info("HH auto-answer skipped risky question: chars=%d", len(question_text))
         return None
 
@@ -710,7 +722,7 @@ async def answer_question_with_llm(
     salary_block, facts_block, profile_note_block = snapshot.salary, snapshot.facts, snapshot.profile_note
     client = current_answer_client() or get_question_answer_client()
     model = snapshot.models['HH_QUESTION_MODEL'] or snapshot.models['LLM_MODEL']
-    stable_answer = answer_question_from_library(question_text, max_chars=max_chars)
+    stable_answer = answer_question_from_library(question_text, max_chars=max_chars, settings=settings)
     if stable_answer:
         supported = await verify_answers([{'index': 0, 'question': question_text, 'answer': stable_answer}],
                                          snapshot.sources, client, model, constraints=snapshot.fact_constraints)
@@ -1084,7 +1096,7 @@ async def try_auto_answer_questions(
         input_type = (field.get("input_type") or "text").strip().lower()
         control = (field.get("control") or "").strip().lower()
 
-        if is_risky_question(question_text):
+        if is_risky_question(question_text, settings=settings):
             short_question = truncate_text(question_text or "вопрос по резюме", 100)
             answer_text = "Нужно ручное подтверждение: риск завысить опыт кандидата."
             question_answers.append(

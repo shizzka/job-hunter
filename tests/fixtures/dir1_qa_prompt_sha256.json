@@ -1,0 +1,50 @@
+{
+  "QA Engineer": {
+    "evaluation": "209c19a680a1f63801652df0310e5cb9fa0759f018e594d96d7be6298ba3211a",
+    "cover": "c203dc74f9df80452e52803af17106a9c10ba64c789c4188cc5472e6b5a507f9",
+    "style": "308da58e5926c40473c2406bc33abcb5e4179d2f7633bd4b2c9355e6b4a76dcd",
+    "positioning": "8f42de9eb8a603910970d75c7c1072407a0dd5b128e0bbf463a0cbef6c02978d"
+  },
+  "Junior QA Engineer": {
+    "evaluation": "a09b4752dc66662083efc4ef3c28ce9e698502630c0dd94c7280924f4f73a856",
+    "cover": "eb4156bdafc70562a10c80cdbc527d8e8ac00a46c00dea34ce201204608086f7",
+    "style": "ba21f4d33f383de11108ce9ffbe2e56af4caf9616351d64bbeae064c594c5344",
+    "positioning": "5df14c0da3de17a92d3c3cfbffe858848273ffe9e2ad2aa027e357bd254c3889"
+  },
+  "Middle QA Engineer": {
+    "evaluation": "c7828714980df8a58f51ee9e01df064213f58d3199f74962ffd57fbf2ecb5662",
+    "cover": "32b70b2689c30fff804a025a7e67b843e6de8eab15afd0f6fb689b65ce0271f4",
+    "style": "a6415b40746884d569fb1da9d9363cc25b00562b985602571d9b4acfb4d62501",
+    "positioning": "d926ab6a8814400707a5be84d65fd38d5f9f0aee643fd545a92f4e1ca5477900"
+  },
+  "Middle Manual QA": {
+    "evaluation": "e09464ae9ff4facc9dd128d9bf8391a7265e09676803e60952867595a0e8f37c",
+    "cover": "51916995fe22f0f3aad6a3217854e69df26a7b25b4c5d85ea5c9ef99d5b0e439",
+    "style": "971da789b0484cce621dd9281ef72973f2bfa82e48a9e8b410b6acf3ab4dabd8",
+    "positioning": "e0221bdd5d900fac0db8170610786614b1c055bef1ec04e3aa983035e164499c"
+  },
+  "Senior QA Engineer": {
+    "evaluation": "d66098cff40b89bc3ca446feb49cf06d7e1a345a39394fb38edd40ffd3bf0177",
+    "cover": "0221421e7f9275e2d9dcccf604946b2bb166eb81697945501c7c26e9f9c225a5",
+    "style": "a50f6bcf4c249d381c06832f28899b0b25c9fe4b05a84c52d5191ba768d52aeb",
+    "positioning": "458a9b53ca3538b2c7984bbcc150e0c395bbcab009d5820f8127d676cffb86cc"
+  },
+  "Junior AQA Python": {
+    "evaluation": "23d135db105f5151f2747393dee2fb7811ea5d81549e158acf2de376744f1e9d",
+    "cover": "1be8adf400f64d5217f29226f2fcd6f1a53cdcb2c028530309ea1a46e63ebd25",
+    "style": "b553cd513e174405aa64fd8d41f4e2dad6b6af740d2fa849495d35df86b0aa13",
+    "positioning": "bce17f66e43655788d335769706b9500a3789c2ab1b1feafc45e117e3d5293e6"
+  },
+  "Mobile QA": {
+    "evaluation": "2c32117391abc822ba2170773ecd6bf5423c26e990c51d2a57f07d7d7a8e638e",
+    "cover": "67253dfb60f0d7304e9f73ffb4e4c5ba6fccc5803fe9d9fb00afb03cebac818b",
+    "style": "0b064e7d7ecdf95cfe7afadaaa5dfe58fef0624ff086f04ff025c1b1c1a8f854",
+    "positioning": "8f42de9eb8a603910970d75c7c1072407a0dd5b128e0bbf463a0cbef6c02978d"
+  },
+  "QA банка": {
+    "evaluation": "898e90a38323d4ea0b77ea49833035c9f1574bbb9b8d1dbfbcbbb3041a072019",
+    "cover": "8fbb35d567627a128f4a63b7cda81c7b6f5b7460f05e5cdf8d2d5c8dd9ebdaee",
+    "style": "3387e953d44e10577f0322e14c12ff8291e04b72f0af0042caf65edd55e7d3ce",
+    "positioning": "8f42de9eb8a603910970d75c7c1072407a0dd5b128e0bbf463a0cbef6c02978d"
+  }
+}

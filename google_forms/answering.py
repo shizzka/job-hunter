@@ -207,8 +207,10 @@ def _required_option_fallback(options: list[str], question_text: str = "") -> li
         for option in candidate_options:
             if "реальн" in _norm(option) and "смартф" in _norm(option):
                 return [option]
-    preferred_markers = (
-        "qa", "тест", "гибрид", "соглас", "готов", "да", "подходит", "интерес",
+    from filters import uses_qa_policy
+    from answer_grounding import current_answer_settings
+    preferred_markers = (("qa", "тест") if uses_qa_policy(current_answer_settings()) else ()) + (
+        "гибрид", "соглас", "готов", "да", "подходит", "интерес",
     )
     for marker in preferred_markers:
         for option in candidate_options:

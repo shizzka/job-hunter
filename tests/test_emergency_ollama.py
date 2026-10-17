@@ -192,7 +192,7 @@ def test_invalid_timeout_has_finite_safe_default(bad):
     [StatusError(429), response("not JSON"), response("not JSON")]])
 def test_matcher_infrastructure_and_malformed_responses_stay_deferred(monkeypatch, outcomes):
     monkeypatch.setattr(matcher, "_load_resume", lambda: "Synthetic candidate")
-    monkeypatch.setattr(matcher, "_build_matcher_truth_block", lambda: "")
+    monkeypatch.setattr(matcher, "_build_matcher_truth_block", lambda *args: "")
     monkeypatch.setattr(matcher.config, "VACANCY_FILTER_POLICY", "generic")
     client, _ = fake_chain(monkeypatch, [cloud(), local(), local("ollama2", "qwen3:8b")], outcomes)
     monkeypatch.setattr(matcher, "_get_client", lambda: client)
@@ -252,7 +252,7 @@ def test_cancellation_is_not_retried(monkeypatch):
 
 def test_matcher_can_score_via_local_model_after_cloud_exhaustion(monkeypatch):
     monkeypatch.setattr(matcher, "_load_resume", lambda: "Synthetic candidate")
-    monkeypatch.setattr(matcher, "_build_matcher_truth_block", lambda: "")
+    monkeypatch.setattr(matcher, "_build_matcher_truth_block", lambda *args: "")
     monkeypatch.setattr(matcher.config, "VACANCY_FILTER_POLICY", "generic")
     answer = response(json.dumps({"score": 80, "reason": "Synthetic semantic match",
                                   "should_apply": True, "red_flags": []}))

@@ -4,8 +4,8 @@ import re
 import config
 
 
-def uses_qa_policy() -> bool:
-    policy = getattr(config, "VACANCY_FILTER_POLICY", "qa")
+def uses_qa_policy(settings=None) -> bool:
+    policy = getattr(settings, "VACANCY_FILTER_POLICY", getattr(config, "VACANCY_FILTER_POLICY", "qa"))
     if policy not in {"qa", "generic"}:
         raise ValueError("VACANCY_FILTER_POLICY must be qa or generic")
     return policy == "qa"

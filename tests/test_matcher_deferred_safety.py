@@ -22,7 +22,7 @@ class RateLimitError(Exception):
 @pytest.fixture
 def matcher_inputs(monkeypatch):
     monkeypatch.setattr(matcher, '_load_resume', lambda: 'Synthetic candidate')
-    monkeypatch.setattr(matcher, '_build_matcher_truth_block', lambda: '')
+    monkeypatch.setattr(matcher, '_build_matcher_truth_block', lambda *args: '')
     monkeypatch.setattr(config, 'VACANCY_FILTER_POLICY', 'generic')
     monkeypatch.setattr(llm_client, '_record_usage', lambda *args, **kwargs: None)
     return {'id': 'hh:1', 'source': 'hh', 'title': 'Synthetic vacancy', 'company': 'Synthetic employer'}

@@ -253,7 +253,7 @@ def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "RUN_HISTORY_FILE", paths.run_history_file)
     monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(tmp_path))
     monkeypatch.setattr(matcher, "_load_resume", lambda: "Synthetic candidate resume")
-    monkeypatch.setattr(matcher, "_build_matcher_truth_block", lambda: "")
+    monkeypatch.setattr(matcher, "_build_matcher_truth_block", lambda *args: "")
     monkeypatch.setattr(matcher.resume_versions, "record_input", lambda *args: None)
     monkeypatch.setattr(matcher.resume_versions, "payload", lambda vacancy: {})
     monkeypatch.setattr(llm_client, "_record_usage", lambda *args, **kwargs: None)
