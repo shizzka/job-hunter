@@ -14,7 +14,8 @@ SECTIONS = {
     "resume-position-card": "Позиция",
     "resume-list-card-experience": "Опыт работы",
     "skills-card": "Навыки",
-    "skills-methods": "Подтверждение навыков",
+    # "skills-methods" is hh's own promo of skill tests (often from another profession),
+    # not resume content: it is deliberately not imported.
     "resume-list-card-education": "Образование",
     "resume-about-card": "О себе",
 }
@@ -121,6 +122,19 @@ async def _server_html(session, path):
     raise ValueError("Слишком много перенаправлений HH; прежнее резюме сохранено.")
 
 
+_EMPLOYMENT_PREFIX = re.compile(
+    r"^(?:(?:постоянная работа|подработка|частичная занятость|проектная работа|стажировка|"
+    r"волонт[её]рство|разовое задание|вахта)(?:,\s*|\s+и\s+|\s+))+(?:(?:и\s+)?ещ[её]\s+\d+\s+)?",
+    re.IGNORECASE)
+_SALARY_SUFFIX = re.compile(r"\s+(?:от\s+|до\s+)?\d[\d\s\u00a0\u202f]*\s*(?:₽|руб\.?|\$|€).*$", re.IGNORECASE)
+
+
+def _catalog_title(text):
+    """Catalog cards also render employment type and salary inside the resume link."""
+    cleaned = _SALARY_SUFFIX.sub("", _EMPLOYMENT_PREFIX.sub("", text)).strip()
+    return cleaned or text
+
+
 async def get_resume_ids_readonly(session):
     parser, url = await _server_html(session, "/applicant/resumes")
     if not parser.catalog_marker:
@@ -137,7 +151,7 @@ async def get_resume_ids_readonly(session):
             _trusted_url(href, "/resume/" + match[1])
         except ValueError:
             continue
-        title = " ".join(" ".join(node["text"]).split())
+        title = _catalog_title(" ".join(" ".join(node["text"]).split()))
         records.setdefault(match[1], {"id": match[1], "title": title, "url": href,
                                        "hh_resume_numeric_id": extract_resume_numeric_id(parser.source, match[1])})
     return list(records.values())
