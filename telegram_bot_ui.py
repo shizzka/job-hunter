@@ -33,7 +33,7 @@ BUTTON_BLACKLIST = "🚫 Компании"
 BUTTON_BLACKLIST_ADD = "➕ В чёрный список"
 BUTTON_BLACKLIST_REMOVE = "➖ Разрешить компанию"
 BUTTON_SEARCH_SETTINGS = "🎯 Мой поиск"
-BUTTON_DIRECTIONS = "🎯 Направления"
+BUTTON_DIRECTIONS = "🧭 Что ищу"
 BUTTON_REVIEW = "📋 На рассмотрении"
 BUTTON_SEARCH_EDIT = "✏️ Изменить запросы"
 BUTTON_SEARCH_SUGGEST = "✨ Предложить ИИ"
@@ -377,7 +377,7 @@ ADMIN_BUTTON_MAP.update(TelegramDirections._direction_button_commands())
 USER_BUTTON_MAP.update(TelegramDirections._direction_button_commands())
 
 ADMIN_ONLY_COMMANDS = {
-    "/direction_stats", "/direction_csv",
+    "/direction_csv",
     "/menu_llm", "/llm_balance", "/llm_test",
     "/profiles", "/profile", "/users", "/grant", "/revoke",
     "/digest", "/backfill",

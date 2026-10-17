@@ -90,6 +90,8 @@ SEARCH_EXPERIENCE = ""   # "" = любой, "noExperience", "between1And3", "bet
 SEARCH_SALARY = 0        # минимальная зарплата (0 = не фильтровать)
 SEARCH_ONLY_WITH_SALARY = False  # только с указанной зарплатой
 HH_SEARCH_REMOTE_ONLY = _env_flag("HH_SEARCH_REMOTE_ONLY", "0")  # оставить только удалённые профили поиска
+# Вакансия без зарплаты: письмо заканчивается вопросом о вилке (DIR-3/SALARY-1).
+COVER_ASK_SALARY_RANGE = _env_flag("HH_COVER_ASK_SALARY_RANGE", "1")
 HH_APPLICATION_MODE = os.getenv("HH_APPLICATION_MODE", "auto").strip().lower()  # preview, confirm, auto
 if HH_APPLICATION_MODE not in {"preview", "confirm", "auto"}:
     HH_APPLICATION_MODE = "auto"

@@ -2257,6 +2257,10 @@ class TelegramBot(
             return
 
         if command == "/search_settings":
+            import directions
+            if directions.active_direction(self._profile(profile_name).home_dir):
+                await self._dispatch_direction(chat_id, principal, "/direction_summary", "")
+                return
             self._set_selected_menu(principal["user_id"], MENU_SEARCH)
             await self._send_text(
                 chat_id,

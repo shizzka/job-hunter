@@ -49,9 +49,10 @@ def capture_candidate(resume_text, *, settings=config, profile_builder=None,
                       facts_builder=None, salary_builder=None, knowledge_builder=None):
     import facts
     import prompt_blocks
+    from direction_knowledge import intent
     from kb_retrieval import get_knowledge_index, retrieval_enabled
     index = (get_knowledge_index(candidate_home())
-             if retrieval_enabled() else None)
+             if retrieval_enabled() or intent() else None)
     personal = copy.deepcopy(facts.load_facts())
     confirmed = personal.get('confirmed', {}) if isinstance(personal, dict) else {}
     if not isinstance(confirmed, dict):

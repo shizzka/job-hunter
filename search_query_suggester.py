@@ -113,10 +113,24 @@ def normalize_direction_suggestion(payload: object) -> dict:
         result[key] = list(dict.fromkeys(" ".join(v.split()) for v in values if v.strip()))
         if any(len(v) > 100 or "\n" in v for v in result[key]):
             raise SearchQueryValidationError("Ключевые слова должны быть не длиннее 100 символов.")
+    if "positioning" in payload:
+        value = payload["positioning"]
+        if not isinstance(value, str) or len(value) > 1500:
+            raise SearchQueryValidationError("Позиционирование: текст до 1500 символов.")
+        result["positioning"] = value.strip()
+    for key in ("goal", "allowed_wording"):
+        if key not in payload:
+            continue
+        values = payload[key]
+        if not isinstance(values, list) or len(values) > 12 or any(
+                not isinstance(v, str) or not v.strip() or len(v) > 300 for v in values):
+            raise SearchQueryValidationError("Цель и формулировки: до 12 коротких непустых строк.")
+        result[key] = list(dict.fromkeys(v.strip() for v in values))
     return result
 
 
-async def suggest_direction(*, resumes: list[dict], target_role: str = "", current_direction: dict | None = None) -> dict:
+async def suggest_direction(*, resumes: list[dict], target_role: str = "", current_direction: dict | None = None,
+                            profile_dir: str | None = None) -> dict:
     """Analyze selected resume texts without writing files or changing HH resumes."""
     if not resumes or any(not str(item.get("raw") or "").strip() for item in resumes):
         raise SearchQueryValidationError("Для анализа нужен непустой текст каждого выбранного резюме.")
@@ -124,13 +138,27 @@ async def suggest_direction(*, resumes: list[dict], target_role: str = "", curre
         f"Резюме {index}: {str(item.get('title') or '')[:200]}\n{str(item['raw'])[:12000]}"
         for index, item in enumerate(resumes, 1)
     )[:36000]
+    common = ""
+    if profile_dir is not None:
+        import json
+        from direction_knowledge import overlay_facts
+        path = Path(profile_dir) / "facts.json"
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data = overlay_facts(data, {"goal": [], "positioning": ""})
+            common = json.dumps({key: data[key] for key in ("confirmed", "do_not_claim", "forbidden_claims")
+                                 if key in data}, ensure_ascii=False)[:12000]
     response = await get_llm_client().chat.completions.create(
         model=config.LLM_MODEL,
         messages=[
             {"role": "system", "content": (
                 "Ты анализируешь выбранные соискателем резюме и предлагаешь одно направление поиска HH.ru. "
                 "Верни только JSON: {\"title\":\"...\",\"search_queries\":[\"...\"],"
-                "\"relevant_keywords\":[\"...\"],\"exclude_keywords\":[\"...\"],\"filter_policy\":\"qa|generic\"}. "
+                "\"relevant_keywords\":[\"...\"],\"exclude_keywords\":[\"...\"],\"filter_policy\":\"qa|generic\","
+                "\"positioning\":\"...\",\"goal\":[\"...\"],\"allowed_wording\":[\"...\"]}. "
+                "Предложи позиционирование (до 1500 символов), краткий список целевых ролей goal и "
+                "разрешённых формулировок роли allowed_wording строго по ТЕКСТУ выбранных резюме и общим подтверждённым фактам. "
+                "Не выдумывай стаж, допуски, разряды, группы, навыки или желаемую роль; неизвестное оставь пустым. "
                 "Дай 4–8 коротких реальных названий вакансий, без городов, зарплат и булевых операторов. "
                 "qa выбирай только для тестирования ПО; для любых других профессий выбирай generic. "
                 "Ключевые слова должны соответствовать профессии и исключать нерелевантные вакансии. "
@@ -139,8 +167,9 @@ async def suggest_direction(*, resumes: list[dict], target_role: str = "", curre
             )},
             {"role": "user", "content": (
                 f"Цель пользователя: {target_role[:500]}\n"
-                f"Текущее направление: {str(current_direction or {})[:4000]}\n\n{context}"
+                f"Текущее направление: {str(current_direction or {})[:4000]}\n"
+                f"Общие подтверждённые факты (другие профессии не являются целью): {common}\n\n{context}"
             )},
-        ], temperature=0.25, max_tokens=1000,
+        ], temperature=0.25, max_tokens=1800,
     )
     return normalize_direction_suggestion(parse_llm_json(response.choices[0].message.content or ""))

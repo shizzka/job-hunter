@@ -78,7 +78,11 @@ def _format_prompt_facts(confirmed: list[dict[str, str]]) -> str:
 
 
 def prompt_block(limit_chars: int = 3000, profile_dir: str | None = None) -> str:
-    result = _format_prompt_facts(facts(profile_dir))
+    from direction_knowledge import interview_items, intent
+    if intent(profile_dir):
+        evidence, limits = cover_prompt_blocks(limit_chars, profile_dir)
+        return evidence + limits
+    result = _format_prompt_facts(interview_items(facts(profile_dir), intent(profile_dir)))
     if len(result) <= limit_chars:
         return result
     marker = "…\n\n"[:max(0, limit_chars)]
@@ -89,7 +93,8 @@ def cover_prompt_blocks(limit_chars: int = 3000, profile_dir: str | None = None)
     """Budget whole interview facts; explicit boundaries are never truncated."""
     selected: list[dict[str, str]] = []
     constraints = []
-    for item in facts(profile_dir):
+    from direction_knowledge import interview_items, intent
+    for item in interview_items(facts(profile_dir), intent(profile_dir)):
         if str(item.get("topic", "")).strip().casefold() in {"границы", "ограничения"}:
             constraints.append(f"- {item['text']}")
         elif len(_format_prompt_facts([*selected, item])) <= limit_chars:

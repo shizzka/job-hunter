@@ -58,7 +58,7 @@ def test_cover_knowledge_author_and_checker_identical(corpus, monkeypatch):
     monkeypatch.setattr(matcher, '_load_resume', lambda: 'Начинающий специалист')
     client = client_for(CLAIM + ' Обсудим детали?', json.dumps(approved(CLAIM, 'knowledge')))
     monkeypatch.setattr(matcher, '_get_client', lambda: client)
-    assert asyncio.run(matcher.generate_cover_letter({'title': 'Android QA', 'id': 'synthetic'})) == CLAIM + ' Обсудим детали?'
+    assert asyncio.run(matcher.generate_cover_letter({'title': 'Android QA', 'id': 'synthetic', 'salary': '100000 ₽'})) == CLAIM + ' Обсудим детали?'
     assert len(assert_shared(client)) <= 12000
     prompt_blocks.select_kb_sections.assert_not_awaited()
 

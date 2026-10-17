@@ -973,6 +973,7 @@ async def _apply_to_vacancy(
         Откликнуться на вакансию.
         Возвращает {"ok": bool, "message": str}
         """
+    session._hh_salary_warning = ""
     vacancy_url = absolute_hh_url(vacancy_url)
     response_url = absolute_hh_url(response_url)
     preferred_resume_id = str(preferred_resume_id or "").strip()
@@ -1072,6 +1073,9 @@ async def _apply_to_vacancy(
                     return {"ok": False, "message": "Сопроводительное в анкете не сохранилось — отклик остановлен"}
                 cover_letter_filled = True
         async def verify_before_submit():
+            from salary_policy import unapproved_hh_salary_warning
+            if await unapproved_hh_salary_warning(session):
+                return False
             await session._dismiss_magritte_dropdowns()
             if cover_letter:
                 current = (await session._detect_response_controls())[4]
@@ -1396,6 +1400,11 @@ async def _apply_to_vacancy(
             return {"ok": False, "message": "Нужное резюме не подтверждено — отклик не отправлен", "resume_selection_verified": False}
         logger.info("Requested resume verified before application")
 
+    from salary_policy import unapproved_hh_salary_warning, warning_result
+    salary_warning = await unapproved_hh_salary_warning(session)
+    if salary_warning:
+        return warning_result(salary_warning)
+
     # Ищем кнопку "Откликнуться" — собираем все data-qa для дебага
     apply_btn = None if resume_verified else await session._page.query_selector(
         "[data-qa='vacancy-response-link-top-again'], "
@@ -1658,6 +1667,8 @@ async def _apply_to_vacancy(
 
     async def verify_final_submit():
         nonlocal resume_verified
+        if await unapproved_hh_salary_warning(session):
+            return False
         await session._dismiss_magritte_dropdowns()
         if cover_letter:
             current_letter = (await refetch_response_controls())[4]

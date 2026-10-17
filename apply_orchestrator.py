@@ -93,6 +93,10 @@ async def fetch_vacancy_details(
     try:
         if source == "hh" and hh_client is not None:
             details = await hh_client.get_vacancy_details(url)
+            from salary_policy import read_hh_salary_warning
+            page = getattr(hh_client, "_page", None)
+            if page is not None:
+                vacancy["_hh_salary_warning"] = await read_hh_salary_warning(page)
             hh_client._hh_consecutive_forbidden_vacancies = set()
         elif source == "habr" and habr_client is not None:
             details = await habr_client.get_vacancy_details(url)

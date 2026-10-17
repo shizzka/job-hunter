@@ -420,13 +420,16 @@ def get_knowledge_index(profile_dir: str | os.PathLike) -> KnowledgeIndex:
     common home/knowledge directory. Symlinked source files remain rejected.
     """
     root = Path(profile_dir).expanduser().resolve()
+    from direction_knowledge import intent, markdown_parts, overlay_facts, profile_note
+    direction = intent(root)
+    cache_key = str(root) + (json.dumps(direction, sort_keys=True, ensure_ascii=False) if direction else "")
     try:
         paths = _sources(root)
         fingerprint = _fingerprint(root, paths)
         with _CACHE_LOCK:
-            cached = _CACHE.get(str(root))
+            cached = _CACHE.get(cache_key)
             if cached is not None and cached.fingerprint == fingerprint:
-                _CACHE.move_to_end(str(root))
+                _CACHE.move_to_end(cache_key)
                 return cached
         contents = {str(path.relative_to(root)): _read_source(root, path, expected)
                     for path, expected in zip(paths, fingerprint)}
@@ -438,8 +441,15 @@ def get_knowledge_index(profile_dir: str | os.PathLike) -> KnowledgeIndex:
             if name.endswith("synonyms.txt"):
                 continue
             filename = Path(name).name.lower()
-            parts = _markdown_parts(text) if name.endswith(".md") else _json_parts(filename, text)
-            core_remaining = _CORE_LIMIT if filename in _CORE_NAMES else 0
+            if direction and filename == "facts.json":
+                text = json.dumps(overlay_facts(json.loads(text), direction), ensure_ascii=False)
+            if direction and filename == "candidate_interview.json":
+                from direction_knowledge import interview_items
+                data = json.loads(text)
+                data["facts"] = interview_items(data.get("facts", []), direction)
+                text = json.dumps(data, ensure_ascii=False)
+            parts = (markdown_parts(name, text, direction) if name.endswith(".md") else _json_parts(filename, text))
+            core_remaining = _CORE_LIMIT if filename in _CORE_NAMES and not direction else 0
             for heading, body, mandatory in parts:
                 mandatory = mandatory or filename in _BOUNDARY_FILES
                 bodies = []
@@ -461,6 +471,10 @@ def get_knowledge_index(profile_dir: str | os.PathLike) -> KnowledgeIndex:
                 for part, required in bodies:
                     tokens = _tokens(heading + " " + heading + " " + part, aliases)
                     chunks.append(KnowledgeChunk(name, heading, part, required, tokens))
+        if direction:
+            note = profile_note(direction)
+            chunks.append(KnowledgeChunk("knowledge/profile_note.md", "Текущее направление", note, True,
+                                         _tokens(note, aliases)))
         chunks = _group_boundaries(_deduplicate_boundaries(chunks), aliases)
         frequencies: Counter = Counter()
         for chunk in chunks:
@@ -468,8 +482,8 @@ def get_knowledge_index(profile_dir: str | os.PathLike) -> KnowledgeIndex:
         index = KnowledgeIndex(str(root), fingerprint, tuple(chunks), aliases, tuple(sorted(frequencies.items())),
                                sum(len(chunk.tokens) for chunk in chunks) / len(chunks) if chunks else 0)
         with _CACHE_LOCK:
-            _CACHE[str(root)] = index
-            _CACHE.move_to_end(str(root))
+            _CACHE[cache_key] = index
+            _CACHE.move_to_end(cache_key)
             while len(_CACHE) > 16:
                 _CACHE.popitem(last=False)
         return index

@@ -147,6 +147,10 @@ def build_cover_facts_blocks() -> tuple[str, str]:
 
 def build_profile_note_block() -> str:
     """Read candidate positioning from the current profile's knowledge directory."""
+    from direction_knowledge import intent, profile_note
+    direction = intent()
+    if direction:
+        return "⭐ ПОЗИЦИОНИРОВАНИЕ ДЛЯ ТЕКУЩЕГО НАПРАВЛЕНИЯ:\n" + profile_note(direction) + "\n\n"
     path = os.path.join(_knowledge_dir(), "profile_note.md")
     try:
         with open(path, encoding="utf-8") as stream:
@@ -408,7 +412,8 @@ async def build_filtered_kb_block(
     Retrieval errors propagate so no mandatory boundaries can be lost.
     """
     from kb_retrieval import retrieval_enabled, retrieve_knowledge
-    if retrieval_enabled():
+    from direction_knowledge import intent
+    if retrieval_enabled() or intent():
         return retrieve_knowledge(
             vacancy_context, profile_dir=candidate_home(),
             limit_chars=limit_chars if limit_chars is not None else 10000,
@@ -441,6 +446,10 @@ def build_knowledge_base_block(limit_chars: int = 12000, *, profile_dir: str | N
     «### <filename>». Общая длина обрезается до limit_chars (по умолчанию ~12 KB).
     """
     import os
+    from direction_knowledge import intent
+    if intent(profile_dir):
+        from kb_retrieval import retrieve_knowledge
+        return retrieve_knowledge("", profile_dir=profile_dir or candidate_home(), limit_chars=limit_chars)
     knowledge_dir = _knowledge_dir(profile_dir)
     if not os.path.isdir(knowledge_dir):
         return ""

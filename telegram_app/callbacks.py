@@ -68,6 +68,14 @@ class TelegramCallbackRouter:
             await self._answer_callback_query(callback_id, "Не удалось определить чат.", show_alert=True)
             return
 
+        if str(raw_data).startswith("dir:"):
+            if (message.get("chat") or {}).get("type") != "private":
+                await self._answer_callback_query(callback_id, "Откройте личный чат с ботом.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id)
+            await self._direction_callback(chat_id, principal, raw_data)
+            return
+
         def can_access_profile(profile_name: str) -> bool:
             return (
                 principal.get("role") == ROLE_ADMIN

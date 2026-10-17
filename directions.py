@@ -81,6 +81,13 @@ def validate_direction(value):
         raise DirectionError("filter_policy: qa или generic.")
     for field in ("search_queries", "relevant_keywords", "exclude_keywords"):
         _strings(result.get(field), field)
+    if "positioning" in result:
+        _text(result["positioning"], "positioning", empty=True)
+        if len(result["positioning"]) > 1500:
+            raise DirectionError("Позиционирование: не больше 1500 символов.")
+    for field in ("goal", "allowed_wording", "do_not_claim_extra"):
+        if field in result:
+            _strings(result[field], field)
     strategy = result.setdefault("selection_strategy", "single")
     if strategy not in {"single", "ab"}:
         raise DirectionError("selection_strategy: single или ab; closest ещё не реализован.")

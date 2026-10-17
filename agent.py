@@ -667,6 +667,8 @@ async def do_manual_apply_token(token: str) -> dict:
     vacancy["_analytics_run_id"] = run_id
     vacancy["_analytics_apply_mode"] = "manual"
     hh_client = HHClient()
+    # Only a warning already visible in this approved card is acknowledged.
+    hh_client._approved_salary_warning = str(vacancy.get("_hh_salary_warning") or "")
     hh_client._manual_apply_guard = begin_external
     hh_client._manual_apply_no_action = lambda: manual_apply_queue.confirm_no_action(token, owner, store=queue_store)
     manual_uncertainty_note = None
@@ -834,6 +836,19 @@ async def do_manual_apply_token(token: str) -> dict:
             if apply_result.get("resume_selection_status") == "unknown_existing_response":
                 await notify_needs_manual(vacancy, score, reason, note=apply_message)
             return {"ok": True, "already_applied": True, "message": apply_message}
+
+        salary_warning = (str(apply_result.get("salary_warning") or "")
+                          or str(getattr(hh_client, "_hh_salary_warning", "") or ""))
+        if salary_warning and not apply_result.get("ok"):
+            message = f"Предупреждение HH: {salary_warning} Подтвердите отклик с учётом предупреждения."
+            finish("failed", message)
+            vacancy["_hh_salary_warning"] = salary_warning
+            candidate = manual_apply_queue.create_candidate(
+                vacancy, evaluation, details, profile_name=item.get("profile_name"), allow_ai_apply=True)
+            markup = manual_apply_queue.build_manual_apply_markup(
+                vacancy, item.get("profile_name"), candidate.get("token", ""), allow_ai_apply=True)
+            await notify_needs_manual(vacancy, score, reason, note=message, reply_markup=markup)
+            return {"ok": False, "requires_salary_confirmation": True, "message": message}
 
         if apply_result.get("ok"):
             seen.mark_seen(vacancy.get("id", token), vacancy, "manual_ai_applied")
@@ -1874,6 +1889,10 @@ async def do_search(dry_run: bool = False) -> dict:
             # HH can be configured per user to only show suitable jobs, or to
             # wait for an explicit Telegram confirmation before AI applies.
             hh_application_mode = getattr(config, "HH_APPLICATION_MODE", "auto")
+            from salary_policy import confirmation_reason
+            salary_note = confirmation_reason(v) if source == "hh" else ""
+            if salary_note and hh_application_mode == "auto":
+                hh_application_mode = "confirm"
             if source == "hh" and hh_application_mode in {"preview", "confirm"}:
                 is_confirmation = hh_application_mode == "confirm"
                 profile_name = profile_mod.active().name
@@ -1901,7 +1920,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     f"Ручной HH: {mode_label}",
                     f"manual_hh_{hh_application_mode}",
                     f"manual_hh_{hh_application_mode}",
-                    f"Режим «{mode_label}». {action_note}",
+                    f"Режим «{mode_label}». {salary_note} {action_note}".strip(),
                     v, vid, score, reason, evaluation, details,
                     result, bucket, run_id, set_hunter_status,
                     resume_variant=hh_resume_variant,
@@ -2410,6 +2429,25 @@ async def do_search(dry_run: bool = False) -> dict:
                         "working",
                     ))
                     log.info("  %s vacancy already has a response: %s", source_label, vid)
+                    continue
+
+                salary_warning = (str(apply_result.get("salary_warning") or "")
+                                  or (str(getattr(hh_client, "_hh_salary_warning", "") or "") if source == "hh" else ""))
+                if source == "hh" and salary_warning and not apply_result.get("ok"):
+                    v["_hh_salary_warning"] = salary_warning
+                    profile_name = profile_mod.active().name
+                    candidate = manual_apply_queue.create_candidate(
+                        v, evaluation, details, profile_name=profile_name, allow_ai_apply=True)
+                    markup = manual_apply_queue.build_manual_apply_markup(
+                        v, profile_name, candidate.get("token", ""), allow_ai_apply=True)
+                    await receipt.wait(_mark_manual(
+                        "HH: подтвердите зарплатные условия", "manual_hh_salary_confirmation",
+                        DECISION_MANUAL_REVIEW,
+                        f"Предупреждение HH: {salary_warning} Подтвердите отклик кнопкой «Откликнуться с ИИ».",
+                        v, vid, score, reason, cover_evaluation, details,
+                        result, bucket, run_id, set_hunter_status,
+                        resume_variant=hh_resume_variant, reply_markup=markup,
+                        analytics_note="hh_salary_confirmation", receipt=receipt))
                     continue
 
                 cover_evaluation["cover_letter_status"] = apply_result.get("cover_letter_status", "unknown")

@@ -40,15 +40,18 @@ def facts_file_path() -> str:
 def load_facts() -> dict[str, Any]:
     path = facts_file_path()
     if not os.path.exists(path):
-        return {}
+        from direction_knowledge import overlay_facts
+        return overlay_facts({})
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            return data
+            from direction_knowledge import overlay_facts
+            return overlay_facts(data)
     except Exception as exc:
         log.warning("Failed to load facts %s: %s", path, exc)
-    return {}
+    from direction_knowledge import overlay_facts
+    return overlay_facts({})
 
 
 def _is_empty_fact(value: Any) -> bool:

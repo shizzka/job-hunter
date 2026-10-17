@@ -135,3 +135,9 @@ def deny_test_network(monkeypatch):
 
     monkeypatch.setattr(socket.socket, "connect", guarded(original_connect))
     monkeypatch.setattr(socket.socket, "connect_ex", guarded(original_connect_ex))
+
+
+@pytest.fixture(autouse=True)
+def salary_question_off_by_default(monkeypatch):
+    """Legacy letter tests use vacancies without salary; salary tests opt in explicitly."""
+    monkeypatch.setattr(config, "COVER_ASK_SALARY_RANGE", False)

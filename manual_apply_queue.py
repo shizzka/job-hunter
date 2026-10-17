@@ -73,7 +73,7 @@ def _compact_vacancy(vacancy: dict) -> dict:
     keys = (
         "id", "source", "source_label", "title", "company", "salary", "url",
         "snippet", "response_url", "apply_mode", "_search_query", "_search_profile",
-        "_resume_input_versions", "_direction_selection",
+        "_resume_input_versions", "_direction_selection", "_hh_salary_warning",
     )
     compact = {key: vacancy.get(key) for key in keys if vacancy.get(key) not in (None, "")}
     if "source" not in compact:

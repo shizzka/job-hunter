@@ -12,6 +12,7 @@ import config
 import filters
 import resume_versions
 import direction_runtime
+import salary_policy
 from llm_client import LLMProvidersExhaustedError, get_llm_client
 
 log = logging.getLogger("matcher")
@@ -859,6 +860,7 @@ def _apply_response_probability_threshold(result: dict) -> dict:
 
 
 SALARY_SOFT_FLAG_PATTERNS = [
+    r"salary|compensation|pay\s*(?:range|band)",
     r"зарп",
     r"оплат",
     r"компенсац",
@@ -991,7 +993,8 @@ def _build_matcher_truth_block(vacancy: dict | None = None, details: str = "") -
         if knowledge:
             parts.append(knowledge)
     except Exception as exc:
-        if not filters.uses_qa_policy():
+        import direction_knowledge
+        if not filters.uses_qa_policy() or direction_knowledge.intent():
             raise  # Missing mandatory restrictions must not produce an ungrounded score.
         log.debug("matcher profile facts load failed: %s", exc)
     return "\n".join(parts) + "\n\n"
@@ -1724,7 +1727,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
                     verifier_budget -= grounding.verifier_calls
             if grounding.ok:
                 return _remember_cover_letter_meta(
-                    cover, cover_style=cover_style, grounding_status=grounding.reason,
+                    salary_policy.finish_cover(vacancy, cover), cover_style=cover_style, grounding_status=grounding.reason,
                 )
             if attempt == 1 or verifier_budget == 0 or grounding.reason not in overclaim_reasons:
                 break
@@ -1736,7 +1739,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
         log.warning("Cover letter grounding: status=%s overclaim_guard=%s check_failed=%s fallback=true",
                     grounding.reason, str(overclaim).lower(), str(not overclaim).lower())
         return _remember_cover_letter_meta(
-            _fallback_cover_letter(vacancy, details, cover_style),
+            salary_policy.finish_cover(vacancy, _fallback_cover_letter(vacancy, details, cover_style)),
             cover_style=cover_style, fallback=True, overclaim_guard=overclaim,
             grounding_status=grounding.reason,
         )
@@ -1745,7 +1748,7 @@ async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
         log.error("Cover letter generation failed, using fallback: %s", type(e).__name__)
         fallback_cover = _fallback_cover_letter(vacancy, details, cover_style)
         return _remember_cover_letter_meta(
-            fallback_cover,
+            salary_policy.finish_cover(vacancy, fallback_cover),
             cover_style=cover_style,
             fallback=True,
             overclaim_guard=grounding.reason in overclaim_reasons,

@@ -337,7 +337,7 @@ async def test_fresh_direction_catalog_includes_other_professions_without_legacy
     await bot._dispatch_direction(1, USER, "/direction_new", "")
     await bot.command.task
     assert [v["id"] for v in bot._direction_sessions()[1]["catalog"]] == ["qa", "electrical"]
-    assert "Электрик" in bot.sent[-1][1]
+    assert "Электрик" in str(bot.sent[-1][2])
     assert calls == ["start", "catalog_readonly", ("stop", False)]
     assert not Path(profile.home_dir).exists()
 
@@ -357,10 +357,10 @@ async def test_real_dispatch_routes_active_search_commands_before_legacy_env_upd
         observed.append(command)
     monkeypatch.setattr(bot, "_dispatch_direction", dispatch)
     for command in ("/search_resume", "/search_suggest", "/search_edit", "/search_use_draft", "/search_application_confirm",
-                    "/refresh_resume", "/grabresume"):
+                    "/refresh_resume", "/grabresume", "/search_settings"):
         await TelegramBot._dispatch.__wrapped__(bot, 1, USER, command, "")
     assert observed == ["/search_resume", "/search_suggest", "/search_edit", "/search_use_draft", "/search_application_confirm",
-                        "/direction_refresh", "/direction_refresh"]
+                        "/direction_refresh", "/direction_refresh", "/direction_summary"]
     assert not (Path(home) / "profile.env").exists()
 
 
@@ -398,7 +398,7 @@ async def test_registered_client_real_bot_dispatch_uses_own_client_profile_and_r
     await actual_bot._dispatch(42, principal, "/directions", "foreign")
     assert "Направления · client42" in sent[-1]
     assert "FOREIGN" not in sent[-1] and "QA" not in sent[-1]
-    for command in ("/profile", "/direction_stats", "/direction_csv"):
+    for command in ("/profile", "/direction_csv"):
         await actual_bot._dispatch(42, principal, command, "foreign")
         assert "Нужны права администратора" in sent[-1]
         assert actual_bot._selected_profile(principal) == "client42"
@@ -477,3 +477,124 @@ async def test_admin_snapshot_summary_and_csv_use_selected_profile_without_ai(bo
     assert not bot.auth_calls
     await bot._dispatch_direction(1, USER, "/direction_csv", "")
     assert len(documents) == 1 and "Нужны права администратора" in bot.sent[-1][1]
+
+
+def inline_actions(bot):
+    return [button['callback_data'] for row in bot.sent[-1][2]['reply_markup']['inline_keyboard'] for button in row]
+
+
+@run_async
+async def test_inline_creation_toggles_next_summary_edit_and_cancel_without_writes(bot, monkeypatch):
+    monkeypatch.setattr('client_hh_auth.load_hh_resume_catalog', lambda name: [{'id': 'one', 'title': 'One'}, {'id': 'two', 'title': 'Two'}])
+    async def suggest(**kwargs):
+        assert kwargs['profile_dir'] == bot.profiles['client_1'].home_dir
+        return {'title': 'QA', 'positioning': 'Manual QA', 'goal': ['QA Engineer'], 'filter_policy': 'qa', 'search_queries': ['QA'], 'relevant_keywords': [], 'exclude_keywords': []}
+    monkeypatch.setattr(search_query_suggester, 'suggest_direction', suggest)
+    await bot._dispatch_direction(1, USER, '/direction_new', '')
+    await bot.command.task
+    actions = inline_actions(bot)
+    await bot._direction_callback(1, USER, actions[0])
+    await bot._direction_callback(1, USER, actions[1])
+    await bot._direction_callback(1, USER, actions[0])  # toggle off
+    await bot._direction_callback(1, USER, next(a for a in actions if a.endswith(':next')))
+    await bot.command.task
+    state = bot._direction_sessions()[1]
+    assert [v['hh_resume_hash'] for v in state['draft']['variants']] == ['two']
+    assert 'Manual QA' in bot.sent[-1][1] and 'Цель: QA Engineer' in bot.sent[-1][1]
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:edit:positioning")
+    await bot._accept_direction_input(1, USER, 'QA lead')
+    assert state['draft']['positioning'] == 'QA lead'
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:cancel")
+    assert not Path(bot.profiles['client_1'].home_dir).exists()
+
+
+@run_async
+async def test_inline_switch_is_confirmed_and_stale_or_foreign_buttons_rejected(bot):
+    home = bot.profiles['client_1'].home_dir
+    make_direction(home)
+    make_direction(home, 'other')
+    directions.set_active_direction(home, 'qa')
+    await bot._dispatch_direction(1, USER, '/directions', '')
+    actions = inline_actions(bot)
+    assert '✅ QA' in str(bot.sent[-1][2])
+    switch = next(a for a in actions if a.endswith('choose:0'))
+    await bot._direction_callback(2, {'user_id': 2, 'role': 'user', 'profile': 'client_2'}, switch)
+    assert 'устарела' in bot.sent[-1][1]
+    await bot._direction_callback(1, USER, switch)
+    assert directions.active_direction(home)['name'] == 'qa'
+    assert 'Переключить' in bot.sent[-1][1]
+    save = next(a for a in inline_actions(bot) if a.endswith(':save'))
+    await bot._direction_callback(1, USER, save)
+    assert directions.active_direction(home)['name'] == 'other'
+    await bot._direction_callback(1, USER, save)
+    assert 'устарела' in bot.sent[-1][1]
+
+
+@run_async
+async def test_independent_city_format_rows_and_salary_are_drafts(bot):
+    home = bot.profiles['client_1'].home_dir
+    original = make_direction(home)
+    directions.set_active_direction(home, 'qa')
+    await bot._dispatch_direction(1, USER, '/direction_summary', '')
+    state = bot._direction_sessions()[1]
+    token = state['token']
+    await bot._direction_callback(1, USER, f'dir:{token}:edit:search_profiles')
+    await bot._accept_direction_input(1, USER, '2\n113 flyInFlyOut')
+    assert state['draft']['search_profiles'] == [{'area': '2', 'schedule': ''}, {'area': '113', 'schedule': 'flyInFlyOut'}]
+    await bot._direction_callback(1, USER, f'dir:{token}:edit:salary')
+    await bot._accept_direction_input(1, USER, '150000')
+    assert state['draft']['salary_baseline'] == 150000
+    assert directions.active_direction(home) == original
+    await bot._direction_callback(1, USER, f'dir:{token}:cancel')
+    assert directions.active_direction(home) == original
+
+
+@run_async
+async def test_client_stats_use_own_profile_without_ai(bot):
+    home = bot.profiles['client_1'].home_dir
+    make_direction(home)
+    await bot._dispatch_direction(1, USER, '/direction_stats', 'client_2')
+    assert 'client_1' in bot.sent[-1][1]
+    assert 'Нужны права' not in bot.sent[-1][1]
+    assert not bot.auth_calls
+
+
+@run_async
+async def test_direction_router_requires_registered_private_chat(bot, monkeypatch):
+    from telegram_app.callbacks import TelegramCallbackRouter
+    import telegram_access
+    home = bot.profiles['client_1'].home_dir
+    make_direction(home)
+    directions.set_active_direction(home, 'qa')
+    await bot._dispatch_direction(1, USER, '/directions', '')
+    payload = next(a for a in inline_actions(bot) if ':choose:' in a)
+    answered = []
+    async def answer(*args, **kwargs):
+        answered.append((args, kwargs))
+    bot._answer_callback_query = answer
+    monkeypatch.setattr(telegram_access, 'resolve_user', lambda user_id: USER if user_id == 1 else None)
+    callback = {'id': 'test', 'from': {'id': 1}, 'data': payload,
+                'message': {'chat': {'id': 1, 'type': 'group'}}}
+    await TelegramCallbackRouter._handle_callback_query.__wrapped__(bot, callback)
+    assert bot._direction_sessions()[1]['mode'] == 'switch'
+    assert 'личный чат' in answered[-1][0][1]
+    callback['message']['chat']['type'] = 'private'
+    await TelegramCallbackRouter._handle_callback_query.__wrapped__(bot, callback)
+    assert bot._direction_sessions()[1]['summary'] is True
+    callback['from']['id'] = 500
+    await TelegramCallbackRouter._handle_callback_query.__wrapped__(bot, callback)
+    assert 'Доступ закрыт' in answered[-1][0][1]
+
+
+@run_async
+async def test_resume_menu_keeps_unsaved_draft_and_downloaded_texts(bot):
+    draft = {'name': 'new', 'title': 'New', 'filter_policy': 'generic', 'search_queries': ['Engineer'],
+             'relevant_keywords': [], 'exclude_keywords': [], 'variants': [
+                 {'hh_resume_hash': 'one', 'title': 'One'}, {'hh_resume_hash': 'two', 'title': 'Two'}]}
+    state = bot._direction_bind(USER, mode='draft', draft=copy.deepcopy(draft), texts={'one': 'One', 'two': 'Two'})
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:variants")
+    variant = next(a for a in inline_actions(bot) if a.endswith(':variant:1'))
+    await bot._direction_callback(1, USER, variant)
+    assert state['draft']['variants'][0]['hh_resume_hash'] == 'two'
+    assert state['texts'] == {'one': 'One', 'two': 'Two'}
+    assert not Path(state['home_dir']).exists()
