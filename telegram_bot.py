@@ -2358,6 +2358,10 @@ class TelegramBot(
         if command == "/search_settings":
             import directions
             if directions.active_direction(self._profile(profile_name).home_dir):
+                # Keep the «Мой поиск» submenu on the keyboard, then show the active direction card.
+                self._set_selected_menu(principal["user_id"], MENU_SEARCH)
+                await self._send_text(chat_id, "🎯 Мой поиск — настройки активного направления ниже.",
+                                      reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH))
                 await self._dispatch_direction(chat_id, principal, "/direction_summary", "")
                 return
             self._set_selected_menu(principal["user_id"], MENU_SEARCH)

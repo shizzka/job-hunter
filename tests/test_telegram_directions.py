@@ -359,6 +359,7 @@ async def test_real_dispatch_routes_active_search_commands_before_legacy_env_upd
     bot._queue_launching = {}
     bot._queue_length = lambda name: 0
     bot._selected_menu = lambda principal: "main"
+    bot._menu_reply_markup = lambda principal, menu=None: {"keyboard": [[{"text": str(menu)}]]}
     observed = []
     async def dispatch(chat_id, principal, command, arg):
         observed.append(command)
