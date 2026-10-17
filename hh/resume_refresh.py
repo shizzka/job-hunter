@@ -132,6 +132,9 @@ _SALARY_SUFFIX = re.compile(r"\s+(?:от\s+|до\s+)?\d[\d\s\u00a0\u202f]*\s*(?:
 def _catalog_title(text):
     """Catalog cards also render employment type and salary inside the resume link."""
     cleaned = _SALARY_SUFFIX.sub("", _EMPLOYMENT_PREFIX.sub("", text)).strip()
+    # «… Уровень дохода не указан · Удалённо»: card meta, not the title.
+    cleaned = re.sub(r"\s+(?:уровень дохода не указан|зарплата не указана)\b.*$", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\s+·\s+.*$", "", cleaned).strip()
     return cleaned or text
 
 
