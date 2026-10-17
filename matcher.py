@@ -35,8 +35,8 @@ def _load_resume() -> str:
     return f"(Резюме не найдено — заполни {config.RESUME_FILE})"
 
 
-def _resume_for_vacancy(vacancy: dict) -> str:
-    selected = direction_runtime.resume_text(vacancy)
+def _resume_for_vacancy(vacancy: dict, details: str = "") -> str:
+    selected = direction_runtime.resume_text(vacancy, details)
     return _load_resume() if selected is None else selected
 
 
@@ -1362,7 +1362,7 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
         "red_flags": [...]    # красные флаги если есть
     }
     """
-    resume = _resume_for_vacancy(vacancy)
+    resume = _resume_for_vacancy(vacancy, details)
     resume_versions.record_input(vacancy, resume, "matcher")
     truth_block = (_build_matcher_truth_block() if filters.uses_qa_policy()
                    else _build_matcher_truth_block(vacancy, details))

@@ -104,8 +104,8 @@ def validate_direction(value):
             item["area"] = int(item["area"])
             item.setdefault("schedule", "")
     strategy = result.setdefault("selection_strategy", "single")
-    if strategy not in {"single", "ab"}:
-        raise DirectionError("selection_strategy: single или ab; closest ещё не реализован.")
+    if strategy not in {"single", "ab", "closest"}:
+        raise DirectionError("selection_strategy: single, ab или closest.")
     if "application_mode" in result and result["application_mode"] not in {"auto", "confirm", "preview"}:
         raise DirectionError("application_mode: auto, confirm или preview.")
     if "cover_letter_fallback" in result:
@@ -258,7 +258,35 @@ def set_active_direction(home_dir, name):
         atomic_write_json(path, {"active_direction": name})
 
 
-def select_variant(direction, vacancy_id):
+def _closest_index(variants, vacancy_text):
+    """Deterministic lexical match: vacancy title/text against each resume title/text.
+
+    Title overlap weighs most (a "техник" vacancy prefers the technician resume);
+    body similarity breaks ties; equal scores keep the first active variant.
+    """
+    from collections import Counter
+    import math
+    from kb_retrieval import _base_tokens
+    title_text, _, body_text = str(vacancy_text or "").partition("\n")
+    title_tokens = set(_base_tokens(title_text))
+    body = Counter(_base_tokens(vacancy_text or ""))
+    best, best_score, scores = 0, None, []
+    for index, variant in enumerate(variants):
+        resume_title = set(_base_tokens(variant.get("title", "")))
+        text = _verify_text(Path(variant["text_file"]), variant)
+        words = Counter(_base_tokens(text))
+        common = set(body) & set(words)
+        dot = sum(body[w] * words[w] for w in common)
+        norm = math.sqrt(sum(v * v for v in body.values())) * math.sqrt(sum(v * v for v in words.values()))
+        cosine = dot / norm if norm else 0.0
+        score = 3.0 * len(title_tokens & resume_title) + 1.0 * len(set(body) & resume_title) + cosine
+        scores.append(round(score, 3))
+        if best_score is None or score > best_score:
+            best, best_score = index, score
+    return best, scores
+
+
+def select_variant(direction, vacancy_id, vacancy_text=""):
     """Select deterministically among active variants and verify text before use."""
     value = validate_direction(direction)
     variants = [item for item in value["variants"] if item["status"] == "active"]
@@ -267,6 +295,13 @@ def select_variant(direction, vacancy_id):
     strategy = value["selection_strategy"]
     if strategy == "single":
         index, reason = 0, "single:first_active"
+    elif strategy == "closest":
+        for item in variants:
+            path = Path(item["text_file"])
+            if not path.is_absolute() or path.resolve() != path:
+                raise DirectionError("Сначала загрузите направление из каталога профиля.")
+        index, scores = _closest_index(variants, vacancy_text)
+        reason = "closest:lexical " + "/".join(str(x) for x in scores)
     else:
         identity = str(vacancy_id).strip() if vacancy_id is not None else ""
         if not identity:
@@ -311,6 +346,4 @@ def overlay_profile(profile):
     return result
 
 
-def select_closest_variant(direction, vacancy):
-    """Reserved interface for a future closest-match selector; no LLM is called."""
-    raise NotImplementedError("Стратегия closest ещё не реализована; выберите single или ab.")
+

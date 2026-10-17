@@ -139,3 +139,11 @@ def test_warning_survives_queue_compaction(tmp_path, monkeypatch):
     item = queue.create_candidate({"id": "salary", "source": "hh", "_hh_salary_warning": warning},
                                   {"score": 80}, profile_name="synthetic")
     assert queue.get_candidate(item["token"])["vacancy"]["_hh_salary_warning"] == warning
+
+
+def test_owner_confirmed_apply_records_warning_without_blocking():
+    warning = "Скорее всего, будет отказ."
+    session = SimpleNamespace(_page=FakePage("Отклик\n" + warning + " Зарплата ниже"),
+                              _owner_confirmed_application=True)
+    assert asyncio.run(policy.unapproved_hh_salary_warning(session)) == ""
+    assert session._hh_salary_warning == warning

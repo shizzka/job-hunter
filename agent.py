@@ -672,6 +672,8 @@ async def do_manual_apply_token(token: str) -> dict:
     hh_client = HHClient()
     # Only a warning already visible in this approved card is acknowledged.
     hh_client._approved_salary_warning = str(vacancy.get("_hh_salary_warning") or "")
+    # Manual apply = explicit owner decision on this vacancy; hh's salary hint is informational.
+    hh_client._owner_confirmed_application = True
     hh_client._manual_apply_guard = begin_external
     hh_client._manual_apply_no_action = lambda: manual_apply_queue.confirm_no_action(token, owner, store=queue_store)
     manual_uncertainty_note = None
@@ -870,7 +872,9 @@ async def do_manual_apply_token(token: str) -> dict:
                 vacancy,
                 score,
                 cover,
-                note=("Ручной AI-отклик из yellow-zone." + (f" {apply_note_text}" if apply_note_text else "")),
+                note=("Ручной AI-отклик из yellow-zone." + (f" {apply_note_text}" if apply_note_text else "")
+                      + (f" ⚠️ hh предупреждал: {hh_client._hh_salary_warning}"
+                         if str(getattr(hh_client, "_hh_salary_warning", "") or "") else "")),
             )
             print(f"✅ ИИ-отклик отправлен: {vacancy.get('title', '—')} @ {vacancy.get('company', '—')}")
             return {"ok": True, "message": apply_message or "ok"}

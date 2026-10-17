@@ -91,6 +91,10 @@ async def read_hh_salary_warning(page) -> str:
 
 async def unapproved_hh_salary_warning(session) -> str:
     warning = await read_hh_salary_warning(session._page)
+    if warning and getattr(session, "_owner_confirmed_application", False):
+        # The owner pressed "apply" on this very vacancy: show the warning, do not block.
+        session._hh_salary_warning = warning
+        return ""
     if warning and warning != getattr(session, "_approved_salary_warning", ""):
         session._hh_salary_warning = warning
         return warning

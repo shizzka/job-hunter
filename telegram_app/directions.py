@@ -21,6 +21,13 @@ def _fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+STRATEGY_LABELS = {
+    "single": "одно резюме (первое в списке)",
+    "closest": "самое подходящее под вакансию",
+    "ab": "A/B — по очереди, чтобы сравнить",
+}
+
+
 def parse_selection(text: str, count: int) -> list[int]:
     values = re.split(r"[\s,;]+", text.strip())
     if not values or any(not value.isdigit() for value in values):
@@ -98,9 +105,9 @@ class TelegramDirections:
                     "Запросы:\n" + "\n".join(draft.get("search_queries", [])) +
                     "\nГород / формат: " + (", ".join(profile_labels) or "из профиля") +
                     f"\nЗарплата от: {draft.get('salary_baseline') or 'не задана'} ₽\n"
-                    f"Выбор резюме: {'A/B' if draft.get('selection_strategy') == 'ab' else 'одно резюме'}\n" + variants)
+                    f"Выбор резюме: {STRATEGY_LABELS.get(draft.get('selection_strategy'), 'одно резюме')}\n" + variants)
             rows = [[("✏️ Изменить", "editmenu"), ("🧾 Резюме", "variants")],
-                    [("🅰️🅱️ A/B", "strategy"), ("📊 Статистика", "stats")]]
+                    [("🔀 Как выбирать резюме", "strategy"), ("📊 Статистика", "stats")]]
             if not state.get("summary"):
                 rows += [[("✅ Сохранить", "save"), ("Отмена", "cancel")]]
                 text += "\n\nИзменения вступят в силу только после сохранения."
@@ -164,7 +171,9 @@ class TelegramDirections:
                 await self._direction_show_draft(chat_id, principal, state)
             elif action == "strategy":
                 state.update(mode="draft", summary=False)
-                state["draft"]["selection_strategy"] = "single" if state["draft"].get("selection_strategy") == "ab" else "ab"
+                order = ["single", "closest", "ab"]
+                current = state["draft"].get("selection_strategy", "single")
+                state["draft"]["selection_strategy"] = order[(order.index(current) + 1) % len(order)] if current in order else "single"
                 await self._direction_show_draft(chat_id, principal, state)
             elif action == "delete":
                 state["delete_target"] = copy.deepcopy(state["draft"])

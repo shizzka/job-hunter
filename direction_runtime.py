@@ -24,7 +24,13 @@ def candidate_home(*, resume_file=None, home_dir=None) -> str:
     return os.path.dirname(resume_file or config.RESUME_FILE) or os.path.expanduser("~/.job-hunter")
 
 
-def prepare(vacancy: dict) -> dict | None:
+def _selection_text(vacancy: dict, details: str = "") -> str:
+    # First line = vacancy title (weighted), then everything known about it.
+    return "\n".join(str(part) for part in (vacancy.get("title", ""), vacancy.get("snippet", ""),
+                                             vacancy.get("details", ""), details) if part)
+
+
+def prepare(vacancy: dict, details: str = "") -> dict | None:
     """Select once, then verify the same binding on subsequent stages.
 
     Queued applications carry this binding, so changing a direction, pausing a
@@ -56,7 +62,8 @@ def prepare(vacancy: dict) -> dict | None:
         ):
             raise ValueError("Вариант резюме изменился; нужна новая оценка вакансии.")
     else:
-        selected = directions.select_variant(direction, str(vacancy.get("id", "")))
+        selected = directions.select_variant(direction, str(vacancy.get("id", "")),
+                                             _selection_text(vacancy, details))
         bound = {
             "profile_home": home,
             "vacancy_id": str(vacancy.get("id", "")),
@@ -88,8 +95,8 @@ def validate_queued(vacancy: dict) -> None:
     prepare(vacancy)
 
 
-def resume_text(vacancy: dict) -> str | None:
-    bound = prepare(vacancy)
+def resume_text(vacancy: dict, details: str = "") -> str | None:
+    bound = prepare(vacancy, details)
     if bound is None:
         return None
     raw = Path(bound["text_file"]).read_bytes()

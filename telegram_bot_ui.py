@@ -458,13 +458,26 @@ def _pretty_pid(state: dict) -> str:
 
 
 def _pretty_profile_name(name: str) -> str:
-    if name == "qa":
-        return "QA"
-    if name == "electrician":
-        return "Электрик"
-    if name == "default":
-        return "Основной"
-    return name
+    pretty = {"qa": "QA", "electrician": "Электрик", "default": "Основной"}.get(name, name)
+    title = _active_direction_title(name)
+    return f"{pretty} · что ищу: {title}" if title else pretty
+
+
+def _active_direction_title(name: str) -> str:
+    """Active direction title for status lines; any problem simply hides it."""
+    try:
+        import json
+        from pathlib import Path
+        import profile as profile_mod
+        home = Path(profile_mod.load_profile(name).home_dir)
+        state = json.loads((home / "directions_state.json").read_text(encoding="utf-8"))
+        active = str(state.get("active_direction") or "")
+        if not active or "/" in active or active.startswith("."):
+            return ""
+        value = json.loads((home / "directions" / f"{active}.json").read_text(encoding="utf-8"))
+        return " ".join(str(value.get("title") or "").split())[:60]
+    except Exception:
+        return ""
 
 
 def _pretty_runtime_action(action: object) -> str:
@@ -594,9 +607,9 @@ def reply_menu_layouts(role: str) -> dict[str, list[list[str]]]:
     """Single source of truth for persistent action buttons and their owners."""
     layouts = {
         MENU_MAIN: [[BUTTON_SEARCH, BUTTON_DRYRUN], [BUTTON_RESPONSES, BUTTON_SEARCH_SETTINGS],
-                    [BUTTON_HH, BUTTON_CANDIDATE_PROFILE], [BUTTON_DIRECTIONS], [BUTTON_MENU_MONITOR], [BUTTON_HELP]],
+                    [BUTTON_HH, BUTTON_CANDIDATE_PROFILE], [BUTTON_MENU_MONITOR], [BUTTON_HELP]],
         MENU_RESPONSES: [[BUTTON_REVIEW, BUTTON_HH_RESPONSES], [BUTTON_FORMS, BUTTON_CHAT_AI]],
-        MENU_SEARCH: [[BUTTON_SEARCH_EDIT, BUTTON_SEARCH_SUGGEST], [BUTTON_SEARCH_USE_DRAFT],
+        MENU_SEARCH: [[BUTTON_DIRECTIONS], [BUTTON_SEARCH_EDIT, BUTTON_SEARCH_SUGGEST], [BUTTON_SEARCH_USE_DRAFT],
                       [BUTTON_SEARCH_CONDITIONS, BUTTON_BLACKLIST],
                       [BUTTON_SEARCH_APPLICATION_MODE, BUTTON_SCHEDULE]],
         MENU_SEARCH_CONDITIONS: [[BUTTON_SEARCH_EXPERIENCE, BUTTON_SEARCH_SALARY],
