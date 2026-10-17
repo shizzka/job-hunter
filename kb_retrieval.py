@@ -1,7 +1,7 @@
 """Local, profile-scoped BM25 retrieval. No model calls or optional dependencies.
 
-Indexes are immutable operation snapshots. Mandatory boundaries and core profile
-notes are included whole, or KnowledgeBudgetError is raised (never truncated).
+Indexes are immutable operation snapshots. Mandatory boundaries and the bounded
+core profile prefix are included whole, or KnowledgeBudgetError is raised.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import threading
+import unicodedata
 
 
 class KnowledgeBudgetError(ValueError):
@@ -39,11 +40,16 @@ _GROUPS = (
 )
 _CORE_NAMES = frozenset({"profile_note.md", "core_profile.md", "canonical_profile.md", "candidate_profile.md"})
 _BOUNDARY_FILES = frozenset({"constraints.md", "limits.md", "do_not_claim.md"})
-_BOUNDARY = re.compile(r"\b(?:LIMIT(?:S|ED)?|DO[_ ]NOT[_ ]CLAIM|FORBIDDEN[_ ]CLAIMS|WEAK|ALLOWED[_ ]WORDING)\b|ограничени|границ|запрет|нельзя заявля", re.I)
+_BOUNDARY_LABELS = frozenset({"LIMIT", "LIMITS", "DO_NOT_CLAIM", "FORBIDDEN_CLAIMS"})
 _TAG = re.compile(r"(?<!\S)(?:[-*+]\s+)?\[([\w -]+)\]\s*")
 _NUMBERED_SECTION = re.compile(r"(?<!\S)\d{1,3}[.)]\s+([^\n\[\]]{1,120}?)\s+(?=(?:[-*+]\s+)?\[[\w -]+\])")
 _HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 _MAX_CHUNK = 1100
+_CORE_LIMIT = 1500
+
+
+def _boundary_label(text: str) -> bool:
+    return re.sub(r"[ -]+", "_", text.strip().strip("[]").upper()) in _BOUNDARY_LABELS
 
 
 def _base_tokens(text: str) -> list[str]:
@@ -205,16 +211,19 @@ def _markdown_parts(text: str):
     def section():
         content = "\n".join(lines).strip()
         heading = " > ".join(title for _, title in headings)
-        numbered = list(_NUMBERED_SECTION.finditer(content))
         blocks = []
-        if numbered:
-            blocks.append((heading, content[:numbered[0].start()]))
-            for pos, match in enumerate(numbered):
-                end = numbered[pos + 1].start() if pos + 1 < len(numbered) else len(content)
-                context = " > ".join(filter(None, (heading, match.group(1).strip())))
-                blocks.append((context, content[match.end():end]))
-        else:
-            blocks.append((heading, content))
+        # Horizontal rules still end a tagged item in flattened Markdown.
+        # Otherwise the last tag swallows the next untagged section wholesale.
+        for segment in re.split(r"(?<!\S)---+(?=\s|$)", content):
+            numbered = list(_NUMBERED_SECTION.finditer(segment))
+            if numbered:
+                blocks.append((heading, segment[:numbered[0].start()]))
+                for pos, match in enumerate(numbered):
+                    end = numbered[pos + 1].start() if pos + 1 < len(numbered) else len(segment)
+                    context = " > ".join(filter(None, (heading, match.group(1).strip())))
+                    blocks.append((context, segment[match.end():end]))
+            else:
+                blocks.append((heading, segment))
         for context, block in blocks:
             matches = list(_TAG.finditer(block))
             pieces = []
@@ -227,7 +236,7 @@ def _markdown_parts(text: str):
             elif block.strip():
                 pieces.append(("", block.strip()))
             for tag, piece in pieces:
-                mandatory = bool(_BOUNDARY.search(context) or _BOUNDARY.search(tag))
+                mandatory = _boundary_label(tag) or any(_boundary_label(title) for title in context.split(" > "))
                 # Boundaries stay intact, including a long multi-paragraph prohibition.
                 parts = [piece] if mandatory else _paragraph_chunks(piece)
                 for part in parts:
@@ -315,7 +324,11 @@ def _json_parts(name: str, text: str):
         for key in ("weak", "allowed_wording", "do_not_claim", "forbidden_claims"):
             value = data.get(key)
             if value is not None and value != "" and value != [] and value != {}:
-                yield "LIMIT / " + key.upper(), _value_text(value), True
+                # Lists contain individual guardrails, not one JSON blob. Keep
+                # each intact so a duplicate in Markdown can be removed safely.
+                for item in value if isinstance(value, list) else [value]:
+                    if item is not None and item != "" and item != [] and item != {}:
+                        yield "LIMIT / " + key.upper(), _value_text(item), True
     else:
         items = data.get("facts", [])
         if not isinstance(items, list):
@@ -324,8 +337,55 @@ def _json_parts(name: str, text: str):
             if not isinstance(item, dict) or not isinstance(item.get("text"), str) or not item["text"].strip():
                 continue
             topic = str(item.get("topic", "общий"))
-            mandatory = topic.strip().casefold() in {"границы", "ограничения"} or bool(_BOUNDARY.search(topic))
+            mandatory = topic.strip().casefold() in {"границы", "ограничения"} or _boundary_label(topic)
             yield ("LIMIT" if mandatory else "CONFIRMED") + " > " + topic, item["text"].strip(), mandatory
+            if not mandatory:
+                # Interview entries retain their paragraph context for ranking.
+                # Embedded tagged guardrails additionally get mandatory copies.
+                for heading, body, tagged in _markdown_parts(item["text"]):
+                    if tagged:
+                        context = " > ".join(filter(None, ("LIMIT", topic, heading)))
+                        yield context, body, True
+
+
+def _deduplicate_boundaries(chunks: list[KnowledgeChunk]) -> list[KnowledgeChunk]:
+    """Prefer tagged Markdown over identical structured guardrails.
+
+    Only presentation, Unicode form, case and whitespace are normalized. No
+    stemming, substring matching or semantic equivalence can erase a boundary.
+    """
+    seen = set()
+    keep = set()
+    candidates = sorted(enumerate(chunks), key=lambda pair: (not pair[1].source.endswith(".md"), pair[0]))
+    for pos, chunk in candidates:
+        if chunk.mandatory and chunk.source in {"facts.json", "candidate_interview.json", "knowledge/candidate_facts.md"}:
+            tag = _TAG.match(chunk.text)
+            body = chunk.text[tag.end():] if tag else chunk.text
+            key = " ".join(unicodedata.normalize("NFKC", body).casefold().split())
+            if key in seen:
+                continue
+            seen.add(key)
+        keep.add(pos)
+    return [chunk for pos, chunk in enumerate(chunks) if pos in keep]
+
+
+def _group_boundaries(chunks: list[KnowledgeChunk], aliases) -> list[KnowledgeChunk]:
+    """Pay the source/heading label once for mandatory items in a section."""
+    result = []
+    positions = {}
+    for chunk in chunks:
+        key = (chunk.source, chunk.heading)
+        if chunk.mandatory and key in positions:
+            pos = positions[key]
+            previous = result[pos]
+            body = previous.text + "\n\n" + chunk.text
+            result[pos] = KnowledgeChunk(chunk.source, chunk.heading, body, True,
+                                         _tokens(chunk.heading + " " + chunk.heading + " " + body, aliases))
+        else:
+            if chunk.mandatory:
+                positions[key] = len(result)
+            result.append(chunk)
+    return result
 
 
 _CACHE: OrderedDict[str, KnowledgeIndex] = OrderedDict()
@@ -358,12 +418,29 @@ def get_knowledge_index(profile_dir: str | os.PathLike) -> KnowledgeIndex:
                 continue
             filename = Path(name).name.lower()
             parts = _markdown_parts(text) if name.endswith(".md") else _json_parts(filename, text)
+            core_remaining = _CORE_LIMIT if filename in _CORE_NAMES else 0
             for heading, body, mandatory in parts:
-                mandatory = mandatory or filename in _CORE_NAMES or filename in _BOUNDARY_FILES
-                bodies = [body] if mandatory or name.endswith(".md") else _paragraph_chunks(body)
-                for part in bodies:
+                mandatory = mandatory or filename in _BOUNDARY_FILES
+                bodies = []
+                if not mandatory and core_remaining:
+                    split = min(len(body), core_remaining)
+                    if split < len(body):
+                        space = body.rfind(" ", 0, split + 1)
+                        if space > 0:
+                            split = space
+                    bodies.append((body[:split].strip(), True))
+                    # Once the prefix ends, later sections cannot use a few
+                    # spare characters left by the whitespace-aligned cut.
+                    core_remaining = 0 if split < len(body) else core_remaining - split
+                    body = body[split:].strip()
+                elif mandatory:
+                    core_remaining = max(0, core_remaining - len(body))
+                if body:
+                    bodies.extend((part, mandatory) for part in ([body] if mandatory else _paragraph_chunks(body)))
+                for part, required in bodies:
                     tokens = _tokens(heading + " " + heading + " " + part, aliases)
-                    chunks.append(KnowledgeChunk(name, heading, part, mandatory, tokens))
+                    chunks.append(KnowledgeChunk(name, heading, part, required, tokens))
+        chunks = _group_boundaries(_deduplicate_boundaries(chunks), aliases)
         frequencies: Counter = Counter()
         for chunk in chunks:
             frequencies.update(set(chunk.tokens))

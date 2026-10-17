@@ -10,7 +10,7 @@ Questions and labels remain local. Output contains aggregate counts, optionally
 ordinal question IDs (--details), never questions, markers, or retrieved text.
 This measures context coverage, not answer quality or factual correctness.
 Legacy is measured at its original 6000-character limit and at --budget;
-retrieval uses --budget (12000 by default to retain mandatory boundaries).
+retrieval uses --budget (12000 by default to leave room beyond boundaries).
 """
 from __future__ import annotations
 
@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         import config
         from prompt_blocks import build_knowledge_base_block
-        from kb_retrieval import retrieve_knowledge
+        from kb_retrieval import get_knowledge_index, retrieve_knowledge
 
         root = Path(os.path.expanduser(config.JOB_HUNTER_HOME))
         profile_dir = root if args.profile == "default" else root / "profiles" / args.profile
@@ -153,6 +153,10 @@ def main(argv: list[str] | None = None) -> int:
                 if source.is_file():
                     shutil.copyfile(source, snapshot / "knowledge" / source.name)
             result = evaluate(questions, snapshot, build_knowledge_base_block, retrieve_knowledge, budget=args.budget, details=args.details)
+            mandatory = [chunk for chunk in get_knowledge_index(snapshot).chunks if chunk.mandatory]
+            required = len("\n\n".join(chunk.render() for chunk in mandatory))
+            result["mandatory"] = {"chunks": len(mandatory), "chars": required,
+                                   "budget_fraction": round(required / args.budget, 4)}
         print(json.dumps(result, ensure_ascii=True, sort_keys=True))
         return 0
     except Exception as exc:

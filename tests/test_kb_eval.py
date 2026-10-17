@@ -72,6 +72,7 @@ def test_cli_excludes_local_labels_from_both_builders(tmp_path, monkeypatch, cap
     assert kb_eval.main(["--profile", "qa", "--questions", str(custom)]) == 0
     output = capsys.readouterr().out
     assert json.loads(output)["retrieval"]["hits"] == 1
+    assert json.loads(output)["mandatory"] == {"chunks": 0, "chars": 0, "budget_fraction": 0.0}
     assert "private" not in output
 
 

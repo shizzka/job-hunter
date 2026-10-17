@@ -21,8 +21,21 @@ Symlinked knowledge sources are rejected rather than following another profile.
    whole. Preserve original spelling in the rendered context and evidence.
 3. Normalize search tokens: lowercase, `ё` to `е`, light Russian suffix removal,
    built-in RU/EN aliases. Preserve tool tokens such as `CI/CD`, `C++` and `3D`.
-4. Reserve all `[LIMIT]`/`[DO_NOT_CLAIM]` chunks, structured constraints, and
-   canonical profile notes. Rank the remainder by BM25 (`k1=1.2`, `b=0.75`),
+4. Reserve all `[LIMIT]`/`[DO_NOT_CLAIM]` chunks, explicitly named `LIMIT`,
+   `LIMITS`, `DO_NOT_CLAIM`/`FORBIDDEN_CLAIMS` sections (including descendants),
+   dedicated constraint files and structured constraints. Words such as
+   «ограничения», «границы» or «запреты» in Markdown prose/headings do not mark
+   a section mandatory. Horizontal rules end tagged items even in flattened
+   Markdown. Interview boundary topics «границы»/«ограничения» remain explicit
+   structured constraints; embedded boundary tags are always reserved as well.
+5. Deduplicate mandatory items across `candidate_facts.md`, `facts.json` and
+   interview copies by Unicode NFKC, case and whitespace, ignoring the item tag.
+   Prefer Markdown spelling. Substring matches and semantic similarity never
+   remove a restriction. Render a shared mandatory section label only once.
+6. Keep up to the first 1500 body characters of each canonical profile note
+   mandatory. Its remainder participates in normal retrieval; explicitly tagged
+   boundaries anywhere in the note still stay mandatory and whole.
+7. Rank the remainder by BM25 (`k1=1.2`, `b=0.75`),
    weighting heading tokens twice. Ties and zero-score fallback use source order.
    Add only whole chunks that fit the remaining character budget.
 
@@ -70,5 +83,6 @@ venv/bin/python scripts/kb_eval.py --profile qa --questions /private/questions.t
 The script compares legacy truncation at 6000, legacy truncation at the chosen
 budget, and retrieval at that same budget. It uses a temporary private source
 snapshot excluding evaluation labels. Output contains aggregate hit/marker recall;
+it also reports mandatory chunk count, rendered characters and budget fraction.
 `--details` adds ordinal IDs and booleans, with no questions, quotes or source text.
 This evaluates retrieval coverage, not the correctness of generated answers.

@@ -145,7 +145,7 @@ def test_metadata_never_enters_legacy_prompts(corpus, monkeypatch):
 @pytest.mark.parametrize('kind', ['cover', 'chat'])
 def test_mandatory_overflow_never_uses_truncated_fallback(corpus, monkeypatch, kind):
     from kb_retrieval import KnowledgeBudgetError
-    (corpus / 'knowledge' / 'profile_note.md').write_text('Обязательное ядро. ' * 1000)
+    (corpus / 'knowledge' / 'candidate_facts.md').write_text('[DO_NOT_CLAIM] ' + 'Не заявлять коммерческий стаж. ' * 1000)
     client = client_for('Should not be generated')
     monkeypatch.setattr(matcher, '_get_client', lambda: client)
     monkeypatch.setattr(chat, '_get_llm_client', lambda: client)

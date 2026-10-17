@@ -104,6 +104,92 @@ def test_mandatory_heading_propagates_through_hierarchy(tmp_path):
     assert result.index("Не заявлять самостоятельную разработку") < result.index("Excel отчёты")
 
 
+@pytest.mark.parametrize("heading", ["Карьерная цель", "Границы проекта", "Ограничения", "Критические запреты"])
+def test_boundary_words_do_not_make_untagged_section_mandatory(tmp_path, heading):
+    write(tmp_path, "knowledge/kb.md", f"# {heading}\nОбсуждал ограничения, границы и запреты.\n- [FACT] Использовал Excel.")
+    index = get_knowledge_index(tmp_path)
+    assert not any(chunk.mandatory for chunk in index.chunks)
+    assert index.retrieve("погода", limit_chars=0) == ""
+
+
+@pytest.mark.parametrize("heading", ["DO_NOT_CLAIM", "FORBIDDEN_CLAIMS", "DO NOT CLAIM", "[LIMIT]"])
+def test_explicit_boundary_sections_remain_mandatory(tmp_path, heading):
+    write(tmp_path, "knowledge/kb.md", f"# {heading}\n## Уровень\nНе заявлять Senior.\n# Практика\nПроверял Android.")
+    index = get_knowledge_index(tmp_path)
+    required = [c for c in index.chunks if c.mandatory]
+    assert len(required) == 1
+    assert required[0].text == "Не заявлять Senior."
+    assert index.retrieve("погода", limit_chars=len(required[0].render())) == required[0].render()
+
+
+def test_flattened_horizontal_rule_ends_tagged_boundary(tmp_path):
+    write(tmp_path, "knowledge/candidate_facts.md",
+          "# Факты\n16. Карьерная цель - [LIMIT] Не заявлять текущий доход. "
+          "--- 17. Позиционирование Manual QA: Excel. "
+          "--- 18. Запреты - [DO_NOT_CLAIM] Не заявлять Senior. "
+          "--- 19. Правила использования: выбирать релевантные факты.")
+    index = get_knowledge_index(tmp_path)
+    required = "\n\n".join(c.render() for c in index.chunks if c.mandatory)
+    result = index.retrieve("погода", limit_chars=len(required))
+    assert "[LIMIT] Не заявлять текущий доход." in result
+    assert "[DO_NOT_CLAIM] Не заявлять Senior." in result
+    assert "Manual QA" not in result and "Правила использования" not in result
+    assert "Manual QA" in index.retrieve("Позиционирование", limit_chars=1000)
+
+
+@pytest.mark.parametrize("key", ["weak", "allowed_wording", "do_not_claim", "forbidden_claims"])
+def test_normalized_mandatory_duplicates_keep_markdown_and_every_distinct_ban(tmp_path, key):
+    write(tmp_path, "facts.json", json.dumps({key: [
+        "НЕ заявлять ＡＱＡ.", "Не заявлять коммерческий SQL.", "Не заявлять AQA без проверки.",
+    ]}, ensure_ascii=False))
+    write(tmp_path, "knowledge/candidate_facts.md", "# Факты\n- [LIMIT] Не заявлять AQA.\n- [DO_NOT_CLAIM] Не заявлять\nкоммерческий SQL.")
+    write(tmp_path, "candidate_interview.json", json.dumps({"facts": [{
+        "text": "[LIMIT] НЕ заявлять AQA.", "topic": "общий",
+    }]}))
+    index = get_knowledge_index(tmp_path)
+    required = [c for c in index.chunks if c.mandatory]
+    assert len(required) == 2  # One Markdown section and one distinct JSON ban.
+    result = index.retrieve("погода", limit_chars=len("\n\n".join(c.render() for c in required)))
+    assert result.count("[LIMIT] Не заявлять AQA.") == 1
+    assert "[DO_NOT_CLAIM] Не заявлять\nкоммерческий SQL." in result
+    assert "Не заявлять AQA без проверки." in result  # No substring deduplication.
+    assert "ＡＱＡ" not in result and "candidate_interview.json" not in result
+    with pytest.raises(KnowledgeBudgetError):
+        index.retrieve("погода", limit_chars=len(result) - 1)
+
+
+def test_all_tagged_boundaries_survive_core_cap_and_unrelated_query(tmp_path):
+    write(tmp_path, "knowledge/profile_note.md", "Краткий профиль. " * 200
+          + "\n\n- [LIMIT] Нет коммерческого SQL.\n- [DO_NOT_CLAIM] Не заявлять Senior.")
+    write(tmp_path, "knowledge/candidate_facts.md", "# Опыт\n- [LIMIT] Не заявлять AQA.\n- [DO_NOT_CLAIM] Не заявлять DevOps.")
+    write(tmp_path, "candidate_interview.json", json.dumps({"facts": [{
+        "text": "Проверял Android.\n- [LIMIT] Нет опыта Go.", "topic": "общий",
+    }]}))
+    index = get_knowledge_index(tmp_path)
+    required = "\n\n".join(c.render() for c in index.chunks if c.mandatory)
+    result = index.retrieve("погода", limit_chars=len(required))
+    for boundary in ("Нет коммерческого SQL.", "Не заявлять Senior.", "Не заявлять AQA.",
+                     "Не заявлять DevOps.", "Нет опыта Go."):
+        assert boundary in result
+    with pytest.raises(KnowledgeBudgetError):
+        index.retrieve("погода", limit_chars=len(required) - 1)
+
+
+def test_long_core_prefix_is_bounded_and_tail_remains_retrievable(tmp_path):
+    prefix = " ".join(f"Профиль{i}." for i in range(400))
+    tail = "Уникальный опыт Blender: моделировал детали."
+    write(tmp_path, "knowledge/profile_note.md", prefix + "\n\n" + tail)
+    index = get_knowledge_index(tmp_path)
+    required = "\n\n".join(c.render() for c in index.chunks if c.mandatory)
+    assert 1500 <= len(required) < 1600  # Prefix plus source label/formatting.
+    assert tail not in required
+    mandatory_words = " ".join(c.text for c in index.chunks if c.mandatory).split()
+    assert mandatory_words == prefix.split()[:len(mandatory_words)]
+    assert any(tail in c.text and not c.mandatory for c in index.chunks)
+    assert tail in index.retrieve("Blender", limit_chars=len(required) + 1200)
+    assert index.retrieve("погода", limit_chars=len(required)) == required
+
+
 def test_constraints_file_and_core_alias_are_mandatory(tmp_path):
     write(tmp_path, "knowledge/constraints.md", "Не готов к ночным сменам.")
     write(tmp_path, "knowledge/core_profile.md", "Механик.")
