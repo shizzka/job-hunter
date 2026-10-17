@@ -1477,6 +1477,7 @@ async def _apply_to_vacancy(
                 "notes": auto_answer_notes,
                 "question_answers": list(auto_answer_question_answers),
                 "risky_question": auto_question_result.get("risky_question", ""),
+            "pending_question": auto_question_result.get("pending_question"),
             }
 
         if direct_response_flow:
@@ -1552,6 +1553,7 @@ async def _apply_to_vacancy(
             "notes": auto_answer_notes,
             "question_answers": list(auto_answer_question_answers),
                 "risky_question": auto_question_result.get("risky_question", ""),
+            "pending_question": auto_question_result.get("pending_question"),
         }
 
     if (resume_select or preferred_resume_title or preferred_resume_id) and not resume_verified:
@@ -1766,6 +1768,7 @@ async def _apply_to_vacancy(
             "notes": auto_answer_notes,
             "question_answers": list(auto_answer_question_answers),
                 "risky_question": auto_question_result.get("risky_question", ""),
+            "pending_question": auto_question_result.get("pending_question"),
         }
 
     if await session._apply_success_detected():

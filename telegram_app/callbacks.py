@@ -95,6 +95,16 @@ class TelegramCallbackRouter:
                 or self._selected_profile(principal) == profile_name
             )
 
+        if str(raw_data).startswith("qm:"):
+            parts = str(raw_data).split(":")
+            if (len(parts) != 4 or parts[1] not in self._profile_names() or not can_access_profile(parts[1])
+                    or (message.get("chat") or {}).get("type") != "private"):
+                await self._answer_callback_query(callback_id, "Вопрос недоступен.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id)
+            await self._answer_employer_question(chat_id, principal, parts[1], parts[2], parts[3])
+            return
+
         # These two callbacks are deliberately available to a regular user,
         # but only for that user's own profile and private bot chat.
         if raw_data.startswith(f"{CALLBACK_HH_REAUTH}:"):

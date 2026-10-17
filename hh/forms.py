@@ -1091,10 +1091,40 @@ async def try_auto_answer_questions(
     notes = []
     question_answers = []
 
+    import question_memory
+    memory_home = str(getattr(settings, "JOB_HUNTER_HOME", "") or "")
+
+    def pending(field, question_text, control):
+        return {"question_text": question_text, "control": control,
+                "options": [str(option.get("label", "")) for option in field.get("options") or []]}
+
     for field in fields:
         question_text = (field.get("question_text") or field.get("placeholder") or "").strip()
         input_type = (field.get("input_type") or "text").strip().lower()
         control = (field.get("control") or "").strip().lower()
+
+        # The user's own earlier answer to this exact question comes first (never a guess).
+        remembered = question_memory.lookup(memory_home, question_text) if memory_home and question_text else None
+        if remembered and control in ("radio", "checkbox", "select"):
+            indices = question_memory.choice_indices(remembered, field.get("options") or [])
+            if indices and (control == "checkbox" or len(indices) == 1):
+                answers.append({"field_id": field["field_id"], "control": control,
+                                "selected_indices": indices, "custom_text": None})
+                notes.append(format_question_answer_note(question_text, remembered["answer"], control=f"{control} [ваш ответ]"))
+                question_answers.append(question_answer_item(question_text, remembered["answer"], control=control,
+                                                             required=bool(field.get("required")),
+                                                             starred=bool(field.get("starred"))))
+                continue
+        elif remembered:
+            answer = remembered["answer"]
+            if field.get("max_length"):
+                answer = answer[: int(field.get("max_length"))]
+            answers.append({"field_id": field["field_id"], "answer": answer})
+            notes.append(format_question_answer_note(question_text, answer))
+            question_answers.append(question_answer_item(question_text, answer, control=control or input_type,
+                                                         required=bool(field.get("required")),
+                                                         starred=bool(field.get("starred"))))
+            continue
 
         if is_risky_question(question_text, settings=settings):
             short_question = truncate_text(question_text or "вопрос по резюме", 100)
@@ -1117,6 +1147,7 @@ async def try_auto_answer_questions(
                 "notes": [f"автоответ пропущен: рискованный вопрос: {short_question}"],
                 "question_answers": question_answers,
                 "risky_question": short_question,
+                "pending_question": pending(field, question_text or "вопрос по резюме", control or input_type),
             }
 
         # ---- choice fields (radio / checkbox / select) ----
@@ -1132,6 +1163,7 @@ async def try_auto_answer_questions(
                     "message": "Требуются доп. вопросы работодателя — пропускаем (нет уверенного выбора)",
                     "notes": [f"автоответ пропущен: {short_question}"],
                     "question_answers": question_answers,
+                    "pending_question": pending(field, question_text or "вопрос по резюме", control),
                 }
             selected = choice["selected"]
             selected_indices = [s["index"] for s in selected]
@@ -1176,6 +1208,7 @@ async def try_auto_answer_questions(
                     "message": "Требуются доп. вопросы работодателя — пропускаем (не найден ответ по зарплате)",
                     "notes": ["автоответ пропущен: в резюме нет явного зарплатного ориентира"],
                     "question_answers": question_answers,
+                    "pending_question": pending(field, question_text or "зарплатные ожидания", control or input_type),
                 }
             answer_question = "зарплатные ожидания"
             notes.append(format_question_answer_note(answer_question, str(answer)))
@@ -1189,6 +1222,7 @@ async def try_auto_answer_questions(
                     "message": "Требуются доп. вопросы работодателя — пропускаем (нет уверенного ответа)",
                     "notes": [f"автоответ пропущен: {short_question}"],
                     "question_answers": question_answers,
+                    "pending_question": pending(field, question_text or "вопрос по резюме", control or input_type),
                 }
             answer_question = question_text or "вопрос по резюме"
             notes.append(format_question_answer_note(answer_question, str(answer)))

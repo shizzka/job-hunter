@@ -881,6 +881,12 @@ async def do_manual_apply_token(token: str) -> dict:
 
         message = apply_message or "unknown apply failure"
         finish("uncertain" if apply_result.get("uncertain") else "failed", message)
+        if apply_result.get("pending_question") and not apply_result.get("uncertain"):
+            if await _notify_employer_question(vacancy, evaluation, details, score, reason,
+                                               apply_result["pending_question"],
+                                               profile_name=item.get("profile_name") or profile_mod.active().name):
+                print(f"❓ Вопрос работодателя отправлен пользователю: {message}")
+                return {"ok": False, "uncertain": False, "message": message, "question_asked": True}
         await notify_needs_manual(
             vacancy,
             score,
@@ -946,6 +952,46 @@ async def do_manual_apply_token(token: str) -> dict:
 
 class _HHApplyUncertain(Exception):
     """Stop consuming a preliminary HH result after its receipt changes."""
+
+
+async def _notify_employer_question(vacancy: dict, evaluation: dict, details: str, score, reason: str,
+                                    pending: dict, *, profile_name: str) -> bool:
+    """Ask the user the employer's question the bot could not answer; the answer is remembered
+    and the application is retried. Returns False when no card could be created."""
+    import html as _html
+    import question_memory
+    try:
+        candidate = manual_apply_queue.create_candidate(vacancy, evaluation, details,
+                                                        profile_name=profile_name, allow_ai_apply=True)
+        token = str(candidate.get("token") or "")
+        if not token:
+            return False
+        options = [label for label in pending.get("options") or [] if str(label).strip()]
+        qid = question_memory.create_pending(
+            config.JOB_HUNTER_HOME, question=str(pending.get("question_text") or "вопрос работодателя"),
+            control=str(pending.get("control") or ""), options=options, token=token, profile_name=profile_name,
+            vacancy_title=str(vacancy.get("title") or ""), company=str(vacancy.get("company") or ""),
+            url=str(vacancy.get("url") or ""))
+    except Exception as exc:
+        log.warning("employer question card failed: %s", type(exc).__name__)
+        return False
+    choice = str(pending.get("control") or "") in {"radio", "checkbox", "select"} and options
+    rows = []
+    if choice:
+        for index, label in enumerate(options[:question_memory.MAX_OPTIONS_IN_CARD]):
+            rows.append([{"text": str(label)[:60], "callback_data": f"qm:{profile_name}:{qid}:{index}"}])
+    rows.append([{"text": "✏️ Ответить своими словами" if choice else "✏️ Ответить",
+                  "callback_data": f"qm:{profile_name}:{qid}:text"}])
+    if vacancy.get("url"):
+        rows.append([{"text": "Открыть вакансию", "url": str(vacancy.get("url"))}])
+    text = (
+        "❓ <b>Работодатель спрашивает</b>\n\n"
+        f"<b>{_html.escape(str(vacancy.get('title') or '—'))}</b> · {_html.escape(str(vacancy.get('company') or '—'))}\n\n"
+        f"«{_html.escape(str(pending.get('question_text') or ''))}»\n\n"
+        + ("Выберите ответ кнопкой" if choice else "Нажмите «Ответить» и пришлите ответ сообщением")
+        + " — я запомню его для таких вопросов и сразу откликнусь снова."
+    )
+    return bool(await notifier.send_message_with_markup(text, {"inline_keyboard": rows}))
 
 
 async def _notify_hh_delivery_or_uncertain(vacancy, score, reason, result, note):
@@ -2398,6 +2444,10 @@ async def do_search(dry_run: bool = False) -> dict:
                         resume_variant=hh_resume_variant,
                     )
                     log.info("  Skipped: employer requires extra questions")
+                    if apply_result.get("pending_question") and await receipt.wait(_notify_employer_question(
+                            v, cover_evaluation, details, score, reason, apply_result["pending_question"],
+                            profile_name=profile_mod.active().name)):
+                        continue
                     await receipt.wait(notify_needs_manual(
                         v,
                         score,

@@ -771,6 +771,56 @@ class TelegramBot(
         text += "\n\nОтветьте сообщением. Ничего не сохранится без подтверждения."
         await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
 
+    async def _answer_employer_question(self, chat_id: int, principal: dict, profile_name: str, qid: str,
+                                        choice: str, text: str | None = None) -> None:
+        """A button/message answer to «❓ Работодатель спрашивает»: remember it and retry the application."""
+        import question_memory
+        if profile_name not in self._profile_names() or (
+                principal.get("role") != ROLE_ADMIN and self._selected_profile(principal) != profile_name):
+            await self._send_text(chat_id, "Вопрос недоступен.")
+            return
+        home = self._profile(profile_name).home_dir
+        pending = question_memory.peek_pending(home, qid)
+        if not pending:
+            await self._send_text(chat_id, "Этот вопрос уже отвечен или устарел.")
+            return
+        if choice == "text" and text is None:
+            self._set_search_settings_state(principal["user_id"], question_answer={"profile": profile_name, "qid": qid})
+            await self._send_text(chat_id, "✏️ Пришлите ответ одним сообщением — я запомню его для этого вопроса.\n"
+                                           f"Вопрос: «{html.escape(pending['question'])}»")
+            return
+        labels: list[str] = []
+        if text is not None:
+            answer = " ".join(str(text).split())
+        else:
+            try:
+                answer = pending["options"][int(choice)]
+                labels = [answer]
+            except (ValueError, IndexError, KeyError):
+                await self._send_text(chat_id, "Не понял выбор — нажмите кнопку ещё раз.")
+                return
+        if not answer:
+            await self._send_text(chat_id, "Пустой ответ — пришлите текст.")
+            return
+        question_memory.remember(home, pending["question"], answer, control=pending.get("control", ""), labels=labels)
+        question_memory.pop_pending(home, qid)
+        self._clear_search_settings_state(principal["user_id"], "question_answer")
+        await self._send_text(chat_id, html.escape(
+            f"✅ Запомнил: «{pending['question']}» → «{answer}». Откликаюсь на «{pending.get('vacancy_title') or 'вакансию'}» снова…"))
+        await self._start_manual_ai_apply(chat_id, principal, profile_name=profile_name, token=pending["token"])
+
+    async def _accept_employer_question_text(self, chat_id: int, principal: dict, text: str) -> bool:
+        waiting = self._search_settings_state(principal["user_id"]).get("question_answer") or {}
+        if not waiting or not text or text.startswith("/") or _is_menu_button_text(text):
+            return False
+        if text.strip().casefold() in {"отмена", "cancel"}:
+            self._clear_search_settings_state(principal["user_id"], "question_answer")
+            await self._send_text(chat_id, "Ответ отменён. Вопрос остался в чате — можно ответить позже.")
+            return True
+        await self._answer_employer_question(chat_id, principal, waiting.get("profile", ""), waiting.get("qid", ""),
+                                             "text", text=text)
+        return True
+
     @staticmethod
     def _full_facts_document(profile_dir: str) -> str:
         """All of the profile's knowledge/*.md, unabridged, for «📋 Мои факты» as a file."""
@@ -2195,6 +2245,9 @@ class TelegramBot(
             return
 
         if await self._accept_form_answer(chat_id, principal, message):
+            return
+
+        if await self._accept_employer_question_text(chat_id, principal, text):
             return
 
         if await self._accept_direction_input(chat_id, principal, text):

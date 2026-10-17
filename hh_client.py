@@ -381,7 +381,7 @@ class HHClient:
                 'HH_AUTO_ANSWER_SIMPLE_QUESTIONS', 'HH_AUTO_ANSWER_MAX_QUESTIONS',
                 'HH_AUTO_ANSWER_MAX_CHARS', 'HH_AUTO_ANSWER_SALARY_TEXT',
                 'HH_AUTO_ANSWER_SALARY_NUMBER', 'HH_AUTO_ANSWER_USE_LLM',
-                'HH_QUESTION_MODEL', 'HH_CHOICE_MODEL', 'LLM_MODEL', 'VACANCY_FILTER_POLICY')})
+                'HH_QUESTION_MODEL', 'HH_CHOICE_MODEL', 'LLM_MODEL', 'VACANCY_FILTER_POLICY', 'JOB_HUNTER_HOME')})
             snapshot = capture_candidate(resume, settings=captured,
                 profile_builder=_build_profile_note_block, facts_builder=_build_facts_block,
                 salary_builder=_build_salary_rule_block, knowledge_builder=_build_knowledge_base_block)
