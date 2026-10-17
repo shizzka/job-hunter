@@ -26,6 +26,7 @@ SENTRY_MAX_BODY = 64 * 1024
 TARGETADS_MAX_BODY = 4 * 1024
 _HH_REGION = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*\.hh\.ru', re.ASCII)
 _ENVELOPE = re.compile(r'/api/[0-9]+/envelope/', re.ASCII)
+_RESUME_HASH = re.compile(r'[0-9a-f]{38}', re.ASCII)
 
 
 def enabled():
@@ -33,11 +34,34 @@ def enabled():
     return os.getenv('HH_PASSIVE_TELEMETRY_ENABLED', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
+def _passive_read(request):
+    """Exact read seen right after a confirmed delivery: the applicant resume page.
+
+    Carries only the resume hash, no vacancy field, so it cannot submit a response.
+    """
+    target = urlsplit(request.url)
+    if (target.scheme != 'https' or target.username is not None or target.password is not None
+            or target.port not in {None, 443} or target.fragment):
+        return None
+    host = target.hostname or ''
+    if target.path != '/applicant/resume' or not (host == 'hh.ru' or _HH_REGION.fullmatch(host)):
+        return None
+    pairs = parse_qsl(target.query, keep_blank_values=True, encoding='utf-8', errors='strict')
+    if len(pairs) != 1 or pairs[0][0] != 'resume' or not _RESUME_HASH.fullmatch(pairs[0][1]):
+        return None
+    body = getattr(request, 'post_data_buffer', None)
+    if body is None:
+        body = request.post_data
+    return 'passive_read' if not body else None
+
+
 def classify_request(request):
     """Return passive_telemetry only on a complete, bounded wire signature."""
     if not enabled():
         return None
     try:
+        if request.method.upper() == 'GET':
+            return _passive_read(request)
         if request.method.upper() != 'POST':
             return None
         target = urlsplit(request.url)

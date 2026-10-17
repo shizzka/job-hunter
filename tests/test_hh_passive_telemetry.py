@@ -219,3 +219,29 @@ def test_anatskytics_negotiations_list_fields_seen_live_are_passive():
     event.headers = {'content-type': 'application/x-www-form-urlencoded'}
     event.post_data = ''
     assert telemetry.classify_request(event)
+
+
+@pytest.mark.parametrize('url,allowed', [
+    ('https://hh.ru/applicant/resume?resume=' + 'a' * 38, True),
+    ('https://spb.hh.ru/applicant/resume?resume=' + '0f' * 19, True),
+    ('https://hh.ru/applicant/resume?resume=' + 'a' * 38 + '&vacancyId=1', False),
+    ('https://hh.ru/applicant/resume?resume=short', False),
+    ('https://hh.ru/applicant/resume', False),
+    ('https://hh.ru/applicant/vacancy_response?resume=' + 'a' * 38, False),
+    ('http://hh.ru/applicant/resume?resume=' + 'a' * 38, False),
+    ('https://evilhh.ru/applicant/resume?resume=' + 'a' * 38, False),
+])
+def test_resume_page_get_after_delivery_is_passive_read(url, allowed):
+    event = request(None, url)
+    event.method = 'GET'
+    event.headers = {}
+    event.post_data = None
+    assert bool(telemetry.classify_request(event)) is allowed
+
+
+def test_resume_page_post_is_not_passive():
+    event = request(None, 'https://hh.ru/applicant/resume?resume=' + 'a' * 38)
+    event.method = 'POST'
+    event.headers = {'content-type': 'application/x-www-form-urlencoded'}
+    event.post_data = ''
+    assert not telemetry.classify_request(event)
