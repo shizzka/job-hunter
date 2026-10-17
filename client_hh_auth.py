@@ -746,6 +746,7 @@ async def _drive_hh_auth_step(
     timeout_s: int,
     poll_sec: float,
     auth_login: str = "",
+    remember: dict | None = None,
 ) -> dict:
     page = client._page  # noqa: SLF001 - auth flow owns the page lifecycle
     if page is None or page.is_closed():
@@ -963,6 +964,8 @@ async def _drive_hh_auth_step(
                 timeout_s=wait_s,
                 poll_sec=poll_sec,
             )
+            if login and remember is not None:
+                remember["login"] = login  # one answer serves the whole attempt
         if login and not await current_prompt("login"):
             return stale
         if login and "@" in login and await _first_visible_locator(page, HH_AUTH_EMAIL_INPUT_SELECTORS) is None:
@@ -1011,6 +1014,8 @@ async def _drive_hh_auth_step(
                 timeout_s=wait_s,
                 poll_sec=poll_sec,
             )
+            if login and remember is not None:
+                remember["login"] = login
         if login and not await current_prompt("login"):
             return stale
         if login and "@" in login and await _first_visible_locator(page, HH_AUTH_EMAIL_INPUT_SELECTORS) is None:
@@ -1172,6 +1177,7 @@ async def run_hh_auth_capture(
         )
 
         deadline = time.monotonic() + max(1, timeout_sec)
+        remembered_login: dict = {}
         stalled_submit_count = 0
         captcha_notified = False
         blocked_notified = False
@@ -1222,7 +1228,8 @@ async def run_hh_auth_capture(
                 profile_name,
                 timeout_s=remaining,
                 poll_sec=max(0.5, float(poll_sec or 1)),
-                auth_login=auth_login,
+                auth_login=auth_login or remembered_login.get("login", ""),
+                remember=remembered_login,
             )
             status = str(step.get("status") or HH_AUTH_STEP_IDLE)
             if status in (HH_AUTH_STEP_SUBMITTED, HH_AUTH_STEP_PROGRESS):
