@@ -50,7 +50,7 @@ def test_parse_queries_limits():
     with pytest.raises(m.MarketResearchError):
         m.parse_queries("")
     with pytest.raises(m.MarketResearchError):
-        m.parse_queries("\n".join(f"q{i}" for i in range(11)))
+        m.parse_queries("\n".join(f"q{i}" for i in range(21)))
 
 
 def test_strict_match_uses_word_stems():

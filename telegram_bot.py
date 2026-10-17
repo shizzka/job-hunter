@@ -1082,6 +1082,14 @@ class TelegramBot(
         state = self._search_settings_state(principal["user_id"])
         input_kind = state.get("search_input")
         if input_kind == "market":
+            import market_research
+            try:
+                market_research.parse_queries(text)
+            except market_research.MarketResearchError as exc:
+                # Keep waiting for titles: the next message is a corrected list, not a command.
+                await self._send_text(chat_id, f"❌ {exc} Отправьте список ещё раз или «Отмена».",
+                                      reply_markup=self._menu_reply_markup(principal))
+                return True
             self._clear_search_settings_state(principal["user_id"], "search_input")
             await self._start_market_research(chat_id, principal, text)
             return True
@@ -2771,7 +2779,7 @@ class TelegramBot(
             await self._send_text(
                 chat_id,
                 "📈 Рынок вакансий: соберу свежую статистику hh.ru по названиям вакансий.\n\n"
-                "Отправьте названия, по одному в строке (до 10). Например:\n"
+                "Отправьте названия, по одному в строке (до 20). Например:\n"
                 "QA lead\nРуководитель отдела тестирования\nМенеджер по подбору персонала\n\n"
                 "Ищу по всей России, в названии вакансии. Откликов и изменений не делаю — только чтение. "
                 "Для отмены: Отмена.",

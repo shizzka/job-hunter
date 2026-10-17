@@ -16,7 +16,7 @@ from datetime import datetime
 
 from hh.observation import initial_state
 
-MAX_QUERIES = 10
+MAX_QUERIES = 20
 MAX_PAGES = 20          # 20 × 50 = up to 1000 vacancies per title
 PAGE_SIZE = 50
 PAUSE_SECONDS = 2.0
