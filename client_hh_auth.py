@@ -225,6 +225,7 @@ HH_AUTH_CODE_INPUT_SELECTORS = (
 )
 
 HH_AUTH_CONTINUE_SELECTORS = (
+    "button:has-text('Дальше')",
     "button:has-text('Далее')",
     "button:has-text('Продолжить')",
     "button:has-text('Получить код')",
