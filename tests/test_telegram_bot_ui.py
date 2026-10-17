@@ -79,7 +79,7 @@ def test_notification_keeps_uncertain_separate_from_unsent(monkeypatch):
 
 # Exact screen membership is the owner-approved tree; overview/list text appears on entry.
 COMMON_SCREENS = {
-    ui.MENU_MAIN: ["🔎 Поиск", "🧪 Тестовый прогон", "📋 Отклики", "🎯 Мой поиск", "🔐 Мой hh", "🧠 Обо мне", "📊 Мониторинг", "❓ Помощь"],
+    ui.MENU_MAIN: ["🔎 Поиск", "🧪 Тестовый прогон", "📋 Отклики", "🎯 Мой поиск", "🔐 Мой hh", "🧠 Обо мне", "🎯 Направления", "📊 Мониторинг", "❓ Помощь"],
     ui.MENU_RESPONSES: ["📋 На рассмотрении", "📨 Отклики HH", "📝 Анкеты", "🤖 Ответ ИИ в чат"],
     ui.MENU_SEARCH: ["✏️ Изменить запросы", "✨ Предложить ИИ", "✅ Сохранить предложенное", "⚙️ Условия поиска", "🚫 Компании", "🛡 Режим откликов", "⏰ Расписание"],
     ui.MENU_SEARCH_CONDITIONS: ["👤 Опыт", "💰 Зарплата от", "💵 Только с зарплатой", "🏠 Только удалёнка"],

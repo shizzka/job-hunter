@@ -1,5 +1,7 @@
 """Read resume server HTML through the authenticated context, without site JS."""
 import re
+import hashlib
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
@@ -25,6 +27,11 @@ class ResumeHTML(HTMLParser):
         self.stack, self.nodes = [], []
         self.catalog_marker = False
         self.challenge = False
+        self.source = ""
+
+    def feed(self, data):
+        self.source += data
+        super().feed(data)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -131,7 +138,8 @@ async def get_resume_ids_readonly(session):
         except ValueError:
             continue
         title = " ".join(" ".join(node["text"]).split())
-        records.setdefault(match[1], {"id": match[1], "title": title, "url": href})
+        records.setdefault(match[1], {"id": match[1], "title": title, "url": href,
+                                       "hh_resume_numeric_id": extract_resume_numeric_id(parser.source, match[1])})
     return list(records.values())
 
 
@@ -151,4 +159,67 @@ async def download_resume_readonly(session, resume):
     if not title or not sections:
         raise ValueError("HH вернул пустое резюме или неизвестную страницу; локальный файл сохранён.")
     raw = f"# {title}\n\n" + "\n\n".join(f"## {name}\n{text}" for name, text in sections.items())
-    return {"title": title, "sections": sections, "raw": raw}
+    return {"title": title, "sections": sections, "raw": raw,
+            "hh_resume_hash": resume_id,
+            "hh_resume_numeric_id": extract_resume_numeric_id(parser.source, resume_id),
+            "text_sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+            "fetched_at": datetime.now(timezone.utc).isoformat()}
+
+
+def extract_resume_numeric_id(html, resume_hash):
+    """Use explicit hash↔numeric mappings in known resume state containers only.
+
+    Vacancy IDs, user IDs and arbitrary nested ``id`` fields are never candidates.
+    Missing/contradictory mappings stay unknown; titles never establish identity.
+    """
+    from hh.observation import initial_state, _number
+    try:
+        state = initial_state(html)
+    except ValueError:
+        return None
+    if not isinstance(state, dict):
+        return None
+    candidates = set()
+    numeric_hashes = {}
+    containers = []
+    for key in ("resume", "resumeView", "resumeData", "applicantResume", "resumes", "applicantResumes"):
+        container = state.get(key)
+        if not isinstance(container, (dict, list)):
+            continue
+        containers.append(container)
+        if isinstance(container, dict):
+            for child in ("resume", "resumes", "resumeList"):
+                if isinstance(container.get(child), (dict, list)):
+                    containers.append(container[child])
+    for container in containers:
+        items = [(None, container)] if isinstance(container, dict) else []
+        if isinstance(container, dict):
+            items += list(container.items())
+        else:
+            items += list(enumerate(container))
+        for key, value in items:
+            if not isinstance(value, dict):
+                continue
+            hashes = {value.get(field) for field in ("hash", "resumeHash", "@hash")
+                      if isinstance(value.get(field), str) and value[field]}
+            # Some resume-page states use id for the URL hash and resumeId for
+            # the numeric database identity. Only that explicit pair is accepted.
+            identity_hash = value.get("id")
+            if (isinstance(identity_hash, str) and _number(identity_hash) is None
+                    and _number(value.get("resumeId")) is not None):
+                hashes.add(identity_hash)
+            if resume_hash in hashes and hashes != {resume_hash}:
+                return None
+            numbers = {_number(value.get(field)) for field in ("id", "resumeId", "@id")}
+            if isinstance(container, dict) and key is not None:
+                numbers.add(_number(key))
+            numbers = {number for number in numbers if number is not None and number > 0}
+            for number in numbers:
+                numeric_hashes.setdefault(number, set()).update(hashes)
+            if hashes == {resume_hash}:
+                candidates.update(numbers)
+    if len(candidates) == 1:
+        candidate = next(iter(candidates))
+        if numeric_hashes[candidate] == {resume_hash}:
+            return candidate
+    return None

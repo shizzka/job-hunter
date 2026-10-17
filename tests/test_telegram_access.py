@@ -33,6 +33,7 @@ def user_bot(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "TELEGRAM_BOT_STATE_FILE", str(tmp_path / "bot-state.json"))
     bot = telegram_bot.TelegramBot("qa")
     monkeypatch.setattr(bot, "_selected_profile", lambda principal: "qa")
+    monkeypatch.setattr(bot, "_profile", lambda name: SimpleNamespace(home_dir=str(tmp_path)))
     monkeypatch.setattr(bot, "_active_command", lambda profile: None)
     monkeypatch.setattr(bot, "_has_active_command", lambda profile: False)
     monkeypatch.setattr(bot, "_menu_reply_markup", lambda *a, **kw: {})
@@ -47,6 +48,7 @@ def user_bot(tmp_path, monkeypatch):
 
 def test_only_agreed_commands_are_opened():
     assert ui.ADMIN_ONLY_COMMANDS == {
+        "/direction_stats", "/direction_csv",
         "/menu_llm", "/llm_balance", "/llm_test", "/profiles", "/profile", "/users", "/grant", "/revoke",
         "/digest", "/backfill", "/daemon_on", "/daemon_off", "/ai_limits", "/ai_grant", "/ai_reset",
         "/clients", "/client_approve", "/client_reject", "/client_hh_auth", "/menu_admin", "/cancel_active", "/diagnostics",

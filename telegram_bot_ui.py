@@ -33,6 +33,7 @@ BUTTON_BLACKLIST = "🚫 Компании"
 BUTTON_BLACKLIST_ADD = "➕ В чёрный список"
 BUTTON_BLACKLIST_REMOVE = "➖ Разрешить компанию"
 BUTTON_SEARCH_SETTINGS = "🎯 Мой поиск"
+BUTTON_DIRECTIONS = "🎯 Направления"
 BUTTON_REVIEW = "📋 На рассмотрении"
 BUTTON_SEARCH_EDIT = "✏️ Изменить запросы"
 BUTTON_SEARCH_SUGGEST = "✨ Предложить ИИ"
@@ -371,7 +372,12 @@ LEGACY_BUTTON_MAP = {
     "Выполняется...": "/busy",
     "Остановить": "/cancel_active",
 }
+from telegram_app.directions import TelegramDirections
+ADMIN_BUTTON_MAP.update(TelegramDirections._direction_button_commands())
+USER_BUTTON_MAP.update(TelegramDirections._direction_button_commands())
+
 ADMIN_ONLY_COMMANDS = {
+    "/direction_stats", "/direction_csv",
     "/menu_llm", "/llm_balance", "/llm_test",
     "/profiles", "/profile", "/users", "/grant", "/revoke",
     "/digest", "/backfill",
@@ -588,7 +594,7 @@ def reply_menu_layouts(role: str) -> dict[str, list[list[str]]]:
     """Single source of truth for persistent action buttons and their owners."""
     layouts = {
         MENU_MAIN: [[BUTTON_SEARCH, BUTTON_DRYRUN], [BUTTON_RESPONSES, BUTTON_SEARCH_SETTINGS],
-                    [BUTTON_HH, BUTTON_CANDIDATE_PROFILE], [BUTTON_MENU_MONITOR], [BUTTON_HELP]],
+                    [BUTTON_HH, BUTTON_CANDIDATE_PROFILE], [BUTTON_DIRECTIONS], [BUTTON_MENU_MONITOR], [BUTTON_HELP]],
         MENU_RESPONSES: [[BUTTON_REVIEW, BUTTON_HH_RESPONSES], [BUTTON_FORMS, BUTTON_CHAT_AI]],
         MENU_SEARCH: [[BUTTON_SEARCH_EDIT, BUTTON_SEARCH_SUGGEST], [BUTTON_SEARCH_USE_DRAFT],
                       [BUTTON_SEARCH_CONDITIONS, BUTTON_BLACKLIST],
@@ -920,6 +926,7 @@ def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default") ->
         "",
         "⚡ Основные действия доступны через кнопки меню.",
         "• «Мой поиск»: запросы, условия, компании, режим откликов и расписание",
+        "• «Направления»: выбор резюме, черновики запросов и варианты single/A/B — /directions",
         "• «Мониторинг»: статус, статистика, прогоны, инвайты",
         "• Сводка запуска: /log или /log run_id; текстовый лог: /raw_log",
         "• Счётчик HH: кнопка «Отклики HH» или команда /hh_responses",

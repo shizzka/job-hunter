@@ -1,0 +1,479 @@
+"""No network: draft, profile ownership and active search direction integration."""
+import asyncio
+import copy
+from functools import wraps
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+import directions
+import search_query_suggester
+from telegram_app.directions import TelegramDirections, parse_selection
+
+
+def run_async(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        return asyncio.run(fn(*args, **kwargs))
+    return wrapped
+
+
+def make_direction(home, name="qa", *, strategy="ab"):
+    value = {"name": name, "title": name.upper(), "filter_policy": "qa", "search_queries": ["QA Engineer"],
+             "relevant_keywords": ["qa"], "exclude_keywords": ["support"], "selection_strategy": strategy,
+             "variants": [{"hh_resume_hash": f"hash{i}", "hh_resume_numeric_id": i, "title": f"Resume {i}"} for i in (1, 2)]}
+    return directions.save_direction(home, value, texts={"hash1": "First resume", "hash2": "Second resume"})
+
+
+class Harness(TelegramDirections):
+    def __init__(self, tmp_path):
+        self.selected = "client_1"
+        self.profiles = {name: SimpleNamespace(home_dir=str(tmp_path / name), name=name,
+                        hh=SimpleNamespace(cookies_file=str(tmp_path / name / "hh_cookies.json")))
+                         for name in ("client_1", "client_2")}
+        self.sent = []
+        self.auth_calls = []
+        self.ai_allowed = True
+        self.command = None
+        self.downloads = []
+
+    def _selected_profile(self, principal):
+        return principal.get("profile") if principal.get("role") != "admin" else self.selected
+
+    def _profile(self, name):
+        return self.profiles[name]
+
+    def _set_selected_menu(self, user_id, menu):
+        pass
+
+    async def _send_text(self, chat_id, text, **kwargs):
+        self.sent.append((chat_id, text, kwargs))
+
+    def _reload_profile_daemon(self, name):
+        return False
+
+    def _has_active_command(self, name):
+        return self.command is not None
+
+    async def _send_busy_status(self, chat_id, principal, *, profile_name):
+        await self._send_text(chat_id, "Профиль занят: " + profile_name)
+
+    def _mark_active_command(self, **kwargs):
+        self.command = SimpleNamespace(task=None)
+        return self.command
+
+    def _create_active_task(self, command, runner):
+        return asyncio.create_task(runner())
+
+    def _clear_active_command(self, name):
+        self.command = None
+
+    async def _authorize_ai_usage(self, chat_id, principal, **kwargs):
+        self.auth_calls.append(kwargs)
+        return self.ai_allowed
+
+    async def _direction_download(self, profile, items, *, chat_id):
+        self.downloads.append((profile.name, items))
+        return [{"hh_resume_hash": str(item.get("id") or item["hh_resume_hash"]),
+                 "hh_resume_numeric_id": None, "title": item.get("title", "Resume"), "raw": "Downloaded resume"} for item in items]
+
+    async def _direction_load_catalog(self, profile, *, chat_id):
+        import client_hh_auth
+        return client_hh_auth.load_hh_resume_catalog(profile.name)
+
+
+USER = {"user_id": 1, "role": "user", "profile": "client_1"}
+ADMIN = {"user_id": 99, "role": "admin"}
+
+
+@pytest.fixture
+def bot(tmp_path):
+    return Harness(tmp_path)
+
+
+@run_async
+async def test_multi_select_creation_has_no_writes_until_save_and_cancel_drops_texts(bot, monkeypatch):
+    monkeypatch.setattr("client_hh_auth.load_hh_resume_catalog", lambda name: [{"id": "one", "title": "One"}, {"id": "two", "title": "Two"}])
+    async def suggest(**kwargs):
+        return {"title": "QA", "filter_policy": "qa", "search_queries": ["QA Engineer"], "relevant_keywords": ["qa"], "exclude_keywords": []}
+    monkeypatch.setattr(search_query_suggester, "suggest_direction", suggest)
+    home = Path(bot.profiles["client_1"].home_dir)
+    await bot._dispatch_direction(1, USER, "/direction_new", "")
+    await bot.command.task
+    assert await bot._accept_direction_input(1, USER, "1, 2 1")
+    await bot.command.task
+    assert not home.exists()
+    state = bot._direction_sessions()[1]
+    assert [v["hh_resume_hash"] for v in state["draft"]["variants"]] == ["one", "two"]
+    assert [c.get("check_only", False) for c in bot.auth_calls] == [True, False]
+    await bot._dispatch_direction(1, USER, "/direction_cancel", "")
+    assert 1 not in bot._direction_sessions() and not home.exists()
+    await bot._dispatch_direction(1, USER, "/direction_save", "")
+    assert not home.exists()
+
+
+@run_async
+async def test_save_new_direction_persists_only_own_profile_and_preserves_unknown_numeric_id(bot):
+    state = bot._direction_bind(USER, mode="draft", draft={"name": "new", "title": "New", "filter_policy": "generic",
+        "search_queries": ["Electric engineer"], "relevant_keywords": [], "exclude_keywords": [],
+        "variants": [{"hh_resume_hash": "one", "title": "One", "hh_resume_numeric_id": None}]}, texts={"one": "Text"})
+    assert not Path(state["home_dir"]).exists()
+    await bot._dispatch_direction(1, USER, "/direction_save", "")
+    saved = directions.active_direction(state["home_dir"])
+    assert saved["name"] == "new" and saved["variants"][0]["hh_resume_numeric_id"] is None
+    assert Path(saved["variants"][0]["text_file"]).read_text() == "Text"
+    assert not Path(bot.profiles["client_2"].home_dir).exists()
+
+
+@run_async
+async def test_activation_and_variant_selection_require_confirmation(bot):
+    home = bot.profiles["client_1"].home_dir
+    make_direction(home)
+    make_direction(home, "other")
+    directions.set_active_direction(home, "qa")
+    await bot._dispatch_direction(1, USER, "/direction_switch", "")
+    await bot._accept_direction_input(1, USER, "1")  # Alphabetical 'other'
+    assert directions.active_direction(home)["name"] == "qa"
+    await bot._dispatch_direction(1, USER, "/direction_save", "")
+    assert directions.active_direction(home)["name"] == "other"
+    await bot._dispatch_direction(1, USER, "/search_resume", "")
+    await bot._accept_direction_input(1, USER, "2")
+    assert directions.active_direction(home)["selection_strategy"] == "ab"
+    await bot._dispatch_direction(1, USER, "/direction_save", "")
+    selected = directions.active_direction(home)
+    assert selected["selection_strategy"] == "single"
+    variant = directions.select_variant(selected, "vacancy")
+    assert variant["hh_resume_hash"] == "hash2"
+    assert Path(variant["text_file"]).read_text() == "Second resume"
+
+
+@run_async
+@pytest.mark.parametrize("operation", ["pause", "remove", "resume"])
+async def test_variant_updates_and_cancel_do_not_mutate_direction(bot, operation):
+    home = bot.profiles["client_1"].home_dir
+    original = make_direction(home)
+    directions.set_active_direction(home, "qa")
+    await bot._dispatch_direction(1, USER, "/direction_" + operation, "")
+    await bot._accept_direction_input(1, USER, "2")
+    assert directions.active_direction(home) == original
+    await bot._dispatch_direction(1, USER, "/direction_cancel", "")
+    assert directions.active_direction(home) == original
+
+
+@run_async
+async def test_stale_admin_profile_and_direction_change_reject_save(bot):
+    home = bot.profiles["client_1"].home_dir
+    original = make_direction(home)
+    directions.set_active_direction(home, "qa")
+    await bot._dispatch_direction(99, ADMIN, "/direction_single", "")
+    bot.selected = "client_2"
+    await bot._dispatch_direction(99, ADMIN, "/direction_save", "")
+    assert directions.active_direction(home) == original
+    assert not Path(bot.profiles["client_2"].home_dir).exists()
+    bot.selected = "client_1"
+    await bot._dispatch_direction(99, ADMIN, "/direction_single", "")
+    changed = copy.deepcopy(original)
+    changed["title"] = "Changed independently"
+    directions.save_direction(home, changed)
+    await bot._dispatch_direction(99, ADMIN, "/direction_save", "")
+    assert directions.active_direction(home)["selection_strategy"] == "ab"
+    assert "Устаревший" in bot.sent[-1][1]
+
+
+@run_async
+async def test_active_query_edit_saves_direction_only_after_confirmation(bot):
+    home = bot.profiles["client_1"].home_dir
+    original = make_direction(home)
+    directions.set_active_direction(home, "qa")
+    await bot._dispatch_direction(1, USER, "/search_edit", "")
+    await bot._accept_direction_input(1, USER, "Manual QA\nAPI QA")
+    assert directions.active_direction(home) == original
+    await bot._dispatch_direction(1, USER, "/search_use_draft", "")
+    assert directions.active_direction(home)["search_queries"] == ["Manual QA", "API QA"]
+    assert not (Path(home) / "profile.env").exists()
+
+
+@run_async
+async def test_active_suggest_uses_all_active_variant_texts_and_authorizes(bot, monkeypatch):
+    home = bot.profiles["client_1"].home_dir
+    original = make_direction(home)
+    directions.set_active_direction(home, "qa")
+    received = []
+    async def suggest(**kwargs):
+        received.append(kwargs)
+        return {"title": "Suggested", "filter_policy": "qa", "search_queries": ["Manual QA"], "relevant_keywords": [], "exclude_keywords": []}
+    monkeypatch.setattr(search_query_suggester, "suggest_direction", suggest)
+    await bot._dispatch_direction(1, USER, "/search_suggest", "")
+    await bot.command.task
+    assert [r["raw"] for r in received[0]["resumes"]] == ["First resume", "Second resume"]
+    assert len(bot.auth_calls) == 2
+    assert directions.active_direction(home) == original
+    await bot._dispatch_direction(1, USER, "/search_use_draft", "")
+    assert directions.active_direction(home)["search_queries"] == ["Manual QA"]
+
+
+@run_async
+async def test_ai_denial_prevents_download_and_analysis(bot, monkeypatch):
+    home = bot.profiles["client_1"].home_dir
+    make_direction(home)
+    directions.set_active_direction(home, "qa")
+    bot.ai_allowed = False
+    async def fail(**kwargs):
+        pytest.fail("AI was invoked without authorization")
+    monkeypatch.setattr(search_query_suggester, "suggest_direction", fail)
+    await bot._dispatch_direction(1, USER, "/search_suggest", "")
+    assert not bot.downloads and bot.command is None
+    assert len(bot.auth_calls) == 1
+
+
+@run_async
+async def test_refresh_texts_and_application_mode_are_drafts(bot):
+    home = bot.profiles["client_1"].home_dir
+    original = make_direction(home)
+    directions.set_active_direction(home, "qa")
+    await bot._dispatch_direction(1, USER, "/direction_refresh", "")
+    await bot.command.task
+    assert directions.active_direction(home) == original
+    assert all(Path(v["text_file"]).read_text() != "Downloaded resume" for v in original["variants"])
+    await bot._dispatch_direction(1, USER, "/direction_save", "")
+    updated = directions.active_direction(home)
+    assert all(Path(v["text_file"]).read_text() == "Downloaded resume" for v in updated["variants"])
+    await bot._dispatch_direction(1, USER, "/search_application_preview", "")
+    assert "application_mode" not in directions.active_direction(home)
+    await bot._dispatch_direction(1, USER, "/direction_save", "")
+    assert directions.active_direction(home)["application_mode"] == "preview"
+
+
+def test_selection_rejects_zero_negative_out_of_bounds_and_accepts_unique_multi():
+    assert parse_selection("1, 3 1", 3) == [0, 2]
+    for text in ("0", "-1", "4", "a", ""):
+        with pytest.raises(ValueError):
+            parse_selection(text, 3)
+
+
+@run_async
+async def test_analyzer_validates_generic_direction_and_prompt_data(monkeypatch):
+    calls = []
+    async def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"title":"Электромонтаж", "filter_policy":"generic", "search_queries":["Электрик", "Электромонтажник"], "relevant_keywords":["электрик"], "exclude_keywords":["qa"]}'))])
+    monkeypatch.setattr(search_query_suggester, "get_llm_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    value = await search_query_suggester.suggest_direction(resumes=[{"title": "Electrician", "raw": "Known skills"}])
+    assert value["filter_policy"] == "generic"
+    assert "Known skills" in calls[0]["messages"][1]["content"]
+    assert "игнорируй" in calls[0]["messages"][0]["content"]
+    for broken in ({}, {**value, "filter_policy": "closest"}, {**value, "search_queries": []}):
+        with pytest.raises(search_query_suggester.SearchQueryValidationError):
+            search_query_suggester.normalize_direction_suggestion(broken)
+
+
+@run_async
+async def test_async_completion_rejects_direction_switch_and_cancel(bot, monkeypatch):
+    home = bot.profiles["client_1"].home_dir
+    make_direction(home)
+    make_direction(home, "other")
+    directions.set_active_direction(home, "qa")
+    started, release = asyncio.Event(), asyncio.Event()
+    async def suggest(**kwargs):
+        started.set()
+        await release.wait()
+        return {"title": "Stale", "filter_policy": "qa", "search_queries": ["Stale QA"], "relevant_keywords": [], "exclude_keywords": []}
+    monkeypatch.setattr(search_query_suggester, "suggest_direction", suggest)
+    await bot._dispatch_direction(1, USER, "/search_suggest", "")
+    task = bot.command.task
+    await started.wait()
+    directions.set_active_direction(home, "other")
+    release.set()
+    await task
+    assert directions.active_direction(home)["name"] == "other"
+    assert all(item["title"] != "Stale" for item in directions.list_directions(home))
+    assert "результат отменён" in bot.sent[-1][1]
+
+
+@run_async
+async def test_readonly_download_captures_profile_cookie_paths_and_never_persists_cookies(bot, monkeypatch):
+    import hh_client
+    profile = bot.profiles["client_1"]
+    instances = []
+    class Client:
+        def __init__(self):
+            self.calls = []
+            instances.append(self)
+        async def start(self):
+            self.calls.append("start")
+        async def get_resume_ids_readonly(self):
+            self.calls.append("catalog_readonly")
+            return [{"id": "hash1", "title": "One", "hh_resume_numeric_id": 123}]
+        async def download_resume_readonly(self, item):
+            self.calls.append("download_readonly")
+            return {"raw": "HH text", "hh_resume_hash": "hash1", "hh_resume_numeric_id": None}
+        async def stop(self, *, persist_cookies):
+            self.calls.append(("stop", persist_cookies))
+    monkeypatch.setattr(hh_client, "HHClient", Client)
+    exports = await TelegramDirections._direction_download(bot, profile, [{"id": "hash1"}], chat_id=1)
+    assert exports[0]["hh_resume_numeric_id"] == 123
+    assert instances[0]._cookie_paths.cookies_file == profile.hh.cookies_file
+    assert instances[0]._ui_home == profile.home_dir
+    assert instances[0].calls == ["start", "catalog_readonly", "download_readonly", ("stop", False)]
+    assert not Path(profile.home_dir).exists()
+
+
+@run_async
+async def test_fresh_direction_catalog_includes_other_professions_without_legacy_title_filter(bot, monkeypatch):
+    import hh_client
+    profile = bot.profiles["client_1"]
+    calls = []
+    class Client:
+        async def start(self):
+            calls.append("start")
+        async def get_resume_ids_readonly(self):
+            calls.append("catalog_readonly")
+            return [{"id": "qa", "title": "QA"}, {"id": "electrical", "title": "Электрик"}]
+        async def stop(self, *, persist_cookies):
+            calls.append(("stop", persist_cookies))
+    monkeypatch.setattr(hh_client, "HHClient", Client)
+    monkeypatch.setattr(bot, "_direction_load_catalog", TelegramDirections._direction_load_catalog.__get__(bot))
+    await bot._dispatch_direction(1, USER, "/direction_new", "")
+    await bot.command.task
+    assert [v["id"] for v in bot._direction_sessions()[1]["catalog"]] == ["qa", "electrical"]
+    assert "Электрик" in bot.sent[-1][1]
+    assert calls == ["start", "catalog_readonly", ("stop", False)]
+    assert not Path(profile.home_dir).exists()
+
+
+@run_async
+async def test_real_dispatch_routes_active_search_commands_before_legacy_env_updates(bot, monkeypatch):
+    from telegram_bot import TelegramBot
+    home = bot.profiles["client_1"].home_dir
+    make_direction(home)
+    directions.set_active_direction(home, "qa")
+    bot._active_command = lambda name: None
+    bot._queue_launching = {}
+    bot._queue_length = lambda name: 0
+    bot._selected_menu = lambda principal: "main"
+    observed = []
+    async def dispatch(chat_id, principal, command, arg):
+        observed.append(command)
+    monkeypatch.setattr(bot, "_dispatch_direction", dispatch)
+    for command in ("/search_resume", "/search_suggest", "/search_edit", "/search_use_draft", "/search_application_confirm",
+                    "/refresh_resume", "/grabresume"):
+        await TelegramBot._dispatch.__wrapped__(bot, 1, USER, command, "")
+    assert observed == ["/search_resume", "/search_suggest", "/search_edit", "/search_use_draft", "/search_application_confirm",
+                        "/direction_refresh", "/direction_refresh"]
+    assert not (Path(home) / "profile.env").exists()
+
+
+@run_async
+async def test_registered_client_real_bot_dispatch_uses_own_client_profile_and_rejects_admin_commands(tmp_path, monkeypatch):
+    import telegram_access
+    import telegram_clients
+    import telegram_bot
+    from runtime_context import TelegramRuntimePaths
+    from telegram_bot import TelegramBot
+
+    paths = TelegramRuntimePaths(*(str(tmp_path / "bot" / name) for name in ("pid", "state.json", "runtime.json", "bot.log", "debug.jsonl")))
+    actual_bot = TelegramBot(profile_name="qa", runtime_paths=paths)
+    profiles = {name: SimpleNamespace(name=name, home_dir=str(tmp_path / name), resume_file=str(tmp_path / name / "resume.md"))
+                for name in ("qa", "client42", "foreign")}
+    for name, profile in profiles.items():
+        make_direction(profile.home_dir, name=name)
+        directions.set_active_direction(profile.home_dir, name)
+    monkeypatch.setattr(actual_bot, "_profile_names", lambda: list(profiles))
+    monkeypatch.setattr(telegram_bot.profile_mod, "load_profile", lambda name: profiles[name])
+    telegram_access.upsert_user(42, profile="qa", role="user")
+    telegram_clients.upsert_client(42, profile_name="client42")
+    actual_bot._set_selected_profile(42, "foreign")
+    principal = telegram_access.resolve_user(42)
+    assert principal["profile"] == "qa"
+    assert actual_bot._selected_profile(principal) == "client42"
+    sent = []
+    async def send(chat_id, text, **kwargs):
+        sent.append(text)
+    monkeypatch.setattr(actual_bot, "_send_text", send)
+    monkeypatch.setattr(actual_bot, "_reload_profile_daemon", lambda name: False)
+    before_foreign = {str(p): p.read_bytes() for name in ("qa", "foreign") for p in Path(profiles[name].home_dir).rglob("*") if p.is_file()}
+
+    # Real public dispatcher wrapper selects the registered client, ignoring an arbitrary profile argument.
+    await actual_bot._dispatch(42, principal, "/directions", "foreign")
+    assert "Направления · client42" in sent[-1]
+    assert "FOREIGN" not in sent[-1] and "QA" not in sent[-1]
+    for command in ("/profile", "/direction_stats", "/direction_csv"):
+        await actual_bot._dispatch(42, principal, command, "foreign")
+        assert "Нужны права администратора" in sent[-1]
+        assert actual_bot._selected_profile(principal) == "client42"
+    await actual_bot._dispatch(42, principal, "/direction_single", "foreign")
+    assert directions.active_direction(profiles["client42"].home_dir)["selection_strategy"] == "ab"
+    await actual_bot._dispatch(42, principal, "/direction_save", "foreign")
+    assert directions.active_direction(profiles["client42"].home_dir)["selection_strategy"] == "single"
+    after_foreign = {str(p): p.read_bytes() for name in ("qa", "foreign") for p in Path(profiles[name].home_dir).rglob("*") if p.is_file()}
+    assert before_foreign == after_foreign
+
+
+@run_async
+async def test_ready_draft_save_waits_for_active_profile_worker(bot):
+    home = bot.profiles["client_1"].home_dir
+    original = make_direction(home)
+    directions.set_active_direction(home, "qa")
+    await bot._dispatch_direction(1, USER, "/direction_single", "")
+    bot.command = SimpleNamespace(task=None)
+    for command in ("/direction_save", "/search_use_draft"):
+        await bot._dispatch_direction(1, USER, command, "")
+        assert directions.active_direction(home) == original
+        assert bot._direction_sessions()[1]["mode"] == "draft"
+        assert "Профиль занят" in bot.sent[-1][1]
+    bot.command = None
+    await bot._dispatch_direction(1, USER, "/direction_save", "")
+    assert directions.active_direction(home)["selection_strategy"] == "single"
+
+
+@run_async
+@pytest.mark.parametrize("replacement", ["cancel", "new_session"])
+async def test_abandoned_download_never_consumes_ai_or_runs_analysis(bot, monkeypatch, replacement):
+    started, release = asyncio.Event(), asyncio.Event()
+    async def download(profile, items, *, chat_id):
+        started.set()
+        await release.wait()
+        return [{"hh_resume_hash": "one", "title": "One", "raw": "Downloaded"}]
+    async def forbidden(**kwargs):
+        pytest.fail("An abandoned draft must not invoke AI")
+    monkeypatch.setattr(bot, "_direction_download", download)
+    monkeypatch.setattr(search_query_suggester, "suggest_direction", forbidden)
+    state = bot._direction_bind(USER, mode="working", draft=None)
+    await bot._direction_job(1, USER, state, "new", [{"id": "one"}])
+    task = bot.command.task
+    await started.wait()
+    if replacement == "cancel":
+        await bot._dispatch_direction(1, USER, "/direction_cancel", "")
+    else:
+        bot._direction_bind(USER, mode="catalog")
+    release.set()
+    await task
+    assert [call.get("check_only", False) for call in bot.auth_calls] == [True]
+    assert not Path(bot.profiles["client_1"].home_dir).exists()
+
+
+@run_async
+async def test_admin_snapshot_summary_and_csv_use_selected_profile_without_ai(bot, monkeypatch):
+    import csv
+    import io
+    import json
+    home = Path(bot.profiles["client_1"].home_dir)
+    make_direction(home)
+    (home / "negotiation_snapshots.jsonl").write_text(json.dumps({
+        "id": 100, "resumeId": 2, "initialTopicType": "RESPONSE_BY_APPLICANT",
+        "lastState": "INVITATION", "viewedByOpponent": True,
+    }) + "\n")
+    documents = []
+    async def document(chat_id, **kwargs):
+        documents.append(kwargs)
+    monkeypatch.setattr(bot, "_send_document", document, raising=False)
+    await bot._dispatch_direction(99, ADMIN, "/direction_stats", "client_2")
+    assert "отправлено 1, просмотрено 1, отказ 0, следующий этап 1, без ответа 0" in bot.sent[-1][1]
+    await bot._dispatch_direction(99, ADMIN, "/direction_csv", "client_2")
+    rows = list(csv.DictReader(io.StringIO(documents[0]["content"].decode("utf-8-sig"))))
+    assert documents[0]["filename"] == "client_1_directions.csv"
+    assert next(r for r in rows if r["hh_resume_hash"] == "hash2")["next_stage"] == "1"
+    assert not bot.auth_calls
+    await bot._dispatch_direction(1, USER, "/direction_csv", "")
+    assert len(documents) == 1 and "Нужны права администратора" in bot.sent[-1][1]

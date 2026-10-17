@@ -47,6 +47,7 @@ from telegram_app.auth_bridge import (
 from telegram_app.api import TelegramAPIClient, TelegramAPIError, telegram_error_summary
 from telegram_app.callbacks import TelegramCallbackRouter
 from telegram_app.forms import TelegramFormEditor
+from telegram_app.directions import TelegramDirections
 from telegram_app.command_queue import TelegramCommandQueue, profile_command, current_entry
 from telegram_app.subprocesses import (
     ActiveCommandState,
@@ -226,6 +227,7 @@ class TelegramBot(
     TelegramHHAuthBridge,
     TelegramCallbackRouter,
     TelegramFormEditor,
+    TelegramDirections,
 ):
     def __init__(
         self,
@@ -726,7 +728,7 @@ class TelegramBot(
         self._update_user_state("user_state", user_id, remove_keys=keys)
 
     def _candidate_profile_dir(self, profile_name: str) -> str:
-        return os.path.dirname(self._profile(profile_name).resume_file)
+        return self._profile(profile_name).home_dir
 
     def _candidate_state(self, user_id: int, profile_name: str) -> dict:
         state = self._search_settings_state(user_id).get("candidate_interview") or {}
@@ -904,7 +906,7 @@ class TelegramBot(
         lines.extend([
             "",
             f"📄 Резюме HH: {profile.hh.primary_resume_title or 'ещё не выбрано'}",
-            f"🎯 Направление: {client.get('target_role') or 'не указано'}",
+            f"🎯 Направление: {(getattr(profile, 'direction', None) or {}).get('title') or client.get('target_role') or 'не указано'}",
             f"📍 Локация: {client.get('target_location') or 'настроена в профиле'}",
             f"🔁 Повтор: {_schedule_preset_label(profile.search_interval_min)}",
             f"🛡 Режим откликов: {self._application_mode_label(profile.hh.application_mode)}",
@@ -1036,6 +1038,16 @@ class TelegramBot(
         input_kind = state.get("search_input")
         if input_kind not in {"queries", "resume", "salary", "company_block", "company_unblock"}:
             return False
+        if input_kind in {"queries", "resume"}:
+            if state.get("search_input_profile", self._selected_profile(principal)) != self._selected_profile(principal):
+                self._clear_search_settings_state(principal["user_id"], "search_input", "search_query_draft", "search_input_profile")
+                await self._send_text(chat_id, "Профиль изменился. Откройте изменение настроек заново.")
+                return True
+            import directions
+            if directions.active_direction(self._profile(self._selected_profile(principal)).home_dir):
+                self._clear_search_settings_state(principal["user_id"], "search_input", "search_query_draft")
+                await self._send_text(chat_id, "Активное направление изменилось. Откройте /search_edit или /search_resume заново.")
+                return True
         if _is_menu_button_text(text) or text.startswith("/") and text != "/cancel":
             self._clear_search_settings_state(principal["user_id"], "search_input")
             return False
@@ -1145,6 +1157,10 @@ class TelegramBot(
 
     @profile_command
     async def _start_search_query_suggestion(self, chat_id: int, principal: dict, *, profile_name: str) -> None:
+        import directions
+        if directions.active_direction(self._profile(profile_name).home_dir):
+            await self._dispatch_direction(chat_id, principal, "/search_suggest", "")
+            return
         if self._has_active_command(profile_name):
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
             return
@@ -1175,7 +1191,10 @@ class TelegramBot(
                     target_role=str(client.get("target_role") or ""),
                     current_queries=profile.hh.search_queries,
                 )
-                self._set_search_settings_state(principal["user_id"], search_query_draft=queries)
+                if self._selected_profile(principal) != profile_name or directions.active_direction(profile.home_dir):
+                    await self._send_text(chat_id, "Профиль или направление изменились; предложение отменено.")
+                    return
+                self._set_search_settings_state(principal["user_id"], search_query_draft=queries, search_query_draft_profile=profile_name)
                 rendered = "\n".join(f"{index}. {query}" for index, query in enumerate(queries, start=1))
                 await self._send_text(
                     chat_id,
@@ -2006,6 +2025,9 @@ class TelegramBot(
         if await self._accept_form_answer(chat_id, principal, message):
             return
 
+        if await self._accept_direction_input(chat_id, principal, text):
+            return
+
         if await self._accept_search_query_input(chat_id, principal, text):
             return
 
@@ -2083,6 +2105,27 @@ class TelegramBot(
         if command in ADMIN_ONLY_COMMANDS and role != ROLE_ADMIN:
             await self._send_text(chat_id, "🔒 Нужны права администратора.", reply_markup=self._menu_reply_markup(principal))
             return
+
+        if command.startswith("/direction"):
+            direction_menu = reply_menu_for_command(role, command)
+            if direction_menu is not None:
+                self._set_selected_menu(principal["user_id"], direction_menu)
+            await self._dispatch_direction(chat_id, principal, command, arg)
+            return
+
+        if command in {"/search_edit", "/search_resume", "/search_suggest", "/search_use_draft", "/refresh_resume", "/grabresume",
+                       "/search_application_preview", "/search_application_confirm", "/search_application_auto"}:
+            import directions
+            pending = self._direction_sessions().get(principal["user_id"])
+            if directions.active_direction(self._profile(profile_name).home_dir) or (
+                command == "/search_use_draft" and pending
+            ):
+                direction_menu = reply_menu_for_command(role, command)
+                if direction_menu is not None:
+                    self._set_selected_menu(principal["user_id"], direction_menu)
+                direction_command = "/direction_refresh" if command in {"/refresh_resume", "/grabresume"} else command
+                await self._dispatch_direction(chat_id, principal, direction_command, arg)
+                return
 
         reply_menu = reply_menu_for_command(role, command)
         if reply_menu is not None:
@@ -2322,7 +2365,7 @@ class TelegramBot(
             return
 
         if command == "/search_edit":
-            self._set_search_settings_state(principal["user_id"], search_input="queries")
+            self._set_search_settings_state(principal["user_id"], search_input="queries", search_input_profile=profile_name)
             await self._send_text(
                 chat_id,
                 "✏️ Отправьте новый список: один поисковый запрос в строке.\n"
@@ -2337,7 +2380,12 @@ class TelegramBot(
             return
 
         if command == "/search_use_draft":
-            draft = self._search_settings_state(principal["user_id"]).get("search_query_draft") or []
+            query_state = self._search_settings_state(principal["user_id"])
+            if query_state.get("search_query_draft_profile", profile_name) != profile_name:
+                self._clear_search_settings_state(principal["user_id"], "search_query_draft", "search_query_draft_profile")
+                await self._send_text(chat_id, "Черновик создан для другого профиля. Запросите предложение заново.")
+                return
+            draft = query_state.get("search_query_draft") or []
             try:
                 queries = search_query_suggester.normalize_queries(draft)
                 env_file = profile_mod.update_profile_env(
@@ -2380,7 +2428,7 @@ class TelegramBot(
                 title = str(item.get("title") or item.get("id") or "Без названия")
                 lines.append(f"{index}. {title}")
             lines.append("\nДля отмены отправьте «Отмена».")
-            self._set_search_settings_state(principal["user_id"], search_input="resume")
+            self._set_search_settings_state(principal["user_id"], search_input="resume", search_input_profile=profile_name)
             await self._send_text(
                 chat_id,
                 "\n".join(lines),
@@ -2405,6 +2453,8 @@ class TelegramBot(
             if target not in self._profile_names():
                 await self._send_text(chat_id, f"❌ Неизвестный профиль: {target}", reply_markup=self._menu_reply_markup(principal))
                 return
+            self._direction_sessions().pop(principal["user_id"], None)
+            self._clear_search_settings_state(principal["user_id"], "search_input", "search_query_draft")
             self._set_selected_profile(principal["user_id"], target)
             self._set_selected_menu(principal["user_id"], MENU_MAIN)
             await self._send_text(chat_id, f"✅ Выбран профиль: {target}", reply_markup=self._menu_reply_markup(principal, menu=MENU_MAIN))

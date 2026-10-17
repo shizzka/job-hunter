@@ -238,6 +238,7 @@ def test_telegram_refresh_button_and_command_route_to_selected_profile(tmp_path,
     monkeypatch.setattr(resume.config, "TELEGRAM_BOT_STATE_FILE", str(tmp_path / "bot-state.json"))
     bot = TelegramBot(profile_name="qa")
     monkeypatch.setattr(bot, "_selected_profile", lambda principal: "selected-profile")
+    monkeypatch.setattr(bot, "_profile", lambda name: SimpleNamespace(home_dir=str(tmp_path)))
     monkeypatch.setattr(bot, "_active_command", lambda profile: None)
     calls = []
     async def start(*args):
