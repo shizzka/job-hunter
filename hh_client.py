@@ -580,7 +580,8 @@ class HHClient:
                               area: int = 113, schedule: str = "") -> list[dict]:
         # Resolve profile-sensitive query settings before the new scheduling
         # boundary, just as the original inline implementation did.
-        params = {"text": query, "area": area, "page": page, "per_page": 20,
+        # The web search reads items_on_page (per_page is an API-only parameter).
+        params = {"text": query, "area": area, "page": page, "items_on_page": config.HH_SEARCH_PAGE_SIZE,
                   "order_by": "publication_time"}
         if config.SEARCH_EXPERIENCE:
             params["experience"] = config.SEARCH_EXPERIENCE

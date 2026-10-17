@@ -226,4 +226,55 @@ def parse_hh_search_html(html: str, *, base_url: str) -> list[dict]:
                           "response_url": response_url})
     if not vacancies and (cards or not _empty_search_results(tree)):
         raise ValueError("unrecognized HH search results")
+    vacancies.extend(_state_vacancies(html, base_url, seen))
     return vacancies
+
+
+def _salary_text(value) -> str:
+    if not isinstance(value, dict) or "noCompensation" in value:
+        return "не указана"
+    low, high = value.get("from"), value.get("to")
+    if not low and not high:
+        return "не указана"
+    money = lambda v: f"{int(v):,}".replace(",", " ")
+    currency = {"RUR": "₽", "USD": "$", "EUR": "€"}.get(str(value.get("currencyCode") or ""), str(value.get("currencyCode") or ""))
+    text = (f"{money(low)} – {money(high)}" if low and high else f"от {money(low)}" if low else f"до {money(high)}") + f" {currency}"
+    if value.get("gross") is True:
+        text += " до вычета налогов"
+    elif value.get("gross") is False:
+        text += " на руки"
+    return text
+
+
+def _state_vacancies(html: str, base_url: str, seen: set) -> list[dict]:
+    """Cards hh renders client-side (beyond the first SSR cards, boosted ones) from page state.
+
+    Optional and additive: any problem leaves the SSR result untouched.
+    """
+    try:
+        from hh.observation import initial_state
+        state = initial_state(html)
+        items = (state.get("vacancySearchResult") or {}).get("vacancies") or []
+    except Exception:
+        return []
+    parts = urlsplit(base_url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    result = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        vid = str(item.get("vacancyId") or "")
+        title = " ".join(str(item.get("name") or "").split())
+        if not vid.isdigit() or vid in seen or not 2 <= len(title) <= 300:
+            continue
+        company = item.get("company") or {}
+        snippet = item.get("snippet") or {}
+        seen.add(vid)
+        result.append({"id": vid, "title": title,
+                       "company": str(company.get("visibleName") or company.get("name") or "—"),
+                       "salary": _salary_text(item.get("compensation")),
+                       "url": f"{origin}/vacancy/{vid}",
+                       "snippet": "\n".join(str(snippet.get(k) or "").strip() for k in ("req", "resp")
+                                            if isinstance(snippet, dict) and snippet.get(k)),
+                       "response_url": ""})
+    return result

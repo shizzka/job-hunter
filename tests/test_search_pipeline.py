@@ -274,3 +274,22 @@ def test_hh_antibot_stops_even_if_search_page_raises(hh_collection, monkeypatch,
     assert stats["hh"]["stop_reason"] == "captcha stop"
     assert stats["hh"]["fetched"] == 1
     record.assert_called_once_with(kind="captcha", raw_message="challenge", stage="search")
+
+
+def test_search_parser_adds_client_rendered_cards_from_page_state():
+    import json as _json
+    from hh.search_html import parse_hh_search_html
+    state = {"vacancySearchResult": {"vacancies": [
+        {"vacancyId": 1, "name": "Электромонтажник", "company": {"visibleName": "A"},
+         "compensation": {"from": 150000, "currencyCode": "RUR", "gross": False, "mode": "MONTH"},
+         "snippet": {"req": "Опыт монтажа", "resp": "Щиты"}},
+        {"vacancyId": 2, "name": "Прораб", "company": {"name": "B"}, "compensation": {"noCompensation": {}}},
+    ]}}
+    html = ('<html><body><div data-qa="vacancy-serp__vacancy"><h2><a data-qa="serp-item__title" '
+            'href="https://hh.ru/vacancy/1">Электромонтажник</a></h2></div>'
+            '<template id="HH-Lux-InitialState">' + _json.dumps(state) + '</template></body></html>')
+    result = parse_hh_search_html(html, base_url="https://hh.ru/search/vacancy?text=x")
+    assert [v["id"] for v in result] == ["1", "2"]
+    added = result[1]
+    assert added == {"id": "2", "title": "Прораб", "company": "B", "salary": "не указана",
+                     "url": "https://hh.ru/vacancy/2", "snippet": "", "response_url": ""}

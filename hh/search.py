@@ -4,7 +4,7 @@ from urllib.parse import parse_qsl, urljoin, urlsplit
 
 from hh.resume_refresh import _trusted_url
 
-_SEARCH_KEYS = {'text', 'area', 'page', 'per_page', 'order_by', 'experience',
+_SEARCH_KEYS = {'text', 'area', 'page', 'per_page', 'items_on_page', 'order_by', 'experience',
                 'schedule', 'salary', 'only_with_salary'}
 
 
