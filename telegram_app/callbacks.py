@@ -68,6 +68,14 @@ class TelegramCallbackRouter:
             await self._answer_callback_query(callback_id, "Не удалось определить чат.", show_alert=True)
             return
 
+        if str(raw_data).startswith("gs:"):
+            from telegram_app import onboarding
+            command = onboarding.ACTIONS.get(str(raw_data)[3:])
+            await self._answer_callback_query(callback_id)
+            if command:
+                await self._dispatch(chat_id, principal, command, "")
+            return
+
         if str(raw_data).startswith("dir:"):
             if (message.get("chat") or {}).get("type") != "private":
                 await self._answer_callback_query(callback_id, "Откройте личный чат с ботом.", show_alert=True)

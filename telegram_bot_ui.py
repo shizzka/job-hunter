@@ -80,6 +80,7 @@ BUTTON_REPEAT_OFF = "🛑 Повтор: выкл"
 BUTTON_PROFILES = "🧾 Профили"
 BUTTON_USERS = "👥 Пользователи"
 BUTTON_HELP = "❓ Помощь"
+BUTTON_GETTING_STARTED = "🚀 С чего начать"
 BUTTON_MENU = "🏠 Главное"
 BUTTON_BACK = "◀ Назад"
 BUTTON_BUSY = "⏳ Выполняется..."
@@ -218,6 +219,7 @@ ADMIN_BUTTON_MAP = {
     BUTTON_PROFILES: "/profiles",
     BUTTON_USERS: "/users",
     BUTTON_HELP: "/help",
+    BUTTON_GETTING_STARTED: "/getting_started",
     BUTTON_MENU: "/menu",
     BUTTON_BACK: "/back",
     BUTTON_BUSY: "/busy",
@@ -285,6 +287,7 @@ USER_BUTTON_MAP = {
     BUTTON_REPEAT_WEEKLY: "/repeat_weekly",
     BUTTON_REPEAT_OFF: "/repeat_off",
     BUTTON_HELP: "/help",
+    BUTTON_GETTING_STARTED: "/getting_started",
     BUTTON_MENU: "/menu",
     BUTTON_BACK: "/back",
     BUTTON_BUSY: "/busy",
@@ -610,7 +613,7 @@ def reply_menu_layouts(role: str) -> dict[str, list[list[str]]]:
     """Single source of truth for persistent action buttons and their owners."""
     layouts = {
         MENU_MAIN: [[BUTTON_SEARCH, BUTTON_DRYRUN], [BUTTON_RESPONSES, BUTTON_SEARCH_SETTINGS],
-                    [BUTTON_HH, BUTTON_CANDIDATE_PROFILE], [BUTTON_MENU_MONITOR], [BUTTON_HELP]],
+                    [BUTTON_HH, BUTTON_CANDIDATE_PROFILE], [BUTTON_MENU_MONITOR], [BUTTON_GETTING_STARTED, BUTTON_HELP]],
         MENU_RESPONSES: [[BUTTON_REVIEW, BUTTON_HH_RESPONSES], [BUTTON_FORMS, BUTTON_CHAT_AI]],
         MENU_SEARCH: [[BUTTON_DIRECTIONS], [BUTTON_SEARCH_EDIT, BUTTON_SEARCH_SUGGEST], [BUTTON_SEARCH_USE_DRAFT],
                       [BUTTON_SEARCH_CONDITIONS, BUTTON_BLACKLIST],

@@ -1033,6 +1033,34 @@ class TelegramBot(
             reply_markup=self._menu_reply_markup(principal, menu=menu),
         )
 
+    async def _send_getting_started(self, chat_id: int, principal: dict, *, only_if_incomplete: bool = False) -> None:
+        from telegram_app import onboarding
+        import directions as directions_mod
+        profile_name = self._selected_profile(principal)
+        profile = self._profile(profile_name)
+        try:
+            resumes = client_hh_auth.load_hh_resume_catalog(profile_name) or []
+        except Exception:
+            resumes = []
+        try:
+            items = directions_mod.list_directions(profile.home_dir)
+            active = directions_mod.active_direction(profile.home_dir)
+        except Exception:
+            items, active = [], None
+        latest = self._latest_run(profile_name) or {}
+        text, rows, complete = onboarding.build(
+            hh_ok=bool({"hhtoken", "hhuid"} & self._auth_cookie_names(profile.hh.cookies_file)),
+            resumes=[r for r in resumes if isinstance(r, dict)],
+            directions=items, active=active,
+            mode=str((active or {}).get("application_mode") or profile.hh.application_mode or ""),
+            has_search=bool(latest.get("run_id")),
+        )
+        if only_if_incomplete and complete:
+            return
+        markup = {"inline_keyboard": [[{"text": label, "callback_data": onboarding.CALLBACK_PREFIX + action}
+                                       for label, action in row] for row in rows]}
+        await self._send_text(chat_id, text, reply_markup=markup)
+
     async def _start_market_research(self, chat_id: int, principal: dict, text: str) -> None:
         """Read-only hh search statistics for admin posts; runs as the profile's active command."""
         import market_research
@@ -2157,6 +2185,16 @@ class TelegramBot(
 
         if command in {"/start", "/menu", "/help"}:
             await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_MAIN)
+            if command == "/start":
+                await self._send_getting_started(chat_id, principal, only_if_incomplete=True)
+            return
+
+        if command == "/getting_started":
+            owner_menu = reply_menu_for_command(role, "/getting_started") or MENU_MAIN
+            self._set_selected_menu(principal["user_id"], owner_menu)
+            await self._send_text(chat_id, "🚀 С чего начать — пошаговая настройка.",
+                                  reply_markup=self._menu_reply_markup(principal, menu=owner_menu))
+            await self._send_getting_started(chat_id, principal)
             return
 
         if command in ADMIN_ONLY_COMMANDS and role != ROLE_ADMIN:
