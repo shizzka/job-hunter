@@ -94,7 +94,7 @@ def test_chat_journal_full_text_permissions_whitelist_and_parallel_records(tmp_p
 
 def test_chat_diagnostics_are_one_shot_per_category_across_runs(tmp_path):
     journal = ChatJournal(tmp_path, "synthetic")
-    page = SimpleNamespace(evaluate=AsyncMock(return_value="<div>Synthetic</div>"),
+    page = SimpleNamespace(evaluate=AsyncMock(return_value=[dict(kind="header", data_qa="", html="<div>Synthetic</div>", truncated=False)]),
                            screenshot=AsyncMock(return_value=b"synthetic png"))
     async def run():
         await diagnostic_snapshot(journal, page, "42", "1", "hr_question", "ref", 0)
@@ -105,7 +105,24 @@ def test_chat_diagnostics_are_one_shot_per_category_across_runs(tmp_path):
     asyncio.run(run())
     root = tmp_path / "chat_diagnostics"
     assert page.screenshot.await_count == 2
+    assert page.evaluate.await_count == 2
     assert len(list(root.glob("*.html"))) == 2
     assert len(list(root.glob("*.png"))) == 2
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in root.iterdir())
+
+
+def test_chat_structural_summary_has_selector_outline_and_bounded_text():
+    from chat_observation import summarize_dom_fragment
+    text = 'Synthetic private message ' * 200
+    summary = summarize_dom_fragment(
+        f'<section class="header"><input data-qa="field" value="private-value">'
+        f'<span data-qa="chat-header-title" class="title accent">{text}</span></section>')
+    assert summary[0] == dict(tag='section', depth=0, data_qa='', classes='header')
+    assert summary[2] == dict(tag='span', depth=1, data_qa='chat-header-title', classes='title accent')
+    assert summary[3]['text'] == text[:48] and summary[3]['truncated']
+    assert 'private-value' not in json.dumps(summary)
+    assert text not in json.dumps(summary)
+    many = summarize_dom_fragment('<p>' + ('<span>' + ('x' * 100) + '</span>') * 200 + '</p>')
+    assert sum(len(node.get('text', '')) for node in many) <= 256
+    assert len(summarize_dom_fragment('<b>x</b>' * 500)) <= 160

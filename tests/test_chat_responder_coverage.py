@@ -218,7 +218,9 @@ def test_chat_stopped_run_still_accounts_for_every_discovered_chat(chat_run, mon
 def test_chat_diagnostic_flag_captures_hr_and_ours_once_without_extra_opens(chat_run, monkeypatch):
     from pathlib import Path
     monkeypatch.setenv("HH_CHAT_DIAGNOSTIC_SNAPSHOTS", "1")
-    chat_run.page.evaluate = AsyncMock(return_value="<div>synthetic DOM</div>")
+    chat_run.page.evaluate = AsyncMock(return_value=[dict(
+        kind="message", data_qa="chatik-chat-message-1",
+        html="<div>synthetic DOM</div>", truncated=False)])
     chat_run.page.screenshot = AsyncMock(return_value=b"synthetic PNG")
     asyncio.run(chat_run.run())
     asyncio.run(chat_run.run())

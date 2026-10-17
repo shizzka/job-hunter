@@ -7,6 +7,7 @@ import os
 import uuid
 from contextvars import ContextVar
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 
 from state_store.json_store import file_lock, atomic_write_bytes, atomic_write_text
@@ -125,6 +126,128 @@ def select_chat_batch(home, chats, limit):
     return selected
 
 
+DIAGNOSTIC_FRAGMENT_LIMIT = 24_000  # UTF-8 bytes per fragment
+
+
+def summarize_dom_fragment(fragment, *, max_nodes=160, text_limit=48):
+    """Selector-oriented outline with bounded text snippets and no other attributes."""
+    class Outline(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.nodes = []
+            self.depth = 0
+            self.text_budget = 256
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if len(self.nodes) < max_nodes:
+                self.nodes.append(dict(tag=tag, depth=self.depth,
+                    data_qa=attrs.get("data-qa", "")[:160],
+                    classes=attrs.get("class", "")[:240]))
+            if tag not in {"area", "base", "br", "col", "embed", "hr", "img", "input",
+                           "link", "meta", "param", "source", "track", "wbr"}:
+                self.depth += 1
+
+        def handle_startendtag(self, tag, attrs):
+            depth = self.depth
+            self.handle_starttag(tag, attrs)
+            self.depth = depth
+
+        def handle_endtag(self, tag):
+            self.depth = max(0, self.depth - 1)
+
+        def handle_data(self, data):
+            text = " ".join(data.split())
+            if text and self.text_budget > 0 and len(self.nodes) < max_nodes:
+                snippet = text[:min(text_limit, self.text_budget)]
+                self.text_budget -= len(snippet)
+                self.nodes.append(dict(text=snippet, depth=self.depth,
+                                       truncated=len(snippet) < len(text)))
+
+    parser = Outline()
+    parser.feed(fragment)
+    return parser.nodes
+
+
+async def collect_diagnostic_fragments(page, chat_id):
+    """Read mounted DOM only; no navigation, scrolling, storage or form actions."""
+    return await page.evaluate(r"""({chatId, limit}) => {
+        const rowSelector = '[data-qa^="chatik-open-chat-"]';
+        const bubbleSelector = '[data-qa^="chatik-chat-message-"]';
+        const outsideConversation = el => !el.closest(rowSelector + ',' + bubbleSelector);
+        const rows = [...document.querySelectorAll(rowSelector)]
+            .filter(el => /^chatik-open-chat-\d+$/.test(el.getAttribute('data-qa') || ''));
+        const bubbles = [...document.querySelectorAll(bubbleSelector)]
+            .filter(el => /^chatik-chat-message-\d+$/.test(el.getAttribute('data-qa') || ''));
+        // Expand anchors locally, stopping before the page shell or whole thread.
+        const region = (anchor, otherAnchor) => {
+            if (!anchor) return null;
+            let root = anchor;
+            for (let i = 0; i < 4; i++) {
+                const parent = root.parentElement;
+                if (!parent || parent.matches('body,html,main') ||
+                    parent.querySelector(rowSelector + ',' + bubbleSelector) ||
+                    (otherAnchor && parent.contains(otherAnchor))) break;
+                root = parent;
+            }
+            return root;
+        };
+        const firstOutside = selector => [...document.querySelectorAll(selector)]
+            .find(outsideConversation);
+        const headerAnchor = firstOutside('[data-qa="chat-header-title"]') ||
+            firstOutside('header h1, h1') || firstOutside('a[href*="/vacancy/"]');
+        const disabledText = /Работодатель отключил переписку по данной вакансии/i;
+        const disabled = [...document.querySelectorAll('div,span,p')].find(el =>
+            outsideConversation(el) && disabledText.test(el.textContent || '') &&
+            ![...el.children].some(child => disabledText.test(child.textContent || '')));
+        const composerAnchor = disabled || firstOutside(
+            'textarea[data-qa="chatik-new-message-text"], textarea[data-qa="text-input"], ' +
+            'textarea, [contenteditable="true"], [data-qa*="composer"]');
+        const header = region(headerAnchor, composerAnchor);
+        const composer = region(composerAnchor, headerAnchor);
+        const selected = rows.find(el => el.getAttribute('data-qa') === 'chatik-open-chat-' + chatId) ||
+            rows.find(el => el.matches('[aria-selected="true"], [data-selected="true"]'));
+        const index = Math.max(0, rows.indexOf(selected));
+        const chosen = selected ? [selected] : [];
+        const neighbours = rows.map((el, i) => ({el, distance: Math.abs(i - index)}))
+            .sort((a, b) => a.distance - b.distance);
+        const refusal = neighbours.find(({el}) => el !== selected && /отказ/iu.test(el.textContent || ''))?.el;
+        if (refusal) chosen.push(refusal);
+        for (const {el} of neighbours) {
+            if (chosen.length >= 4) break;
+            if (!chosen.includes(el)) chosen.push(el);
+        }
+        const fragments = [];
+        const add = (kind, el) => {
+            if (!el) return;
+            const clone = el.cloneNode(true);
+            clone.querySelectorAll('script,iframe,object,embed,style,link,meta,template,noscript')
+                .forEach(node => node.remove());
+            for (const node of [clone, ...clone.querySelectorAll('*')]) {
+                for (const attr of [...node.attributes]) {
+                    if (/^on/i.test(attr.name) || attr.name === 'srcdoc' ||
+                        /^\s*(javascript|vbscript):/i.test(attr.value)) node.removeAttribute(attr.name);
+                }
+            }
+            const raw = clone.outerHTML;
+            let html = raw.slice(0, limit);
+            const encoder = new TextEncoder();
+            while (encoder.encode(html).length > limit) {
+                html = html.slice(0, Math.max(0, html.length -
+                    Math.ceil((encoder.encode(html).length - limit) / 4)));
+            }
+            if (/[\uD800-\uDBFF]$/.test(html)) html = html.slice(0, -1);
+            fragments.push({kind, data_qa: el.getAttribute('data-qa') || '',
+                            html, truncated: html.length < raw.length});
+        };
+        add('header', header);
+        add('composer', composer);
+        chosen.forEach(el => add(el === selected ? 'selected_row' : 'list_row', el));
+        bubbles.forEach(el => add('message', el));
+        return fragments;
+    }""", dict(chatId=str(chat_id), limit=DIAGNOSTIC_FRAGMENT_LIMIT))
+
+
 async def diagnostic_snapshot(journal, page, chat_id, message_id, decision, snapshot_ref, budget):
     """One-shot budget per category, durable reservations also survive process restarts."""
     if budget <= 0:
@@ -144,19 +267,16 @@ async def diagnostic_snapshot(journal, page, chat_id, message_id, decision, snap
     store.update(reserve)
     if not reserved:
         return
-    # Only message DOM, not page HTML with bootstrap/session scripts.
-    dom = await page.evaluate("""() => {
-        const bubbles = [...document.querySelectorAll('[data-qa^="chatik-chat-message-"]')]
-            .filter(el => /^chatik-chat-message-\\d+$/.test(el.getAttribute('data-qa') || ''));
-        return bubbles.map(el => {
-            const clone = el.cloneNode(true);
-            clone.querySelectorAll('script, iframe').forEach(node => node.remove());
-            return clone.outerHTML;
-        }).join('\\n');
-    }""")
+    fragments = await collect_diagnostic_fragments(page, chat_id)
+    dom = "\n".join(
+        f'<!-- {fragment["kind"]} -->\n{fragment["html"]}' for fragment in fragments)
     atomic_write_text(root / f"{key}.html", dom)
     atomic_write_bytes(root / f"{key}.png", await page.screenshot())
     atomic_write_text(root / f"{key}.json", json.dumps(dict(
         run_id=journal.run_id, chat_id=chat_id, message_id=message_id,
-        decision=decision, snapshot_ref=snapshot_ref), ensure_ascii=False))
+        decision=decision, snapshot_ref=snapshot_ref,
+        fragment_limit_bytes=DIAGNOSTIC_FRAGMENT_LIMIT,
+        fragments=[dict(kind=f["kind"], data_qa=f["data_qa"], truncated=f["truncated"],
+                        structure=summarize_dom_fragment(f["html"])) for f in fragments]),
+        ensure_ascii=False))
     store.update(lambda state: state[key].update(status="saved"))
