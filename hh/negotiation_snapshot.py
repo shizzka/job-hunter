@@ -33,7 +33,8 @@ VACANCY_FIELDS = ('vacancy_name', 'company_id', 'company_name', 'company_trusted
                   'company_accredited_it', 'vacancy_creation_time',
                   'vacancy_publication_time', 'closed_for_applicants',
                   'vacancy_work_experience', 'vacancy_area_id', 'vacancy_area_name',
-                  'vacancy_work_formats', 'vacancy_salary_from', 'vacancy_salary_to',
+                  'vacancy_work_formats', 'vacancy_work_schedule',
+                  'vacancy_salary_from', 'vacancy_salary_to',
                   'vacancy_salary_currency', 'vacancy_salary_gross',
                   'vacancy_employment', 'vacancy_professional_role_ids')
 
@@ -67,6 +68,26 @@ def _activity_code(value):
     if not isinstance(value, str):
         return None
     return value if value in ('online', 'offline') else 'other'
+
+
+def _work_formats(value):
+    if not isinstance(value, list) or len(value) > 100:
+        return None
+    codes = []
+    for item in value:
+        elements = item.get('workFormatsElement') if isinstance(item, dict) else [item]
+        elements = _short_list(elements, str)
+        if elements is None:
+            continue
+        codes.extend(code if code in {'REMOTE', 'HYBRID', 'ON_SITE', 'FIELD_WORK'}
+                     else 'OTHER' for code in elements)
+    return codes
+
+
+def _work_schedule(value):
+    if not isinstance(value, str):
+        return None
+    return value if value in {'fullDay', 'shift', 'flexible', 'remote', 'flyInFlyOut'} else 'other'
 
 
 def _pick(value, fields):
@@ -142,11 +163,12 @@ def parse_page(html, *, expected_filter='active'):
                 'vacancy_work_experience': _scalar(vacancy.get('workExperience')),
                 'vacancy_area_id': _first_scalar(area, 'id', '@id'),
                 'vacancy_area_name': _first_scalar(area, 'name', '$'),
-                'vacancy_work_formats': _short_list(vacancy.get('workFormats'), str),
+                'vacancy_work_formats': _work_formats(vacancy.get('workFormats')),
+                'vacancy_work_schedule': _work_schedule(vacancy.get('@workSchedule')),
                 'vacancy_salary_from': _first_scalar(compensation, 'from', '@from'),
                 'vacancy_salary_to': _first_scalar(compensation, 'to', '@to'),
                 'vacancy_salary_currency': _first_scalar(
-                    compensation, 'currencyCode', 'currency', '@currencyCode'),
+                    compensation, 'currencyCode', 'currency', '@currencyCode', '@currency'),
                 'vacancy_salary_gross': _first_scalar(compensation, 'gross', '@gross'),
                 'vacancy_employment': _first_scalar(vacancy, 'employment', 'employmentForm'),
                 'vacancy_professional_role_ids': _short_list(

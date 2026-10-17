@@ -15,6 +15,7 @@ VACANCY_ATTRIBUTES = {
     'vacancy_work_experience': 'between1And3',
     'vacancy_area_id': 1, 'vacancy_area_name': 'Москва',
     'vacancy_work_formats': ['REMOTE', 'ON_SITE', 'HYBRID'],
+    'vacancy_work_schedule': 'remote',
     'vacancy_salary_from': 100000, 'vacancy_salary_to': 200000,
     'vacancy_salary_currency': 'RUR', 'vacancy_salary_gross': False,
     'vacancy_employment': 'full', 'vacancy_professional_role_ids': [96, 165],
@@ -56,7 +57,8 @@ def state(page=0, pages=1, *, archived=False):
             'publicationTime': 200, 'closedForApplicants': False,
             'workExperience': 'between1And3',
             'area': {'id': 1, 'name': 'Москва', 'managerName': 'PRIVATE NAME'},
-            'workFormats': ['REMOTE', 'ON_SITE', 'HYBRID'],
+            'workFormats': [{'workFormatsElement': ['REMOTE', 'ON_SITE', 'HYBRID']}],
+            '@workSchedule': 'remote',
             'compensation': {'from': 100000, 'to': 200000, 'currencyCode': 'RUR',
                              'gross': False, 'managerName': 'PRIVATE NAME'},
             'employment': 'full', 'professionalRoleIds': [96, 165],
@@ -160,7 +162,7 @@ def test_vacancy_xml_attributes_and_employment_form():
 def test_unknown_or_missing_vacancy_attributes_are_null(missing):
     payload = state()
     vacancy = payload['vacanciesShort']['vacanciesList'][0]
-    fields = ('workExperience', 'area', 'workFormats', 'compensation',
+    fields = ('workExperience', 'area', 'workFormats', '@workSchedule', 'compensation',
               'employment', 'employmentForm', 'professionalRoleIds')
     for field in fields:
         if missing:
@@ -190,6 +192,59 @@ def test_vacancy_lists_are_short_and_typed(formats, roles, expected_formats, exp
     assert row['vacancy_work_formats'] == expected_formats
     assert row['vacancy_professional_role_ids'] == expected_roles
     assert 'PRIVATE' not in json.dumps(row)
+
+
+@pytest.mark.parametrize('codes', [
+    ['REMOTE'], ['REMOTE', 'HYBRID'], ['ON_SITE'], ['ON_SITE', 'REMOTE'],
+    ['FIELD_WORK'],
+])
+def test_live_work_formats_shape(codes):
+    payload = state()
+    payload['vacanciesShort']['vacanciesList'][0]['workFormats'] = [
+        {'workFormatsElement': codes}]
+    row = ns.parse_page(html(payload))['records'][0]
+    assert row['vacancy_work_formats'] == codes
+
+
+def test_work_formats_flatten_allowlisted_elements_only():
+    payload = state()
+    payload['vacanciesShort']['vacanciesList'][0]['workFormats'] = [
+        {'workFormatsElement': ['REMOTE', 'PRIVATE CODE', True, {'name': 'PRIVATE'}]},
+        {'workFormatsElement': ['HYBRID', 'ON_SITE', 'FIELD_WORK']},
+        {'workFormatsElement': 'PRIVATE'},
+        {'workFormatsElement': ['REMOTE'] * 101},
+        {'name': 'PRIVATE'},
+    ]
+    row = ns.parse_page(html(payload))['records'][0]
+    assert row['vacancy_work_formats'] == ['REMOTE', 'OTHER', 'HYBRID', 'ON_SITE', 'FIELD_WORK']
+    assert 'PRIVATE' not in json.dumps(row)
+
+
+@pytest.mark.parametrize('schedule,expected', [
+    ('remote', 'remote'), ('fullDay', 'fullDay'), ('shift', 'shift'),
+    ('flexible', 'flexible'), ('flyInFlyOut', 'flyInFlyOut'),
+    ('PRIVATE CODE', 'other'), ('', 'other'),
+    (None, None), (True, None), (42, None), ({'name': 'PRIVATE'}, None),
+])
+def test_work_schedule_is_allowlisted_string(schedule, expected):
+    payload = state()
+    payload['vacanciesShort']['vacanciesList'][0]['@workSchedule'] = schedule
+    row = ns.parse_page(html(payload))['records'][0]
+    assert row['vacancy_work_schedule'] == expected
+    assert 'PRIVATE' not in json.dumps(row)
+
+
+@pytest.mark.parametrize('currency_key', ['@currencyCode', '@currency'])
+def test_string_experience_and_compensation_attributes(currency_key):
+    payload = state()
+    payload['vacanciesShort']['vacanciesList'][0].update(
+        workExperience='between3And6',
+        compensation={'@from': 0, '@to': 250000, currency_key: 'RUR', '@gross': False})
+    row = ns.parse_page(html(payload))['records'][0]
+    assert row['vacancy_work_experience'] == 'between3And6'
+    assert [row[key] for key in ('vacancy_salary_from', 'vacancy_salary_to',
+                                'vacancy_salary_currency', 'vacancy_salary_gross')] == [
+        0, 250000, 'RUR', False]
 
 
 @pytest.mark.parametrize('value,expected', [
