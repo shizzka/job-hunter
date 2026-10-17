@@ -1033,9 +1033,58 @@ class TelegramBot(
             reply_markup=self._menu_reply_markup(principal, menu=menu),
         )
 
+    async def _start_market_research(self, chat_id: int, principal: dict, text: str) -> None:
+        """Read-only hh search statistics for admin posts; runs as the profile's active command."""
+        import market_research
+        try:
+            queries = market_research.parse_queries(text)
+        except market_research.MarketResearchError as exc:
+            await self._send_text(chat_id, f"❌ {exc}", reply_markup=self._menu_reply_markup(principal))
+            return
+        profile_name = self._selected_profile(principal)
+        if self._has_active_command(profile_name):
+            await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+            return
+        active_command = self._mark_active_command(principal=principal, label="market research", profile_name=profile_name)
+        await self._send_text(chat_id, "⏳ Собираю: " + ", ".join(queries) + ". Это займёт пару минут.",
+                              reply_markup=self._menu_reply_markup(principal))
+
+        async def runner() -> None:
+            try:
+                cookies_file = self._profile(profile_name).hh.cookies_file
+
+                def work():
+                    with hh_response_counter._authenticated_client(cookies_file) as client:
+                        return market_research.collect(client, queries)
+                snapshot = await asyncio.to_thread(work)
+                summary = market_research.summarize(snapshot)
+                await self._send_text(chat_id, html.escape(market_research.summary_text(summary)),
+                                      reply_markup=self._menu_reply_markup(principal))
+                stamp = datetime.now().strftime("%Y%m%d-%H%M")
+                await self._send_document(chat_id, filename=f"hh-market-{stamp}.md",
+                                          content=market_research.export_markdown(snapshot, summary),
+                                          caption="Отчёт для поста: сводка и таблица вакансий с зарплатой.")
+                await self._send_document(chat_id, filename=f"hh-market-{stamp}.csv",
+                                          content=market_research.export_csv(snapshot),
+                                          caption="Все собранные вакансии; strict_match=True — точное совпадение слов.")
+            except market_research.MarketResearchError as exc:
+                await self._send_text(chat_id, f"❌ {exc}", reply_markup=self._menu_reply_markup(principal))
+            except Exception as exc:
+                log.warning("market research failed: %s", type(exc).__name__)
+                await self._send_text(chat_id, "❌ Не удалось собрать статистику. Подробности в логе бота.",
+                                      reply_markup=self._menu_reply_markup(principal))
+            finally:
+                self._clear_active_command(profile_name)
+
+        active_command.task = self._create_active_task(active_command, runner)
+
     async def _accept_search_query_input(self, chat_id: int, principal: dict, text: str) -> bool:
         state = self._search_settings_state(principal["user_id"])
         input_kind = state.get("search_input")
+        if input_kind == "market":
+            self._clear_search_settings_state(principal["user_id"], "search_input")
+            await self._start_market_research(chat_id, principal, text)
+            return True
         if input_kind not in {"queries", "resume", "salary", "company_block", "company_unblock"}:
             return False
         if input_kind in {"queries", "resume"}:
@@ -2710,6 +2759,22 @@ class TelegramBot(
             await self._send_text(
                 chat_id,
                 f"{'✅ Пользователь удалён' if removed else '⚪️ Пользователь не найден'}: {target_user_id}",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+
+        if command == "/market_research":
+            if arg.strip():
+                await self._start_market_research(chat_id, principal, arg)
+                return
+            self._set_search_settings_state(principal["user_id"], search_input="market")
+            await self._send_text(
+                chat_id,
+                "📈 Рынок вакансий: соберу свежую статистику hh.ru по названиям вакансий.\n\n"
+                "Отправьте названия, по одному в строке (до 10). Например:\n"
+                "QA lead\nРуководитель отдела тестирования\nМенеджер по подбору персонала\n\n"
+                "Ищу по всей России, в названии вакансии. Откликов и изменений не делаю — только чтение. "
+                "Для отмены: Отмена.",
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
