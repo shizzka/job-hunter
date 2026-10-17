@@ -1010,11 +1010,15 @@ class TelegramBot(
         ])
 
     def _application_mode_text(self, profile_name: str) -> str:
-        mode = self._profile(profile_name).hh.application_mode
+        profile = self._profile(profile_name)
+        mode = profile.hh.application_mode
+        direction = getattr(profile, "direction", None) or {}
+        scope = f" (направление «{direction.get('title')}»)" if direction.get("title") else ""
         return "\n".join([
             "🛡 Режим откликов",
             "",
-            f"Сейчас: {self._application_mode_label(mode)}.",
+            f"Сейчас: {self._application_mode_label(mode)}{scope}.",
+            "Нажмите режим — он сохранится сразу.",
             "👀 Только показать — пришлёт подходящие вакансии, без отправки.",
             "✋ Подтверждать — отправит только после нажатия «Откликнуться с ИИ».",
             "⚡ Автоотклик — отправит подходящие вакансии сам в рамках лимитов.",

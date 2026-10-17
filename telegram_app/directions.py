@@ -587,9 +587,13 @@ class TelegramDirections:
         elif command.startswith("/search_application_"):
             if not active:
                 return
+            mode = command.removeprefix("/search_application_")
             state = self._direction_bind(principal, mode="draft", draft=copy.deepcopy(active), texts={})
-            state["draft"]["application_mode"] = command.removeprefix("/search_application_")
-            await self._direction_show_draft(chat_id, principal, state)
+            state["draft"]["application_mode"] = mode
+            # One explicit choice: save it right away, no extra «Сохранить».
+            labels = {"preview": "только показать", "confirm": "подтверждать перед откликом", "auto": "автоотклик"}
+            await self._send_text(chat_id, html.escape(f"Режим откликов для «{active['title']}»: {labels.get(mode, mode)}. Сохраняю…"))
+            await self._dispatch_direction(chat_id, principal, "/direction_save", "")
         elif command in {"/direction_single", "/direction_ab"}:
             if not active:
                 await self._send_text(chat_id, "Сначала выберите направление: /directions.")

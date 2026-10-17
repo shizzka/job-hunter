@@ -246,9 +246,8 @@ async def test_refresh_texts_and_application_mode_are_drafts(bot):
     await bot._dispatch_direction(1, USER, "/direction_save", "")
     updated = directions.active_direction(home)
     assert all(Path(v["text_file"]).read_text() == "Downloaded resume" for v in updated["variants"])
+    # The application mode is one explicit choice: saved immediately (owner feedback 17.10).
     await bot._dispatch_direction(1, USER, "/search_application_preview", "")
-    assert "application_mode" not in directions.active_direction(home)
-    await bot._dispatch_direction(1, USER, "/direction_save", "")
     assert directions.active_direction(home)["application_mode"] == "preview"
 
 
