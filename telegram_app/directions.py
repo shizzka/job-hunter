@@ -5,6 +5,7 @@ profile and the exact base direction, including async completion.
 """
 from __future__ import annotations
 
+import asyncio
 import copy
 from contextlib import asynccontextmanager
 import hashlib
@@ -266,17 +267,21 @@ class TelegramDirections:
                 # authenticated catalog without title filters or changing HH.
                 if not self._direction_current(principal, state):
                     raise ValueError("Профиль, направление или черновик изменились; каталог отменён.")
+                from hh.session_probe import probe, OK
+                checked = await asyncio.to_thread(probe, profile.hh.cookies_file)
+                if checked["status"] != OK:
+                    raise ValueError(checked["message"] + " Откройте «🔐 Мой hh» → «Вход в hh», затем повторите.")
                 catalog = await self._direction_load_catalog(profile, chat_id=chat_id)
                 if not self._direction_current(principal, state):
                     raise ValueError("Профиль, направление или черновик изменились; каталог отменён.")
                 if not catalog:
-                    raise ValueError("Нет резюме в HH-сессии. Проверьте вход HH: /hh_auth.")
+                    raise ValueError("На hh.ru в вашем аккаунте нет резюме. Создайте резюме на сайте hh.ru и повторите.")
                 state.update(mode="catalog", catalog=copy.deepcopy(catalog))
                 await self._direction_show_catalog(chat_id, state)
                 command.result = {"ok": True}
             except Exception as exc:
                 command.result = {"ok": False}
-                await self._send_text(chat_id, html.escape(f"Не удалось прочитать каталог: {exc}"))
+                await self._send_text(chat_id, html.escape(f"Не удалось прочитать резюме: {exc}"))
             finally:
                 self._clear_active_command(profile_name)
         command.task = self._create_active_task(command, runner)

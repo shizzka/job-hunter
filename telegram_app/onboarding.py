@@ -23,7 +23,7 @@ MODE_LABELS = {
 
 
 def build(*, hh_ok: bool, resumes: list[dict], directions: list[dict], active: dict | None,
-          mode: str, has_search: bool) -> tuple[str, list[list[tuple[str, str]]], bool]:
+          mode: str, has_search: bool, hh_message: str = "") -> tuple[str, list[list[tuple[str, str]]], bool]:
     """Return (text, inline rows [(label, action)], complete)."""
     def mark(ok):
         return "✅" if ok else "⬜️"
@@ -34,7 +34,8 @@ def build(*, hh_ok: bool, resumes: list[dict], directions: list[dict], active: d
              "Бот ищет вакансии на hh.ru и откликается вашими резюме. Пройдите шаги по порядку:", ""]
     rows: list[list[tuple[str, str]]] = []
 
-    lines.append(f"{mark(hh_ok)} 1. Войти в hh.ru" + ("" if hh_ok else " — бот откроет вход, понадобится код из SMS/почты."))
+    lines.append(f"{mark(hh_ok)} 1. Войти в hh.ru" + ("" if hh_ok else
+                 " — " + (hh_message or "бот откроет вход, понадобится код из SMS/почты.")))
     if not hh_ok:
         rows.append([("🔐 Войти в hh.ru", "auth")])
 

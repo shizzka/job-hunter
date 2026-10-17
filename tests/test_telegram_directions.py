@@ -19,6 +19,13 @@ def run_async(fn):
     return wrapped
 
 
+@pytest.fixture(autouse=True)
+def live_hh_session_ok(monkeypatch):
+    """The wizard checks the hh session live first; tests use a healthy fake session."""
+    from hh import session_probe
+    monkeypatch.setattr(session_probe, "probe", lambda cookies_file, **kw: {"status": "ok", "message": "", "resumes": []})
+
+
 def make_direction(home, name="qa", *, strategy="ab"):
     value = {"name": name, "title": name.upper(), "filter_policy": "qa", "search_queries": ["QA Engineer"],
              "relevant_keywords": ["qa"], "exclude_keywords": ["support"], "selection_strategy": strategy,

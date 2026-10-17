@@ -1038,10 +1038,14 @@ class TelegramBot(
         import directions as directions_mod
         profile_name = self._selected_profile(principal)
         profile = self._profile(profile_name)
-        try:
-            resumes = client_hh_auth.load_hh_resume_catalog(profile_name) or []
-        except Exception:
-            resumes = []
+        from hh.session_probe import probe, save_catalog, OK
+        checked = await asyncio.to_thread(probe, profile.hh.cookies_file)
+        resumes = checked["resumes"] if checked["status"] == OK else []
+        if checked["status"] == OK:
+            try:
+                save_catalog(client_hh_auth.hh_resume_catalog_path(profile_name), resumes)
+            except Exception as exc:
+                log.warning("resume catalog cache refresh failed: %s", type(exc).__name__)
         try:
             items = directions_mod.list_directions(profile.home_dir)
             active = directions_mod.active_direction(profile.home_dir)
@@ -1049,7 +1053,7 @@ class TelegramBot(
             items, active = [], None
         latest = self._latest_run(profile_name) or {}
         text, rows, complete = onboarding.build(
-            hh_ok=bool({"hhtoken", "hhuid"} & self._auth_cookie_names(profile.hh.cookies_file)),
+            hh_ok=checked["status"] == OK, hh_message=checked["message"],
             resumes=[r for r in resumes if isinstance(r, dict)],
             directions=items, active=active,
             mode=str((active or {}).get("application_mode") or profile.hh.application_mode or ""),
@@ -2607,10 +2611,20 @@ class TelegramBot(
             target_profile = profile_name
             if client and client.get("profile_name"):
                 target_profile = client["profile_name"]
+            from hh.session_probe import probe, save_catalog, OK
+            checked = await asyncio.to_thread(probe, self._profile(target_profile).hh.cookies_file)
+            note = ""
+            if checked["status"] == OK:
+                try:
+                    save_catalog(client_hh_auth.hh_resume_catalog_path(target_profile), checked["resumes"])
+                except Exception as exc:
+                    log.warning("resume catalog cache refresh failed: %s", type(exc).__name__)
+            else:
+                note = "⚠️ " + checked["message"] + "\nНиже — последний сохранённый список.\n\n"
             resumes = client_hh_auth.load_hh_resume_catalog(target_profile)
             await self._send_text(
                 chat_id,
-                build_hh_resumes_text(target_profile, resumes),
+                note + build_hh_resumes_text(target_profile, resumes),
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
