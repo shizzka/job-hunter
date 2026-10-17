@@ -213,6 +213,18 @@ HH_AUTH_LOGIN_INPUT_SELECTORS = (
     "input[placeholder*='email' i]",
 )
 
+HH_AUTH_EMAIL_MODE_SELECTORS = (
+    "label:has(input[data-qa='credential-type-email'])",
+    "label:has-text('Почта')",
+    "input[data-qa='credential-type-email']",
+)
+
+HH_AUTH_EMAIL_INPUT_SELECTORS = (
+    "input[data-qa='applicant-login-input-email']",
+    "input[inputmode='email']",
+    "input[type='email']",
+)
+
 HH_AUTH_CODE_INPUT_SELECTORS = (
     "input[autocomplete='one-time-code']",
     "input[name*='code' i]",
@@ -445,7 +457,32 @@ async def _fill_first_visible(page, selectors: tuple[str, ...], value: str, *, g
     return True
 
 
+async def _fill_hh_auth_email(page, value: str, *, guard=None, owner_guard=None, receipts=None) -> bool:
+    """Switch hh's login form to «Почта» and type the address."""
+    email_input = await _first_visible_locator(page, HH_AUTH_EMAIL_INPUT_SELECTORS)
+    if email_input is None:
+        tab = await _first_visible_locator(page, HH_AUTH_EMAIL_MODE_SELECTORS)
+        if tab is None or not await _mutation_allowed(guard, owner_guard):
+            return False
+        try:
+            await tab.click(timeout=5000)
+        except Exception:
+            await tab.click(timeout=5000, force=True)
+        await page.wait_for_timeout(600)
+        email_input = await _first_visible_locator(page, HH_AUTH_EMAIL_INPUT_SELECTORS)
+    if email_input is None or not await _mutation_allowed(guard, owner_guard):
+        return False
+    await email_input.click(timeout=5000)
+    await email_input.fill("", timeout=5000)
+    await email_input.press_sequentially(value, delay=60)
+    if receipts is not None:
+        receipts.append((email_input, value))
+    return True
+
+
 async def _fill_hh_auth_login(page, value: str, *, guard=None, owner_guard=None, receipts=None) -> bool:
+    if "@" in value:
+        return await _fill_hh_auth_email(page, value.strip(), guard=guard, owner_guard=owner_guard, receipts=receipts)
     phone_input = await _first_visible_locator(
         page,
         (
@@ -920,6 +957,18 @@ async def _drive_hh_auth_step(
             )
         if login and not await current_prompt("login"):
             return stale
+        if login and "@" in login and await _first_visible_locator(page, HH_AUTH_EMAIL_INPUT_SELECTORS) is None:
+            # Switching to «Почта» changes the visible form: switch first, then re-capture the prompt.
+            tab = await _first_visible_locator(page, HH_AUTH_EMAIL_MODE_SELECTORS)
+            if tab is not None and await _mutation_allowed(None, mutation_owner):
+                try:
+                    await tab.click(timeout=5000)
+                except Exception:
+                    await tab.click(timeout=5000, force=True)
+                await page.wait_for_timeout(600)
+            prompt_identity = None
+            if not await capture_prompt("login"):
+                return stale
         if login and await _fill_hh_auth_login(page, login, guard=lambda: credential_guard("login"),
                                                owner_guard=mutation_owner, receipts=receipts):
             before_url = str(getattr(page, "url", "") or "")
@@ -956,6 +1005,18 @@ async def _drive_hh_auth_step(
             )
         if login and not await current_prompt("login"):
             return stale
+        if login and "@" in login and await _first_visible_locator(page, HH_AUTH_EMAIL_INPUT_SELECTORS) is None:
+            # Switching to «Почта» changes the visible form: switch first, then re-capture the prompt.
+            tab = await _first_visible_locator(page, HH_AUTH_EMAIL_MODE_SELECTORS)
+            if tab is not None and await _mutation_allowed(None, mutation_owner):
+                try:
+                    await tab.click(timeout=5000)
+                except Exception:
+                    await tab.click(timeout=5000, force=True)
+                await page.wait_for_timeout(600)
+            prompt_identity = None
+            if not await capture_prompt("login"):
+                return stale
         if login and await _fill_hh_auth_login(page, login, guard=lambda: credential_guard("login"),
                                                owner_guard=mutation_owner, receipts=receipts):
             before_url = str(getattr(page, "url", "") or "")
