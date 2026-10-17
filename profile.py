@@ -35,6 +35,7 @@ _CANDIDATE_CONFIG_KEYS = (
     "HH_AUTO_ANSWER_SALARY_RULE",
 )
 _default_candidate_settings: dict[str, str] | None = None
+_default_chat_responder: bool | None = None
 
 
 def validate_profile_name(name: str, *, allow_default: bool = True) -> str:
@@ -147,6 +148,8 @@ class Profile:
     filter_policy: str = "qa"
     filter_relevant_keywords: list[str] = field(default_factory=list)
     filter_exclude_keywords: list[str] = field(default_factory=list)
+    # None = global HH_CHAT_RESPONDER_ENABLED; a profile may switch chat cards off/on for itself.
+    chat_responder_enabled: bool | None = None
 
     # Источники
     hh: HHConfig = field(default_factory=HHConfig)
@@ -357,6 +360,11 @@ def _release_lock() -> None:
 def _patch_config(p: Profile):
     """Записать значения профиля обратно в config.*, чтобы все модули их видели."""
     global _default_candidate_settings
+    global _default_chat_responder
+    if _default_chat_responder is None:
+        _default_chat_responder = bool(getattr(config, "HH_CHAT_RESPONDER_ENABLED", False))
+    chat = getattr(p, "chat_responder_enabled", None)
+    config.HH_CHAT_RESPONDER_ENABLED = _default_chat_responder if chat is None else bool(chat)
     config.ACTIVE_DIRECTION = getattr(p, "direction", None)
     config.ACTIVE_DIRECTION_NAME = getattr(p, "direction_name", "")
     config._DIRECTION_BASE_PROFILE = getattr(p, "_direction_base", None)
@@ -838,6 +846,8 @@ def _apply_env_overrides(profile: Profile, env: dict[str, str]):
                     values.append(item)
         return values or default
 
+    if env.get("HH_CHAT_RESPONDER_ENABLED", "").strip():
+        profile.chat_responder_enabled = _flag("HH_CHAT_RESPONDER_ENABLED")
     if "VACANCY_FILTER_POLICY" in env:
         policy = env["VACANCY_FILTER_POLICY"].strip().lower()
         if policy not in {"qa", "generic"}:
