@@ -459,8 +459,12 @@ async def _fill_hh_auth_login(page, value: str, *, guard=None, owner_guard=None,
         national = digits[1:] if len(digits) == 11 and digits[0] in "78" else digits
         if not await _mutation_allowed(guard, owner_guard):
             return False
+        # hh's masked phone input ignores programmatic fill (the value resets and the form
+        # reports «обязательное поле»); type the digits like a person instead.
         try:
-            await phone_input.fill(national, timeout=5000)
+            await phone_input.click(timeout=5000)
+            await phone_input.fill("", timeout=5000)
+            await phone_input.press_sequentially(national, delay=80)
         except TypeError:
             if not await _mutation_allowed(guard, owner_guard):
                 return False
@@ -768,7 +772,9 @@ async def _drive_hh_auth_step(
             return False
         try:
             for item, expected in receipts:
-                if await item.input_value() != expected:
+                actual = await item.input_value()
+                # The phone mask shows «900 000-00-00» for typed «9000000000».
+                if actual != expected and not (expected.isdigit() and re.sub(r"\D", "", actual) == expected):
                     return False
         except Exception:
             return False
