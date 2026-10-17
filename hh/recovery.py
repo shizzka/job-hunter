@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlsplit
 from browser_action_boundary import RUNTIME, bootstrap_boundary
 from hh.response_path import RESPONSE_PATH, canonical_path, is_response_path
 from hh import observation
+from hh.request_journal import journal_path, record_unknown_request
 from hh.ui import CHALLENGE_SELECTOR, CHALLENGE_TEXT, HHUIGuard, HHUnexpectedUI
 
 AUTH_URL = 'https://hh.ru/applicant/resumes'
@@ -107,6 +108,7 @@ class PageActions:
         self.observations += 1
         watch = getattr(self.page.context, '_hh_action_watch', None)
         requires_stop = _unknown_requires_stop(self.session, request, watch)
+        _record_private_request(self, 'page', request, reason)
         with contextlib.suppress(Exception):
             _record_unknown(self, 'page', request, reason, frame_kind, event_url, requires_stop)
         if requires_stop:
@@ -153,10 +155,12 @@ class ContextActions:
     application_post_sequence: int = 0
     observations: int = 0
     last_unknown_diagnostic: dict = field(default_factory=dict)
+    request_journal_path: object = None
 
     def mark_unknown(self, request=None, *, reason='unclassified_event', frame_kind=None, event_url=None):
         self.observations += 1
         requires_stop = _unknown_requires_stop(self.session, request, self)
+        _record_private_request(self, 'context', request, reason)
         with contextlib.suppress(Exception):
             _record_unknown(self, 'context', request, reason, frame_kind, event_url, requires_stop)
         if not requires_stop:
@@ -236,6 +240,16 @@ def _unknown_classification(request, reason, frame_kind, event_url):
                 if page is not None:
                     diagnostic['frame'] = 'main' if frame is page.main_frame else 'child'
     return diagnostic
+
+
+def _record_private_request(monitor, scope, request, reason):
+    try:
+        record_unknown_request(monitor, scope, request, reason)
+    except Exception as exc:
+        # Observation failure cannot change the action boundary, and exception
+        # text may contain the private address or payload.
+        with contextlib.suppress(Exception):
+            log.warning('HH private request signature unavailable: %s', type(exc).__name__)
 
 
 def _record_unknown(monitor, scope, request, reason, frame_kind, event_url, requires_stop):
@@ -423,7 +437,7 @@ def monitor_page(session, page):
     context = page.context
     watch = getattr(context, '_hh_action_watch', None)
     if watch is None:
-        watch = ContextActions(session, context)
+        watch = ContextActions(session, context, request_journal_path=journal_path(session))
         context._hh_action_watch = watch
         def request_seen(request):
             try:
