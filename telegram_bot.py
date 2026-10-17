@@ -771,8 +771,70 @@ class TelegramBot(
         text += "\n\nОтветьте сообщением. Ничего не сохранится без подтверждения."
         await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
 
+    async def _accept_facts_upload(self, chat_id: int, principal: dict, message: dict) -> bool:
+        """«📥 Загрузить базу фактов»: a whole .md/.txt becomes the profile's facts base after preview."""
+        from telegram_app import facts_upload
+        profile_name = self._selected_profile(principal)
+        state = self._candidate_state(principal["user_id"], profile_name)
+        if state.get("mode") != "upload" or not message.get("document"):
+            return False
+        document = message.get("document") or {}
+        filename = str(document.get("file_name") or "facts.md").strip()
+        markup = self._menu_reply_markup(principal, menu=MENU_CANDIDATE)
+        if not filename.lower().endswith((".md", ".txt", ".markdown")):
+            await self._send_text(chat_id, "❌ Нужен текстовый файл .md или .txt.", reply_markup=markup)
+            return True
+        if int(document.get("file_size") or 0) > facts_upload.MAX_BYTES:
+            await self._send_text(chat_id, "❌ Файл больше 400 КБ — разбейте его или сократите.", reply_markup=markup)
+            return True
+        try:
+            text = (await self._download_file(str(document.get("file_id") or ""))).decode("utf-8-sig")
+        except UnicodeDecodeError:
+            await self._send_text(chat_id, "❌ Файл не в UTF-8. Сохраните его как UTF-8 и пришлите ещё раз.", reply_markup=markup)
+            return True
+        except Exception as exc:
+            log.warning("facts upload download failed: %s", type(exc).__name__)
+            await self._send_text(chat_id, "❌ Не удалось скачать файл. Попробуйте ещё раз.", reply_markup=markup)
+            return True
+        if not text.strip():
+            await self._send_text(chat_id, "❌ Файл пустой.", reply_markup=markup)
+            return True
+        self._facts_uploads = getattr(self, "_facts_uploads", {})
+        self._facts_uploads[principal["user_id"]] = {"profile_name": profile_name, "text": text}
+        state.update(mode="upload_confirm")
+        self._set_candidate_state(principal["user_id"], state)
+        info = facts_upload.summarize(text)
+        buttons = {"inline_keyboard": [[{"text": "✅ Сохранить базу", "callback_data": "kbu:save"},
+                                        {"text": "❌ Отмена", "callback_data": "kbu:cancel"}]]}
+        await self._send_text(chat_id, html.escape(facts_upload.preview_text(filename, info, profile_name)),
+                              reply_markup=buttons)
+        return True
+
+    async def _finish_facts_upload(self, chat_id: int, principal: dict, save: bool) -> None:
+        from telegram_app import facts_upload
+        pending = getattr(self, "_facts_uploads", {}).pop(principal["user_id"], None)
+        self._clear_candidate_state(principal["user_id"])
+        markup = self._menu_reply_markup(principal, menu=MENU_CANDIDATE)
+        if not save or not pending:
+            await self._send_text(chat_id, "Загрузка отменена. База фактов не менялась." if not save
+                                  else "Файл устарел — пришлите его ещё раз.", reply_markup=markup)
+            return
+        if pending["profile_name"] != self._selected_profile(principal):
+            await self._send_text(chat_id, "Профиль изменился — загрузка отменена.", reply_markup=markup)
+            return
+        try:
+            knowledge_dir = os.path.join(self._candidate_profile_dir(pending["profile_name"]), "knowledge")
+            facts_upload.save(knowledge_dir, pending["text"])
+        except (OSError, ValueError) as exc:
+            await self._send_text(chat_id, f"❌ {html.escape(str(exc))}", reply_markup=markup)
+            return
+        await self._send_text(chat_id, "✅ База фактов сохранена. Бот будет отбирать из неё факты под каждую вакансию. "
+                              "Посмотреть: «📋 Мои факты».", reply_markup=markup)
+
     async def _accept_candidate_document(self, chat_id: int, principal: dict, message: dict) -> bool:
         """Accept a UTF-8 txt/md document as one admin candidate fact."""
+        if await self._accept_facts_upload(chat_id, principal, message):
+            return True
         if principal.get("role") != ROLE_ADMIN:
             return False
         profile_name = self._selected_profile(principal)
@@ -2246,6 +2308,23 @@ class TelegramBot(
                     await self._send_text(chat_id, "🧪 Проверяю DeepSeek…", reply_markup=markup)
                     message = await admin_llm.diagnostic(test=True)
             await self._send_text(chat_id, message, reply_markup=markup)
+            return
+
+        if command in {"/candidate_upload", "/candidate_upload_save", "/candidate_upload_cancel"}:
+            if command == "/candidate_upload":
+                owner_menu = reply_menu_for_command(role, "/candidate_upload") or MENU_CANDIDATE
+                self._set_selected_menu(principal["user_id"], owner_menu)
+                self._set_candidate_state(principal["user_id"], {"profile_name": profile_name, "kind": "upload", "mode": "upload"})
+                await self._send_text(
+                    chat_id,
+                    "📥 Пришлите файл с фактами о себе (.md или .txt, до 400 КБ) — как документ.\n\n"
+                    "Это может быть ваша «база фактов»: опыт, навыки, проекты, образование. "
+                    "Строки, которые бот НИКОГДА не должен про вас писать, пометьте [DO_NOT_CLAIM].\n"
+                    "Перед сохранением покажу, что прочитал.",
+                    reply_markup=self._menu_reply_markup(principal, menu=owner_menu),
+                )
+            else:
+                await self._finish_facts_upload(chat_id, principal, save=command == "/candidate_upload_save")
             return
 
         if command in {"/candidate_profile", "/candidate_facts", "/candidate_add_fact", "/candidate_interview", "/candidate_save", "/candidate_edit", "/candidate_skip"}:

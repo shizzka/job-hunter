@@ -68,6 +68,11 @@ class TelegramCallbackRouter:
             await self._answer_callback_query(callback_id, "Не удалось определить чат.", show_alert=True)
             return
 
+        if str(raw_data) in {"kbu:save", "kbu:cancel"}:
+            await self._answer_callback_query(callback_id)
+            await self._dispatch(chat_id, principal, "/candidate_upload_save" if raw_data == "kbu:save" else "/candidate_upload_cancel", "")
+            return
+
         if str(raw_data).startswith("gs:"):
             from telegram_app import onboarding
             command = onboarding.ACTIONS.get(str(raw_data)[3:])
