@@ -1,6 +1,8 @@
 """Access registry for the standalone Telegram control bot."""
 from __future__ import annotations
 
+import json
+import os
 from datetime import datetime
 
 import config
@@ -98,11 +100,48 @@ def save_registry(registry: dict) -> None:
     _store().save(registry)
 
 
+def impersonation_path() -> str:
+    """Dev-only «смотреть как клиент»: enabled only when JOB_HUNTER_IMPERSONATION_FILE is set."""
+    return os.getenv("JOB_HUNTER_IMPERSONATION_FILE", "").strip()
+
+
+def _load_impersonation() -> dict:
+    path = impersonation_path()
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def set_impersonation(admin_user_id: int, profile: str | None) -> None:
+    path = impersonation_path()
+    if not path:
+        raise RuntimeError("Режим «смотреть как» доступен только в dev-боте.")
+    data = _load_impersonation()
+    if profile:
+        data[str(int(admin_user_id))] = {"profile": str(profile)}
+    else:
+        data.pop(str(int(admin_user_id)), None)
+    temp = path + ".tmp"
+    with open(temp, "w", encoding="utf-8") as stream:
+        json.dump(data, stream, ensure_ascii=False, indent=2)
+    os.replace(temp, path)
+
+
 def resolve_user(user_id: int) -> dict | None:
     registry = load_registry()
     for item in registry["users"]:
         if item["user_id"] == int(user_id) and item.get("enabled", True):
-            return dict(item)
+            result = dict(item)
+            acting = _load_impersonation().get(str(int(user_id))) if result.get("role") == ROLE_ADMIN else None
+            if acting and acting.get("profile"):
+                # The admin sees the bot exactly as a client of that profile (dev bot only).
+                result.update(role=ROLE_USER, profile=acting["profile"], impersonating=True)
+            return result
     return None
 
 

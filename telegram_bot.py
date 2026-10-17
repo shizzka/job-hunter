@@ -2237,6 +2237,20 @@ class TelegramBot(
         profile_name = self._selected_profile(principal)
         active_command = self._active_command(profile_name)
 
+        if command in {"/act_as", "/act_as_self"} and (role == ROLE_ADMIN or principal.get("impersonating")):
+            target = "" if command == "/act_as_self" else arg.strip()
+            try:
+                if target and target not in self._profile_names():
+                    raise RuntimeError(f"Профиль {target} не найден.")
+                telegram_access.set_impersonation(principal["user_id"], target or None)
+            except RuntimeError as exc:
+                await self._send_text(chat_id, f"❌ {exc}")
+                return
+            fresh = telegram_access.resolve_user(principal["user_id"]) or principal
+            note = (f"👤 Теперь вы видите бота как клиент профиля {target}. Вернуться: /act_as_self"
+                    if target else "👤 Вы снова администратор.")
+            await self._send_text(chat_id, note, reply_markup=self._menu_reply_markup(fresh, menu=MENU_MAIN))
+            return
         if command == "/busy":
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
             return
@@ -2254,6 +2268,8 @@ class TelegramBot(
             return
 
         if command in {"/start", "/menu", "/help"}:
+            if principal.get("impersonating"):
+                await self._send_text(chat_id, f"👤 Режим «смотреть как клиент»: профиль {profile_name}. Вернуться: /act_as_self")
             await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_MAIN)
             if command == "/start":
                 await self._send_getting_started(chat_id, principal, only_if_incomplete=True)
