@@ -1,4 +1,4 @@
-"""Unowned HH mutations outlive a receipt; third-party traffic cannot apply."""
+"""Unowned mutations outlive receipts; third-party never enters the HH POST sequence."""
 import asyncio
 
 import pytest
@@ -46,8 +46,10 @@ def test_hh_mutation_is_passive_before_first_attempt_then_invalidates_receipt(
     ('POST', '/watch/123'), ('PUT', RESPONSE_PATH),
     ('POST', RESPONSE_PATH + '/popup'), ('GET', RESPONSE_PATH + '?resume_id=approved'),
 ])
-def test_third_party_cannot_dirty_owned_attempt_or_application_sequence(
-        tmp_path, stage, host, method, path):
+@pytest.mark.parametrize('flag', ['0', '1'])
+def test_third_party_never_counts_as_application_but_unproven_mutation_stops_when_enabled(
+        tmp_path, monkeypatch, stage, host, method, path, flag):
+    monkeypatch.setenv('HH_PASSIVE_TELEMETRY_ENABLED', flag)
     client, context, page, monitor = monitored_client()
     repository = NativeApplyRepository(tmp_path / 'cookies.json', 'hh')
     retained = []
@@ -67,13 +69,15 @@ def test_third_party_cannot_dirty_owned_attempt_or_application_sequence(
     result = asyncio.run(run_native_attempt(client, repository, URL, operation))
     if stage == 'finished':
         observe()
-    assert result['ok'] and not result.get('uncertain')
-    assert not retained[0].uncertain
-    assert not monitor.unknown and not context._hh_action_watch.unknown
+    stops = flag == '1'
+    assert bool(result.get('uncertain')) is (stops and stage != 'finished')
+    assert result['ok'] is (not stops or stage == 'finished')
+    assert retained[0].uncertain is stops
+    assert monitor.unknown is stops and context._hh_action_watch.unknown is stops
     assert context._hh_action_watch.observations == 1
     assert context._hh_action_watch.application_post_sequence == 0
     assert retained[0]._hh_application_posts == []
-    assert repository.get(URL)['status'] == 'completed'
+    assert repository.get(URL)['status'] == ('uncertain' if stops else 'completed')
 
 
 def test_detached_session_retains_late_context_evidence(tmp_path):

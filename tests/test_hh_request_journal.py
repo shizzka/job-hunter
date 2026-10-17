@@ -50,7 +50,7 @@ def test_private_signature_has_exact_route_and_no_values(tmp_path, caplog, sourc
         attempt._hh_application_posts.append({'owned': True, 'status': 200,
             '_started_monotonic': request_journal.time.monotonic() - 0.5})
         context.emit('request', event)
-        assert context._hh_action_watch.unknown is (host == 'spb.hh.ru')
+        assert context._hh_action_watch.unknown
         return {'ok': True}
 
     asyncio.run(run_native_attempt(client, repository, URL, operation))
@@ -162,13 +162,13 @@ def test_evidence_failure_does_not_change_safety(tmp_path, monkeypatch, caplog, 
         client._external_attempt.begin()
         event = request(page, 'https://' + host + '/unapproved')
         context.emit('request', event)
-        assert monitor.unknown is (host == 'hh.ru')
-        assert context._hh_action_watch.unknown is (host == 'hh.ru')
+        assert monitor.unknown
+        assert context._hh_action_watch.unknown
         return {'ok': True}
 
     result = asyncio.run(run_native_attempt(client, repository, URL, operation))
-    assert bool(result.get('uncertain')) is (host == 'hh.ru')
-    assert repository.get(URL)['status'] == ('uncertain' if host == 'hh.ru' else 'completed')
+    assert result['uncertain']
+    assert repository.get(URL)['status'] == 'uncertain'
     if failure == 'trace':
         assert len(read_json_records(path)) == 2
     if failure == 'symlink':
@@ -179,7 +179,7 @@ def test_evidence_failure_does_not_change_safety(tmp_path, monkeypatch, caplog, 
 @pytest.mark.parametrize('extra', ['malformed', 'response', 'unknown_body'])
 @pytest.mark.parametrize('flag', ['0', '1'])
 def test_live_shape_delivery_never_excuses_second_possible_action(tmp_path, monkeypatch, extra, flag):
-    # No passive classifier is installed until exact live signatures are known.
+    # An unclassified route is still an action candidate with either flag value.
     monkeypatch.setenv('HH_PASSIVE_TELEMETRY_ENABLED', flag)
     client, attempt, _, _ = setup(tmp_path)
     context, page = attempt.context, attempt.page

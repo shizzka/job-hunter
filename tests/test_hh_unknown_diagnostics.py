@@ -126,7 +126,7 @@ def test_unknown_classification_is_logged_and_traced_without_private_values(
         'body_state': 'empty',
         'application_reason': 'none' if host == 'PRIVATE_HOST.invalid' else 'query_fields',
         'scope': 'context', 'observation': 1,
-        'requires_stop': host != 'PRIVATE_HOST.invalid', 'unknown_before': False,
+        'requires_stop': True, 'unknown_before': False,
     }
     assert context._hh_action_watch.unknown is diagnostic['requires_stop']
     assert [row['scope'] for row in traced] == (

@@ -78,7 +78,9 @@ def test_resume_and_vacancy_payload_on_unknown_path_counts_and_stops_after_owned
 @pytest.mark.parametrize('key', ['resume_id', 'resumeId', 'resumeHash', 'resume_hash', 'resume', 'letter'])
 @pytest.mark.parametrize('earlier_unknown', [False, True])
 def test_single_body_field_never_counts_and_only_relaxes_after_owned_post(
-        tmp_path, wire, key, earlier_unknown):
+        tmp_path, monkeypatch, wire, key, earlier_unknown):
+    # Rollback mode preserves the pre-TELEM-2 broad post-200 relaxation.
+    monkeypatch.setenv('HH_PASSIVE_TELEMETRY_ENABLED', '0')
     client, context, page, monitor = monitored_client()
     repository = NativeApplyRepository(tmp_path / 'cookies.json', 'hh')
     event = request(page, 'https://hh.ru/analytics/pageview')
@@ -212,7 +214,8 @@ def test_two_owned_posts_block_reconciliation_and_passive_traffic_relaxation(tmp
 ])
 @pytest.mark.parametrize('earlier_unknown', [False, True])
 @pytest.mark.parametrize('post_status', [None, 500, 200])
-def test_telemetry_never_clears_unknown_before_owned_post(tmp_path, body, headers, earlier_unknown, post_status):
+def test_telemetry_never_clears_unknown_before_owned_post(tmp_path, monkeypatch, body, headers, earlier_unknown, post_status):
+    monkeypatch.setenv('HH_PASSIVE_TELEMETRY_ENABLED', '0')
     client, context, page, monitor = monitored_client()
     repository = NativeApplyRepository(tmp_path / 'cookies.json', 'hh')
     event = request(page, 'https://hh.ru/analytics/pageview')

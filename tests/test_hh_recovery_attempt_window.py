@@ -33,7 +33,7 @@ def test_background_observations_respect_unproven_attempt_window(tmp_path, stage
     watch = context._hh_action_watch
     repository = NativeApplyRepository(tmp_path / 'cookies.json', 'hh')
     retained = []
-    requires_stop = stage != 'idle' and surface in {'event', 'malformed'}
+    requires_stop = stage != 'idle'
 
     def observe():
         if surface == 'event':
@@ -46,7 +46,7 @@ def test_background_observations_respect_unproven_attempt_window(tmp_path, stage
         assert watch.observations == 1
         assert monitor.observations == (1 if surface in {'page', 'event'} else 0)
         assert watch.unknown is requires_stop
-        assert monitor.unknown is (requires_stop and surface == 'event')
+        assert monitor.unknown is (requires_stop and surface in {'page', 'event'})
         if requires_stop:
             assert client._hh_recovery_stop_reason == 'possible_external_action'
             assert client._hh_recovery_uncertain

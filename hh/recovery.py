@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, parse_qsl, unquote_plus, urlsplit
 from browser_action_boundary import RUNTIME, bootstrap_boundary
 from hh.response_path import RESPONSE_PATH, canonical_path, is_response_path
 from hh import observation
+from hh.passive_telemetry import classify_request as passive_telemetry, enabled as passive_telemetry_enabled
 from hh.request_journal import journal_path, record_unknown_request
 from hh.ui import CHALLENGE_SELECTOR, CHALLENGE_TEXT, HHUIGuard, HHUnexpectedUI
 
@@ -280,6 +281,10 @@ def _unknown_requires_stop(session, request, watch):
     if request is None:
         return True
     try:
+        if passive_telemetry_enabled():
+            # Exact passive requests are filtered before application heuristics.
+            # No broader HH-after-200 or third-party exception in this mode.
+            return not passive_telemetry(request) and _mutating_request(request)
         if not _hh_target(request.url) or not _mutating_request(request):
             return False
         if _application_request(request):
@@ -429,6 +434,8 @@ def _application_reason(request, evidence):
 
 def _application_request(request):
     """Share the stop decision and sequence fence for every possible HH submit."""
+    if passive_telemetry(request):
+        return False
     return _application_reason(request, _response_evidence(request)) != 'none'
 
 
@@ -441,6 +448,10 @@ def monitor_page(session, page):
         context._hh_action_watch = watch
         def request_seen(request):
             try:
+                # Sentry envelopes are several JSON documents; classify their
+                # exact signature before malformed_body can look like a submit.
+                if passive_telemetry(request):
+                    return
                 # Every possible submit advances the fence, on any HH path and
                 # with any method. Only actual POSTs supply POST receipts.
                 if _application_request(request):

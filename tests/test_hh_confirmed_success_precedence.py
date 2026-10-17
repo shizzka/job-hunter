@@ -29,9 +29,12 @@ REAL_DISPATCH = apply_orchestrator.dispatch_apply
     ("late_second_post", "result"),
     ("new_attempt_registered", "result"),
     ("post_success_unrelated_put", "result"),
+    ("post_success_unrelated_put_legacy", "result"),
     ("completion_write_error", "result"),
 ])
 def test_owned_confirmation_overrides_only_its_inherited_stop(tmp_path, monkeypatch, variant, consumer):
+    if variant == 'post_success_unrelated_put_legacy':
+        monkeypatch.setenv('HH_PASSIVE_TELEMETRY_ENABLED', '0')
     for key, name in {
         "JOB_HUNTER_HOME": "", "SEEN_VACANCIES_FILE": "seen.json",
         "RUN_HISTORY_FILE": "runs.jsonl", "RUNTIME_STATUS_FILE": "runtime.json",
@@ -231,29 +234,30 @@ def test_owned_confirmation_overrides_only_its_inherited_stop(tmp_path, monkeypa
             assert not client._hh_recovery_stop_reason
             assert result["cover_letter_status"] == "submitted_with_application"
             assert repository.claim(VACANCY_URL, "", "") is None
-            if variant == "post_success_unrelated_put":
+            if variant.startswith("post_success_unrelated_put"):
                 assert not result.get("hh_hard_stop")
-                # An unrelated readable payload cannot submit another resume
-                # and preserves the already verified receipt.
+                # Enabled mode requires an exact passive signature even after
+                # confirmed success; rollback retains the earlier relaxation.
                 await page.evaluate("""() => fetch('/applicant/synthetic-preference', {
                   method: 'PUT', body: 'synthetic-only'
                 }).catch(() => null)""")
                 result = apply_orchestrator.apply_result_with_current_uncertainty(
                     vacancy, client, result, owned_attempt=attempt
                 )
+                stops = variant == 'post_success_unrelated_put'
                 assert len(unrelated_mutations) == 1
-                assert monitor.unknown is False
-                assert context._hh_action_watch.unknown is False
+                assert monitor.unknown is stops
+                assert context._hh_action_watch.unknown is stops
                 assert context._hh_action_watch.application_post_sequence == 1
                 assert len(attempt._hh_application_posts) == 1
                 assert attempt._hh_application_posts[0]["owned"] is True
                 assert attempt._hh_application_posts[0]["status"] == 200
                 assert len(apply_core_calls) == len(popup_posts) == len(fresh_get_calls) == 1
-                assert result.get("ok") is True
-                assert result.get("uncertain") is False
-                assert result.get("submission_status") == "success_confirmed"
-                assert not client._hh_recovery_stop_reason
-                assert repository.get(VACANCY_URL)["status"] == "completed"
+                assert result.get("ok") is not stops
+                assert result.get("uncertain") is stops
+                assert (result.get("submission_status") == "success_confirmed") is not stops
+                assert bool(client._hh_recovery_stop_reason) is stops
+                assert repository.get(VACANCY_URL)["status"] == ('uncertain' if stops else 'completed')
                 assert repository.claim(VACANCY_URL, "", "") is None
                 return
             if consumer == "result":

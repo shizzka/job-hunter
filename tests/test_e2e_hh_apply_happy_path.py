@@ -332,12 +332,13 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
 
 
 @pytest.mark.parametrize('effect, expected_applied, expected_sequence', [
-    ("await fetch('/analytics/pageview',{method:'POST',body:'pageview=applied'});", True, 1),
+    ("await fetch('/anatskytics?event=applied',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:''}).catch(()=>{});", True, 1),
+    ("await fetch('/analytics/pageview',{method:'POST',body:'pageview=applied'});", False, 1),
     ("await fetch('/applicant/vacancy_response',{method:'POST',body:'vacancy_id=2'}).catch(()=>{});", False, 2),
     ("await fetch('/unknown?resume_id=other&letter=').catch(()=>{});", False, 2),
-    ("await fetch('/unknown',{method:'POST',body:new URLSearchParams({resume_hash:'other'})}).catch(()=>{});", True, 1),
-    ("await fetch('/analytics/pageview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nested:{resumeHash:'other'}})});", True, 1),
-    ("const data=new FormData();data.append('resume_id','other');await fetch('/analytics/pageview',{method:'POST',body:data});", True, 1),
+    ("await fetch('/unknown',{method:'POST',body:new URLSearchParams({resume_hash:'other'})}).catch(()=>{});", False, 1),
+    ("await fetch('/analytics/pageview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nested:{resumeHash:'other'}})});", False, 1),
+    ("const data=new FormData();data.append('resume_id','other');await fetch('/analytics/pageview',{method:'POST',body:data});", False, 1),
     ("await fetch('/unknown',{method:'POST',body:new URLSearchParams({resume_hash:'other',vacancy_id:'2'})}).catch(()=>{});", False, 2),
     ("const data=new FormData();Object.entries({_xsrf:'fixture',vacancy_id:'2',resume_hash:'other',letter:'',lux:'true',withoutTest:'no',ignore_postponed:'true',incomplete:'false',mark_applicant_visible_in_vacancy_country:'false',country_ids:'[]',hhtmFromLabel:'',hhtmSourceLabel:''}).forEach(([k,v])=>data.append(k,v));await fetch('/analytics/pageview',{method:'POST',body:data});", False, 2),
 ])
@@ -355,10 +356,10 @@ def test_post_submit_hh_traffic_preserves_only_owned_application(
     assert gate.entries['2']['action'] == ('applied' if expected_applied else 'apply_uncertain'), gate.evidence
     assert attempt.repository.get(VACANCY_URL)['status'] == ('completed' if expected_applied else 'uncertain')
     if expected_applied:
-        assert any(method == 'POST' and url in {ANALYTICS_URL, 'https://hh.ru/unknown'}
+        assert any(method == 'POST' and url == 'https://hh.ru/anatskytics?event=applied'
                    for method, url in gate.answered)
         assert len(attempt._hh_application_posts) == 1
-        assert watch.last_unknown_diagnostic['requires_stop'] is False
+        assert not watch.last_unknown_diagnostic
         assert len([call for call in gate.fresh_gets if call['url'] == VACANCY_URL]) == 1
         assert gate.dispatch_results[0]['submission_status'] == 'success_confirmed'
     else:
