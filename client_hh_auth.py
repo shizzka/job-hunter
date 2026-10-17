@@ -378,15 +378,25 @@ def _hh_auth_page_signature(url: str, text: str) -> str:
 
 
 async def _hh_auth_page_text(page) -> str:
+    """Visible page text only: hh embeds every login-step phrase («введите код»…) in page
+    state, so raw HTML would make the phone step look like the SMS-code step."""
     try:
-        return " ".join((await page.locator("body").inner_text(timeout=1500)).split()).casefold()
+        return " ".join((await page.locator("body").inner_text(timeout=4000)).split()).casefold()
     except Exception:
-        try:
-            raw = await page.content()
-        except Exception:
-            return ""
-        raw = re.sub(r"<[^>]+>", " ", raw)
-        return " ".join(raw.split()).casefold()
+        pass
+    try:
+        text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+        if isinstance(text, str):
+            return " ".join(text.split()).casefold()
+    except Exception:
+        pass
+    try:
+        raw = await page.content()
+    except Exception:
+        return ""
+    raw = re.sub(r"(?is)<(script|style|template|noscript)\b.*?</\1\s*>", " ", raw)
+    raw = re.sub(r"<[^>]+>", " ", raw)
+    return " ".join(raw.split()).casefold()
 
 
 async def _first_visible_locator(page, selectors: tuple[str, ...]):
