@@ -31,7 +31,11 @@ POLITENESS_FIELDS = ('allTopicCount', 'readTopicPercent', 'replyTotalWorkingTime
 MANAGER_FIELDS = ('inactive_days', 'inactiveMinutes', 'trl_code')
 VACANCY_FIELDS = ('vacancy_name', 'company_id', 'company_name', 'company_trusted',
                   'company_accredited_it', 'vacancy_creation_time',
-                  'vacancy_publication_time', 'closed_for_applicants')
+                  'vacancy_publication_time', 'closed_for_applicants',
+                  'vacancy_work_experience', 'vacancy_area_id', 'vacancy_area_name',
+                  'vacancy_work_formats', 'vacancy_salary_from', 'vacancy_salary_to',
+                  'vacancy_salary_currency', 'vacancy_salary_gross',
+                  'vacancy_employment', 'vacancy_professional_role_ids')
 
 
 def _object(value):
@@ -41,6 +45,22 @@ def _object(value):
 def _scalar(value):
     # Do not copy nested objects, even under an allowed field name.
     return value if type(value) in (str, int, float, bool) else None
+
+
+def _first_scalar(value, *keys):
+    value = _object(value)
+    for key in keys:
+        scalar = _scalar(value.get(key))
+        if scalar is not None:
+            return scalar
+    return None
+
+
+def _short_list(value, item_type):
+    # Unknown containers/items must not bring names or other nested data along.
+    if not isinstance(value, list) or len(value) > 100:
+        return None
+    return [item for item in value if type(item) is item_type]
 
 
 def _activity_code(value):
@@ -105,6 +125,8 @@ def parse_page(html, *, expected_filter='active'):
             } if manager is not None else None)
             vacancy = _object(vacancies.get(str(topic.get('vacancyId'))))
             company = _object(vacancy.get('company'))
+            area = _object(vacancy.get('area'))
+            compensation = _object(vacancy.get('compensation'))
             row.update({
                 'vacancy_name': _scalar(vacancy.get('name')),
                 'company_id': _number(company.get('id', company.get('@id'))),
@@ -112,8 +134,23 @@ def parse_page(html, *, expected_filter='active'):
                 'company_trusted': _scalar(company.get('@trusted')),
                 'company_accredited_it': _scalar(company.get('accreditedITEmployer')),
                 'vacancy_creation_time': _scalar(vacancy.get('creationTime')),
-                'vacancy_publication_time': _scalar(vacancy.get('publicationTime')),
+                'vacancy_publication_time': (
+                    _scalar(vacancy.get('publicationTime'))
+                    if not isinstance(vacancy.get('publicationTime'), dict)
+                    else _first_scalar(vacancy['publicationTime'], '@timestamp', '$')),
                 'closed_for_applicants': _scalar(vacancy.get('closedForApplicants', vacancy.get('@closedForApplicants'))),
+                'vacancy_work_experience': _scalar(vacancy.get('workExperience')),
+                'vacancy_area_id': _first_scalar(area, 'id', '@id'),
+                'vacancy_area_name': _first_scalar(area, 'name', '$'),
+                'vacancy_work_formats': _short_list(vacancy.get('workFormats'), str),
+                'vacancy_salary_from': _first_scalar(compensation, 'from', '@from'),
+                'vacancy_salary_to': _first_scalar(compensation, 'to', '@to'),
+                'vacancy_salary_currency': _first_scalar(
+                    compensation, 'currencyCode', 'currency', '@currencyCode'),
+                'vacancy_salary_gross': _first_scalar(compensation, 'gross', '@gross'),
+                'vacancy_employment': _first_scalar(vacancy, 'employment', 'employmentForm'),
+                'vacancy_professional_role_ids': _short_list(
+                    vacancy.get('professionalRoleIds'), int),
             })
             records.append(row)
         # Counter keys come from HH tabs; retain numeric counts only, never text.

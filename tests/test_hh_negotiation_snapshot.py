@@ -11,6 +11,16 @@ import pytest
 from hh import negotiation_snapshot as ns
 
 
+VACANCY_ATTRIBUTES = {
+    'vacancy_work_experience': 'between1And3',
+    'vacancy_area_id': 1, 'vacancy_area_name': 'Москва',
+    'vacancy_work_formats': ['REMOTE', 'ON_SITE', 'HYBRID'],
+    'vacancy_salary_from': 100000, 'vacancy_salary_to': 200000,
+    'vacancy_salary_currency': 'RUR', 'vacancy_salary_gross': False,
+    'vacancy_employment': 'full', 'vacancy_professional_role_ids': [96, 165],
+}
+
+
 def html(state):
     return '<template id="HH-Lux-InitialState">' + json.dumps(state) + '</template>'
 
@@ -44,6 +54,12 @@ def state(page=0, pages=1, *, archived=False):
         'vacanciesShort': {'vacanciesList': [{
             'id': 42, 'name': 'Synthetic vacancy', 'creationTime': 100,
             'publicationTime': 200, 'closedForApplicants': False,
+            'workExperience': 'between1And3',
+            'area': {'id': 1, 'name': 'Москва', 'managerName': 'PRIVATE NAME'},
+            'workFormats': ['REMOTE', 'ON_SITE', 'HYBRID'],
+            'compensation': {'from': 100000, 'to': 200000, 'currencyCode': 'RUR',
+                             'gross': False, 'managerName': 'PRIVATE NAME'},
+            'employment': 'full', 'professionalRoleIds': [96, 165],
             'employerManager': {'@managerId': '9', '@hhid': 99, '@userId': 123,
                                 '@firstName': 'PRIVATE FIRST', '@lastName': 'PRIVATE LAST'},
             'company': {'id': 8, 'visibleName': 'Synthetic company', 'name': 'Fallback company',
@@ -90,7 +106,90 @@ def test_parse_active_joins_and_public_vacancy_fields():
     assert {key: row[key] for key in ns.VACANCY_FIELDS} == {
         'vacancy_name': 'Synthetic vacancy', 'company_id': 8, 'company_name': 'Synthetic company',
         'company_trusted': True, 'company_accredited_it': True,
-        'vacancy_creation_time': 100, 'vacancy_publication_time': 200, 'closed_for_applicants': False}
+        'vacancy_creation_time': 100, 'vacancy_publication_time': 200,
+        'closed_for_applicants': False, **VACANCY_ATTRIBUTES}
+
+
+@pytest.mark.parametrize('archived', [False, True])
+def test_vacancy_attributes_in_jsonl(tmp_path, monkeypatch, archived):
+    payload = state(archived=archived)
+    vacancy = payload['vacanciesShort']['vacanciesList'][0]
+    vacancy['publicationTime'] = {'@timestamp': 1700000000000,
+                                 '$': '2023-11-14T22:13:20Z', 'name': 'PRIVATE NAME'}
+    collect, _, _ = transport(tmp_path, monkeypatch,
+        lambda req: httpx.Response(200, text=html(payload)))
+    assert collect(archived=archived)['complete']
+    row = rows(tmp_path)[0]
+    assert {key: row[key] for key in VACANCY_ATTRIBUTES} == VACANCY_ATTRIBUTES
+    assert row['vacancy_publication_time'] == 1700000000000
+    assert set(row) == set(ns.TOPIC_FIELDS + ns.VACANCY_FIELDS) | {
+        'snapshot_id', 'fetched_at', 'filter', 'page', 'employer_politeness', 'manager_activity'}
+    assert 'PRIVATE' not in json.dumps(rows(tmp_path))
+
+
+@pytest.mark.parametrize('publication,expected', [
+    ({'$': '2023-11-14T22:13:20Z'}, '2023-11-14T22:13:20Z'),
+    ({'@timestamp': {}, '$': '2023-11-14T22:13:20Z'}, '2023-11-14T22:13:20Z'),
+    ({'@timestamp': 0, '$': 'unused'}, 0),
+    ({'@timestamp': {'name': 'PRIVATE NAME'}, '$': []}, None),
+    ({'name': 'PRIVATE NAME'}, None), ([], None), (None, None), (200, 200),
+])
+def test_publication_time_known_scalars(publication, expected):
+    payload = state()
+    payload['vacanciesShort']['vacanciesList'][0]['publicationTime'] = publication
+    row = ns.parse_page(html(payload))['records'][0]
+    assert row['vacancy_publication_time'] == expected
+    assert 'PRIVATE' not in json.dumps(row)
+
+
+def test_vacancy_xml_attributes_and_employment_form():
+    payload = state()
+    vacancy = payload['vacanciesShort']['vacanciesList'][0]
+    vacancy.update(area={'@id': '2', '$': 'Санкт-Петербург'},
+                   employment=None, employmentForm='PART_TIME',
+                   compensation={'@from': 100, '@to': 200,
+                                 '@currencyCode': 'RUR', '@gross': True})
+    row = ns.parse_page(html(payload))['records'][0]
+    assert {key: row[key] for key in VACANCY_ATTRIBUTES} == dict(
+        VACANCY_ATTRIBUTES, vacancy_area_id='2', vacancy_area_name='Санкт-Петербург',
+        vacancy_employment='PART_TIME', vacancy_salary_from=100,
+        vacancy_salary_to=200, vacancy_salary_gross=True)
+
+
+@pytest.mark.parametrize('missing', [False, True])
+def test_unknown_or_missing_vacancy_attributes_are_null(missing):
+    payload = state()
+    vacancy = payload['vacanciesShort']['vacanciesList'][0]
+    fields = ('workExperience', 'area', 'workFormats', 'compensation',
+              'employment', 'employmentForm', 'professionalRoleIds')
+    for field in fields:
+        if missing:
+            vacancy.pop(field, None)
+        else:
+            vacancy[field] = {'name': 'PRIVATE NAME', 'unknown': ['PRIVATE NAME']}
+    if not missing:
+        vacancy['area'] = {'id': {}, 'name': ['PRIVATE NAME']}
+        vacancy['compensation'] = {key: {'name': 'PRIVATE NAME'} for key in (
+            'from', 'to', 'currencyCode', 'gross')}
+    row = ns.parse_page(html(payload))['records'][0]
+    assert {key: row[key] for key in VACANCY_ATTRIBUTES} == dict.fromkeys(VACANCY_ATTRIBUTES)
+    assert 'PRIVATE' not in json.dumps(row)
+
+
+@pytest.mark.parametrize('formats,roles,expected_formats,expected_roles', [
+    ([], [], [], []),
+    (['REMOTE', {'name': 'PRIVATE NAME'}, ['PRIVATE NAME'], 1, True],
+     [96, True, '165', {'name': 'PRIVATE NAME'}, [1], 2.5], ['REMOTE'], [96]),
+    (['REMOTE'] * 101, [96] * 101, None, None),
+])
+def test_vacancy_lists_are_short_and_typed(formats, roles, expected_formats, expected_roles):
+    payload = state()
+    payload['vacanciesShort']['vacanciesList'][0].update(
+        workFormats=formats, professionalRoleIds=roles)
+    row = ns.parse_page(html(payload))['records'][0]
+    assert row['vacancy_work_formats'] == expected_formats
+    assert row['vacancy_professional_role_ids'] == expected_roles
+    assert 'PRIVATE' not in json.dumps(row)
 
 
 @pytest.mark.parametrize('value,expected', [
