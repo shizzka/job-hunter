@@ -65,3 +65,14 @@ def test_markdown_report_has_summary_and_salary_table():
     text = m.export_markdown(snapshot, m.summarize(snapshot)).decode("utf-8")
     assert text.startswith("# Рынок вакансий hh.ru")
     assert "## QA lead" in text and "| [QA Lead](https://hh.ru/vacancy/1) |" in text
+
+
+def test_explicit_tax_period_source_and_title_level():
+    row = m._row("QA lead", vacancy(1, "Lead QA Engineer", {"from": 1000, "currencyCode": "USD", "gross": True, "mode": "MONTH"}))
+    assert (row["salary_tax"], row["salary_period"], row["salary_source"], row["level"]) == (
+        "gross (до вычета налогов)", "в месяц", "hh: зарплата в вакансии", "lead")
+    assert row["salary_from_net"] is None and row["salary_currency"] == "USD"
+    plain = m._row("QA", vacancy(2, "QA Engineer", {"to": 100000, "currencyCode": "RUR", "mode": "MONTH"}))
+    assert plain["salary_tax"] == "не указано" and plain["level"] == ""
+    none = m._row("QA", vacancy(3, "Head of QA"))
+    assert none["salary_source"] == "не указана" and none["level"] == "head/director"

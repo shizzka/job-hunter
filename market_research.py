@@ -55,15 +55,40 @@ def strict_match(query: str, title: str) -> bool:
     return _stem_tokens(query) <= _stem_tokens(title)
 
 
+_LEVELS = (
+    ("head/director", r"\b(head|director|cto|vp)\b|директор|руководитель (направления|департамента)|head of"),
+    ("manager", r"\bmanager\b|менеджер|руководитель"),
+    ("lead", r"\b(lead|лид|teamlead|team lead|тимлид)\b|ведущ"),
+    ("senior", r"\bsenior\b|старш|сеньор"),
+    ("middle", r"\bmiddle\b|мидл"),
+    ("junior", r"\b(junior|intern|trainee)\b|младш|стажер|стажёр|джун"),
+)
+
+
+def title_level(title: str) -> str:
+    """Level as stated in the vacancy title (hh has no grade field); empty if not stated."""
+    text = str(title).casefold()
+    for label, pattern in _LEVELS:
+        if re.search(pattern, text):
+            return label
+    return ""
+
+
 def parse_compensation(value) -> dict:
     """Monthly rouble bounds, net-estimated; other currencies/modes are kept as unknown."""
     result = {"salary_from": None, "salary_to": None, "salary_currency": "", "salary_gross": None,
+              "salary_tax": "", "salary_source": "не указана", "salary_period": "",
               "salary_from_net": None, "salary_to_net": None}
     if not isinstance(value, dict) or "noCompensation" in value:
         return result
     currency = str(value.get("currencyCode") or "")
     result["salary_currency"] = currency
     result["salary_gross"] = bool(value.get("gross")) if "gross" in value else None
+    # Only what hh states explicitly; absence of the flag stays "не указано".
+    result["salary_tax"] = {True: "gross (до вычета налогов)", False: "net (на руки)"}.get(result["salary_gross"], "не указано")
+    result["salary_source"] = "hh: зарплата в вакансии"
+    result["salary_period"] = {"MONTH": "в месяц", "SHIFT": "за смену", "HOUR": "в час", "FLY_IN_FLY_OUT": "за вахту"}.get(
+        str(value.get("mode") or "MONTH"), str(value.get("mode") or ""))
     if str(value.get("mode") or "MONTH") != "MONTH":
         return result
     for side in ("from", "to"):
@@ -91,6 +116,7 @@ def _row(query: str, vacancy: dict) -> dict:
         "company": str(company.get("visibleName") or company.get("name") or ""),
         "area": str(area.get("name") or ""),
         "experience": EXPERIENCE.get(str(vacancy.get("workExperience") or ""), str(vacancy.get("workExperience") or "")),
+        "level": title_level(vacancy.get("name") or ""),
         "formats": ", ".join(FORMATS.get(f, f) for f in dict.fromkeys(formats)),
         "published": published[:10],
         "responses": vacancy.get("totalResponsesCount"),
@@ -209,9 +235,9 @@ def summary_text(summary: list[dict], *, strict: bool = True) -> str:
 
 
 def export_csv(snapshot: dict) -> bytes:
-    columns = ["query", "strict_match", "title", "company", "area", "experience", "formats",
-               "salary_from", "salary_to", "salary_currency", "salary_gross", "salary_from_net",
-               "salary_to_net", "responses", "published", "url"]
+    columns = ["query", "strict_match", "title", "level", "company", "area", "formats", "experience",
+               "salary_from", "salary_to", "salary_currency", "salary_tax", "salary_period", "salary_source",
+               "salary_from_net", "salary_to_net", "responses", "published", "url"]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=columns, delimiter=";", extrasaction="ignore")
     writer.writeheader()
@@ -224,7 +250,8 @@ def export_markdown(snapshot: dict, summary: list[dict]) -> bytes:
     """Post-ready report: summary per title plus the salaried vacancies table."""
     lines = [f"# Рынок вакансий hh.ru — {snapshot.get('collected_at', '')[:16].replace('T', ' ')}", "",
              "Источник: поиск hh.ru по названию вакансии, вся Россия. Зарплаты — в месяц, «на руки»",
-             "(для «до вычета налогов» × 0,87), только рубли. Строгое совпадение: все слова запроса есть в названии.", ""]
+             "(для «до вычета налогов» × 0,87), только рубли. Строгое совпадение: все слова запроса есть в названии.",
+             "В таблице «От/До» — как в вакансии (валюта и налог — как указал работодатель); источник вилки — hh.ru.", ""]
     for item in summary:
         mid = item["mid"]
         lines += [f"## {item['query']}", "",
@@ -246,11 +273,14 @@ def export_markdown(snapshot: dict, summary: list[dict]) -> bytes:
         rows = [r for r in snapshot.get("rows", []) if r["query"] == item["query"] and r["strict_match"]
                 and (r["salary_from_net"] or r["salary_to_net"])]
         if rows:
-            lines += ["", "| Вакансия | Компания | Город | Опыт | От | До | Откликов |", "|---|---|---|---|---|---|---|"]
+            lines += ["", "| Вакансия | Уровень | Компания | Город | Формат | Опыт | От | До | Налог | Опубл. | Откликов |",
+                      "|---|---|---|---|---|---|---|---|---|---|---|"]
             for r in sorted(rows, key=lambda r: -(r["salary_to_net"] or r["salary_from_net"] or 0)):
                 cell = lambda v: str(v).replace("|", "/")
-                lines.append(f"| [{cell(r['title'])}]({r['url']}) | {cell(r['company'])} | {cell(r['area'])} | "
-                             f"{r['experience']} | {_money(r['salary_from_net'])} | {_money(r['salary_to_net'])} | "
-                             f"{r['responses'] if r['responses'] is not None else '—'} |")
+                raw = lambda v: f"{v:,}".replace(",", " ") if v else "—"
+                lines.append(f"| [{cell(r['title'])}]({r['url']}) | {r['level'] or '—'} | {cell(r['company'])} | "
+                             f"{cell(r['area'])} | {r['formats'] or '—'} | {r['experience']} | "
+                             f"{raw(r['salary_from'])} | {raw(r['salary_to'])} | {r['salary_tax'].split(' ')[0]} | "
+                             f"{r['published']} | {r['responses'] if r['responses'] is not None else '—'} |")
         lines.append("")
     return "\n".join(lines).encode("utf-8")
