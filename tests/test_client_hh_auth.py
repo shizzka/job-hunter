@@ -689,3 +689,76 @@ def test_select_profile_resumes_filters_blank_ids_and_non_qa_titles():
     selected = client_hh_auth._select_profile_resumes("qa", resumes)
 
     assert [item["id"] for item in selected] == ["qa-1", "qa-2", "qa-3"]
+
+
+def test_active_direction_blocks_legacy_import_before_client_calls_or_writes(tmp_path, monkeypatch):
+    import directions
+    from pathlib import Path
+
+    saved = directions.save_direction(tmp_path, {
+        "name": "electrical", "title": "Electrical", "filter_policy": "generic",
+        "search_queries": ["Electrician"], "relevant_keywords": [], "exclude_keywords": [],
+        "variants": [{"hh_resume_hash": "electrical", "title": "Electrician"}],
+    }, texts={"electrical": "Immutable direction resume"})
+    directions.set_active_direction(tmp_path, "electrical")
+    profile = SimpleNamespace(home_dir=str(tmp_path), resume_file=saved["variants"][0]["text_file"])
+    monkeypatch.setattr(client_hh_auth, "_resolve_profile", lambda name: profile)
+    (tmp_path / "profile.env").write_text("HH_RESUME_IDS=previous\n")
+    (tmp_path / "hh_resumes.json").write_text('[{"id":"previous"}]')
+    before = {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    class UnusedClient:
+        def __getattr__(self, name):
+            raise AssertionError("Blocked import must not access the HH client: " + name)
+
+    result = asyncio.run(client_hh_auth.import_current_hh_resumes(UnusedClient(), "qa"))
+
+    assert result["ok"] is False and result["count"] == 0
+    assert "/direction_refresh" in result["error"]
+    assert result["profile_env_path"] == result["resume_file"] == ""
+    assert Path(profile.resume_file).read_text() == "Immutable direction resume"
+    after = {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert before == after
+
+
+def test_direction_activated_during_import_prevents_legacy_publication(tmp_path, monkeypatch):
+    import directions
+    import pytest
+    from hh.browser import CookieBinding, CookiePaths
+    from state_store.hh_cookies import HHCookieRepository
+
+    (tmp_path / "profile.env").write_text("HH_RESUME_IDS=original\n")
+    (tmp_path / "resume.md").write_text("Original resume")
+    profile = SimpleNamespace(home_dir=str(tmp_path), resume_file=str(tmp_path / "resume.md"),
+                              hh=SimpleNamespace(cookies_file=str(tmp_path / "cookies.json")))
+    monkeypatch.setattr(client_hh_auth, "_resolve_profile", lambda name: profile)
+    cookies = [{"name": "hhtoken", "value": "synthetic", "domain": ".hh.ru", "path": "/"}]
+    repository = HHCookieRepository(profile.hh.cookies_file)
+    repository.save(cookies)
+
+    class Client:
+        async def get_resume_ids(self):
+            return [{"id": "qa", "title": "QA Engineer"}]
+
+        async def download_resume_by_id(self, item):
+            directions.save_direction(tmp_path, {
+                "name": "new", "title": "New", "filter_policy": "generic",
+                "search_queries": ["Electrician"], "relevant_keywords": [], "exclude_keywords": [],
+                "variants": [{"hh_resume_hash": "new", "title": "New"}],
+            }, texts={"new": "Direction text"})
+            directions.set_active_direction(tmp_path, "new")
+            return {"raw": "Legacy downloaded text"}
+
+    async def browser_cookies():
+        return cookies
+
+    client = Client()
+    client._context = SimpleNamespace(cookies=browser_cookies)
+    client._cookie_paths = CookiePaths(profile.hh.cookies_file, str(tmp_path / "state"))
+    client._cookie_binding = CookieBinding(repository, repository.snapshot()[1], True, client._context)
+    with pytest.raises(RuntimeError, match="/direction_refresh"):
+        asyncio.run(client_hh_auth.import_current_hh_resumes(client, "qa"))
+    assert (tmp_path / "resume.md").read_text() == "Original resume"
+    assert (tmp_path / "profile.env").read_text() == "HH_RESUME_IDS=original\n"
+    assert not (tmp_path / "hh_resumes.json").exists()
+    assert json.loads((tmp_path / "hh_resume_import.json").read_text())["status"] == "failed"

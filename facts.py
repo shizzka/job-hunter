@@ -20,6 +20,7 @@ import time
 from typing import Any
 
 import config
+from direction_runtime import candidate_home
 from llm_client import get_llm_client
 from state_store.json_store import JsonStore, atomic_write_json
 
@@ -29,8 +30,8 @@ log = logging.getLogger("facts")
 # ---------- путь к файлу ----------
 
 def facts_file_path() -> str:
-    """Путь к facts.json в той же папке что и resume.md (т.е. учитывает активный профиль)."""
-    home = os.path.dirname(config.RESUME_FILE) or os.path.expanduser("~/.job-hunter")
+    """Путь к facts.json профиля, общий для всех его направлений."""
+    home = candidate_home()
     return os.path.join(home, "facts.json")
 
 

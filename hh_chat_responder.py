@@ -35,6 +35,7 @@ import html
 import logging
 import analytics
 import os
+from pathlib import Path
 import re
 import time
 from typing import Any
@@ -169,6 +170,11 @@ def _runtime_paths() -> RuntimePaths:
 def _state_repository(runtime_paths: RuntimePaths | None = None) -> ChatResponderStateRepository:
     paths = runtime_paths or _runtime_paths()
     home = os.path.dirname(paths.resume_file) or os.path.expanduser("~/.job-hunter")
+    # Use captured paths: config may already belong to another profile. Legacy
+    # callers can keep a resume outside JOB_HUNTER_HOME; only direction texts
+    # are nested below their owner's home and must share its chat state.
+    if paths.home_dir and Path(paths.resume_file).resolve().is_relative_to((Path(paths.home_dir) / "directions").resolve()):
+        home = paths.home_dir
     return ChatResponderStateRepository(home, logger=log)
 
 

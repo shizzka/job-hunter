@@ -7,9 +7,11 @@ import pytest
 
 @pytest.mark.parametrize("policy,queries", [("qa", ["manual QA", "QA тестировщик"]),
                                            ("generic", ["электромонтажник", "электрик"])])
-def test_do_fresh_search_uses_lightweight_hh_only_overrides(monkeypatch, policy, queries):
+@pytest.mark.parametrize("direction_active", [False, True])
+def test_do_fresh_search_uses_lightweight_hh_only_overrides(monkeypatch, policy, queries, direction_active):
     captured = {}
     monkeypatch.setattr(config, "VACANCY_FILTER_POLICY", policy)
+    monkeypatch.setattr(config, "ACTIVE_DIRECTION", {"name": "selected"} if direction_active else None, raising=False)
     monkeypatch.setattr(config, "HH_ENABLED", True, raising=False)
     monkeypatch.setattr(config, "HH_FRESH_SEARCH_ENABLED", True, raising=False)
     monkeypatch.setattr(config, "HH_FRESH_SEARCH_QUERIES", ["manual QA", "QA тестировщик"], raising=False)
@@ -45,7 +47,7 @@ def test_do_fresh_search_uses_lightweight_hh_only_overrides(monkeypatch, policy,
     assert result["found"] == 1
     assert captured == {
         "dry_run": False,
-        "queries": queries,
+        "queries": ["электромонтажник", "электрик"] if direction_active else queries,
         "pages": 1,
         "superjob": False,
         "habr": False,

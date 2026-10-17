@@ -10,6 +10,7 @@ import os
 
 import config
 import filters
+from direction_runtime import candidate_home
 
 log = logging.getLogger("prompt_blocks")
 
@@ -197,10 +198,10 @@ def build_vacancy_context_block(vacancy_context: str, limit: int = 1500) -> str:
 
 
 def _knowledge_dir(profile_dir: str | None = None) -> str:
-    """Папка knowledge/ рядом с resume.md (per-profile)."""
+    """Папка knowledge/ профиля, общая для его направлений."""
     import os
     import config
-    home = profile_dir or os.path.dirname(config.RESUME_FILE) or os.path.expanduser("~/.job-hunter")
+    home = profile_dir or candidate_home()
     return os.path.join(home, "knowledge")
 
 
@@ -409,7 +410,7 @@ async def build_filtered_kb_block(
     from kb_retrieval import retrieval_enabled, retrieve_knowledge
     if retrieval_enabled():
         return retrieve_knowledge(
-            vacancy_context, profile_dir=os.path.dirname(config.RESUME_FILE) or os.path.expanduser('~/.job-hunter'),
+            vacancy_context, profile_dir=candidate_home(),
             limit_chars=limit_chars if limit_chars is not None else 10000,
         )
     about_text, sections = _load_kb_filterable()

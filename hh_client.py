@@ -101,6 +101,10 @@ def _absolute_hh_url(url: str) -> str:
 
 
 def _load_resume_text() -> str:
+    from direction_runtime import application_resume
+    selected = application_resume()
+    if selected is not None:
+        return selected
     try:
         if os.path.exists(config.RESUME_FILE):
             with open(config.RESUME_FILE, encoding="utf-8") as f:

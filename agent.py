@@ -527,6 +527,9 @@ async def do_geekjob_login():
 
 async def _save_resume_from_client(client: HHClient):
     """Скачать и сохранить резюме через уже открытый клиент."""
+    if getattr(config, "ACTIVE_DIRECTION", None):
+        print("❌ Обновите тексты через /direction_refresh в Telegram и подтвердите черновик направления.")
+        return
     import hh_resume_pipeline
 
     resume_path = config.RESUME_FILE
@@ -586,6 +589,9 @@ async def _save_resume_from_client(client: HHClient):
 
 async def do_grab_resume():
     """Скачать резюме с hh.ru (отдельный запуск)."""
+    if getattr(config, "ACTIVE_DIRECTION", None):
+        print("❌ Обновите тексты через /direction_refresh в Telegram и подтвердите черновик направления.")
+        return
     client = HHClient()
     try:
         await client.start()
@@ -619,6 +625,13 @@ async def do_manual_apply_token(token: str) -> dict:
         return {"ok": False, "message": "Компания в чёрном списке"}
     if item.get("status") != "pending" or not item.get("allow_ai_apply", True):
         return {"ok": False, "message": "Отклик для этой карточки недоступен"}
+    from direction_runtime import validate_queued
+    try:
+        validate_queued(vacancy)
+    except (ValueError, OSError) as exc:
+        message = str(exc)
+        manual_apply_queue.mark_candidate(token, "stale", message)
+        return {"ok": False, "reason": "direction_context_changed", "message": message}
     evaluation = dict(item.get("evaluation") or {})
     details = str(item.get("details") or "")
     source = vacancy.get("source", "hh")
@@ -1815,8 +1828,9 @@ async def do_search(dry_run: bool = False) -> dict:
                 continue
 
             analytics.count_stage("matcher_pass", v)
-            hh_resume_variant = None
-            if source == "hh" and hh_pipeline.enabled():
+            from direction_runtime import requested_variant
+            hh_resume_variant = requested_variant(v)
+            if hh_resume_variant is None and source == "hh" and hh_pipeline.enabled():
                 if v.get("_hh_resume_variant"):
                     hh_resume_variant = hh_pipeline.get_variant_by_name(v["_hh_resume_variant"])
                 if hh_resume_variant is None:
@@ -2401,7 +2415,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 cover_evaluation["cover_letter_status"] = apply_result.get("cover_letter_status", "unknown")
                 if apply_result.get("ok"):
                     seen.mark_seen(vid, v, "applied")
-                    if source == "hh" and hh_resume_variant is not None:
+                    if source == "hh" and hh_resume_variant is not None and not v.get("_direction_selection"):
                         hh_pipeline.record_successful_apply(v, hh_resume_variant)
                     if source == "hh":
                         hh_guard.record_apply_success()
@@ -2697,7 +2711,7 @@ async def do_fresh_search() -> dict:
         return {"found": 0, "applied": 0, "skipped": 0, "source_stats": {}, "note": "fresh hh disabled"}
 
     queries = ([str(q).strip() for q in getattr(config, "HH_FRESH_SEARCH_QUERIES", []) if str(q).strip()]
-               if filters.uses_qa_policy() else [])
+               if filters.uses_qa_policy() and not getattr(config, "ACTIVE_DIRECTION", None) else [])
     if not queries:
         queries = list(config.SEARCH_QUERIES)
     pages = max(1, int(getattr(config, "HH_FRESH_SEARCH_PAGES", 1) or 1))

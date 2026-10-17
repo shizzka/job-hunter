@@ -6,13 +6,14 @@ from datetime import datetime
 from typing import Any
 
 import config
+from direction_runtime import candidate_home
 from llm_client import get_llm_client
 from llm_utils import parse_llm_json
 from state_store.protected import ProtectedJsonStore
 
 
 def _profile_dir() -> str:
-    return os.path.dirname(config.RESUME_FILE) or os.path.expanduser("~/.job-hunter")
+    return candidate_home()
 
 
 def data_path(profile_dir: str | None = None) -> str:

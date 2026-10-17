@@ -964,6 +964,18 @@ async def _drive_hh_auth_step(
 
 async def import_current_hh_resumes(client: HHClient, profile_name: str) -> dict:
     profile = _resolve_profile(profile_name)
+    import directions
+    direction_import_error = "Активно направление. Обновите его тексты через /direction_refresh и сохраните черновик."
+    if directions.active_direction(profile.home_dir):
+        return {
+            "ok": False,
+            "error": direction_import_error,
+            "count": 0,
+            "catalog_path": "",
+            "profile_env_path": "",
+            "resume_file": "",
+            "resumes": [],
+        }
     cookie_paths = getattr(client, "_cookie_paths", None)
     binding = getattr(client, "_cookie_binding", None)
     cookie_revision = getattr(binding, "revision", None)
@@ -1025,6 +1037,8 @@ async def import_current_hh_resumes(client: HHClient, profile_name: str) -> dict
         raw = Path(selected["path"]).read_text(encoding="utf-8") if selected else ""
         await verify_browser_owner()
         def publish():
+            if directions.active_direction(profile.home_dir):
+                raise RuntimeError(direction_import_error)
             workflow.publish(selected_exports, raw, lambda env, expected: _update_profile_resume_ids(
                 profile_name, selected_exports, env_file=env, expected_content=expected))
         if binding is not None:

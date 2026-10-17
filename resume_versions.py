@@ -27,4 +27,15 @@ def payload(vacancy):
     requested = vacancy.get('_requested_resume') or {}
     result['requested_resume_id'] = requested.get('id', '')
     result['requested_resume_title'] = requested.get('title', '')
+    selected = vacancy.get('_direction_selection')
+    if selected:
+        result.update({
+            'direction': selected['direction'],
+            'hh_resume_hash': selected['hh_resume_hash'],
+            'hh_resume_numeric_id': selected['hh_resume_numeric_id'],
+            'variant_text_sha256': selected['text_sha256'],
+            'selection_strategy': selected['selection_strategy'],
+            'selection_reason': selected['selection_reason'],
+            'direction_variant_scope': 'requested_local_variant',
+        })
     return result

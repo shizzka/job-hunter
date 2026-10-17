@@ -37,6 +37,9 @@ def _publish_refreshed_resume(path, raw, original):
 
 async def do_hh_resume_refresh() -> bool:
     """Refresh only the configured HH ID, without selecting or changing settings."""
+    if getattr(config, "ACTIVE_DIRECTION", None):
+        print("❌ Обновите тексты через /direction_refresh в Telegram и подтвердите черновик направления.")
+        return False
     resume_id = str(config.HH_PRIMARY_RESUME_ID or "").strip()
     configured_title = config.HH_PRIMARY_RESUME_TITLE
     resume_path = config.RESUME_FILE

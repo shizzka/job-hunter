@@ -9,6 +9,7 @@ import os
 import uuid
 import analytics
 import resume_versions
+import direction_runtime
 
 import config
 import company_blacklist
@@ -284,6 +285,13 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
     # in _dispatch_apply after any preflight awaits.
     if company_blacklist.is_blocked(vacancy.get("company", "")):
         return {"ok": False, "message": "Компания в чёрном списке", "reason": "company_blacklisted"}
+    try:
+        selection = direction_runtime.prepare(vacancy)
+    except (ValueError, OSError) as exc:
+        return {"ok": False, "reason": "direction_variant_unavailable", "message": str(exc)}
+    if selection and vacancy.get("source", "hh") == "hh":
+        kwargs["preferred_resume_id"] = selection["hh_resume_hash"]
+        kwargs["preferred_resume_title"] = selection["title"]
     if vacancy.get("source", "hh") == "hh":
         if not kwargs.get("preferred_resume_id") and not kwargs.get("preferred_resume_title"):
             kwargs["preferred_resume_id"] = getattr(config, "HH_PRIMARY_RESUME_ID", "")
@@ -344,7 +352,8 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
         analytics.record_event({"event": "application_attempt"})
         hh_client = kwargs.get("hh_client") or (args[0] if args else None)
         try:
-            result = await _dispatch_apply(vacancy, cover_letter, *args, **kwargs)
+            with direction_runtime.application_context(vacancy):
+                result = await _dispatch_apply(vacancy, cover_letter, *args, **kwargs)
         except Exception as exc:
             monitor = getattr(getattr(hh_client, "_page", None), "_hh_action_monitor", None)
             owned_attempt = getattr(hh_client, "_external_attempt", None) or getattr(monitor, "last_attempt", None)

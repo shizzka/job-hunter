@@ -11,6 +11,7 @@ from datetime import datetime
 import config
 import filters
 import resume_versions
+import direction_runtime
 from llm_client import LLMProvidersExhaustedError, get_llm_client
 
 log = logging.getLogger("matcher")
@@ -31,6 +32,11 @@ def _load_resume() -> str:
         with open(config.RESUME_FILE) as f:
             return f.read().strip()
     return f"(Резюме не найдено — заполни {config.RESUME_FILE})"
+
+
+def _resume_for_vacancy(vacancy: dict) -> str:
+    selected = direction_runtime.resume_text(vacancy)
+    return _load_resume() if selected is None else selected
 
 
 from llm_utils import parse_llm_json as _parse_llm_json, repair_llm_json as _repair_llm_json  # re-export для обратной совместимости
@@ -978,7 +984,7 @@ def _build_matcher_truth_block(vacancy: dict | None = None, details: str = "") -
         if not filters.uses_qa_policy():
             from kb_retrieval import retrieve_knowledge, retrieval_enabled
             knowledge = (retrieve_knowledge(_vacancy_role_haystack(vacancy or {}, details),
-                                            profile_dir=os.path.dirname(config.RESUME_FILE), limit_chars=12000)
+                                            profile_dir=direction_runtime.candidate_home(), limit_chars=12000)
                          if retrieval_enabled() else build_knowledge_base_block()).strip()
         else:
             knowledge = build_knowledge_base_block().strip()
@@ -1053,16 +1059,20 @@ def _clean_cover_letter_output(value: str) -> str:
 def _fallback_cover_letter(vacancy: dict, details: str = "", cover_style: str = "") -> str:
     # Activation sets JOB_HUNTER_HOME to the active profile's home_dir.
     path = os.path.join(config.JOB_HUNTER_HOME, "cover_letter_fallback.md")
-    try:
-        with open(path, encoding="utf-8", newline="") as source:
-            raw = source.read()
-    except FileNotFoundError:
-        pass
-    except UnicodeDecodeError:
-        log.warning("Profile fallback letter rejected: invalid_utf8")
-    except OSError:
-        log.warning("Profile fallback letter rejected: unreadable")
-    else:
+    direction = getattr(config, "ACTIVE_DIRECTION", None) or {}
+    # A profile template can describe another profession in the same account.
+    raw = direction.get("cover_letter_fallback", "") if direction else None
+    if raw is None:
+        try:
+            with open(path, encoding="utf-8", newline="") as source:
+                raw = source.read()
+        except FileNotFoundError:
+            pass
+        except UnicodeDecodeError:
+            log.warning("Profile fallback letter rejected: invalid_utf8")
+        except OSError:
+            log.warning("Profile fallback letter rejected: unreadable")
+    if raw is not None:
         text = raw.strip()
         if any(unicodedata.category(char) == "Cc" and char != "\n" for char in raw):
             log.warning("Profile fallback letter rejected: control_characters")
@@ -1349,7 +1359,7 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
         "red_flags": [...]    # красные флаги если есть
     }
     """
-    resume = _load_resume()
+    resume = _resume_for_vacancy(vacancy)
     resume_versions.record_input(vacancy, resume, "matcher")
     truth_block = (_build_matcher_truth_block() if filters.uses_qa_policy()
                    else _build_matcher_truth_block(vacancy, details))
@@ -1609,7 +1619,7 @@ def _build_cover_letter_instructions() -> str:
 
 async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
     """Сгенерировать сопроводительное письмо для вакансии."""
-    resume = _load_resume()
+    resume = _resume_for_vacancy(vacancy)
     resume_versions.record_input(vacancy, resume, "cover_letter")
     from prompt_blocks import (
         build_cover_facts_blocks,

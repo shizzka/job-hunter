@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from functools import wraps
 
 import config
+from direction_runtime import candidate_home
 from cover_grounding import split_sentences, validate_check
 from llm_utils import parse_llm_json
 
@@ -49,7 +50,7 @@ def capture_candidate(resume_text, *, settings=config, profile_builder=None,
     import facts
     import prompt_blocks
     from kb_retrieval import get_knowledge_index, retrieval_enabled
-    index = (get_knowledge_index(os.path.dirname(config.RESUME_FILE) or os.path.expanduser('~/.job-hunter'))
+    index = (get_knowledge_index(candidate_home())
              if retrieval_enabled() else None)
     personal = copy.deepcopy(facts.load_facts())
     confirmed = personal.get('confirmed', {}) if isinstance(personal, dict) else {}
