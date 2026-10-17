@@ -621,6 +621,12 @@ async def _wait_for_hh_auth_progress(page, before_url: str, before_text: str, *,
 
 
 async def _submit_hh_auth_form(page, *, guard=None, owner_guard=None) -> dict:
+    # Close hh's suggestion popup under the field: it intercepts the click on «Дальше».
+    try:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(300)
+    except Exception:
+        pass
     try:
         clicked = await _click_first_visible(page, HH_AUTH_CONTINUE_SELECTORS, guard=guard, owner_guard=owner_guard)
     except RuntimeError as exc:
@@ -788,8 +794,10 @@ async def _drive_hh_auth_step(
         matches = (_looks_like_hh_auth_code_prompt(current_text, current_url) if kind == "code"
                    else (_looks_like_hh_auth_login_prompt(current_text, current_url)
                          or bool(visible_login)))
+        # Same page and still the same kind of prompt. Exact text equality is not required:
+        # typing opens hh's own suggestion/validation popups that change the visible text.
         return (same_owner() and current_url == str(getattr(page, "url", "") or "") and matches
-                and (prompt_identity is None or prompt_identity == (current_url, current_text)))
+                and (prompt_identity is None or prompt_identity[0] == current_url))
 
     async def capture_prompt(kind):
         nonlocal prompt_identity
