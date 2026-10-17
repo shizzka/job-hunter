@@ -357,6 +357,9 @@ def _release_lock() -> None:
 def _patch_config(p: Profile):
     """Записать значения профиля обратно в config.*, чтобы все модули их видели."""
     global _default_candidate_settings
+    config.ACTIVE_DIRECTION = getattr(p, "direction", None)
+    config.ACTIVE_DIRECTION_NAME = getattr(p, "direction_name", "")
+    config._DIRECTION_BASE_PROFILE = getattr(p, "_direction_base", None)
     if _default_candidate_settings is None:
         _default_candidate_settings = {
             key: str(getattr(config, key, "") or "") for key in _CANDIDATE_CONFIG_KEYS
@@ -459,14 +462,14 @@ def _patch_config(p: Profile):
     config.TELEGRAM_PROXY = p.notify.proxy
 
 
-def load_default_profile() -> Profile:
+def load_default_profile(*, _include_direction: bool = True) -> Profile:
     """
     Загрузить профиль из текущих переменных окружения (через config.py).
 
     Полная обратная совместимость: если нет многопрофильности,
     всё работает как раньше.
     """
-    return Profile(
+    profile = Profile(
         name="default",
         home_dir=config.JOB_HUNTER_HOME,
         max_applications_per_run=config.MAX_APPLICATIONS_PER_RUN,
@@ -552,6 +555,22 @@ def load_default_profile() -> Profile:
         ),
     )
 
+    # Config contains the active overlay after activation. Rebuild legacy defaults
+    # from its base before loading another direction or another named profile.
+    base = getattr(config, "_DIRECTION_BASE_PROFILE", None)
+    if base is not None and getattr(config, "ACTIVE_DIRECTION", None) is not None:
+        import copy
+        for attr in ("resume_file", "filter_policy", "filter_relevant_keywords", "filter_exclude_keywords"):
+            setattr(profile, attr, copy.deepcopy(getattr(base, attr)))
+        for attr in ("search_queries", "search_profiles", "primary_resume_id", "primary_resume_title",
+                     "secondary_resume_id", "secondary_resume_title", "tertiary_resume_id",
+                     "tertiary_resume_title", "application_mode"):
+            setattr(profile.hh, attr, copy.deepcopy(getattr(base.hh, attr)))
+    if _include_direction:
+        from directions import overlay_profile
+        return overlay_profile(profile)
+    return profile
+
 
 def load_profile(name: str = "default") -> Profile:
     """
@@ -578,7 +597,7 @@ def load_profile(name: str = "default") -> Profile:
     profile_env = _parse_env_file(env_file)
 
     # Строим профиль с home_dir = profiles/<name>/
-    profile = load_default_profile()
+    profile = load_default_profile(_include_direction=False)
     profile.name = name
     # Candidate biography and salary expectations never inherit another profile.
     profile.candidate_settings = {key: profile_env.get(key, "").strip() for key in _CANDIDATE_CONFIG_KEYS}
@@ -625,7 +644,8 @@ def load_profile(name: str = "default") -> Profile:
     # Применяем переопределения из env-файла
     _apply_env_overrides(profile, profile_env)
 
-    return profile
+    from directions import overlay_profile
+    return overlay_profile(profile)
 
 
 def profile_env_path(name: str) -> str:
