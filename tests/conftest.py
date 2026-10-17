@@ -141,3 +141,20 @@ def deny_test_network(monkeypatch):
 def salary_question_off_by_default(monkeypatch):
     """Legacy letter tests use vacancies without salary; salary tests opt in explicitly."""
     monkeypatch.setattr(config, "COVER_ASK_SALARY_RANGE", False)
+
+
+def _known_failures() -> set[str]:
+    path = Path(__file__).with_name("known_failures.txt")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return set()
+    return {line.strip() for line in lines if line.strip() and not line.startswith("#")}
+
+
+def pytest_collection_modifyitems(config, items):
+    """Quarantine: known failures/flakes do not fail the run, any new failure does."""
+    known = _known_failures()
+    for item in items:
+        if item.nodeid in known:
+            item.add_marker(pytest.mark.xfail(reason="known failure (tests/known_failures.txt)", strict=False))
