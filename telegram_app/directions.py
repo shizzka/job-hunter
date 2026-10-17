@@ -90,7 +90,7 @@ class TelegramDirections:
                                      for v in draft.get("variants", []))
             profiles = draft.get("search_profiles", [])
             cities = {"1": "Москва", "2": "Санкт-Петербург", "113": "Россия"}
-            formats = {"": "любой формат", "remote": "удалённо", "fullDay": "офис", "hybrid": "гибрид", "flyInFlyOut": "вахта", "shift": "сменный", "flexible": "гибкий"}
+            formats = {"": "любой формат", "remote": "удалённо", "fullDay": "офис", "flyInFlyOut": "вахта", "shift": "сменный", "flexible": "гибкий"}
             profile_labels = [f"{cities.get(str(x['area']), str(x['area']))} / {formats.get(x['schedule'], x['schedule'])}" for x in profiles]
             text = (f"{'Черновик' if not state.get('summary') else 'Мой поиск'}: {draft.get('title', '')}\n"
                     f"Позиционирование: {draft.get('positioning') or 'не задано'}\n"
@@ -149,7 +149,7 @@ class TelegramDirections:
             elif action == "edit":
                 await self._dispatch_direction(chat_id, principal, "/direction_edit", parts[3])
             elif action == "preset" and state.get("mode") == "edit":
-                values = {"moscow": "1", "spb": "2", "russia": "113", "remote": "remote", "office": "fullDay", "hybrid": "hybrid", "any": "любой"}
+                values = {"moscow": "1", "spb": "2", "russia": "113", "remote": "remote", "office": "fullDay", "fly": "flyInFlyOut", "any": "любой"}
                 await self._accept_direction_input(chat_id, principal, values[parts[3]])
             elif action == "pair" and state.get("draft"):
                 pairs = {"spb": {"area": "2", "schedule": ""}, "fly": {"area": "113", "schedule": "flyInFlyOut"}}
@@ -433,7 +433,7 @@ class TelegramDirections:
                         if len(parts) > 2 or not parts[0].isdigit() or int(parts[0]) <= 0:
                             raise ValueError("Каждая строка: ID города и формат, например: 2 или 113 flyInFlyOut.")
                         schedule = parts[1] if len(parts) == 2 else ""
-                        if schedule not in {"", "remote", "fullDay", "hybrid", "flexible", "shift", "flyInFlyOut"}:
+                        if schedule not in {"", "remote", "fullDay", "flexible", "shift", "flyInFlyOut"}:
                             raise ValueError("Неизвестный формат работы.")
                         row = {"area": parts[0], "schedule": schedule}
                         if row not in rows:
@@ -451,9 +451,9 @@ class TelegramDirections:
                         profiles = [{"area": area, "schedule": item["schedule"]} for area in dict.fromkeys(areas)
                                     for item in {v["schedule"]: v for v in profiles}.values()]
                     else:
-                        aliases = {"удалённо": "remote", "удаленно": "remote", "офис": "fullDay", "гибкий": "flexible", "гибрид": "hybrid", "вахта": "flyInFlyOut", "любой": ""}
+                        aliases = {"удалённо": "remote", "удаленно": "remote", "офис": "fullDay", "гибкий": "flexible", "вахта": "flyInFlyOut", "любой": ""}
                         values = [aliases.get(v.strip().lower(), v.strip()) for v in text.split(",")]
-                        if not values or any(v not in {"", "remote", "fullDay", "hybrid", "flexible", "shift", "flyInFlyOut"} for v in values):
+                        if not values or any(v not in {"", "remote", "fullDay", "flexible", "shift", "flyInFlyOut"} for v in values):
                             raise ValueError("Форматы через запятую: удалённо, офис, гибкий, любой.")
                         profiles = [{"area": area, "schedule": value} for area in dict.fromkeys(v["area"] for v in profiles)
                                     for value in dict.fromkeys(values)]
@@ -580,10 +580,10 @@ class TelegramDirections:
             state.update(mode="edit", field=field)
             if field in {"city", "format", "search_profiles"}:
                 choices = ({"Москва": "moscow", "Санкт-Петербург": "spb", "Россия": "russia"} if field == "city" else
-                           {"Удалённо": "remote", "Офис": "office", "Гибрид": "hybrid", "Любой": "any"})
+                           {"Удалённо": "remote", "Офис": "office", "Вахта": "fly", "Любой": "any"})
                 rows = [[(label, "preset:" + value)] for label, value in choices.items()] if field != "search_profiles" else []
                 rows += [[("Добавить СПб · любой", "pair:spb")], [("Добавить РФ · вахта", "pair:fly")], [("Назад", "back"), ("Отмена", "cancel")]]
-                await self._send_text(chat_id, "Выберите значение или отправьте текст. Город: ID HH через запятую. Формат: remote, fullDay, hybrid, flyInFlyOut.\n"
+                await self._send_text(chat_id, "Выберите значение или отправьте текст. Город: ID HH через запятую. Формат: remote, fullDay, flyInFlyOut.\n"
                     "Для независимых сочетаний выберите «Города и форматы»: каждая строка содержит ID города и формат, например:\n2\n113 flyInFlyOut", reply_markup=self._direction_inline(state, rows))
                 return
             label = {"title": "названия", "search_queries": "запросов", "positioning": "позиционирования", "goal": "цели",

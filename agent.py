@@ -314,6 +314,9 @@ def _observe_search(function):
                 (config.GEEKJOB_ENABLED, "GeekJob")) if enabled]
             analytics.record_search_started(run_id=run_id, mode=mode, enabled_sources=enabled)
             try:
+                if dry_run:
+                    with seen.dry_run_overlay():
+                        return await function(dry_run=dry_run)
                 return await function(dry_run=dry_run)
             except BaseException as exc:
                 observation.ok = False

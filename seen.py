@@ -1,4 +1,6 @@
 """Трекинг просмотренных вакансий — не откликаемся повторно."""
+import contextlib
+import contextvars
 import json
 import os
 import logging
@@ -41,13 +43,32 @@ def _load_from_file(path: str) -> dict:
         return {}
 
 
+# Dry-run keeps its marks in memory: a trial run must not consume vacancies.
+_DRY_RUN_MARKS: contextvars.ContextVar[dict | None] = contextvars.ContextVar("seen_dry_run_marks", default=None)
+
+
+@contextlib.contextmanager
+def dry_run_overlay():
+    token = _DRY_RUN_MARKS.set({})
+    try:
+        yield
+    finally:
+        _DRY_RUN_MARKS.reset(token)
+
+
 def is_seen(vacancy_id: str) -> bool:
     """Уже видели эту вакансию?"""
-    return vacancy_id in _load()
+    marks = _DRY_RUN_MARKS.get()
+    return (marks is not None and vacancy_id in marks) or vacancy_id in _load()
 
 
 def mark_seen(vacancy_id: str, vacancy: dict, action: str = "applied"):
     """Отметить вакансию как обработанную."""
+    marks = _DRY_RUN_MARKS.get()
+    if marks is not None:
+        marks[vacancy_id] = {"title": vacancy.get("title", ""), "company": vacancy.get("company", ""),
+                             "action": action, "date": datetime.now().isoformat()}
+        return
     def remember(data: dict) -> None:
         prior = data.get(vacancy_id, {}).get("action")
         if (prior == "apply_uncertain" and action != prior) or (

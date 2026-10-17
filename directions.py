@@ -70,6 +70,10 @@ def _text(value, field, *, empty=False):
     return value
 
 
+# hh schedule codes accepted in search; "" = any format.
+SEARCH_SCHEDULES = frozenset({"", "remote", "fullDay", "shift", "flexible", "flyInFlyOut"})
+
+
 def validate_direction(value):
     """Validate the persisted public schema without accessing any files."""
     if not isinstance(value, dict):
@@ -88,6 +92,17 @@ def validate_direction(value):
     for field in ("goal", "allowed_wording", "do_not_claim_extra"):
         if field in result:
             _strings(result[field], field)
+    if "search_profiles" in result:
+        profiles = result["search_profiles"]
+        if not isinstance(profiles, list) or not profiles or len(profiles) > 10:
+            raise DirectionError("search_profiles: от 1 до 10 пар «регион + формат».")
+        for item in profiles:
+            if (not isinstance(item, dict) or set(item) - {"area", "schedule"}
+                    or not str(item.get("area", "")).isdigit() or int(item["area"]) <= 0
+                    or item.get("schedule", "") not in SEARCH_SCHEDULES):
+                raise DirectionError("search_profiles: регион — номер hh, формат — один из известных.")
+            item["area"] = int(item["area"])
+            item.setdefault("schedule", "")
     strategy = result.setdefault("selection_strategy", "single")
     if strategy not in {"single", "ab"}:
         raise DirectionError("selection_strategy: single или ab; closest ещё не реализован.")
@@ -282,6 +297,8 @@ def overlay_profile(profile):
     result.filter_relevant_keywords = list(value["relevant_keywords"])
     result.filter_exclude_keywords = list(value["exclude_keywords"])
     result.hh.search_queries = list(value["search_queries"])
+    if value.get("search_profiles"):
+        result.hh.search_profiles = [dict(item) for item in value["search_profiles"]]
     result.hh.secondary_resume_id = result.hh.secondary_resume_title = ""
     result.hh.tertiary_resume_id = result.hh.tertiary_resume_title = ""
     active = [item for item in value["variants"] if item["status"] == "active"]
