@@ -21,6 +21,7 @@ TARGETADS_FIELDS = frozenset({
     'cid', 'dl', 'dt', 'edttm', 'pid', 'ref', 'sid', 'ss', 'ul', 'wh', 'ww', 'yandexuid',
 })
 ANATSKYTICS_MAX_BODY = 256
+ANATSKYTICS_JSON_MAX_BODY = 4 * 1024
 CPA_MAX_BODY = 256
 SENTRY_MAX_BODY = 64 * 1024
 TARGETADS_MAX_BODY = 4 * 1024
@@ -74,6 +75,9 @@ def classify_request(request):
         host, path = target.hostname, target.path
         if path == '/anatskytics' and (host == 'hh.ru' or _HH_REGION.fullmatch(host or '')):
             fields, media_type, limit = ANATSKYTICS_FIELDS, 'application/x-www-form-urlencoded', ANATSKYTICS_MAX_BODY
+            # Seen live 2026-10-17: the same beacon batched as JSON (~1.3 KB) after a delivery.
+            if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() == 'application/json':
+                media_type, limit = 'application/json', ANATSKYTICS_JSON_MAX_BODY
         elif host == 'sentry.hh.ru' and _ENVELOPE.fullmatch(path):
             fields, media_type, limit = SENTRY_FIELDS, 'text/plain', SENTRY_MAX_BODY
         elif host == 'cpa.hh.ru' and path == '/api/tracker/hit':

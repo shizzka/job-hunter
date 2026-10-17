@@ -102,7 +102,8 @@ def test_partial_signature_stops_and_journals_after_owned_200(tmp_path, endpoint
     elif change == 'path':
         event.url = event.url.replace('?', '/other?')
     elif change == 'content_type':
-        event.headers['content-type'] = 'application/json'
+        # JSON is a proven anatskytics variant (batched beacon); use a type never seen there.
+        event.headers['content-type'] = 'text/html' if endpoint == 'anatskytics' else 'application/json'
     elif change == 'encoding':
         event.headers['content-encoding'] = 'gzip'
     else:
@@ -245,3 +246,13 @@ def test_resume_page_post_is_not_passive():
     event.headers = {'content-type': 'application/x-www-form-urlencoded'}
     event.post_data = ''
     assert not telemetry.classify_request(event)
+
+
+@pytest.mark.parametrize('size,allowed', [(1301, True), (4096, True), (4097, False)])
+def test_anatskytics_json_batch_seen_live_is_passive_within_limit(size, allowed):
+    fields = ['active', 'activeTab', 'archived', 'disabled', 'event', 'hhtmFrom', 'hhtmFromLabel', 'hhtmSource',
+              'hhtmSourceLabel', 'isBrandingPreview', 'needFix', 'originalRequestId', 'vacancyId', 'waiting']
+    event = request(None, 'https://spb.hh.ru/anatskytics?' + urlencode({name: '1' for name in fields}))
+    event.headers = {'content-type': 'application/json'}
+    event.post_data = 'x' * size
+    assert bool(telemetry.classify_request(event)) is allowed
