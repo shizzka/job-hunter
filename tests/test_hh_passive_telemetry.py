@@ -256,3 +256,33 @@ def test_anatskytics_json_batch_seen_live_is_passive_within_limit(size, allowed)
     event.headers = {'content-type': 'application/json'}
     event.post_data = 'x' * size
     assert bool(telemetry.classify_request(event)) is allowed
+
+
+def _beacon(url, content_type, body=b''):
+    event = request(None, url)
+    event.headers = {'content-type': content_type}
+    event.post_data_buffer = body
+    event.post_data = body.decode()
+    return event
+
+
+@pytest.mark.parametrize('url,ctype,body,allowed', [
+    # Seen live 2026-10-18 right after confirmed deliveries.
+    ('https://spb.hh.ru/anatskytics?event=x&device_memory=8&downlink=10&rtt=50&effective_type=4g'
+     '&hardware_concurrency=8&executionTime=12&fingerprintFull=x&rating=4&reviewsCount=3&screenShow=1'
+     '&widgetType=x&isPersonalized=false', 'application/x-www-form-urlencoded', b'', True),
+    ('https://spb.hh.ru/api/fl?cfidsgib-w-hh=1&u=x', 'text/plain', b'x' * 4112, True),
+    ('https://hh.ru/api/fl?u=x', 'text/plain', b'x', True),
+    ('https://widget-api.uxfeedback.ru/v6/widgets/vipcyfobvmjpxs33c0nszyyl?uid=1&uidType=x',
+     'application/json', b'{"a":1}', True),
+    # Anything beyond the exact signatures still stops.
+    ('https://spb.hh.ru/api/fl?cfidsgib-w-hh=1&vacancyId=2', 'text/plain', b'x', False),
+    ('https://spb.hh.ru/api/fl?u=x', 'text/plain', b'x' * (8 * 1024 + 1), False),
+    ('https://spb.hh.ru/api/fl?u=x', 'application/json', b'x', False),
+    ('https://evil.example/api/fl?u=x', 'text/plain', b'x', False),
+    ('https://widget-api.uxfeedback.ru/v6/widgets/x/../../submit?uid=1', 'application/json', b'{}', False),
+    ('https://widget-api.uxfeedback.ru/v6/widgets/vipcyfobvmjpxs33c0nszyyl?answer=1', 'application/json', b'{}', False),
+    ('https://widget-api.uxfeedback.ru/v6/widgets/vipcyfobvmjpxs33c0nszyyl', 'application/json', b'x' * 1025, False),
+])
+def test_signatures_seen_2026_10_18(url, ctype, body, allowed):
+    assert (telemetry.classify_request(_beacon(url, ctype, body)) == 'passive_telemetry') is allowed

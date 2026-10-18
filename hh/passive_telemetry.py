@@ -1,4 +1,4 @@
-"""Exact passive POST signatures proven by the 2026-10-17 private journal.
+"""Exact passive POST signatures proven by the 2026-10-17/18 private journals.
 
 No URL values or body contents are retained. A partial/unreadable signature
 does not authorize an exception to the ordinary action monitor.
@@ -14,7 +14,18 @@ ANATSKYTICS_FIELDS = frozenset({
     'hhtmSourceLabel', 'isBrandingPreview', 'needFix', 'not_in_experiment',
     'originalRequestId', 'position', 'requestId', 'source', 'supernova', 'type', 'userType',
     'vacancyId', 'waiting',
+    # Seen live 2026-10-18 right after confirmed deliveries (empty body): device/network
+    # metrics and the employer-rating widget beacon.
+    'device_memory', 'downlink', 'effective_type', 'executionTime', 'fingerprintFull',
+    'hardware_concurrency', 'isPersonalized', 'rating', 'reviewsCount', 'rtt', 'screenShow', 'widgetType',
 })
+# hh anti-fraud fingerprint beacon (spb.hh.ru/api/fl, text/plain ~4 KB), seen 2026-10-18.
+FL_FIELDS = frozenset({'cfidsgib-w-hh', 'u'})
+FL_MAX_BODY = 8 * 1024
+# Third-party UX survey widget loaded by hh pages, seen 2026-10-18.
+UXFEEDBACK_FIELDS = frozenset({'uid', 'uidType'})
+UXFEEDBACK_MAX_BODY = 1024
+_UXFEEDBACK_PATH = re.compile(r'/v6/widgets/[a-z0-9]{16,40}', re.ASCII)
 SENTRY_FIELDS = frozenset({'sentry_client', 'sentry_key', 'sentry_version'})
 CPA_FIELDS = frozenset({'ref', 'rnd', 'sh', 'sw', 'uid', 'url'})
 TARGETADS_FIELDS = frozenset({
@@ -78,6 +89,10 @@ def classify_request(request):
             # Seen live 2026-10-17: the same beacon batched as JSON (~1.3 KB) after a delivery.
             if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() == 'application/json':
                 media_type, limit = 'application/json', ANATSKYTICS_JSON_MAX_BODY
+        elif path == '/api/fl' and (host == 'hh.ru' or _HH_REGION.fullmatch(host or '')):
+            fields, media_type, limit = FL_FIELDS, 'text/plain', FL_MAX_BODY
+        elif host == 'widget-api.uxfeedback.ru' and _UXFEEDBACK_PATH.fullmatch(path):
+            fields, media_type, limit = UXFEEDBACK_FIELDS, 'application/json', UXFEEDBACK_MAX_BODY
         elif host == 'sentry.hh.ru' and _ENVELOPE.fullmatch(path):
             fields, media_type, limit = SENTRY_FIELDS, 'text/plain', SENTRY_MAX_BODY
         elif host == 'cpa.hh.ru' and path == '/api/tracker/hit':
