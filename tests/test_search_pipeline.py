@@ -293,3 +293,39 @@ def test_search_parser_adds_client_rendered_cards_from_page_state():
     added = result[1]
     assert added == {"id": "2", "title": "Прораб", "company": "B", "salary": "не указана",
                      "url": "https://hh.ru/vacancy/2", "snippet": "", "response_url": ""}
+
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_short_page_is_the_last_one_only_when_the_page_state_was_read(monkeypatch, complete):
+    from hh.search_html import SearchPage
+    calls = []
+
+    class FakeHHClient:
+        async def is_logged_in(self):
+            return True
+
+        async def search_vacancies(self, query, page=0, area=113, schedule=""):
+            calls.append(page)
+            size = 50 if page == 0 else 12 if page == 1 else 0
+            return SearchPage([{"id": f"{page}-{i}", "title": "QA", "company": "A", "url": "u"} for i in range(size)],
+                              complete=complete)
+
+        def consume_antibot_signal(self):
+            return None
+
+    monkeypatch.setattr(search_pipeline.config, "HH_ENABLED", True)
+    monkeypatch.setattr(search_pipeline.config, "HH_SEARCH_PAGE_SIZE", 50)
+    monkeypatch.setattr(search_pipeline.config, "SEARCH_PAGES", 5)
+    monkeypatch.setattr(search_pipeline.config, "SEARCH_QUERIES", ["QA"])
+    monkeypatch.setattr(search_pipeline.config, "SEARCH_PROFILES", [{"area": 2}])
+    monkeypatch.setattr(search_pipeline.seen, "is_seen", lambda vid: False)
+    monkeypatch.setattr(search_pipeline.hh_guard, "can_collect", lambda: (True, ""))
+
+    async def quiet(*args):
+        return None
+
+    monkeypatch.setattr(search_pipeline, "office_log", quiet)
+    found = asyncio.run(search_pipeline.collect_hh_vacancies(FakeHHClient()))
+    # complete: page 2 would only say «0 вакансий»; SSR-only (~20 cards) a short page proves nothing
+    assert calls == ([0, 1] if complete else [0, 1, 2]) and len(found) == 62

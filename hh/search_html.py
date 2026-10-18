@@ -226,8 +226,18 @@ def parse_hh_search_html(html: str, *, base_url: str) -> list[dict]:
                           "response_url": response_url})
     if not vacancies and (cards or not _empty_search_results(tree)):
         raise ValueError("unrecognized HH search results")
-    vacancies.extend(_state_vacancies(html, base_url, seen))
-    return vacancies
+    extra, complete = _state_vacancies(html, base_url, seen)
+    vacancies.extend(extra)
+    return SearchPage(vacancies, complete=complete)
+
+
+class SearchPage(list):
+    """Search results; complete=True when the page state listed all cards of the page,
+    so a short page reliably means the last one."""
+
+    def __init__(self, items=(), *, complete=False):
+        super().__init__(items)
+        self.complete = complete
 
 
 def _salary_text(value) -> str:
@@ -246,17 +256,20 @@ def _salary_text(value) -> str:
     return text
 
 
-def _state_vacancies(html: str, base_url: str, seen: set) -> list[dict]:
+def _state_vacancies(html: str, base_url: str, seen: set) -> tuple[list[dict], bool]:
     """Cards hh renders client-side (beyond the first SSR cards, boosted ones) from page state.
 
-    Optional and additive: any problem leaves the SSR result untouched.
+    Optional and additive: any problem leaves the SSR result untouched (and the page
+    is not marked complete).
     """
     try:
         from hh.observation import initial_state
         state = initial_state(html)
-        items = (state.get("vacancySearchResult") or {}).get("vacancies") or []
+        items = (state.get("vacancySearchResult") or {}).get("vacancies")
     except Exception:
-        return []
+        return [], False
+    if not isinstance(items, list):
+        return [], False
     parts = urlsplit(base_url)
     origin = f"{parts.scheme}://{parts.netloc}"
     result = []
@@ -277,4 +290,4 @@ def _state_vacancies(html: str, base_url: str, seen: set) -> list[dict]:
                        "snippet": "\n".join(str(snippet.get(k) or "").strip() for k in ("req", "resp")
                                             if isinstance(snippet, dict) and snippet.get(k)),
                        "response_url": ""})
-    return result
+    return result, True

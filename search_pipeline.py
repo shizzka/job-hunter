@@ -213,6 +213,12 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
 
                 if not vacancies:
                     break
+                # A short page whose state listed every card is the last one: the next
+                # request would only return «0 вакансий». Without the state (SSR shows
+                # only the first ~20 cards) a short page proves nothing.
+                if getattr(vacancies, "complete", False) and len(vacancies) < int(
+                        0.8 * int(getattr(config, "HH_SEARCH_PAGE_SIZE", 20) or 20)):
+                    break
 
     return all_vacancies
 

@@ -153,3 +153,17 @@ def test_challenge_text_window_matches_existing_client():
     html = '<p>' + 'x' * 3001 + '</p><p>Verify you are human</p>'
     assert search_antibot_kind(html) == ""
     assert search_antibot_kind(html + '<div id="captcha"></div>') == "captcha"
+
+
+def test_page_is_complete_only_when_state_lists_the_cards():
+    from hh.search_html import parse_hh_search_html
+    import json
+    state = {"vacancySearchResult": {"vacancies": [{"vacancyId": 7, "name": "QA Engineer", "company": {"name": "A"}}]}}
+    with_state = ('<html><body><div data-qa="vacancy-serp__vacancy"><h2><a data-qa="serp-item__title" '
+                  'href="https://hh.ru/vacancy/7">QA Engineer</a></h2></div>'
+                  '<template id="HH-Lux-InitialState">' + json.dumps(state) + '</template></body></html>')
+    page = parse_hh_search_html(with_state, base_url="https://hh.ru/search/vacancy")
+    assert page.complete is True and [v["id"] for v in page] == ["7"]
+    renamed = with_state.replace('{"vacancySearchResult"', '{"vacancySearchResult_renamed"')
+    page = parse_hh_search_html(renamed, base_url="https://hh.ru/search/vacancy")
+    assert page.complete is False and [v["id"] for v in page] == ["7"]  # SSR cards only
