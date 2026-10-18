@@ -1598,6 +1598,7 @@ async def process_all(
                         summary["skipped"] += 1
                         continue
                     notified = False
+                    rejected_chat = False
                     with repository.attempt(chat_id, "notice", message_id) as owner:
                         if not owner:
                             decision, reason = "already_handled", "notice_claim_unavailable"
@@ -1606,7 +1607,8 @@ async def process_all(
                         if notifier:
                             repository.mark_acting(chat_id, owner)
                             try:
-                                if decision == "hr_question" and topic_states.get(chat_id) == "DISCARD":
+                                rejected_chat = decision == "hr_question" and topic_states.get(chat_id) == "DISCARD"
+                                if rejected_chat:
                                     # The employer already said no; the chat is usually closed.
                                     # One digest after the scan instead of a reply card.
                                     summary["rejections"].append(dict(title=vac.get("title") or "—",
@@ -1631,7 +1633,7 @@ async def process_all(
                             if not repository.finish(chat_id, owner, "completed", remember_notice):
                                 raise RuntimeError("Chat notification completion ownership lost")
                     reason += ":notice_delivered" if notified else ":notice_unavailable_or_uncertain"
-                    if notified:
+                    if notified and not rejected_chat:
                         summary["hr_notified" if decision == "hr_question" else "external_notified"] += 1
                         if suspicious:
                             summary["suspicious_notified"] += 1

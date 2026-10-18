@@ -287,5 +287,6 @@ def test_hr_message_in_rejected_chat_goes_to_one_digest_without_reply_card(chat_
     assert chat_run.notifications == []  # no «Ответить с ИИ» card
     assert len(digests) == 1 and "Отказы в чатах: 1" in digests[0] and "Synthetic Company" in digests[0]
     assert first["rejections"] == [{"title": "Synthetic QA", "company": "Synthetic Company"}]
+    assert first["hr_notified"] == 0  # a digest line is not a reply card
     assert asyncio.run(chat_run.run())["decisions"] == {"already_handled": 1}
     assert len(digests) == 1  # each rejection once

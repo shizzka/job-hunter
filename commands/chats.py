@@ -27,7 +27,8 @@ async def respond_all() -> None:
     print(f"  С AI-помощником: {summary.get('with_ai', 0)}")
     print(f"  Подозрительных HR-сообщений: {summary.get('suspicious', 0)}")
     print(f"  Уведомлений на подтверждение: {summary.get('suspicious_notified', 0)}")
-    print(f"  Вопросов HR: {summary.get('hr_questions', 0)} | карточек: {summary.get('hr_notified', 0)}")
+    print(f"  Вопросов HR: {summary.get('hr_questions', 0)} | карточек: {summary.get('hr_notified', 0)}"
+          f" | в сводке отказов: {len(summary.get('rejections') or [])}")
     print(f"  Внешних приглашений: {summary.get('external_invites', 0)} | карточек: {summary.get('external_notified', 0)}")
     print(
         "  Google Forms: "
