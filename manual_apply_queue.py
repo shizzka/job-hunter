@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
+import logging
 import os
 import re
 import time
@@ -13,6 +15,8 @@ from pathlib import Path
 import config
 import company_blacklist
 from state_store.protected import ProtectedJsonStore
+
+log = logging.getLogger(__name__)
 
 CALLBACK_MANUAL_APPLY = "manual_apply"
 CALLBACK_MANUAL_FEEDBACK = "manual_fb"
@@ -279,7 +283,33 @@ def record_feedback(token: str, value: str, *, user_id: int = 0, profile_name: s
         item["updated_at"] = item["feedback_at"]
 
     _store(profile_name).update(mutate)
+    if item is not None:
+        _append_feedback_log(item, profile_name)
     return item
+
+
+FEEDBACK_LOG = "feedback_log.jsonl"
+
+
+def _append_feedback_log(item: dict, profile_name: str | None) -> None:
+    """Durable 👍/👎 history for learning (F1): the queue itself keeps 7 days / 250 cards."""
+    vacancy = item.get("vacancy") or {}
+    evaluation = item.get("evaluation") or {}
+    selection = vacancy.get("_direction_selection") or {}
+    record = {
+        "at": item.get("feedback_at"), "feedback": item.get("feedback"), "status": item.get("status"),
+        "vacancy_id": str(vacancy.get("id") or ""), "source": vacancy.get("source") or "hh",
+        "title": vacancy.get("title"), "company": vacancy.get("company"), "salary": vacancy.get("salary"),
+        "url": vacancy.get("url"), "query": vacancy.get("_search_query"), "search_profile": vacancy.get("_search_profile"),
+        "direction": selection.get("direction"), "direction_title": selection.get("direction_title"),
+        "score": evaluation.get("score"), "reason": str(evaluation.get("reason") or "")[:500],
+    }
+    try:
+        path = _queue_path(profile_name).with_name(FEEDBACK_LOG)
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:  # the button must keep working even if the log is not writable
+        log.warning("feedback log write failed: %s", type(exc).__name__)
 
 
 def list_candidates(profile_name: str, *, limit: int = 8, include_snoozed: bool = False) -> list[dict]:
