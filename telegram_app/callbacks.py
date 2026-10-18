@@ -104,6 +104,19 @@ class TelegramCallbackRouter:
                 or self._selected_profile(principal) == profile_name
             )
 
+        if str(raw_data).startswith("mad:"):
+            parts = str(raw_data).split(":")
+            await self._answer_callback_query(callback_id)
+            if parts[1:] == ["no"]:
+                await self._send_text(chat_id, "Отклик отменён.")
+                return
+            if len(parts) != 3 or parts[1] not in self._profile_names() or not can_access_profile(parts[1]):
+                await self._send_text(chat_id, "Карточка недоступна.")
+                return
+            await self._start_manual_ai_apply(chat_id, principal, profile_name=parts[1], token=parts[2],
+                                              direction_override=True)
+            return
+
         if str(raw_data).startswith("qm:"):
             parts = str(raw_data).split(":")
             if (len(parts) != 4 or parts[1] not in self._profile_names() or not can_access_profile(parts[1])

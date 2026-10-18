@@ -4092,12 +4092,46 @@ class TelegramBot(
         *,
         profile_name: str,
         token: str,
+        direction_override: bool = False,
     ) -> None:
         role = principal.get("role", ROLE_USER)
         reply_markup = self._menu_reply_markup(principal)
         if self._has_active_command(profile_name):
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
             return
+
+        # A card keeps the direction (and resume) it was evaluated in. When another
+        # direction is selected now, ask instead of failing with «направление изменилось».
+        import directions as directions_mod
+        home = self._profile(profile_name).home_dir
+        switch_to = restore_to = None
+        try:
+            item = manual_apply_queue.get_candidate(token, profile_name=profile_name) or {}
+            bound = (item.get("vacancy") or {}).get("_direction_selection") or {}
+            current = directions_mod.active_direction(home)
+        except Exception:
+            bound, current = {}, None
+        bound_name = str(bound.get("direction") or "")
+        if bound_name and bound_name != (current or {}).get("name"):
+            try:
+                card_direction = directions_mod.load_direction(home, bound_name)
+            except Exception:
+                await self._send_text(chat_id, "Направление, в котором найдена эта вакансия, удалено — "
+                                      "нужна новая оценка: запустите поиск.", reply_markup=reply_markup)
+                return
+            if not direction_override:
+                current_title = (current or {}).get("title") or "без направления"
+                await self._send_text(
+                    chat_id,
+                    html.escape(f"Эта вакансия найдена в направлении «{card_direction['title']}», а сейчас выбрано "
+                                f"«{current_title}». Откликнуться резюме из «{card_direction['title']}»? "
+                                "Направление переключу только на время отклика и потом верну."),
+                    reply_markup={"inline_keyboard": [
+                        [{"text": f"✅ Откликнуться в «{card_direction['title'][:30]}»",
+                          "callback_data": f"mad:{profile_name}:{token}"}],
+                        [{"text": "❌ Отмена", "callback_data": "mad:no"}]]})
+                return
+            switch_to, restore_to = bound_name, (current or {}).get("name")
 
         label = "manual AI apply"
         active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
@@ -4123,11 +4157,20 @@ class TelegramBot(
         async def runner() -> None:
             nonlocal progress_task
             try:
-                result = await self._run_active_command_capture(
-                    active_command,
-                    runtime_control.agent_command_argv(profile_name, "--manual-apply-token", token),
-                    timeout=1800,
-                )
+                if switch_to:
+                    directions_mod.set_active_direction(home, switch_to)
+                try:
+                    result = await self._run_active_command_capture(
+                        active_command,
+                        runtime_control.agent_command_argv(profile_name, "--manual-apply-token", token),
+                        timeout=1800,
+                    )
+                finally:
+                    if switch_to:
+                        with contextlib.suppress(Exception):
+                            # Restore only if nobody changed the direction meanwhile.
+                            if (directions_mod.active_direction(home) or {}).get("name") == switch_to:
+                                directions_mod.set_active_direction(home, restore_to)
                 message = format_command_result(label, result, role=role)
                 if progress_task:
                     progress_task.cancel()
