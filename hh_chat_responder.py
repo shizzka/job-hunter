@@ -721,7 +721,12 @@ async def notify_suspicious_screening_message(
 def _latest_topic_states() -> dict[str, str]:
     """chat id -> lastState (RESPONSE / DISCARD / INVITATION / INTERVIEW…) from the profile's
     latest negotiation snapshot; empty when there is none (then nothing changes)."""
-    states: dict[str, str] = {}
+    return {chat: row["state"] for chat, row in _latest_topics().items() if row.get("state")}
+
+
+def _latest_topics() -> dict[str, dict]:
+    """chat id -> {state, company, title} from the profile's latest negotiation snapshot."""
+    topics: dict[str, dict] = {}
     try:
         import config
         path = os.path.join(config.JOB_HUNTER_HOME, "negotiation_snapshots.jsonl")
@@ -733,11 +738,35 @@ def _latest_topic_states() -> dict[str, str]:
                     row = json.loads(line)
                 except ValueError:
                     continue
-                if row.get("chatId") and row.get("lastState"):
-                    states[str(row["chatId"])] = str(row["lastState"])
+                if row.get("chatId"):
+                    topics[str(row["chatId"])] = {"state": str(row.get("lastState") or ""),
+                                                 "company": str(row.get("company_name") or ""),
+                                                 "title": str(row.get("vacancy_name") or "")}
     except OSError:
         pass
-    return states
+    return topics
+
+
+# Closing messages that need no answer (live 18.10: rejections in archived chats and «свяжемся
+# при положительном решении» were sent as «Вопрос HR» cards with «Ответить с ИИ»).
+_REJECTION_TEXT = re.compile(
+    r"не готовы (?:вас )?пригласить|не можем (?:вам )?предложить|к сожалению[^.!?]{0,80}"
+    r"(?:не готов|отказ|не подход|не смож|выбрали другого|приняли решение)|"
+    r"(?:приняли|принято) решение[^.!?]{0,60}(?:в пользу|не в вашу|отказ|другого кандидата)|"
+    r"вакансия (?:уже )?закрыта|позиция (?:уже )?закрыта", re.I)
+_WAITING_TEXT = re.compile(
+    r"(?:при положительном решении|в случае положительного решения|если (?:ваша )?кандидатура)[^.!?]{0,60}"
+    r"свяж|(?:мы )?(?:обязательно )?рассмотрим (?:ваше )?резюме[^.!?]{0,80}свяж", re.I)
+
+
+def _closing_kind(text: str) -> str:
+    """«rejection» / «waiting» for messages that end the exchange; "" otherwise."""
+    value = " ".join(str(text or "").split())
+    if _REJECTION_TEXT.search(value):
+        return "rejection"
+    if _WAITING_TEXT.search(value) and "?" not in value:
+        return "waiting"
+    return ""
 
 
 def _notifier_module():
@@ -748,15 +777,22 @@ def _notifier_module():
         return None
 
 
-async def _notify_rejections(notifier, rejections: list[dict]) -> bool:
-    if notifier is None or not rejections:
+async def _notify_rejections(notifier, rejections: list[dict], waiting: list[dict] | None = None) -> bool:
+    waiting = waiting or []
+    if notifier is None or not (rejections or waiting):
         return False
-    lines = [f"• {_escaped_html(item['company'], limit=80)} — {_escaped_html(item['title'], limit=90)}"
-             for item in rejections[:20]]
-    more = f"\n…и ещё {len(rejections) - 20}" if len(rejections) > 20 else ""
-    return await notifier.send_message(
-        f"📭 <b>Отказы в чатах: {len(rejections)}</b>\n" + "\n".join(lines) + more
-        + "\n\nОтвечать на них не нужно — работодатель уже ответил отказом.")
+
+    def block(items):
+        lines = [f"• {_escaped_html(item['company'], limit=80)} — {_escaped_html(item['title'], limit=90)}"
+                 for item in items[:20]]
+        return "\n".join(lines) + (f"\n…и ещё {len(items) - 20}" if len(items) > 20 else "")
+
+    parts = []
+    if rejections:
+        parts.append(f"📭 <b>Отказы в чатах: {len(rejections)}</b>\n" + block(rejections))
+    if waiting:
+        parts.append(f"⏳ <b>Ответят сами (обещали связаться): {len(waiting)}</b>\n" + block(waiting))
+    return await notifier.send_message("\n\n".join(parts) + "\n\nОтвечать на них не нужно.")
 
 
 async def notify_hr_message(notifier, *, chat_id, vacancy, message, profile_name, invitation=None):
@@ -1470,8 +1506,8 @@ async def process_all(
 
     journal = ChatJournal(repository.path.parent, profile_name)
     summary.update(run_id=journal.run_id, decisions={}, hr_questions=0, hr_notified=0,
-                   external_invites=0, external_notified=0, rejections=[])
-    topic_states = _latest_topic_states()
+                   external_invites=0, external_notified=0, rejections=[], waiting=[])
+    topics = _latest_topics()
     chats = await list_chats(page)
     list_ref = journal.write(
         "chat_list_snapshot", list_complete=bool(getattr(chats, "list_complete", False)),
@@ -1607,12 +1643,21 @@ async def process_all(
                         if notifier:
                             repository.mark_acting(chat_id, owner)
                             try:
-                                rejected_chat = decision == "hr_question" and topic_states.get(chat_id) == "DISCARD"
+                                topic = topics.get(chat_id) or {}
+                                # The chat header often yields «Перейти @ —»; the snapshot knows better.
+                                if topic.get("title") and (not vac.get("title") or _normalize_ai_marker_text(
+                                        vac.get("title") or "") == "перейти"):
+                                    vac["title"] = topic["title"]
+                                if topic.get("company") and vac.get("company") in (None, "", "—"):
+                                    vac["company"] = topic["company"]
+                                closing = ("rejection" if topic.get("state") == "DISCARD"
+                                           else _closing_kind(last.get("text") or ""))
+                                rejected_chat = decision == "hr_question" and bool(closing)
                                 if rejected_chat:
-                                    # The employer already said no; the chat is usually closed.
+                                    # The employer closed the exchange; usually the chat is closed too.
                                     # One digest after the scan instead of a reply card.
-                                    summary["rejections"].append(dict(title=vac.get("title") or "—",
-                                                                      company=vac.get("company") or "—"))
+                                    summary["rejections" if closing == "rejection" else "waiting"].append(
+                                        dict(title=vac.get("title") or "—", company=vac.get("company") or "—"))
                                     notified = True
                                 elif suspicious:
                                     notified = await notify_suspicious_screening_message(
@@ -1689,9 +1734,9 @@ async def process_all(
 
     log.info("chat scan complete: read=%d/%d, failures=%d",
              summary["chats_read"], summary["chats_scanned"], summary["read_failures"])
-    if summary["rejections"]:
+    if summary["rejections"] or summary["waiting"]:
         try:
-            await _notify_rejections(_notifier_module(), summary["rejections"])
+            await _notify_rejections(_notifier_module(), summary["rejections"], summary["waiting"])
         except Exception as exc:
             log.warning("rejection digest failed: %s", type(exc).__name__)
     return summary

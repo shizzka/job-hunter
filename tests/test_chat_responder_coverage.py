@@ -274,7 +274,9 @@ def test_hr_message_in_rejected_chat_goes_to_one_digest_without_reply_card(chat_
     home = tmp_path / "snapshot_home"
     home.mkdir(exist_ok=True)
     monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(home))
-    (home / "negotiation_snapshots.jsonl").write_text(json.dumps({"chatId": 42, "lastState": "DISCARD"}) + "\n")
+    (home / "negotiation_snapshots.jsonl").write_text(json.dumps(
+        {"chatId": 42, "lastState": "DISCARD", "company_name": "Snapshot Company", "vacancy_name": "Snapshot QA"}) + "\n")
+    chat_run.messages["42"]["vacancy"] = {"title": "Перейти", "company": "—"}
     chat_run.messages["42"]["messages"][0]["text"] = "К сожалению, мы не готовы пригласить вас. Есть вопросы?"
     digests = []
 
@@ -285,8 +287,8 @@ def test_hr_message_in_rejected_chat_goes_to_one_digest_without_reply_card(chat_
     monkeypatch.setattr(notifier, "send_message", send_message)
     first = asyncio.run(chat_run.run())
     assert chat_run.notifications == []  # no «Ответить с ИИ» card
-    assert len(digests) == 1 and "Отказы в чатах: 1" in digests[0] and "Synthetic Company" in digests[0]
-    assert first["rejections"] == [{"title": "Synthetic QA", "company": "Synthetic Company"}]
+    assert len(digests) == 1 and "Отказы в чатах: 1" in digests[0] and "Snapshot Company — Snapshot QA" in digests[0]
+    assert first["rejections"] == [{"title": "Snapshot QA", "company": "Snapshot Company"}]
     assert first["hr_notified"] == 0  # a digest line is not a reply card
     assert asyncio.run(chat_run.run())["decisions"] == {"already_handled": 1}
     assert len(digests) == 1  # each rejection once
