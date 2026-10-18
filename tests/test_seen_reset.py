@@ -33,3 +33,13 @@ def test_unknown_scope_and_no_runs(tmp_path):
         seen_reset.plan(str(tmp_path), "week")
     with pytest.raises(ValueError):
         seen_reset.plan(str(tmp_path), "last_run")
+
+
+def test_last_run_ignores_a_run_still_in_progress(tmp_path):
+    home = setup(tmp_path)
+    now = datetime.now()
+    with open(home / "run_history.jsonl", "w") as stream:
+        stream.write(json.dumps({"started_at": (now - timedelta(hours=3)).isoformat(),
+                                 "finished_at": (now - timedelta(hours=2, minutes=50)).isoformat()}) + "\n")
+        stream.write(json.dumps({"started_at": now.isoformat(), "finished_at": None}) + "\n")
+    assert sorted(seen_reset.plan(str(home), "last_run")) == ["2", "5"]

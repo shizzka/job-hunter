@@ -30,13 +30,18 @@ def _since(home_dir: str, scope: str) -> str:
                 lines = [line for line in stream if line.strip()]
         except OSError:
             lines = []
-        for line in reversed(lines):
+        runs = []
+        for line in lines:
             try:
-                started = json.loads(line).get("started_at")
+                row = json.loads(line)
             except ValueError:
                 continue
-            if started:
-                return str(started)
+            if isinstance(row, dict) and row.get("started_at"):
+                runs.append(row)
+        # A run still in progress (started by cron or by hand) is not «the last run».
+        finished = [row for row in runs if row.get("finished_at")]
+        if finished or runs:
+            return str((finished or runs)[-1]["started_at"])
         raise ValueError("Прогонов ещё не было.")
     raise ValueError(f"Неизвестный период: {scope}")
 
