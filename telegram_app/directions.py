@@ -164,6 +164,8 @@ class TelegramDirections:
                 state.update(mode="draft", draft=copy.deepcopy(item), activate=not active or item["name"] != active["name"],
                              summary=bool(active and item["name"] == active["name"]))
                 await self._direction_show_draft(chat_id, principal, state)
+            elif action == "statsrefresh":
+                await self._dispatch_direction(chat_id, principal, "/direction_stats_refresh", "")
             elif action == "editmenu":
                 await self._direction_edit_menu(chat_id, state)
             elif action == "edit":
@@ -653,6 +655,30 @@ class TelegramDirections:
                 return
             state = self._direction_bind(principal, mode="working", draft=copy.deepcopy(active), texts={})
             await self._direction_job(chat_id, principal, state, "refresh" if command == "/direction_refresh" else "suggest", active["variants"])
+        elif command == "/direction_stats_refresh":
+            if self._has_active_command(profile_name):
+                await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+                return
+            job = self._mark_active_command(principal=principal, label="negotiation snapshot", profile_name=profile_name)
+            await self._send_text(chat_id, "🔄 Собираю данные об откликах с hh (только чтение). Это займёт пару минут…")
+
+            async def runner():
+                from hh import negotiation_snapshot
+                try:
+                    results = []
+                    for archived in (False, True):
+                        summary = await asyncio.to_thread(negotiation_snapshot.collect, home_dir=profile.home_dir,
+                                                          cookies_file=profile.hh.cookies_file, archived=archived)
+                        results.append(summary)
+                    done = all(item.get("complete") for item in results)
+                    note = ("✅ Данные обновлены." if done else
+                            "⚠️ Собрал не всё (" + ", ".join(str(item.get("stop_reason")) for item in results
+                                                         if not item.get("complete")) + ") — покажу, что есть.")
+                    await self._send_text(chat_id, note)
+                finally:
+                    self._clear_active_command(profile_name)
+                await self._dispatch_direction(chat_id, principal, "/direction_stats", "")
+            job.task = self._create_active_task(job, runner)
         elif command in {"/direction_stats", "/direction_csv"}:
             if command == "/direction_csv" and principal.get("role") != "admin":
                 await self._send_text(chat_id, "Нужны права администратора.")
@@ -687,5 +713,9 @@ class TelegramDirections:
                 lines.append("Приглашение = работодатель позвал дальше (собеседование, тест, оффер).")
                 if principal.get("role") == "admin":
                     lines.append("/direction_csv — полная выгрузка")
+                if not summary.get("total_topics"):
+                    lines = ["📊 Данных об откликах пока нет — их нужно один раз собрать с hh.",
+                             "Нажмите «🔄 Обновить данные» (только чтение, пара минут). Дальше бот обновляет их сам после поиска."]
                 state = state or self._direction_bind(principal, mode="switch", choices=[])
-                await self._send_text(chat_id, html.escape("\n".join(lines)), reply_markup=self._direction_inline(state, [[("К направлениям", "list")]]))
+                await self._send_text(chat_id, html.escape("\n".join(lines)), reply_markup=self._direction_inline(
+                    state, [[("🔄 Обновить данные", "statsrefresh")], [("К направлениям", "list")]]))

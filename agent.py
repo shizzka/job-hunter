@@ -2673,6 +2673,18 @@ async def do_search(dry_run: bool = False) -> dict:
                 await observe_hh_receipts(notify_hh_uncertain(receipt, v, score, reason))
                 continue
 
+        # Every profile keeps its own read-only negotiation snapshot fresh: chat cards
+        # (link + company) and resume statistics depend on it.
+        if not dry_run and config.HH_ENABLED and hh_client is not None and not hh_breaker.stopped:
+            try:
+                from hh import negotiation_snapshot as _snapshots
+                await observe_hh_receipts(asyncio.to_thread(
+                    _snapshots.ensure_fresh, config.JOB_HUNTER_HOME, config.HH_COOKIES_FILE, max_age_hours=6.0))
+            except HHUnexpectedUI:
+                raise
+            except Exception as exc:
+                log.warning("negotiation snapshot refresh failed: %s", type(exc).__name__)
+
         # После поиска — заодно отвечаем в hh-чатах AI-помощникам,
         # пока браузер уже открыт. Включается флагом HH_CHAT_RESPONDER_ENABLED.
         if (not dry_run and config.HH_CHAT_RESPONDER_ENABLED and hh_client is not None

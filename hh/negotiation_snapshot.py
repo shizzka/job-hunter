@@ -367,6 +367,40 @@ def collect(*, home_dir, cookies_file, archived=False, max_pages=None,
     return summary
 
 
+def latest_complete_age_hours(home_dir, *, archived=False):
+    """Hours since the latest complete pass of this filter, or None when there is none."""
+    filter_name = 'archived' if archived else 'active'
+    latest = None
+    try:
+        with (Path(home_dir) / 'negotiation_snapshots.jsonl').open(encoding='utf-8') as stream:
+            for line in stream:
+                if '"snapshot_summary"' not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get('filter') == filter_name and row.get('complete'):
+                    latest = row.get('fetched_at') or latest
+    except OSError:
+        return None
+    if not latest:
+        return None
+    try:
+        then = datetime.fromisoformat(latest)
+    except ValueError:
+        return None
+    return (datetime.now().astimezone() - then).total_seconds() / 3600
+
+
+def ensure_fresh(home_dir, cookies_file, *, max_age_hours=6.0, archived=False, max_pages=None):
+    """Collect a read-only pass only when the latest complete one is missing or older than max_age_hours."""
+    age = latest_complete_age_hours(home_dir, archived=archived)
+    if age is not None and age < max_age_hours:
+        return None
+    return collect(home_dir=home_dir, cookies_file=cookies_file, archived=archived, max_pages=max_pages)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Read-only HH negotiation snapshot')
     parser.add_argument('--profile', default='default')

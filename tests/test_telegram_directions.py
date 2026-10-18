@@ -565,7 +565,7 @@ async def test_client_stats_use_own_profile_without_ai(bot):
     home = bot.profiles['client_1'].home_dir
     make_direction(home)
     await bot._dispatch_direction(1, USER, '/direction_stats', 'client_2')
-    assert 'QA · «Resume 1»' in bot.sent[-1][1]  # own profile data, argument ignored
+    assert 'Данных об откликах пока нет' in bot.sent[-1][1]  # own (empty) profile data, argument ignored
     assert 'client_' not in bot.sent[-1][1]  # internal profile names are not shown to clients
     assert 'Нужны права' not in bot.sent[-1][1]
     assert not bot.auth_calls
@@ -625,3 +625,20 @@ async def test_strategy_chooser_saves_existing_direction_in_one_tap(bot):
     await bot._direction_callback(1, USER, next(a for a in inline_actions(bot) if a.endswith(':strategyset:closest')))
     assert directions.active_direction(home)['selection_strategy'] == 'closest'
     assert 'Направление сохранено' in bot.sent[-1][1]
+
+
+
+@run_async
+async def test_empty_stats_offer_refresh_and_refresh_collects_both_filters(bot, monkeypatch):
+    from hh import negotiation_snapshot
+    home = bot.profiles["client_1"].home_dir
+    make_direction(home)
+    directions.set_active_direction(home, "qa")
+    await bot._dispatch_direction(1, USER, "/direction_stats", "")
+    assert "Данных об откликах пока нет" in bot.sent[-1][1]
+    assert any(a.endswith(":statsrefresh") for a in inline_actions(bot))
+    calls = []
+    monkeypatch.setattr(negotiation_snapshot, "collect", lambda **kw: calls.append(kw["archived"]) or {"complete": True})
+    await bot._dispatch_direction(1, USER, "/direction_stats_refresh", "")
+    await bot.command.task
+    assert calls == [False, True] and "Данные обновлены" in " ".join(m[1] for m in bot.sent)
