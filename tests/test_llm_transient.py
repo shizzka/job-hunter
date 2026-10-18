@@ -189,7 +189,7 @@ def test_quota_and_unavailable_models_fall_through_without_retry(chain, error):
     assert [r.url.host for r in calls] == ["gemini.test", "backup.test"]
 
 
-@pytest.mark.parametrize("code", [400, 401, 403, 408, 413, 422])
+@pytest.mark.parametrize("code", [400, 401, 403, 408, 422])
 def test_other_4xx_are_never_retried(chain, code):
     from openai import APIStatusError
     client, calls = chain([status(code), completion()])

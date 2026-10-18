@@ -524,7 +524,49 @@ def _status_code(exc: Exception) -> int | None:
         return None
 
 
+_TPM_NUMBERS = re.compile(r"limit\s+(\d+)\s*,\s*requested\s+(\d+)", re.I)
+
+
+def _request_too_large(exc: Exception) -> tuple[int, int] | None:
+    """HTTP 413: this one request exceeds the provider's per-minute token budget
+    (Groq free tier: «Request too large … TPM: Limit 8000, Requested 9500»).
+
+    Not a quota: other, smaller requests still fit. Returns (limit, requested) when
+    stated, (0, 0) when not; None for any other error.
+    """
+    text = str(exc)
+    low = text.casefold()
+    if (_status_code(exc) != 413 and "request too large" not in low
+            and "reduce your message size" not in low):
+        return None
+    match = _TPM_NUMBERS.search(text)
+    return (int(match.group(1)), int(match.group(2))) if match else (0, 0)
+
+
+def _request_chars(kwargs: dict) -> int:
+    """Characters of the messages sent, for scaling a learned per-request token limit."""
+    try:
+        return sum(len(str(message.get("content") or "")) for message in kwargs.get("messages") or []
+                   if isinstance(message, dict))
+    except Exception:
+        return 0
+
+
+def _completion_reserve(kwargs: dict) -> int:
+    """Tokens reserved for the answer; providers count them against the same limit."""
+    try:
+        return max(0, int(kwargs.get("max_completion_tokens") or kwargs.get("max_tokens") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _estimated_tokens(request_chars: int, reserve: int, tokens_per_char: float) -> int:
+    return int(request_chars * tokens_per_char) + reserve
+
+
 def _is_quota_or_rate_limit(exc: Exception) -> bool:
+    if _request_too_large(exc) is not None:
+        return False
     status = _status_code(exc)
     if status == 429:
         return True
@@ -582,7 +624,7 @@ def _is_model_unavailable(exc: Exception) -> bool:
 def _is_retryable_provider_error(exc: Exception) -> bool:
     status = _status_code(exc)
     return (
-        _is_quota_or_rate_limit(exc) or _is_model_unavailable(exc)
+        _is_quota_or_rate_limit(exc) or _is_model_unavailable(exc) or _request_too_large(exc) is not None
         or status == 408 or (status is not None and 500 <= status <= 599)
         or isinstance(exc, (APIConnectionError, TransportError, ConnectionError, TimeoutError))
     )
@@ -602,6 +644,8 @@ def _is_transient_provider_error(exc: Exception) -> bool:
 
 def _failure_reason(exc):
     status = _status_code(exc)
+    if _request_too_large(exc) is not None:
+        return "LLM_REQUEST_TOO_LARGE"
     if _is_quota_or_rate_limit(exc):
         return "LLM_QUOTA_OR_RATE_LIMIT"
     if status == 408 or isinstance(exc, (TimeoutError, httpx.TimeoutException, APITimeoutError)):
@@ -682,6 +726,8 @@ class FallbackLLMClient:
             delay = 3.0
         self._transient_retry_delay_seconds = delay
         self._fallback_until_by_model: dict[str, float] = {}
+        # (provider, model) -> (token limit, tokens per request char) learned from a 413.
+        self._request_limits: dict[tuple[str, str], tuple[int, float]] = {}
         # Explicit role orders replace the global allowlist and own their fallback
         # state. Children receive specs, so they do not recursively load roles.
         self._role_clients: dict[str, FallbackLLMClient] = {}
@@ -777,6 +823,16 @@ class FallbackLLMClient:
             if provider.text_fallback_model and vision:
                 continue  # Never send CAPTCHA/images to emergency text-only models.
             provider_kwargs = self._kwargs_for_provider(provider, kwargs)
+            request_chars = _request_chars(provider_kwargs)
+            reserve = _completion_reserve(provider_kwargs)
+            learned = self._request_limits.get((provider.name, str(provider_kwargs.get("model") or "")))
+            estimate = _estimated_tokens(request_chars, reserve, learned[1]) if learned else 0
+            if learned and offset + 1 < total and estimate > learned[0]:
+                # This provider already said a request of this size does not fit its
+                # per-minute budget; go straight to the next one (it is not «exhausted»).
+                log.info("LLM provider %s skipped: request ~%d tokens > its limit %d; role=%s",
+                         provider.name, estimate, learned[0], llm_role or "default")
+                continue
             if deadline is not None and not provider.text_fallback_model:
                 # SDK per-request timeout reaches the shared HTTP client without
                 # mutating its defaults for concurrent matcher/unroled calls.
@@ -874,6 +930,10 @@ class FallbackLLMClient:
                     latency_seconds=time.monotonic() - attempt_started, **quality_meta)
                 _record_usage(provider.name, str(provider_kwargs.get("model") or ""), error_kind=type(exc).__name__)
                 last_exc = exc
+                too_large = _request_too_large(exc)
+                if too_large and too_large[0] and too_large[1] > reserve and request_chars:
+                    self._request_limits[(provider.name, str(provider_kwargs.get("model") or ""))] = (
+                        too_large[0], (too_large[1] - reserve) / request_chars)
                 sticky_activated = False
                 # Only skip a prefix of rate-limited providers. A transient or
                 # unavailable provider in that prefix must be tried next time,

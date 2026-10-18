@@ -145,7 +145,8 @@ REQUEST = httpx.Request("POST", "https://provider.test/v1/chat/completions")
 
 @pytest.mark.parametrize("error,reason,sticky", [
     (StatusError(429), "LLM_QUOTA_OR_RATE_LIMIT", True),
-    (StatusError(413, "rate_limit_exceeded"), "LLM_QUOTA_OR_RATE_LIMIT", True),
+    # 413: this request is too large for the provider, not a quota — no stickiness.
+    (StatusError(413, "rate_limit_exceeded"), "LLM_REQUEST_TOO_LARGE", False),
     (RuntimeError("quota exhausted"), "LLM_QUOTA_OR_RATE_LIMIT", True),
     (APIConnectionError(request=REQUEST), "LLM_TRANSPORT_ERROR", False),
     (APITimeoutError(request=REQUEST), "LLM_TIMEOUT", False),

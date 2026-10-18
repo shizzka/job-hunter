@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 import httpx
-from openai import AsyncOpenAI, APIStatusError
+from openai import AsyncOpenAI
 
 import llm_client
 
@@ -76,7 +76,8 @@ def test_groq_rate_limit_switches_account_on_same_endpoint(monkeypatch):
 @pytest.mark.parametrize("status,code,expected", [
     (429, "rate_limit_exceeded", ["groq", "groq2"]),
     (413, "rate_limit_exceeded", ["groq", "groq2", "ollama"]),
-    (413, "payload_too_large", ["groq"]),
+    # A request too large for one provider may fit the next one (18.10: Groq TPM 413).
+    (413, "payload_too_large", ["groq", "groq2", "ollama"]),
 ])
 def test_sdk_rate_limit_code_falls_through_without_retrying(monkeypatch, status, code, expected):
     calls = []
@@ -109,15 +110,51 @@ def test_sdk_rate_limit_code_falls_through_without_retrying(monkeypatch, status,
 
     async def run():
         try:
-            if code == "payload_too_large":
-                with pytest.raises(APIStatusError) as error:
-                    await client.chat.completions.create(model="test-model", messages=[])
-                assert error.value.status_code == 413
-            else:
-                response = await client.chat.completions.create(model="test-model", messages=[])
-                assert response.choices[0].message.content == "OK"
+            response = await client.chat.completions.create(model="test-model", messages=[])
+            assert response.choices[0].message.content == "OK"
         finally:
             await client.aclose()
 
     asyncio.run(run())
     assert calls == expected
+
+
+def test_groq_tpm_413_is_learned_and_big_requests_skip_it(monkeypatch):
+    """18.10: Groq «Request too large … Limit 8000, Requested 9500» must not switch groq off
+    for everyone; requests of that size go straight to the next provider, small ones still use groq."""
+    calls = []
+    monkeypatch.setattr(llm_client, "_record_usage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(llm_client, "_observe_provider_failure", lambda *args, **kwargs: None)
+    providers = [llm_client.ProviderSpec("groq", "https://groq.test/v1", "synthetic-one"),
+                 llm_client.ProviderSpec("gemini", "https://gemini.test/v1", "synthetic-two")]
+    client = llm_client.FallbackLLMClient(providers)
+
+    def transport(provider):
+        def handle(request):
+            size = len(request.content)
+            calls.append((provider.name, size > 5000))
+            if provider.name == "groq" and size > 5000:
+                return httpx.Response(413, json={"error": {"type": "tokens", "code": "rate_limit_exceeded",
+                    "message": "Request too large for model on tokens per minute (TPM): Limit 8000, Requested 9500"}})
+            return httpx.Response(200, json={"id": "s", "object": "chat.completion", "created": 0, "model": "m",
+                "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "OK"}}]})
+        return httpx.MockTransport(handle)
+
+    for index, provider in enumerate(providers):
+        client._clients[index] = AsyncOpenAI(api_key=provider.api_key, base_url=provider.base_url, max_retries=0,
+                                             http_client=httpx.AsyncClient(transport=transport(provider)))
+    big = [{"role": "user", "content": "я" * 6000}]
+    small = [{"role": "user", "content": "привет"}]
+
+    async def run():
+        try:
+            for messages in (big, big, small):
+                response = await client.chat.completions.create(model="m", messages=messages)
+                assert response.choices[0].message.content == "OK"
+        finally:
+            await client.aclose()
+
+    asyncio.run(run())
+    # 1st big: groq 413 → gemini; 2nd big: groq skipped; small: groq again (not «exhausted»).
+    assert calls == [("groq", True), ("gemini", True), ("gemini", True), ("groq", False)]
+    assert not client._active_index_by_model
