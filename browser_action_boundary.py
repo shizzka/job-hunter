@@ -19,6 +19,14 @@ RUNTIME = r'''(() => {
     const nativeRequestSubmit = HTMLFormElement.prototype.requestSubmit;
     const nativeSubmit = HTMLFormElement.prototype.submit;
     const nativeDispatch = EventTarget.prototype.dispatchEvent;
+    const nativeStopImmediate = Event.prototype.stopImmediatePropagation;
+    // Registered at document start, before any page listener: while a guarded
+    // read is in progress, the formdata event never reaches page code.
+    let suppressFormdata = false;
+    window.addEventListener('formdata', event => { if (suppressFormdata) nativeStopImmediate.call(event); }, true);
+    // A form-associated custom element (e.g. a design-system <x-input>) keeps its
+    // submission value in ElementInternals, which an inert copy cannot carry.
+    const customControl = el => el.tagName.includes('-') && !el.matches(':disabled');
     const externalControl = el => !!el && (el.matches?.(
         '[data-qa="chatik-do-send-message"],[data-qa*="vacancy-response"],[data-qa*="response-link"],button.f-test-vacancy-response-button,button.f-test-button-Otkliknutsya') ||
         /(откликнуться|отправить|submit|verzenden|send|envoyer|senden)/i.test((el.innerText || el.value || '').trim()));
@@ -105,7 +113,13 @@ RUNTIME = r'''(() => {
         formData(form,submitter) {
             // FormData(form) fires formdata handlers. Read successful controls
             // on an inert document copy so validation cannot dispatch page JS.
-            if ([...form.elements].some(el=>el.tagName.includes('-'))) throw new Error('Unsupported successful control');
+            if ([...form.elements].some(customControl)) {
+                // Read the live form with formdata dispatch suppressed: the
+                // element's own submission value, still without running page JS.
+                if (submitter && submitter.form !== form) throw new Error('Unsupported successful control');
+                suppressFormdata = true;
+                try { return new nativeFormData(form,submitter); } finally { suppressFormdata = false; }
+            }
             const copy = document.implementation.createHTMLDocument();
             copy.replaceChild(copy.importNode(document.documentElement,true),copy.documentElement);
             const original = [...document.querySelectorAll('*')], cloned = [...copy.querySelectorAll('*')];
