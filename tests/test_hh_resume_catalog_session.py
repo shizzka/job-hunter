@@ -72,6 +72,11 @@ def test_observed_catalog_events_remain_possible_external_action(tmp_path, sourc
         if source == 'frameattached':
             assert await client._page.locator('#mts-pixel').count() == 1
         else:
+            # The context 'request' event precedes the route handler that records it.
+            for _ in range(100):
+                if ('POST', 'https://hh.ru/anatskytics') in requests:
+                    break
+                await asyncio.sleep(0.05)
             assert ('POST', 'https://hh.ru/anatskytics') in requests
     asyncio.run(scenario(tmp_path, check, body))
 
