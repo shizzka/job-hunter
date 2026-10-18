@@ -3000,6 +3000,44 @@ class TelegramBot(
             )
             return
 
+        if command == "/seen_reset":
+            import seen_reset
+            parts = arg.split()
+            home = self._profile(profile_name).home_dir
+            if self._has_active_command(profile_name):
+                await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+                return
+            if not parts:
+                owner_menu = reply_menu_for_command(role, "/seen_reset") or MENU_ADMIN
+                self._set_selected_menu(principal["user_id"], owner_menu)
+                await self._send_text(chat_id, f"🧹 Сброс просмотренных для профиля {profile_name}.\n"
+                                      "Бот забудет пропущенные вакансии и переоценит их в следующем поиске. "
+                                      "Отклики, ручные карточки и неопределённые исходы не трогаются.",
+                                      reply_markup=self._menu_reply_markup(principal, menu=owner_menu))
+                await self._send_text(chat_id, "За какой период?", reply_markup={"inline_keyboard": [[
+                    {"text": label.capitalize(), "callback_data": f"sr:ask:{scope}"}
+                    for scope, label in seen_reset.SCOPES.items()]]})
+                return
+            action, scope = (parts + [""])[:2]
+            if scope not in seen_reset.SCOPES:
+                await self._send_text(chat_id, "Неизвестный период.")
+                return
+            try:
+                if action == "ask":
+                    count = len(seen_reset.plan(home, scope))
+                    await self._send_text(chat_id, f"Снять {count} отметок «пропущено» ({seen_reset.SCOPES[scope]}) "
+                                          f"у профиля {profile_name}?", reply_markup={"inline_keyboard": [[
+                                              {"text": "✅ Да, сбросить", "callback_data": f"sr:do:{scope}"},
+                                              {"text": "❌ Нет", "callback_data": "sr:no:"}]]})
+                elif action == "do":
+                    count = seen_reset.apply(home, scope)
+                    await self._send_text(chat_id, f"✅ Снято {count} отметок ({seen_reset.SCOPES[scope]}). "
+                                          "Следующий поиск переоценит эти вакансии. Копия списка сохранена.",
+                                          reply_markup=self._menu_reply_markup(principal))
+            except (OSError, ValueError) as exc:
+                await self._send_text(chat_id, f"❌ {html.escape(str(exc))}")
+            return
+
         if command == "/market_research":
             if arg.strip():
                 await self._start_market_research(chat_id, principal, arg)

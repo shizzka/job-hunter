@@ -23,6 +23,7 @@ ROLE_USER = telegram_access.ROLE_USER
 BUTTON_STATUS = "📊 Статус"
 BUTTON_DIAGNOSTICS = "🩺 Диагностика"
 BUTTON_MARKET_RESEARCH = "📈 Рынок вакансий"
+BUTTON_SEEN_RESET = "🧹 Сброс просмотренных"
 BUTTON_RESEARCH = "🔬 Отказы и конверсии"
 BUTTON_STATS = "📈 Статистика"
 BUTTON_RUNS = "🕓 Прогоны"
@@ -167,6 +168,7 @@ ADMIN_BUTTON_MAP = {
     BUTTON_STATUS: "/status",
     BUTTON_DIAGNOSTICS: "/diagnostics",
     BUTTON_MARKET_RESEARCH: "/market_research",
+    BUTTON_SEEN_RESET: "/seen_reset",
     BUTTON_STATS: "/stats",
     BUTTON_RESEARCH: "/research",
     BUTTON_RUNS: "/runs",
@@ -396,6 +398,7 @@ ADMIN_ONLY_COMMANDS = {
     "/cancel_active",
     "/diagnostics",
     "/market_research",
+    "/seen_reset",
 }
 ACTIVE_CONFLICT_COMMANDS = {
     "/search", "/dryrun", "/check", "/digest", "/analyze", "/backfill", "/grabresume", "/refresh_resume",
@@ -634,7 +637,7 @@ def reply_menu_layouts(role: str) -> dict[str, list[list[str]]]:
         MENU_MONITOR: [[BUTTON_STATUS], [BUTTON_ZERO_APPLY], [BUTTON_RUNS, BUTTON_STATS],
                        [BUTTON_RESEARCH, BUTTON_CHECK], [BUTTON_LOGS]],
         MENU_LOGS: [[BUTTON_LOG, BUTTON_RAW_LOG], [BUTTON_CHAT_LOG]],
-        MENU_ADMIN: [[BUTTON_DIAGNOSTICS, BUTTON_MARKET_RESEARCH], [BUTTON_PROFILES, BUTTON_USERS], [BUTTON_CLIENTS, BUTTON_LLM],
+        MENU_ADMIN: [[BUTTON_DIAGNOSTICS, BUTTON_MARKET_RESEARCH], [BUTTON_SEEN_RESET], [BUTTON_PROFILES, BUTTON_USERS], [BUTTON_CLIENTS, BUTTON_LLM],
                      [BUTTON_DIGEST, BUTTON_BACKFILL], [BUTTON_DAEMON_ON, BUTTON_DAEMON_OFF]],
         MENU_LLM: [[BUTTON_LLM_BALANCE, BUTTON_LLM_TEST], [BUTTON_AI_LIMITS]],
     }

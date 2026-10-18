@@ -52,7 +52,7 @@ def test_only_agreed_commands_are_opened():
         "/menu_llm", "/llm_balance", "/llm_test", "/profiles", "/profile", "/users", "/grant", "/revoke",
         "/digest", "/backfill", "/daemon_on", "/daemon_off", "/ai_limits", "/ai_grant", "/ai_reset",
         "/clients", "/client_approve", "/client_reject", "/client_hh_auth", "/menu_admin", "/cancel_active", "/diagnostics",
-        "/market_research",
+        "/market_research", "/seen_reset",
     }
 
 

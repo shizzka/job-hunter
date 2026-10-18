@@ -68,6 +68,15 @@ class TelegramCallbackRouter:
             await self._answer_callback_query(callback_id, "Не удалось определить чат.", show_alert=True)
             return
 
+        if str(raw_data).startswith("sr:"):
+            await self._answer_callback_query(callback_id)
+            action, _, scope = str(raw_data)[3:].partition(":")
+            if action == "no":
+                await self._send_text(chat_id, "Сброс отменён.")
+            elif principal.get("role") == ROLE_ADMIN:
+                await self._dispatch(chat_id, principal, "/seen_reset", f"{action} {scope}")
+            return
+
         if str(raw_data) in {"kbu:save", "kbu:cancel"}:
             await self._answer_callback_query(callback_id)
             await self._dispatch(chat_id, principal, "/candidate_upload_save" if raw_data == "kbu:save" else "/candidate_upload_cancel", "")
