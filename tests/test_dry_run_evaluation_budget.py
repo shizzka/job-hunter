@@ -16,8 +16,10 @@ def test_dry_run_cap_cache_and_real_search_stays_fresh(search_harness, monkeypat
     evaluate = AsyncMock(return_value={'score': 30, 'reason': 'low', 'red_flags': [], 'should_apply': False})
     monkeypatch.setattr(agent, 'evaluate_vacancy', evaluate)
 
+    details = agent.apply_orchestrator.fetch_vacancy_details
     first = asyncio.run(agent.do_search(dry_run=True))
     assert evaluate.await_count == 2
+    assert details.await_count == 2  # no page load for the vacancy past the cap
     assert first['source_stats']['hh']['dry_run_not_evaluated'] == 1
     assert 'потолок' in first['note']
 

@@ -1737,6 +1737,18 @@ async def do_search(dry_run: bool = False) -> dict:
                     "thinking",
                 )
 
+            # A dry run past its evaluation cap would only open vacancy pages it will not
+            # evaluate (18.10: 457 page loads after the 30th evaluation). Skip them early.
+            if dry_run and not v.get("_hh_retry"):
+                import evaluation_cache
+                if (dry_run_llm_calls >= evaluation_cache.dry_run_cap()
+                        and evaluation_cache.lookup(v) is None):
+                    bucket["dry_run_not_evaluated"] = bucket.get("dry_run_not_evaluated", 0) + 1
+                    result["note"] = (f"Пробный режим: новых оценок ИИ {dry_run_llm_calls} (потолок), "
+                                      f"из памяти {bucket.get('dry_run_cached', 0)}, "
+                                      f"не оценено {bucket['dry_run_not_evaluated']} — чтобы не тратить квоту")
+                    continue
+
             # Получаем детали
             if skip_stopped_hh(v, vid, bucket):
                 continue
