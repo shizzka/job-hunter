@@ -252,6 +252,13 @@ async def _stop_browser_owned(session, captured, *, save_cookies, terminate):
                     setattr(session, field, None)
 
 
+def is_completed_owned_stop(operation) -> bool:
+    """A finished, successful _stop_browser_owned task (the client's own browser shutdown)."""
+    return (isinstance(operation, asyncio.Task) and operation.done() and not operation.cancelled()
+            and operation.exception() is None
+            and getattr(operation.get_coro(), "cr_code", None) is _stop_browser_owned.__code__)
+
+
 async def save_session(session, *, save_cookies=_save_cookies, logger=log):
     if getattr(session, "_starting", False):
         raise RuntimeError("HH browser startup is still in progress")
