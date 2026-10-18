@@ -1529,6 +1529,7 @@ async def do_search(dry_run: bool = False) -> dict:
         applied_count = 0
         auto_applied_count_by_source = defaultdict(int)
         llm_issue_alert_sent = False
+        dry_run_llm_calls = 0
         shadow_verifier = ShadowVerifier()
         processed_by_source = defaultdict(int)
         habr_logged_in: bool | None = None
@@ -1801,7 +1802,24 @@ async def do_search(dry_run: bool = False) -> dict:
                     "should_apply": True,
                 }
             else:
-                evaluation = await observe_hh_receipts(analytics.tracked_call("matcher", run_id, v, evaluate_vacancy, v, details))
+                import evaluation_cache
+                cached = evaluation_cache.lookup(v) if dry_run else None
+                if cached is not None:
+                    evaluation = cached
+                    bucket["dry_run_cached"] = bucket.get("dry_run_cached", 0) + 1
+                elif dry_run and dry_run_llm_calls >= evaluation_cache.dry_run_cap():
+                    # A dry run must not burn the free LLM quota the real searches need.
+                    bucket["dry_run_not_evaluated"] = bucket.get("dry_run_not_evaluated", 0) + 1
+                    result["note"] = (f"Пробный режим: новых оценок ИИ {dry_run_llm_calls} (потолок), "
+                                      f"из памяти {bucket.get('dry_run_cached', 0)}, "
+                                      f"не оценено {bucket['dry_run_not_evaluated']} — чтобы не тратить квоту")
+                    continue
+                else:
+                    if dry_run:
+                        dry_run_llm_calls += 1
+                    evaluation = await observe_hh_receipts(analytics.tracked_call("matcher", run_id, v, evaluate_vacancy, v, details))
+                    if not is_deferred_evaluation(evaluation):
+                        evaluation_cache.store(v, evaluation)
             if is_deferred_evaluation(evaluation):
                 evaluation = {**evaluation, "score": None, "should_apply": False,
                               "evaluation_status": "deferred_unscored"}
