@@ -104,6 +104,19 @@ class TelegramCallbackRouter:
                 or self._selected_profile(principal) == profile_name
             )
 
+        if str(raw_data).startswith("rq:"):
+            parts = str(raw_data).split(":")
+            await self._answer_callback_query(callback_id)
+            if len(parts) != 4 or parts[2] not in self._profile_names() or not can_access_profile(parts[2]):
+                await self._send_text(chat_id, "Список недоступен.")
+                return
+            if parts[1] == "o":
+                await self._open_review_card(chat_id, parts[2], parts[3])
+            elif parts[1] == "p" and parts[3].isdigit():
+                await self._show_review_queue(chat_id, principal, profile_name=parts[2], page=int(parts[3]),
+                                              message_id=int(message.get("message_id") or 0))
+            return
+
         if str(raw_data).startswith("mad:"):
             parts = str(raw_data).split(":")
             await self._answer_callback_query(callback_id)

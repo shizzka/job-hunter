@@ -787,7 +787,7 @@ class TelegramBot(
         if choice == "text" and text is None:
             self._set_search_settings_state(principal["user_id"], question_answer={"profile": profile_name, "qid": qid})
             await self._send_text(chat_id, "✏️ Пришлите ответ одним сообщением — я запомню его для этого вопроса.\n"
-                                           f"Вопрос: «{html.escape(pending['question'])}»")
+                                           f"Вопрос: «{str(pending['question'])}»")
             return
         labels: list[str] = []
         if text is not None:
@@ -805,7 +805,7 @@ class TelegramBot(
         question_memory.remember(home, pending["question"], answer, control=pending.get("control", ""), labels=labels)
         question_memory.pop_pending(home, qid)
         self._clear_search_settings_state(principal["user_id"], "question_answer")
-        await self._send_text(chat_id, html.escape(
+        await self._send_text(chat_id, str(
             f"✅ Запомнил: «{pending['question']}» → «{answer}». Откликаюсь на «{pending.get('vacancy_title') or 'вакансию'}» снова…"))
         await self._start_manual_ai_apply(chat_id, principal, profile_name=profile_name, token=pending["token"])
 
@@ -873,7 +873,7 @@ class TelegramBot(
         info = facts_upload.summarize(text)
         buttons = {"inline_keyboard": [[{"text": "✅ Сохранить базу", "callback_data": "kbu:save"},
                                         {"text": "❌ Отмена", "callback_data": "kbu:cancel"}]]}
-        await self._send_text(chat_id, html.escape(facts_upload.preview_text(filename, info, profile_name)),
+        await self._send_text(chat_id, str(facts_upload.preview_text(filename, info, profile_name)),
                               reply_markup=buttons)
         return True
 
@@ -893,7 +893,7 @@ class TelegramBot(
             knowledge_dir = os.path.join(self._candidate_profile_dir(pending["profile_name"]), "knowledge")
             facts_upload.save(knowledge_dir, pending["text"])
         except (OSError, ValueError) as exc:
-            await self._send_text(chat_id, f"❌ {html.escape(str(exc))}", reply_markup=markup)
+            await self._send_text(chat_id, f"❌ {str(str(exc))}", reply_markup=markup)
             return
         await self._send_text(chat_id, "✅ База фактов сохранена. Бот будет отбирать из неё факты под каждую вакансию. "
                               "Посмотреть: «📋 Мои факты».", reply_markup=markup)
@@ -1095,53 +1095,78 @@ class TelegramBot(
     def _review_item_text(item: dict, index: int) -> str:
         vacancy = item.get("vacancy") or {}
         evaluation = item.get("evaluation") or {}
-        title = html.escape(str(vacancy.get("title") or "Вакансия"))
-        company = html.escape(str(vacancy.get("company") or "Компания не указана"))
-        source = html.escape(str(vacancy.get("source_label") or vacancy.get("source") or "hh.ru"))
-        salary = html.escape(str(vacancy.get("salary") or "зарплата не указана"))
+        title = str(str(vacancy.get("title") or "Вакансия"))
+        company = str(str(vacancy.get("company") or "Компания не указана"))
+        source = str(str(vacancy.get("source_label") or vacancy.get("source") or "hh.ru"))
+        salary = str(str(vacancy.get("salary") or "зарплата не указана"))
         score = evaluation.get("score")
         reason = " ".join(str(evaluation.get("reason") or "").split())
         if len(reason) > 380:
             reason = reason[:377].rstrip() + "..."
         lines = [
-            f"<b>{index}. {title}</b>",
+            f"{index}. {title}" if index != "•" else f"📌 {title}",
             f"{company} · {source}",
             f"💰 {salary}" + (f" · 📊 {score}/100" if score not in (None, "") else ""),
         ]
         if reason:
-            lines.append(html.escape(reason))
+            lines.append(str(reason))
         return "\n".join(lines)
 
-    async def _show_review_queue(self, chat_id: int, principal: dict, *, profile_name: str) -> None:
+    REVIEW_PAGE_SIZE = 6
+
+    async def _show_review_queue(self, chat_id: int, principal: dict, *, profile_name: str,
+                                 page: int = 0, message_id: int = 0) -> None:
+        """One message per page: a short line per vacancy, a button opens its full card."""
         reply_menu = reply_menu_for_command(principal.get("role", ROLE_USER), "/review")
         self._set_selected_menu(principal["user_id"], reply_menu)
-        items = manual_apply_queue.list_candidates(profile_name, limit=8)
-        if not items:
+        all_items = manual_apply_queue.list_candidates(profile_name, limit=250)
+        if not all_items:
             await self._send_text(
                 chat_id,
                 "📋 На рассмотрении пока пусто. Подходящие вакансии появятся здесь, если выбран режим просмотра или подтверждения.",
                 reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
             )
             return
-        total = len(manual_apply_queue.list_candidates(profile_name, limit=250))
-        await self._send_text(
-            chat_id,
-            f"📋 На рассмотрении: {total}. Показываю последние {len(items)}.",
-            reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
-        )
-        for index, item in enumerate(items, start=1):
+        size = self.REVIEW_PAGE_SIZE
+        pages = (len(all_items) + size - 1) // size
+        page = max(0, min(int(page), pages - 1))
+        chunk = all_items[page * size:(page + 1) * size]
+        lines = [f"📋 На рассмотрении: {len(all_items)}" + (f" · стр. {page + 1}/{pages}" if pages > 1 else ""),
+                 "Новые сверху. Нажмите номер — откроется карточка с кнопками.", ""]
+        buttons = []
+        for offset, item in enumerate(chunk):
+            number = page * size + offset + 1
             vacancy = item.get("vacancy") or {}
-            markup = manual_apply_queue.build_manual_apply_markup(
-                vacancy,
-                profile_name,
-                str(item.get("token") or ""),
-                allow_ai_apply=bool(item.get("allow_ai_apply", True)),
-            )
-            await self._send_text(
-                chat_id,
-                self._review_item_text(item, index),
-                reply_markup=markup,
-            )
+            score = (item.get("evaluation") or {}).get("score")
+            title = " ".join(str(vacancy.get("title") or "Вакансия").split())
+            company = " ".join(str(vacancy.get("company") or "").split())
+            salary = " ".join(str(vacancy.get("salary") or "").split())
+            details = " · ".join(part for part in (
+                str(company[:40]), str(salary[:30]) if salary and "не указ" not in salary else "",
+                f"📊 {score}" if score not in (None, "") else "") if part)
+            lines.append(f"{number}. {title[:70]}" + (f"\n     {details}" if details else ""))
+            buttons.append({"text": str(number), "callback_data": f"rq:o:{profile_name}:{item.get('token')}"})
+        keyboard = [buttons[i:i + 6] for i in range(0, len(buttons), 6)]
+        if pages > 1:
+            keyboard.append([
+                {"text": "◀", "callback_data": f"rq:p:{profile_name}:{(page - 1) % pages}"},
+                {"text": f"{page + 1}/{pages}", "callback_data": f"rq:p:{profile_name}:{page}"},
+                {"text": "▶", "callback_data": f"rq:p:{profile_name}:{(page + 1) % pages}"},
+            ])
+        text, markup = "\n".join(lines), {"inline_keyboard": keyboard}
+        if message_id:
+            await self._edit_text(chat_id, message_id, text, reply_markup=markup)
+        else:
+            await self._send_text(chat_id, text, reply_markup=markup)
+
+    async def _open_review_card(self, chat_id: int, profile_name: str, token: str) -> None:
+        item = manual_apply_queue.get_candidate(token, profile_name=profile_name)
+        if not item or item.get("status") != "pending":
+            await self._send_text(chat_id, "Эта вакансия уже разобрана. Обновите список: «На разбор».")
+            return
+        markup = manual_apply_queue.build_manual_apply_markup(
+            item.get("vacancy") or {}, profile_name, token, allow_ai_apply=bool(item.get("allow_ai_apply", True)))
+        await self._send_text(chat_id, self._review_item_text(item, "•"), reply_markup=markup)
 
     async def _save_search_setting(
         self,
@@ -1223,7 +1248,7 @@ class TelegramBot(
                         return market_research.collect(client, queries)
                 snapshot = await asyncio.to_thread(work)
                 summary = market_research.summarize(snapshot)
-                await self._send_text(chat_id, html.escape(market_research.summary_text(summary)),
+                await self._send_text(chat_id, str(market_research.summary_text(summary)),
                                       reply_markup=self._menu_reply_markup(principal))
                 stamp = datetime.now().strftime("%Y%m%d-%H%M")
                 await self._send_document(chat_id, filename=f"hh-market-{stamp}.md",
@@ -3035,7 +3060,7 @@ class TelegramBot(
                                           "Следующий поиск переоценит эти вакансии. Копия списка сохранена.",
                                           reply_markup=self._menu_reply_markup(principal))
             except (OSError, ValueError) as exc:
-                await self._send_text(chat_id, f"❌ {html.escape(str(exc))}")
+                await self._send_text(chat_id, f"❌ {str(str(exc))}")
             return
 
         if command == "/market_research":
@@ -4121,7 +4146,7 @@ class TelegramBot(
                                       "нужна новая оценка: запустите поиск.", reply_markup=reply_markup)
                 return
             switch_to, restore_to = bound_name, (current or {}).get("name")
-            await self._send_text(chat_id, html.escape(
+            await self._send_text(chat_id, str(
                 f"ℹ️ Карточка из направления «{card_direction['title']}» — откликаюсь его резюме; "
                 f"выбранное направление «{(current or {}).get('title') or 'без направления'}» вернётся после отклика."))
 

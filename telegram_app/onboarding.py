@@ -70,4 +70,4 @@ def build(*, hh_ok: bool, resumes: list[dict], directions: list[dict], active: d
     lines += ["", "Всё готово! Дальше бот присылает вакансии сам; эта кнопка — всегда в главном меню."
               if complete else "Нажмите кнопку под нужным шагом. Вернуться к списку — «🚀 С чего начать»."]
     rows.append([("🔄 Обновить", "check")])
-    return html.escape("\n".join(lines)), rows, complete
+    return str("\n".join(lines)), rows, complete

@@ -220,9 +220,9 @@ def test_manual_block_company_and_why_callback_parser_and_markup():
     )
     buttons = [button for row in markup["inline_keyboard"] for button in row]
 
-    assert any(button["text"] == "Почему?" for button in buttons)
+    assert any(button["text"] == "❓ Почему" for button in buttons)
     assert any(button.get("callback_data") == "manual_why:qa:abcdef123456" for button in buttons)
-    assert any(button["text"] == "🚫 В чёрный список" for button in buttons)
+    assert any(button["text"] == "🚫 Компанию в ЧС" for button in buttons)
     assert any(button.get("callback_data") == "manual_block_company:qa:abcdef123456" for button in buttons)
 
 

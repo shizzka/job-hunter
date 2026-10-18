@@ -127,7 +127,7 @@ class TelegramDirections:
             rows += [[("Назад к направлениям", "list")]]
             if state.get("summary"):
                 rows += [[("Удалить направление", "delete")]]
-        await self._send_text(chat_id, html.escape(text), reply_markup=self._direction_inline(state, rows))
+        await self._send_text(chat_id, str(text), reply_markup=self._direction_inline(state, rows))
 
     async def _direction_edit_menu(self, chat_id, state):
         labels = [("Название", "title"), ("Позиционирование", "positioning"), ("Цель", "goal"),
@@ -222,7 +222,7 @@ class TelegramDirections:
             elif action == "variant" and state.get("mode") == "variant":
                 await self._accept_direction_input(chat_id, principal, str(int(parts[3]) + 1))
         except (ValueError, IndexError, KeyError, OSError) as exc:
-            await self._send_text(chat_id, html.escape(str(exc)))
+            await self._send_text(chat_id, str(str(exc)))
 
     async def _direction_prompt_variants(self, chat_id, principal, operation):
         _, _, active = self._direction_context(principal)
@@ -243,7 +243,7 @@ class TelegramDirections:
         if operation == "select":
             lines.append("Выбранный вариант станет единственным для откликов (режим single). Подтвердите черновик.")
         lines.append("Отмена: /direction_cancel")
-        await self._send_text(chat_id, html.escape("\n".join(lines)), reply_markup=self._direction_inline(state, [[(str(v.get("title") or v["hh_resume_hash"]), f"variant:{i}")] for i, v in enumerate(active["variants"])] + [[("Добавить резюме", "add"), ("Пауза", "pause"), ("Включить", "resume")], [("Убрать вариант", "remove"), ("Обновить тексты", "refresh")], [("Назад", "back"), ("Отмена", "cancel")]]))
+        await self._send_text(chat_id, str("\n".join(lines)), reply_markup=self._direction_inline(state, [[(str(v.get("title") or v["hh_resume_hash"]), f"variant:{i}")] for i, v in enumerate(active["variants"])] + [[("Добавить резюме", "add"), ("Пауза", "pause"), ("Включить", "resume")], [("Убрать вариант", "remove"), ("Обновить тексты", "refresh")], [("Назад", "back"), ("Отмена", "cancel")]]))
 
     async def _direction_catalog(self, chat_id, principal, *, add=False):
         profile_name, profile, active = self._direction_context(principal)
@@ -283,7 +283,7 @@ class TelegramDirections:
                 command.result = {"ok": True}
             except Exception as exc:
                 command.result = {"ok": False}
-                await self._send_text(chat_id, html.escape(f"Не удалось прочитать резюме: {exc}"))
+                await self._send_text(chat_id, str(f"Не удалось прочитать резюме: {exc}"))
             finally:
                 self._clear_active_command(profile_name)
         command.task = self._create_active_task(command, runner)
@@ -386,7 +386,7 @@ class TelegramDirections:
                 active_command.result = {"ok": True}
             except Exception as exc:
                 active_command.result = {"ok": False}
-                await self._send_text(chat_id, html.escape(f"Не удалось подготовить направление: {exc}"))
+                await self._send_text(chat_id, str(f"Не удалось подготовить направление: {exc}"))
             finally:
                 self._clear_active_command(profile_name)
         active_command.task = self._create_active_task(active_command, runner)
@@ -509,7 +509,7 @@ class TelegramDirections:
                 return False
             await self._direction_show_draft(chat_id, principal, state)
         except (ValueError, IndexError) as exc:
-            await self._send_text(chat_id, html.escape(str(exc)))
+            await self._send_text(chat_id, str(str(exc)))
         return True
 
     @staticmethod
@@ -543,7 +543,7 @@ class TelegramDirections:
             rows += [[("➕ Новое направление", "new"), ("📊 Статистика", "stats")]]
             await self._send_text(chat_id, "🧭 Что ищу — ваши направления поиска. Выберите кнопкой ниже.",
                                   reply_markup=self._direction_markup())
-            await self._send_text(chat_id, html.escape(f"Направления · {profile_name}\nАктивное: " + (active["title"] if active else "нет")),
+            await self._send_text(chat_id, str(f"Направления · {profile_name}\nАктивное: " + (active["title"] if active else "нет")),
                                   reply_markup=self._direction_inline(state, rows))
         elif command == "/direction_summary":
             if not active:
@@ -580,7 +580,7 @@ class TelegramDirections:
                     note = " Повтор не удалось перезапустить; проверьте статус."
                 await self._send_text(chat_id, "Направление сохранено." + note, reply_markup=self._direction_markup())
             except (ValueError, OSError) as exc:
-                await self._send_text(chat_id, html.escape(str(exc)), reply_markup=self._direction_markup(draft=True))
+                await self._send_text(chat_id, str(str(exc)), reply_markup=self._direction_markup(draft=True))
         elif command in {"/direction_new", "/direction_add"}:
             await self._direction_catalog(chat_id, principal, add=command == "/direction_add")
         elif command in {"/direction_variants", "/search_resume", "/direction_pause", "/direction_resume", "/direction_remove"}:
@@ -602,14 +602,14 @@ class TelegramDirections:
             try:
                 directions.save_direction(profile.home_dir, draft, texts={})
             except (ValueError, OSError) as exc:
-                await self._send_text(chat_id, html.escape(f"❌ Не удалось сохранить режим: {exc}"), reply_markup=back)
+                await self._send_text(chat_id, str(f"❌ Не удалось сохранить режим: {exc}"), reply_markup=back)
                 return
             self._direction_sessions().pop(principal["user_id"], None)
             try:
                 self._reload_profile_daemon(profile_name)
             except RuntimeError:
                 pass
-            await self._send_text(chat_id, html.escape(
+            await self._send_text(chat_id, str(
                 f"✅ Режим откликов: {labels.get(mode, mode)} — сохранено (направление «{active['title']}»)."),
                 reply_markup=back)
         elif command in {"/direction_single", "/direction_ab"}:
@@ -717,5 +717,5 @@ class TelegramDirections:
                     lines = ["📊 Данных об откликах пока нет — их нужно один раз собрать с hh.",
                              "Нажмите «🔄 Обновить данные» (только чтение, пара минут). Дальше бот обновляет их сам после поиска."]
                 state = state or self._direction_bind(principal, mode="switch", choices=[])
-                await self._send_text(chat_id, html.escape("\n".join(lines)), reply_markup=self._direction_inline(
+                await self._send_text(chat_id, str("\n".join(lines)), reply_markup=self._direction_inline(
                     state, [[("🔄 Обновить данные", "statsrefresh")], [("К направлениям", "list")]]))

@@ -484,29 +484,37 @@ def build_manual_apply_markup(
     include_feedback: bool = True,
     allow_ai_apply: bool = True,
 ) -> dict | None:
+    # Compact: three rows instead of six, so a long review list stays readable.
     rows = []
-    url = (vacancy.get("url") or "").strip()
-    if url:
-        rows.append([{"text": "Открою сам", "url": url}])
+    first = []
     callback_data = manual_apply_callback_data(profile_name, token)
     is_hh = (vacancy.get("source") or "hh") == "hh"
     if allow_ai_apply and is_hh and len(callback_data.encode("utf-8")) <= 64:
-        rows.append([{"text": "Откликнуться с ИИ", "callback_data": callback_data}])
+        first.append({"text": "✅ Откликнуться с ИИ", "callback_data": callback_data})
+    url = (vacancy.get("url") or "").strip()
+    if url:
+        first.append({"text": "🔗 Открою сам", "url": url})
+    if first:
+        rows.append(first)
+    second = []
     why_data = manual_why_callback_data(profile_name, token)
     if len(why_data.encode("utf-8")) <= 64:
-        rows.append([{"text": "Почему?", "callback_data": why_data}])
+        second.append({"text": "❓ Почему", "callback_data": why_data})
     if include_feedback:
-        feedback_buttons = []
-        for text, value in (("Норм", "good"), ("Мимо", "bad")):
+        for text, value in (("👍 Норм", "good"), ("👎 Мимо", "bad")):
             feedback_data = manual_feedback_callback_data(profile_name, token, value)
             if len(feedback_data.encode("utf-8")) <= 64:
-                feedback_buttons.append({"text": text, "callback_data": feedback_data})
-        if feedback_buttons:
-            rows.append(feedback_buttons)
+                second.append({"text": text, "callback_data": feedback_data})
+    if second:
+        rows.append(second)
+    third = []
+    if include_feedback:
         snooze_data = manual_snooze_callback_data(profile_name, token)
         if len(snooze_data.encode("utf-8")) <= 64:
-            rows.append([{"text": "⏰ Через сутки", "callback_data": snooze_data}])
+            third.append({"text": "⏰ Через сутки", "callback_data": snooze_data})
     block_company_data = manual_block_company_callback_data(profile_name, token)
     if vacancy.get("company") and len(block_company_data.encode("utf-8")) <= 64:
-        rows.append([{"text": "🚫 В чёрный список", "callback_data": block_company_data}])
+        third.append({"text": "🚫 Компанию в ЧС", "callback_data": block_company_data})
+    if third:
+        rows.append(third)
     return {"inline_keyboard": rows} if rows else None
