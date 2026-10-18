@@ -107,14 +107,18 @@ class TelegramCallbackRouter:
         if str(raw_data).startswith("rq:"):
             parts = str(raw_data).split(":")
             await self._answer_callback_query(callback_id)
-            if len(parts) != 4 or parts[2] not in self._profile_names() or not can_access_profile(parts[2]):
+            if len(parts) not in (4, 5) or parts[2] not in self._profile_names() or not can_access_profile(parts[2]):
                 await self._send_text(chat_id, "Список недоступен.")
                 return
             if parts[1] == "o":
                 await self._open_review_card(chat_id, parts[2], parts[3])
             elif parts[1] == "p" and parts[3].isdigit():
                 await self._show_review_queue(chat_id, principal, profile_name=parts[2], page=int(parts[3]),
-                                              message_id=int(message.get("message_id") or 0))
+                                              message_id=int(message.get("message_id") or 0),
+                                              sort="new" if parts[4:] == ["n"] else "score")
+            elif parts[1] in ("d", "D") and parts[3].isdigit():
+                await self._review_dismiss_below(chat_id, principal, parts[2], int(parts[3]),
+                                                 confirmed=parts[1] == "D")
             return
 
         if str(raw_data).startswith("mad:"):

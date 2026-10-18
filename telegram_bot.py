@@ -1114,8 +1114,17 @@ class TelegramBot(
 
     REVIEW_PAGE_SIZE = 6
 
+    REVIEW_DISMISS_THRESHOLDS = (40, 50, 60)
+
+    @staticmethod
+    def _review_score(item: dict) -> int | None:
+        try:
+            return int((item.get("evaluation") or {}).get("score"))
+        except (TypeError, ValueError):
+            return None
+
     async def _show_review_queue(self, chat_id: int, principal: dict, *, profile_name: str,
-                                 page: int = 0, message_id: int = 0) -> None:
+                                 page: int = 0, message_id: int = 0, sort: str = "score") -> None:
         """One message per page: a short line per vacancy, a button opens its full card."""
         reply_menu = reply_menu_for_command(principal.get("role", ROLE_USER), "/review")
         self._set_selected_menu(principal["user_id"], reply_menu)
@@ -1127,12 +1136,18 @@ class TelegramBot(
                 reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
             )
             return
+        sort = "new" if sort == "new" else "score"
+        if sort == "score":
+            # Best first; unscored at the end; ties keep «newest first».
+            all_items = sorted(all_items, key=lambda item: (self._review_score(item) is None,
+                                                           -(self._review_score(item) or 0)))
         size = self.REVIEW_PAGE_SIZE
         pages = (len(all_items) + size - 1) // size
         page = max(0, min(int(page), pages - 1))
         chunk = all_items[page * size:(page + 1) * size]
         lines = [f"📋 На рассмотрении: {len(all_items)}" + (f" · стр. {page + 1}/{pages}" if pages > 1 else ""),
-                 "Новые сверху. Нажмите номер — откроется карточка с кнопками.", ""]
+                 ("Сверху лучшие по баллу." if sort == "score" else "Сверху новые.")
+                 + " Нажмите номер — откроется карточка с кнопками.", ""]
         buttons = []
         for offset, item in enumerate(chunk):
             number = page * size + offset + 1
@@ -1147,17 +1162,52 @@ class TelegramBot(
             lines.append(f"{number}. {title[:70]}" + (f"\n     {details}" if details else ""))
             buttons.append({"text": str(number), "callback_data": f"rq:o:{profile_name}:{item.get('token')}"})
         keyboard = [buttons[i:i + 6] for i in range(0, len(buttons), 6)]
+        mode = "s" if sort == "score" else "n"
         if pages > 1:
             keyboard.append([
-                {"text": "◀", "callback_data": f"rq:p:{profile_name}:{(page - 1) % pages}"},
-                {"text": f"{page + 1}/{pages}", "callback_data": f"rq:p:{profile_name}:{page}"},
-                {"text": "▶", "callback_data": f"rq:p:{profile_name}:{(page + 1) % pages}"},
+                {"text": "◀", "callback_data": f"rq:p:{profile_name}:{(page - 1) % pages}:{mode}"},
+                {"text": f"{page + 1}/{pages}", "callback_data": f"rq:p:{profile_name}:{page}:{mode}"},
+                {"text": "▶", "callback_data": f"rq:p:{profile_name}:{(page + 1) % pages}:{mode}"},
             ])
+        keyboard.append([{"text": "🆕 Сначала новые" if sort == "score" else "📊 Сначала лучшие",
+                          "callback_data": f"rq:p:{profile_name}:0:{'n' if sort == 'score' else 's'}"}])
+        scored = [self._review_score(item) for item in all_items]
+        dismiss = [{"text": f"👎 < {limit}", "callback_data": f"rq:d:{profile_name}:{limit}"}
+                   for limit in self.REVIEW_DISMISS_THRESHOLDS
+                   if any(score is not None and score < limit for score in scored)]
+        if dismiss:
+            keyboard.append(dismiss)
         text, markup = "\n".join(lines), {"inline_keyboard": keyboard}
         if message_id:
             await self._edit_text(chat_id, message_id, text, reply_markup=markup)
         else:
             await self._send_text(chat_id, text, reply_markup=markup)
+
+    async def _review_dismiss_below(self, chat_id: int, principal: dict, profile_name: str, limit: int,
+                                    *, confirmed: bool) -> None:
+        """«👎 < N»: every pending card scored below N becomes «Мимо» (kept in the feedback log)."""
+        targets = [item for item in manual_apply_queue.list_candidates(profile_name, limit=250)
+                   if (score := self._review_score(item)) is not None and score < limit]
+        if not targets:
+            await self._send_text(chat_id, f"Вакансий с баллом ниже {limit} нет.")
+            return
+        if not confirmed:
+            await self._send_text(
+                chat_id,
+                f"Убрать {len(targets)} вакансий с баллом ниже {limit}? Каждая запишется как «👎 Мимо» — "
+                "это пойдёт в обучение поиска.",
+                reply_markup={"inline_keyboard": [[
+                    {"text": f"✅ Убрать {len(targets)}", "callback_data": f"rq:D:{profile_name}:{limit}"},
+                    {"text": "❌ Нет", "callback_data": f"rq:p:{profile_name}:0:s"}]]})
+            return
+        done = 0
+        for item in targets:
+            if manual_apply_queue.record_feedback(str(item.get("token") or ""), "bad",
+                                                  user_id=int(principal.get("user_id") or 0),
+                                                  profile_name=profile_name):
+                done += 1
+        await self._send_text(chat_id, f"👎 Убрал {done} вакансий с баллом ниже {limit}.")
+        await self._show_review_queue(chat_id, principal, profile_name=profile_name)
 
     async def _open_review_card(self, chat_id: int, profile_name: str, token: str) -> None:
         item = manual_apply_queue.get_candidate(token, profile_name=profile_name)
