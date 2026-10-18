@@ -207,12 +207,14 @@ def validate_answer_check(payload, answers, sources, *, diagnostics=None, quote_
 
 # Failures of the auditor's citation format, not of the answer's facts.
 _CITATION_FAILURES = frozenset({'unknown_source', 'nonliteral_quote', 'quote_too_short', 'invalid_evidence',
-                                'invalid_grounding_check', 'grounding_incomplete', 'number_mismatch'})
+                                'invalid_grounding_check', 'grounding_incomplete', 'number_mismatch',
+                                'incomplete_check', 'invalid_check', 'missing_evidence'})
 _CITATION_FEEDBACK = (
     "\n\nПредыдущая проверка отклонена локальной сверкой: {reason}. Повтори проверку внимательно: "
     "source — строго одно из resume|facts|profile_note|contacts|salary|knowledge; quote — непрерывный "
     "ДОСЛОВНЫЙ фрагмент этого источника без пересказа; если в предложении есть число, цитата должна "
-    "содержать это же число. Если такого фрагмента нет — supported=false.")
+    "содержать это же число; разбери КАЖДОЕ предложение ответа (sentence index по порядку, ни одного "
+    "не пропускай). Если такого фрагмента нет — supported=false.")
 
 
 async def verify_answers(answers, sources, client, model, *, constraints='', diagnostics=None,
@@ -248,7 +250,8 @@ Constraints и метки [LIMIT]/[DO_NOT_CLAIM] в knowledge — запреты
 формулировкой в старом resume/profile_note: запрещённый claim
 должен получить supported=false даже при дословной цитате. Не выводи согласие из вакансии. Для зарплаты допустим только явно заданный
 ориентир/правило из salary; не принимай сумму вакансии за ожидание кандидата.
-Разбей answer на предложения как split: граница .!? + пробел или новая строка.
+Предложения ответа уже разбиты в поле sentences: используй ровно их и их порядок
+(sentence index = позиция в sentences), не дели и не склеивай их сам.
 Для каждого предложения процитируй непрерывные ДОСЛОВНЫЕ фрагменты источников,
 подтверждающие ВСЕ детали. При сомнении supported=false. Не переписывай ответ.
 Верни только JSON: {"verdict":"supported|mixed|unsupported", "answers":[
@@ -257,6 +260,9 @@ Constraints и метки [LIMIT]/[DO_NOT_CLAIM] в knowledge — запреты
 Каждый answer index ровно один раз; каждый sentence index ровно один раз.
 Для неподтверждённого ответа supported=false. Не объявляй произвольные
 предложения нейтральными, не склеивай/не перефразируй цитаты. Только JSON."""
+    # The local check splits sentences with split_sentences(); give the auditor the very
+    # same split so «incomplete_check» does not come from a different sentence count.
+    audit_answers = [dict(answer, sentences=split_sentences(answer['answer'])) for answer in answers]
     local = diagnostics if diagnostics is not None else {}
     feedback = ''
     accepted = set()
@@ -270,7 +276,8 @@ Constraints и метки [LIMIT]/[DO_NOT_CLAIM] в knowledge — запреты
                 llm_role="answer_grounding",
                 model=model, messages=[{'role': 'system', 'content': instructions + feedback},
                                       {'role': 'user', 'content': json.dumps(
-                                          {'sources': sources, 'answers': answers, 'constraints': constraints}, ensure_ascii=False)}],
+                                          {'sources': sources, 'answers': audit_answers, 'constraints': constraints},
+                                          ensure_ascii=False)}],
                 temperature=0, max_tokens=5000, response_format={'type': 'json_object'}), timeout=_grounding_timeout())
             choice = response.choices[0]
             if choice.finish_reason != 'stop':
