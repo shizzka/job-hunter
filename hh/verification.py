@@ -5,7 +5,7 @@ import logging
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from hh.recovery import AUTH_URL, _auth_cookies, _authenticated_server_html, _request_matches
 from hh.ui import CHALLENGE_TEXT, HHUIGuard
@@ -117,6 +117,19 @@ def _owned_post(session, attempt, resume_id, letter):
     return proof
 
 
+def _regional_vacancy_redirect(url, response):
+    """The same /vacancy/<id> on a regional hh host (hh.ru → spb.hh.ru), or None."""
+    if response.status not in (301, 302, 303, 307, 308):
+        return None
+    location = urljoin(url, response.headers.get('location', ''))
+    source, target = urlsplit(url), urlsplit(location)
+    if (target.scheme != 'https' or not re.fullmatch(r'[a-z0-9-]+\.hh\.ru', target.hostname or '')
+            or target.port is not None or target.username or target.password
+            or target.path != source.path or target.query or target.fragment or location == url):
+        return None
+    return location
+
+
 async def reconcile_post_submit(session, attempt, resume_id, letter, *, trace=None):
     """Verify one owned POST; at most two GETs allow server rendering to catch up."""
     if trace is None:
@@ -202,6 +215,14 @@ async def reconcile_post_submit(session, attempt, resume_id, letter, *, trace=No
             response = await request_context.get(url, max_redirects=0, timeout=15000,
                                                  headers={'Cache-Control': 'no-cache'})
             fresh()
+            regional = _regional_vacancy_redirect(url, response)
+            if regional:
+                # The form lives on hh.ru while the vacancy belongs to a regional host
+                # (spb.hh.ru/...): follow exactly this one hop, nothing else.
+                url = regional
+                response = await request_context.get(url, max_redirects=0, timeout=15000,
+                                                     headers={'Cache-Control': 'no-cache'})
+                fresh()
             content_type = response.headers.get('content-type', '').split(';', 1)[0].strip().lower()
             if response.status != 200 or response.url != url or content_type != 'text/html':
                 attempt._hh_reconciliation_blocked = True

@@ -67,3 +67,47 @@ def test_refusal_names_exact_step_without_tokens(monkeypatch, failure, step, rea
         assert failure in diagnostic['failed'] and diagnostic['after'] == 'vacancy_get'
     if failure == 'html':
         assert diagnostic['read_number'] == 2
+
+
+def _redirect_case(monkeypatch, location):
+    token = 'T'
+    request = SimpleNamespace(all_headers=AsyncMock(return_value={'cookie': 'hhtoken=' + token}))
+    proof = {'url': 'https://hh.ru/applicant/vacancy_response/popup', 'fields': {'vacancy_id': '2'}}
+    context = SimpleNamespace(cookies=AsyncMock(return_value=[{'name': 'hhtoken', 'value': token}]),
+                              _hh_action_watch=SimpleNamespace(application_post_sequence=1, unknown=False))
+    page = SimpleNamespace(_hh_action_monitor=SimpleNamespace(unknown=False))
+    attempt = SimpleNamespace(page=page, context=context, _hh_application_posts=[{'request': request}])
+    session = SimpleNamespace(_page=page, _context=context, _external_attempt=attempt)
+    monkeypatch.setattr(verification, '_owned_post', lambda *args: proof)
+    regional = 'https://spb.hh.ru/vacancy/2'
+    responses = {
+        'https://hh.ru/vacancy/2': SimpleNamespace(status=302, url='https://hh.ru/vacancy/2',
+                                                   headers={'location': location}, text=AsyncMock(return_value=''),
+                                                   dispose=AsyncMock()),
+        regional: SimpleNamespace(status=200, url=regional, headers={'content-type': 'text/html'},
+                                  text=AsyncMock(return_value=APPLIED_HTML), dispose=AsyncMock()),
+    }
+    urls = []
+
+    async def get(url, **kwargs):
+        urls.append(url)
+        return responses.get(url, responses['https://hh.ru/vacancy/2'])
+
+    context.request = SimpleNamespace(get=AsyncMock(side_effect=get))
+    asyncio.run(verification.reconcile_post_submit(session, attempt, 'resume', 'letter'))
+    return attempt, urls
+
+
+def test_regional_vacancy_redirect_is_followed_once(monkeypatch):
+    attempt, urls = _redirect_case(monkeypatch, 'https://spb.hh.ru/vacancy/2')
+    assert urls == ['https://hh.ru/vacancy/2', 'https://spb.hh.ru/vacancy/2']
+    assert attempt._hh_reconciliation_diagnostic['step'] == 'verified'
+
+
+@pytest.mark.parametrize('location', ['https://spb.hh.ru/applicant/negotiations', 'https://evil.example/vacancy/2',
+                                      'http://spb.hh.ru/vacancy/2', 'https://spb.hh.ru/vacancy/2?from=x',
+                                      'https://hh.ru.evil.example/vacancy/2'])
+def test_other_redirects_still_refuse(monkeypatch, location):
+    attempt, urls = _redirect_case(monkeypatch, location)
+    assert urls == ['https://hh.ru/vacancy/2']
+    assert attempt._hh_reconciliation_diagnostic['step'] == 'vacancy_response'
