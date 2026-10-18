@@ -210,6 +210,17 @@ def validate_check(payload: dict, sentences: list[str], sources: dict[str, str],
 _KNOWLEDGE_CHUNK_LABELS = ("knowledge/", "facts.json", "candidate_interview.json")
 
 
+_SOURCE_ALIASES = {
+    "резюме": "resume", "resume.md": "resume", "cv": "resume",
+    "факты": "facts", "facts.json": "facts", "подтвержденные факты": "facts",
+    "профиль": "profile_note", "profile": "profile_note", "profile note": "profile_note",
+    "канонический профиль": "profile_note",
+    "база знаний": "knowledge", "база фактов": "knowledge", "kb": "knowledge",
+    "зарплата": "salary", "зарплатные ожидания": "salary",
+    "контакты": "contacts",
+}
+
+
 def _validate_check(payload: dict, sentences: list[str], sources: dict[str, str], *,
                     quote_min_similarity: float = 1.0) -> GroundingResult:
     if not isinstance(payload, dict) or payload.get("verdict") != "supported":
@@ -240,6 +251,9 @@ def _validate_check(payload: dict, sentences: list[str], sources: dict[str, str]
             source, quote = item.get("source"), item.get("quote")
             if not isinstance(source, str) or not isinstance(quote, str):
                 return GroundingResult(False, "invalid_evidence")
+            # Weaker models name the same blocks in Russian or decorate them; that is
+            # the same source, not an «unknown» one.
+            source = _SOURCE_ALIASES.get(_normalize(source).strip(" .:`'\"«»"), source)
             normalized = _normalize(quote)
             fragment = ""
             similarity = 0.0

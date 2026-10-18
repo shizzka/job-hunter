@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import os
 from cover_grounding import _grounding_timeout
 from contextlib import contextmanager
@@ -15,6 +16,8 @@ import config
 from direction_runtime import candidate_home
 from cover_grounding import split_sentences, validate_check
 from llm_utils import parse_llm_json
+
+log = logging.getLogger("answer_grounding")
 
 
 @dataclass(frozen=True)
@@ -202,6 +205,16 @@ def validate_answer_check(payload, answers, sources, *, diagnostics=None, quote_
     return accepted if payload['verdict'] != 'unsupported' else set()
 
 
+# Failures of the auditor's citation format, not of the answer's facts.
+_CITATION_FAILURES = frozenset({'unknown_source', 'nonliteral_quote', 'quote_too_short', 'invalid_evidence',
+                                'invalid_grounding_check', 'grounding_incomplete', 'number_mismatch'})
+_CITATION_FEEDBACK = (
+    "\n\nПредыдущая проверка отклонена локальной сверкой: {reason}. Повтори проверку внимательно: "
+    "source — строго одно из resume|facts|profile_note|contacts|salary|knowledge; quote — непрерывный "
+    "ДОСЛОВНЫЙ фрагмент этого источника без пересказа; если в предложении есть число, цитата должна "
+    "содержать это же число. Если такого фрагмента нет — supported=false.")
+
+
 async def verify_answers(answers, sources, client, model, *, constraints='', diagnostics=None,
                          quote_min_similarity=1.0):
     """Model-assisted semantic entailment, plus deterministic citation guards.
@@ -244,28 +257,41 @@ Constraints и метки [LIMIT]/[DO_NOT_CLAIM] в knowledge — запреты
 Каждый answer index ровно один раз; каждый sentence index ровно один раз.
 Для неподтверждённого ответа supported=false. Не объявляй произвольные
 предложения нейтральными, не склеивай/не перефразируй цитаты. Только JSON."""
-    try:
-        response = await asyncio.wait_for(client.chat.completions.create(
-            llm_role="answer_grounding",
-            model=model, messages=[{'role': 'system', 'content': instructions},
-                                  {'role': 'user', 'content': json.dumps(
-                                      {'sources': sources, 'answers': answers, 'constraints': constraints}, ensure_ascii=False)}],
-            temperature=0, max_tokens=5000, response_format={'type': 'json_object'}), timeout=_grounding_timeout())
-        choice = response.choices[0]
-        if choice.finish_reason != 'stop':
-            if diagnostics is not None:
-                diagnostics['reason'] = 'grounding_incomplete'
+    local = diagnostics if diagnostics is not None else {}
+    feedback = ''
+    accepted = set()
+    # A second audit only for a human-approved draft (relaxed threshold) and only when
+    # the auditor's citations were sloppy. The local rules stay the same: invented facts
+    # or digits are still rejected. Strict paths (applications, automatic replies) keep one audit.
+    attempts = 2 if quote_min_similarity < 1.0 else 1
+    for attempt in range(attempts):
+        try:
+            response = await asyncio.wait_for(client.chat.completions.create(
+                llm_role="answer_grounding",
+                model=model, messages=[{'role': 'system', 'content': instructions + feedback},
+                                      {'role': 'user', 'content': json.dumps(
+                                          {'sources': sources, 'answers': answers, 'constraints': constraints}, ensure_ascii=False)}],
+                temperature=0, max_tokens=5000, response_format={'type': 'json_object'}), timeout=_grounding_timeout())
+            choice = response.choices[0]
+            if choice.finish_reason != 'stop':
+                local['reason'] = 'grounding_incomplete'
+                accepted = set()
+                continue
+        except Exception:
+            # No rejected candidate content, quotes or raw transport exceptions.
+            if attempt == 0:
+                local['reason'] = 'grounding_unavailable'
             return set()
-    except Exception:
-        # No rejected candidate content, quotes or raw transport exceptions.
-        if diagnostics is not None:
-            diagnostics['reason'] = 'grounding_unavailable'
-        return set()
-    try:
-        payload = parse_llm_json(choice.message.content or '')
-        return validate_answer_check(payload, answers, sources, diagnostics=diagnostics,
-                                     quote_min_similarity=quote_min_similarity)
-    except Exception:
-        if diagnostics is not None:
-            diagnostics['reason'] = 'invalid_grounding_check'
-        return set()
+        try:
+            payload = parse_llm_json(choice.message.content or '')
+            accepted = validate_answer_check(payload, answers, sources, diagnostics=local,
+                                             quote_min_similarity=quote_min_similarity)
+        except Exception:
+            local['reason'] = 'invalid_grounding_check'
+            accepted = set()
+        if (len(accepted) == len(answers) or local.get('reason') not in _CITATION_FAILURES
+                or attempt + 1 == attempts):
+            return accepted
+        log.warning("Answer grounding: re-audit after %s", local.get('reason'))
+        feedback = _CITATION_FEEDBACK.format(reason=local.get('reason'))
+    return accepted
