@@ -265,3 +265,27 @@ def test_chat_existing_freshness_read_is_journalled_without_extra_navigation(cha
     assert decision["reason"] == "stale_question" and decision["snapshot_ref"] == snapshots[-1]["snapshot_id"]
     assert active_chat_journal.get() is None
     chat_run.send.assert_not_awaited()
+
+
+def test_hr_message_in_rejected_chat_goes_to_one_digest_without_reply_card(chat_run, monkeypatch, tmp_path):
+    """B1 (18.10): 7 of 11 «Вопрос HR» cards were chats the employer had already rejected."""
+    import config
+    import notifier
+    home = tmp_path / "snapshot_home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(home))
+    (home / "negotiation_snapshots.jsonl").write_text(json.dumps({"chatId": 42, "lastState": "DISCARD"}) + "\n")
+    chat_run.messages["42"]["messages"][0]["text"] = "К сожалению, мы не готовы пригласить вас. Есть вопросы?"
+    digests = []
+
+    async def send_message(text, **kwargs):
+        digests.append(text)
+        return True
+
+    monkeypatch.setattr(notifier, "send_message", send_message)
+    first = asyncio.run(chat_run.run())
+    assert chat_run.notifications == []  # no «Ответить с ИИ» card
+    assert len(digests) == 1 and "Отказы в чатах: 1" in digests[0] and "Synthetic Company" in digests[0]
+    assert first["rejections"] == [{"title": "Synthetic QA", "company": "Synthetic Company"}]
+    assert asyncio.run(chat_run.run())["decisions"] == {"already_handled": 1}
+    assert len(digests) == 1  # each rejection once

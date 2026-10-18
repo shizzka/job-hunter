@@ -718,6 +718,47 @@ async def notify_suspicious_screening_message(
     return await notifier.send_message_with_markup(text, reply_markup=markup)
 
 
+def _latest_topic_states() -> dict[str, str]:
+    """chat id -> lastState (RESPONSE / DISCARD / INVITATION / INTERVIEW…) from the profile's
+    latest negotiation snapshot; empty when there is none (then nothing changes)."""
+    states: dict[str, str] = {}
+    try:
+        import config
+        path = os.path.join(config.JOB_HUNTER_HOME, "negotiation_snapshots.jsonl")
+        with open(path, encoding="utf-8") as stream:
+            for line in stream:
+                if '"chatId"' not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("chatId") and row.get("lastState"):
+                    states[str(row["chatId"])] = str(row["lastState"])
+    except OSError:
+        pass
+    return states
+
+
+def _notifier_module():
+    try:
+        import notifier
+        return notifier
+    except Exception:
+        return None
+
+
+async def _notify_rejections(notifier, rejections: list[dict]) -> bool:
+    if notifier is None or not rejections:
+        return False
+    lines = [f"• {_escaped_html(item['company'], limit=80)} — {_escaped_html(item['title'], limit=90)}"
+             for item in rejections[:20]]
+    more = f"\n…и ещё {len(rejections) - 20}" if len(rejections) > 20 else ""
+    return await notifier.send_message(
+        f"📭 <b>Отказы в чатах: {len(rejections)}</b>\n" + "\n".join(lines) + more
+        + "\n\nОтвечать на них не нужно — работодатель уже ответил отказом.")
+
+
 async def notify_hr_message(notifier, *, chat_id, vacancy, message, profile_name, invitation=None):
     """Notification only. AI generation stays behind the existing manual callback."""
     if notifier is None:
@@ -1429,7 +1470,8 @@ async def process_all(
 
     journal = ChatJournal(repository.path.parent, profile_name)
     summary.update(run_id=journal.run_id, decisions={}, hr_questions=0, hr_notified=0,
-                   external_invites=0, external_notified=0)
+                   external_invites=0, external_notified=0, rejections=[])
+    topic_states = _latest_topic_states()
     chats = await list_chats(page)
     list_ref = journal.write(
         "chat_list_snapshot", list_complete=bool(getattr(chats, "list_complete", False)),
@@ -1564,7 +1606,13 @@ async def process_all(
                         if notifier:
                             repository.mark_acting(chat_id, owner)
                             try:
-                                if suspicious:
+                                if decision == "hr_question" and topic_states.get(chat_id) == "DISCARD":
+                                    # The employer already said no; the chat is usually closed.
+                                    # One digest after the scan instead of a reply card.
+                                    summary["rejections"].append(dict(title=vac.get("title") or "—",
+                                                                      company=vac.get("company") or "—"))
+                                    notified = True
+                                elif suspicious:
                                     notified = await notify_suspicious_screening_message(
                                         notifier, chat_id=chat_id, vacancy=vac, message=last, profile_name=profile_name)
                                 else:
@@ -1639,4 +1687,9 @@ async def process_all(
 
     log.info("chat scan complete: read=%d/%d, failures=%d",
              summary["chats_read"], summary["chats_scanned"], summary["read_failures"])
+    if summary["rejections"]:
+        try:
+            await _notify_rejections(_notifier_module(), summary["rejections"])
+        except Exception as exc:
+            log.warning("rejection digest failed: %s", type(exc).__name__)
     return summary
