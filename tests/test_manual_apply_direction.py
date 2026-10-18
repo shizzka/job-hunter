@@ -36,11 +36,20 @@ def setup(tmp_path, monkeypatch):
     return bot, str(home), sent, runs
 
 
-def test_card_from_another_direction_asks_first(tmp_path, monkeypatch):
+def test_card_from_another_direction_applies_in_it_without_asking(tmp_path, monkeypatch):
+    """A tap is the decision — also when it comes from the command queue."""
     bot, home, sent, runs = setup(tmp_path, monkeypatch)
-    asyncio.run(bot._start_manual_ai_apply(1, {"user_id": 1, "role": "admin"}, profile_name="client_1", token="t"))
-    assert runs == [] and "найдена в направлении «ELECTRIC»" in sent[-1][0]
-    assert sent[-1][1]["inline_keyboard"][0][0]["callback_data"] == "mad:client_1:t"
+
+    async def run():
+        await bot._start_manual_ai_apply(1, {"user_id": 1, "role": "admin"}, profile_name="client_1", token="t")
+        await asyncio.sleep(0.05)
+        for task in [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]:
+            await task
+
+    asyncio.run(run())
+    assert runs and runs[0][0] == "electric"
+    assert "Карточка из направления «ELECTRIC»" in sent[0][0]
+    assert directions.active_direction(home)["name"] == "qa"
 
 
 def test_override_switches_for_the_apply_and_restores(tmp_path, monkeypatch):

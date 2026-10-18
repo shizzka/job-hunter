@@ -4092,7 +4092,7 @@ class TelegramBot(
         *,
         profile_name: str,
         token: str,
-        direction_override: bool = False,
+        direction_override: bool = False,  # legacy «mad:» buttons; a card tap always uses its direction
     ) -> None:
         role = principal.get("role", ROLE_USER)
         reply_markup = self._menu_reply_markup(principal)
@@ -4100,8 +4100,9 @@ class TelegramBot(
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
             return
 
-        # A card keeps the direction (and resume) it was evaluated in. When another
-        # direction is selected now, ask instead of failing with «направление изменилось».
+        # A card keeps the direction (and resume) it was evaluated in. A tap on it is the
+        # decision to apply with that resume, also from the command queue: switch the
+        # direction only for this application and restore it afterwards.
         import directions as directions_mod
         home = self._profile(profile_name).home_dir
         switch_to = restore_to = None
@@ -4119,19 +4120,10 @@ class TelegramBot(
                 await self._send_text(chat_id, "Направление, в котором найдена эта вакансия, удалено — "
                                       "нужна новая оценка: запустите поиск.", reply_markup=reply_markup)
                 return
-            if not direction_override:
-                current_title = (current or {}).get("title") or "без направления"
-                await self._send_text(
-                    chat_id,
-                    html.escape(f"Эта вакансия найдена в направлении «{card_direction['title']}», а сейчас выбрано "
-                                f"«{current_title}». Откликнуться резюме из «{card_direction['title']}»? "
-                                "Направление переключу только на время отклика и потом верну."),
-                    reply_markup={"inline_keyboard": [
-                        [{"text": f"✅ Откликнуться в «{card_direction['title'][:30]}»",
-                          "callback_data": f"mad:{profile_name}:{token}"}],
-                        [{"text": "❌ Отмена", "callback_data": "mad:no"}]]})
-                return
             switch_to, restore_to = bound_name, (current or {}).get("name")
+            await self._send_text(chat_id, html.escape(
+                f"ℹ️ Карточка из направления «{card_direction['title']}» — откликаюсь его резюме; "
+                f"выбранное направление «{(current or {}).get('title') or 'без направления'}» вернётся после отклика."))
 
         label = "manual AI apply"
         active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
