@@ -359,7 +359,40 @@ async def notify_llm_issue(
         f"Где смотреть: <code>статус</code> → <b>📜 Лог поиска</b> или команда <code>/log</code>.\n\n"
         f"Ошибка: <code>{_html(evaluation.get('llm_error', ''), 800)}</code>"
     )
-    await send_message(text)
+    bot_token, chat_ids, proxy_url = capture_delivery_target()
+    admins = _admin_chat_ids()
+    clients = tuple(chat_id for chat_id in chat_ids if chat_id not in admins)
+    if not clients:
+        await send_message(text)
+        return
+    # A client gets a plain message; keys, providers and logs are the admin's business.
+    friendly = ("⏳ ИИ сейчас перегружен, поэтому оценку новых вакансий я отложил. "
+                "Продолжу сам, когда он освободится — ничего делать не нужно. "
+                "Вакансии не потеряются и не будут отклонены.")
+    await _send_to_chats("sendMessage", _build_text_payload(friendly, "HTML", None),
+                         target=(bot_token, clients, proxy_url))
+    if admins:
+        profile_name = str(getattr(_active_profile(), "name", "") or "")
+        await _send_to_chats("sendMessage", _build_text_payload(
+            f"Профиль: <code>{_html(profile_name, 80)}</code>\n" + text, "HTML", None),
+            target=(bot_token, tuple(sorted(admins)), proxy_url))
+
+
+def _admin_chat_ids() -> set[int]:
+    """Admins of the control bot plus the configured owner chat."""
+    admins = set()
+    try:
+        for item in telegram_access.list_users():
+            if item.get("role") == "admin" and item.get("enabled", True):
+                admins.add(int(item.get("user_id") or 0))
+    except Exception:
+        pass
+    try:
+        admins.add(int(config.NOTIFY_CHAT_ID or 0))
+    except (TypeError, ValueError):
+        pass
+    admins.discard(0)
+    return admins
 
 
 def _format_autoanswer_notes(note: str) -> str:
