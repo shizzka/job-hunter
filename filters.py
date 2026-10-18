@@ -82,6 +82,59 @@ MILITARY_PATTERNS = tuple(
 )
 
 
+_WORD_RE = re.compile(r"[a-zа-я0-9+#]+")
+# Role words that say nothing about the field: «специалист по закупкам» ≠ «специалист по данным».
+_GENERIC_ROLE_WORDS = ("специалист", "менеджер", "руководитель", "ведущий", "старший", "главный", "сотрудник",
+                       "группа", "отдел", "начальник", "помощник", "ассистент", "заместитель", "работа",
+                       "направление", "координатор", "младший", "senior", "junior", "middle", "lead")
+
+
+def _words(text: str) -> list[str]:
+    return [w for w in _WORD_RE.findall(str(text or "").casefold().replace("ё", "е")) if len(w) >= 3]
+
+
+def _same_word(a: str, b: str) -> bool:
+    """Same word up to a Russian ending: «контроль/контроля/контролер», «данных/данные», not «контракт»."""
+    if a == b:
+        return True
+    if min(len(a), len(b)) < 4:
+        return False
+    common = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        common += 1
+    return common >= max(4, min(len(a), len(b)) - 2)
+
+
+def _meaningful(words: list[str]) -> list[str]:
+    return [w for w in words if not any(_same_word(w, g) for g in _GENERIC_ROLE_WORDS)]
+
+
+def _soft_match(title: str, combined: str, keywords) -> bool:
+    """A keyword phrase matches in any word form/order; for a direction, a title matches its target
+    roles by a meaningful word («Оператор базы данных» ~ «Оператор обработки данных»)."""
+    text_words = _words(combined)
+    for phrase in keywords:
+        wanted = _meaningful(_words(phrase))
+        if wanted and all(any(_same_word(w, t) for t in text_words) for w in wanted):
+            return True
+    direction = getattr(config, "ACTIVE_DIRECTION", None) or {}
+    roles = [str(r) for key in ("goal", "allowed_wording") for r in (direction.get(key) or [])]
+    role_words = set(_meaningful([w for role in roles for w in _words(role)]))
+    title_words = _meaningful(_words(title))
+    return any(_same_word(r, t) for r in role_words for t in title_words)
+
+
+def _excluded(keyword: str, combined: str) -> bool:
+    keyword = str(keyword or "").casefold().strip()
+    if not keyword:
+        return False
+    if len(keyword) <= 3:  # «HR», «QA»: a whole word, not a part of «through»/«chrome»
+        return re.search(r"(?<![a-zа-я0-9])" + re.escape(keyword) + r"(?![a-zа-я0-9])", combined) is not None
+    return keyword in combined
+
+
 def check_vacancy(vacancy: dict) -> str | None:
     """
     Проверить вакансию на релевантность по ключевым словам.
@@ -96,7 +149,7 @@ def check_vacancy(vacancy: dict) -> str | None:
     combined = title_lower + " " + snippet_lower
 
     excludes = config.VACANCY_EXCLUDE_KEYWORDS or (EXCLUDE_KEYWORDS if qa_policy else ())
-    if any(ex.casefold() in combined for ex in excludes):
+    if any(_excluded(ex, combined) for ex in excludes):
         return "exclude_keywords"
 
     if any(pattern.search(combined) for pattern in MILITARY_PATTERNS):
@@ -104,7 +157,9 @@ def check_vacancy(vacancy: dict) -> str | None:
 
     keywords = config.VACANCY_RELEVANT_KEYWORDS
     if keywords:
-        return None if any(kw.casefold() in combined for kw in keywords) else "relevant_keywords"
+        if any(kw.casefold() in combined for kw in keywords) or _soft_match(title_lower, combined, keywords):
+            return None
+        return "relevant_keywords"
     if not qa_policy:
         return None
 
