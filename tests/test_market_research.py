@@ -76,3 +76,9 @@ def test_explicit_tax_period_source_and_title_level():
     assert plain["salary_tax"] == "не указано" and plain["level"] == ""
     none = m._row("QA", vacancy(3, "Head of QA"))
     assert none["salary_source"] == "не указана" and none["level"] == "head/director"
+
+
+def test_strict_match_ignores_prepositions():
+    assert m.strict_match("Инженер по электроснабжению", "Инженер электроснабжения")
+    assert m.strict_match("Инженер по тестированию", "Ведущий инженер по тестированию")
+    assert not m.strict_match("Инженер по электроснабжению", "Инженер-конструктор")

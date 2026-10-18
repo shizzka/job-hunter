@@ -46,8 +46,13 @@ def parse_queries(text: str) -> list[str]:
     return queries
 
 
+# Prepositions say nothing about the role: «Инженер по электроснабжению» = «Инженер электроснабжения».
+_STOP_WORDS = frozenset({"по", "на", "для", "во", "со", "из", "от", "при", "of", "and", "for", "the", "in"})
+
+
 def _stem_tokens(text: str) -> set[str]:
-    return {word[:5] for word in re.findall(r"[a-zа-яё0-9]+", str(text).casefold().replace("ё", "е")) if len(word) > 1}
+    return {word[:5] for word in re.findall(r"[a-zа-яё0-9]+", str(text).casefold().replace("ё", "е"))
+            if len(word) > 1 and word not in _STOP_WORDS}
 
 
 def strict_match(query: str, title: str) -> bool:
