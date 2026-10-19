@@ -687,3 +687,18 @@ def test_user_ai_access_does_not_open_admin_callbacks(monkeypatch, payload):
     bot, calls = _configured_bot(monkeypatch, principal={"user_id": 42, "role": telegram_bot.ROLE_USER, "profile": "qa"})
     asyncio.run(bot._handle_callback_query(_callback(payload, user_id=42, chat_type="private")))
     assert calls["answers"][-1][1] == "🔒 Нужны права администратора."
+
+
+def test_callback_router_sends_accepted_template_letter(monkeypatch):
+    """B17: «📨 Отправить шаблон» marks the card and starts the application with the same token."""
+    bot, calls = _configured_bot(monkeypatch)
+    marked, started = [], []
+    monkeypatch.setattr(telegram_bot.manual_apply_queue, "allow_stub_cover",
+                        lambda token, *, profile_name=None: marked.append((token, profile_name)) or True)
+
+    async def start(chat_id, principal, *, profile_name, token):
+        started.append((profile_name, token))
+
+    monkeypatch.setattr(bot, "_start_manual_ai_apply", start)
+    asyncio.run(bot._handle_callback_query(_callback("stub:qa:token-1")))
+    assert marked == [("token-1", "qa")] and started == [("qa", "token-1")]

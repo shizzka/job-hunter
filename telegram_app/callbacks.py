@@ -120,7 +120,6 @@ class TelegramCallbackRouter:
             if len(parts) != 3 or parts[1] not in self._profile_names() or not can_access_profile(parts[1]):
                 await self._send_text(chat_id, "Карточка недоступна.")
                 return
-            import manual_apply_queue
             if not manual_apply_queue.allow_stub_cover(parts[2], profile_name=parts[1]):
                 await self._send_text(chat_id, "Эта карточка уже обработана.")
                 return
