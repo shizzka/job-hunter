@@ -896,8 +896,10 @@ async def do_manual_apply_token(token: str) -> dict:
             if await _notify_employer_question(vacancy, evaluation, details, score, reason,
                                                apply_result["pending_question"],
                                                profile_name=item.get("profile_name") or profile_mod.active().name):
-                print(f"❓ Вопрос работодателя отправлен пользователю: {message}")
-                return {"ok": False, "uncertain": False, "message": message, "question_asked": True}
+                waiting = ("❓ Работодатель задал вопрос — ответь в карточке «Работодатель спрашивает», "
+                           "и я откликнусь сам.")
+                print(waiting)
+                return {"ok": False, "uncertain": False, "message": waiting, "question_asked": True}
         await notify_needs_manual(
             vacancy,
             score,
@@ -988,6 +990,12 @@ async def _notify_employer_question(vacancy: dict, evaluation: dict, details: st
     and the application is retried. Returns False when no card could be created."""
     import html as _html
     import question_memory
+    existing = question_memory.find_pending(
+        config.JOB_HUNTER_HOME, question=str(pending.get("question_text") or ""), url=str(vacancy.get("url") or ""),
+        vacancy_title=str(vacancy.get("title") or ""), company=str(vacancy.get("company") or ""))
+    if existing:
+        # A repeated tap must not stack identical cards (prod 19.10: two per vacancy).
+        return True
     try:
         candidate = manual_apply_queue.create_candidate(vacancy, evaluation, details,
                                                         profile_name=profile_name, allow_ai_apply=True)
@@ -3432,7 +3440,8 @@ async def main():
                 print(server_delivery_note(result))
             elif result.get("uncertain"):
                 print(f"⚠ Исход отклика не подтверждён; нужна ручная сверка. {result.get('message', '')}")
-            if not result.get("ok"):
+            # Waiting for the owner (an employer question, a template letter) is not a failure.
+            if not result.get("ok") and not (result.get("question_asked") or result.get("stub_review")):
                 sys.exit(1)
         elif args.trace_apply:
             result = await do_trace_apply(args.trace_apply, confirm_real=args.confirm_real)

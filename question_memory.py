@@ -93,6 +93,20 @@ def create_pending(home_dir: str, *, question: str, control: str, options: list[
     return qid
 
 
+def find_pending(home_dir: str, *, question: str, url: str = "", vacancy_title: str = "", company: str = "") -> str:
+    """qid of a live card with the same question for the same vacancy, or ""."""
+    wanted = normalize(question)
+    now = time.time()
+    for qid, item in _read(os.path.join(home_dir, PENDING_FILE)).items():
+        if not isinstance(item, dict) or now - float(item.get("created_at", 0)) >= PENDING_TTL_SECONDS:
+            continue
+        same_vacancy = (url and item.get("url") == url) or (
+            not url and item.get("vacancy_title") == vacancy_title and item.get("company") == company)
+        if same_vacancy and normalize(item.get("question", "")) == wanted:
+            return qid
+    return ""
+
+
 def pop_pending(home_dir: str, qid: str) -> dict | None:
     path = os.path.join(home_dir, PENDING_FILE)
     data = _read(path)

@@ -1955,6 +1955,11 @@ def format_command_result(label: str, result: dict, *, role: str = ROLE_ADMIN) -
             return 'Черновик подготовлен. Используйте кнопки под черновиком.'
         if not result.get('ok') and not result.get('cancelled') and not result.get('timeout'):
             return reply_failure_text('preparation_error')
+    if label == "manual AI apply" and result.get("ok"):
+        # An employer question or a template letter waits for the owner: not sent, not an error.
+        for line in reversed(str(result.get("stdout") or "").splitlines()):
+            if line.startswith(("❓ Работодатель задал вопрос", "⏸ Письмо не прошло проверку")):
+                return "⏸ Отклик ждёт твоего решения\n\n" + line
     if result.get("cancelled"):
         return "\n".join([
             f"⏹ {pretty_label} остановлен.",
