@@ -134,3 +134,58 @@ def test_preview_mode_blocks_old_confirmable_card(monkeypatch):
     result = asyncio.run(agent.do_manual_apply_token('old-token'))
     assert result['ok'] is False
     dispatch.assert_not_awaited()
+
+
+def _stub_setup(tmp_path, monkeypatch, *, allow_stub):
+    queue_file = tmp_path / "manual_apply_queue.json"
+    monkeypatch.setattr(manual_apply_queue, "_queue_path", lambda profile_name=None: queue_file)
+    item = manual_apply_queue.create_candidate(
+        {"id": "321", "source": "hh", "title": "Электромонтажник", "company": "ООО Синтетика",
+         "url": "https://hh.ru/vacancy/321"},
+        {"score": 60, "reason": "ok"}, details="Описание", profile_name="qa")
+    token = item["token"]
+    if allow_stub:
+        assert manual_apply_queue.allow_stub_cover(token, profile_name="qa")
+    monkeypatch.setattr(agent, "HHClient", FakeHHClient)
+    monkeypatch.setattr(agent.hh_guard, "can_auto_apply", lambda: (True, ""))
+    monkeypatch.setattr(agent.apply_orchestrator, "get_cover_letter_limit", lambda source: 1000)
+    monkeypatch.setattr(agent.analytics, "record_decision", lambda **kwargs: None)
+    stub = "Здравствуйте! Направляю резюме на вашу вакансию."
+
+    async def fake_generate_cover_letter(vacancy, details):
+        return stub
+
+    monkeypatch.setattr(agent, "generate_cover_letter", fake_generate_cover_letter)
+    monkeypatch.setattr(agent, "analyze_cover_letter", lambda cover, **kw: {"fallback": True})
+    cards, dispatched = [], []
+
+    async def send_with_markup(text, reply_markup=None, **kwargs):
+        cards.append((text, reply_markup))
+        return True
+
+    async def dispatch(*args, **kwargs):
+        dispatched.append(args)
+        return {"ok": False, "message": "stop here"}
+
+    monkeypatch.setattr(agent.notifier, "send_message_with_markup", send_with_markup)
+    monkeypatch.setattr(agent.apply_orchestrator, "dispatch_apply", dispatch)
+    monkeypatch.setattr(agent, "notify_needs_manual", lambda *a, **k: asyncio.sleep(0))
+    return token, cards, dispatched
+
+
+def test_template_letter_waits_for_the_owner(tmp_path, monkeypatch):
+    """B17 (dev 19.10, «Синтетика»): the template letter was sent without asking."""
+    token, cards, dispatched = _stub_setup(tmp_path, monkeypatch, allow_stub=False)
+    result = asyncio.run(agent.do_manual_apply_token(token))
+    assert result["stub_review"] is True and dispatched == []
+    assert manual_apply_queue.get_candidate(token)["status"] == "pending"  # can be retried
+    text, markup = cards[0]
+    labels = [b["text"] for row in markup["inline_keyboard"] for b in row]
+    assert "Направляю резюме" in text and "🔄 Перегенерировать" in labels and "📨 Отправить шаблон" in labels
+    assert markup["inline_keyboard"][0][1]["callback_data"] == f"stub:qa:{token}"
+
+
+def test_accepted_template_goes_to_dispatch(tmp_path, monkeypatch):
+    token, cards, dispatched = _stub_setup(tmp_path, monkeypatch, allow_stub=True)
+    asyncio.run(agent.do_manual_apply_token(token))
+    assert dispatched and not any("Отправить шаблон" in str(card) for card in cards)

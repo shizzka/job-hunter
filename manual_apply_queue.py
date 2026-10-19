@@ -234,6 +234,21 @@ def confirm_no_action(token, owner, *, store=None) -> bool:
     return changed
 
 
+def allow_stub_cover(token: str, *, profile_name: str | None = None) -> bool:
+    """«📨 Отправить шаблон» (B17): the owner accepts the template letter for this pending card."""
+    changed = False
+
+    def mutate(data):
+        nonlocal changed
+        item = data["items"].get((token or "").strip())
+        if item and item.get("status") == "pending":
+            item["allow_stub_cover"] = True
+            changed = True
+
+    _store(profile_name).update(mutate)
+    return changed
+
+
 def finish_candidate(token, owner, status, message="", *, store=None) -> bool:
     changed = False
     def mutate(data):

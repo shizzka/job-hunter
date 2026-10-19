@@ -114,6 +114,21 @@ class TelegramCallbackRouter:
                 or self._selected_profile(principal) == profile_name
             )
 
+        if str(raw_data).startswith("stub:"):
+            parts = str(raw_data).split(":")
+            await self._answer_callback_query(callback_id)
+            if len(parts) != 3 or parts[1] not in self._profile_names() or not can_access_profile(parts[1]):
+                await self._send_text(chat_id, "Карточка недоступна.")
+                return
+            import manual_apply_queue
+            if not manual_apply_queue.allow_stub_cover(parts[2], profile_name=parts[1]):
+                await self._send_text(chat_id, "Эта карточка уже обработана.")
+                return
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            await self._start_manual_ai_apply(chat_id, principal, profile_name=parts[1], token=parts[2])
+            return
+
         if str(raw_data).startswith("rq:"):
             parts = str(raw_data).split(":")
             await self._answer_callback_query(callback_id)

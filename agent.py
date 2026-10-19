@@ -796,6 +796,17 @@ async def do_manual_apply_token(token: str) -> dict:
             print(f"❌ {message}")
             return {"ok": False, "message": message, "no_cover": True}
 
+        if analyze_cover_letter(cover).get("fallback") and not item.get("allow_stub_cover"):
+            # B17: the letter failed its fact check and fell back to the template. A manual
+            # application waits for the owner instead of sending the template silently.
+            message = "Письмо не прошло проверку фактов, получился шаблон — без твоего решения не отправляю."
+            await stop_manual_result({"ok": False, "message": message}, raise_on_uncertain=True)
+            finish("pending", message)
+            await _notify_stub_cover(vacancy, cover, token,
+                                     profile_name=item.get("profile_name") or profile_mod.active().name)
+            print(f"⏸ {message}")
+            return {"ok": False, "message": message, "stub_review": True}
+
         if not valid():
             await stop_manual_result({"ok": False, "message": "Подтверждение отозвано до отправки"},
                                      raise_on_uncertain=True)
@@ -952,6 +963,23 @@ async def do_manual_apply_token(token: str) -> dict:
 
 class _HHApplyUncertain(Exception):
     """Stop consuming a preliminary HH result after its receipt changes."""
+
+
+async def _notify_stub_cover(vacancy: dict, cover: str, token: str, *, profile_name: str) -> bool:
+    import html as _html
+    text = (
+        "✉️ <b>Письмо не прошло проверку фактов</b>\n\n"
+        f"<b>{_html.escape(str(vacancy.get('title') or '—'))}</b> · {_html.escape(str(vacancy.get('company') or '—'))}\n\n"
+        "Вместо него получился шаблон:\n"
+        f"<i>{_html.escape(cover[:900])}</i>\n\n"
+        "Отклик не отправлен. Сгенерировать письмо заново или отправить этот шаблон?"
+    )
+    rows = [[{"text": "🔄 Перегенерировать",
+              "callback_data": manual_apply_queue.manual_apply_callback_data(profile_name, token)},
+             {"text": "📨 Отправить шаблон", "callback_data": f"stub:{profile_name}:{token}"}]]
+    if vacancy.get("url"):
+        rows.append([{"text": "🔗 Открою сам", "url": str(vacancy.get("url"))}])
+    return bool(await notifier.send_message_with_markup(text, {"inline_keyboard": rows}))
 
 
 async def _notify_employer_question(vacancy: dict, evaluation: dict, details: str, score, reason: str,
