@@ -535,7 +535,21 @@ class HHClient:
         await self.stop()
 
     async def is_logged_in(self) -> bool:
-        """Confirm the authenticated catalog without executing its background JS."""
+        """Confirm the authenticated catalog; one retry after a transient failure.
+
+        19.10: a single failed read («Login check failed: Error») switched hh off for the
+        whole search although the session was fine. The read is GET-only, so a second
+        attempt after a short pause is safe; an unexpected UI still stops at once.
+        """
+        result = await self._is_logged_in_once()
+        if result is not None:
+            return result
+        await asyncio.sleep(5)
+        log.info("Login check: retrying once after a transient failure")
+        return bool(await self._is_logged_in_once())
+
+    async def _is_logged_in_once(self) -> bool | None:
+        """True/False — a definite answer; None — a transient failure (network, timeout)."""
         try:
             await self._ensure_expected_ui("login_before_navigation")
             page, context = self._page, self._context
@@ -550,9 +564,13 @@ class HHClient:
             return True
         except HHUnexpectedUI:
             raise
-        except Exception as e:
-            log.warning("Login check failed: %s", e)
+        except ValueError as e:
+            # The server answered: login page, forbidden page or an unproven catalog.
+            log.warning("Login check failed: %s: %s", type(e).__name__, " ".join(str(e).split())[:200])
             return False
+        except Exception as e:
+            log.warning("Login check failed: %s: %s", type(e).__name__, " ".join(str(e).split())[:200])
+            return None
 
     async def _dismiss_whats_new_modal(self):
         """Only safe scoped close; no onboarding confirm/answers."""
