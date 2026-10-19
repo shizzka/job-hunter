@@ -176,15 +176,19 @@ def _build_chat_ai_candidates_text(summary: dict) -> str:
     candidates = list(summary.get("candidates") or [])
     scanned = int(summary.get("chats_scanned") or 0)
     read = int(summary.get("chats_read") or 0)
+    looked = f"просмотрено {read} из {scanned} последних чатов"
+    skipped = []
+    if summary.get("skipped_closing"):
+        skipped.append(f"отказы и «свяжемся» — {summary['skipped_closing']}")
+    if summary.get("skipped_other_profile"):
+        skipped.append(f"отклики другого профиля — {summary['skipped_other_profile']}")
+    skipped_line = ("Пропустил: " + ", ".join(skipped) + ".") if skipped else ""
     if not candidates:
-        return (
-            "Не нашёл свежих входящих HH-сообщений для ручного ИИ-ответа.\n"
-            f"Проверено чатов: {read}/{scanned}."
-        )
-    lines = [
-        "Выбери HH-чат для ИИ-предпросмотра.",
-        f"Проверено чатов: {read}/{scanned}.",
-    ]
+        return "\n".join(line for line in (
+            f"Не нашёл свежих сообщений HR для ответа ({looked}).", skipped_line) if line)
+    lines = [f"Нашёл чатов для ответа: {len(candidates)} ({looked}). Выбери, на какой ответить."]
+    if skipped_line:
+        lines.append(skipped_line)
     for idx, item in enumerate(candidates, 1):
         title = str(item.get("title") or "—")[:120]
         company = str(item.get("company") or "—")[:80]

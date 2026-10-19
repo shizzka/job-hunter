@@ -400,7 +400,7 @@ def test_chat_ai_candidate_list_markup():
     text = _build_chat_ai_candidates_text(summary)
     markup = _build_chat_ai_candidates_markup("qa", summary)
 
-    assert "Выбери HH-чат" in text
+    assert "Нашёл чатов для ответа: 2" in text and "просмотрено 5 из 12" in text
     assert "QA Engineer @ Циан" in text
     assert "📝 анкета" in text
     assert markup["inline_keyboard"][0][0]["callback_data"] == "chat_ai_any:qa:5416682595:14513855732"
@@ -445,3 +445,13 @@ def test_standalone_hh_auth_code_detection():
     assert _looks_like_standalone_hh_auth_code("7113") is True
     assert _looks_like_standalone_hh_auth_code("123") is False
     assert _looks_like_standalone_hh_auth_code("код: 7113") is False
+
+
+def test_chat_ai_candidate_list_explains_counts_and_skips():
+    """B16/B18: «14/60» read like «sent 14 of 60»; say what was found and what was skipped."""
+    from telegram_bot import _build_chat_ai_candidates_text
+    text = _build_chat_ai_candidates_text({
+        "ok": True, "chats_scanned": 60, "chats_read": 14, "skipped_closing": 4, "skipped_other_profile": 2,
+        "candidates": [{"chat_id": "1", "message_id": "2", "title": "QA", "company": "A", "question": "Опыт?"}]})
+    assert text.startswith("Нашёл чатов для ответа: 1 (просмотрено 14 из 60 последних чатов)")
+    assert "отказы и «свяжемся» — 4" in text and "отклики другого профиля — 2" in text

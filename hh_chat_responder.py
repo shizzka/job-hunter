@@ -907,8 +907,11 @@ async def list_reply_candidates(
         "max_scan": max_scan,
         "limit": limit,
         "read_failures": 0,
+        "skipped_closing": 0,
+        "skipped_other_profile": 0,
         "candidates": candidates,
     }
+    topics = _latest_topics()
     try:
         chats = await list_chats(page)
     except Exception as exc:
@@ -955,7 +958,22 @@ async def list_reply_candidates(
         question = _short_chat_text(last.get("text") or "", limit=260)
         if not question:
             continue
+        topic = topics.get(chat_id) or {}
+        # B18: a rejection or «свяжемся при положительном решении» needs no answer.
+        if topic.get("state") == "DISCARD" or _closing_kind(last.get("text") or ""):
+            summary["skipped_closing"] += 1
+            continue
+        # B13: another profile of the same hh account owns this application.
+        owner = _chat_owner(chat_id)
+        if owner is not None and owner.status == "other":
+            summary["skipped_other_profile"] += 1
+            continue
         vacancy = dict(data.get("vacancy") or {})
+        if topic.get("title") and (not vacancy.get("title") or _normalize_ai_marker_text(
+                vacancy.get("title") or "") == "перейти"):
+            vacancy["title"] = topic["title"]
+        if topic.get("company") and vacancy.get("company") in (None, "", "—"):
+            vacancy["company"] = topic["company"]
         preview_clean = _short_chat_text(preview_text, limit=180)
         if preview_clean and (not vacancy.get("title") or _normalize_ai_marker_text(vacancy.get("title") or "") == "перейти"):
             vacancy["title"] = preview_clean
