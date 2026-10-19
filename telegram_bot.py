@@ -104,7 +104,9 @@ _configure_logging()
 
 
 def _is_menu_button_text(text: str) -> bool:
-    return text in ADMIN_BUTTON_MAP or text in USER_BUTTON_MAP or text in LEGACY_BUTTON_MAP
+    # Profile buttons are generated per profile («📁 Профиль: qa») and are menu buttons too.
+    return (text in ADMIN_BUTTON_MAP or text in USER_BUTTON_MAP or text in LEGACY_BUTTON_MAP
+            or str(text or "").startswith(BUTTON_PROFILE_PREFIX))
 
 
 def _parse_manual_chat_ai_arg(raw: str) -> tuple[str, str]:

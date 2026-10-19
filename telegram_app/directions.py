@@ -395,8 +395,15 @@ class TelegramDirections:
         state = self._direction_sessions().get(principal["user_id"])
         if not state or text.startswith("/") or text in self._direction_button_commands():
             return False
-        from telegram_bot_ui import ADMIN_BUTTON_MAP, USER_BUTTON_MAP, LEGACY_BUTTON_MAP
+        from telegram_bot_ui import ADMIN_BUTTON_MAP, USER_BUTTON_MAP, LEGACY_BUTTON_MAP, BUTTON_PROFILE_PREFIX
         if text in ADMIN_BUTTON_MAP or text in USER_BUTTON_MAP or text in LEGACY_BUTTON_MAP:
+            return False
+        # Profile buttons are generated per profile and are never a draft answer (dev 19.10:
+        # «📁 Профиль: qa» was answered «Отправьте один или несколько номеров»).
+        if text.startswith(BUTTON_PROFILE_PREFIX):
+            return False
+        # The directions screen only waits for a number; any other text belongs elsewhere.
+        if state.get("mode") == "switch" and not re.fullmatch(r"[\d\s,;]+", text.strip()):
             return False
         if text.casefold() == "отмена":
             self._direction_sessions().pop(principal["user_id"], None)
