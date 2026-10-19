@@ -114,6 +114,21 @@ class TelegramCallbackRouter:
                 or self._selected_profile(principal) == profile_name
             )
 
+        if str(raw_data).startswith("cop:"):
+            parts = str(raw_data).split(":")
+            await self._answer_callback_query(callback_id)
+            if (len(parts) != 4 or parts[1] not in self._profile_names() or not can_access_profile(parts[1])
+                    or not parts[2].isdigit() or not parts[3].isdigit()):
+                await self._send_text(chat_id, "Профиль недоступен.")
+                return
+            if message_id > 0:
+                await self._edit_reply_markup(chat_id, message_id)
+            self._set_selected_profile(principal["user_id"], parts[1])
+            await self._send_text(chat_id, f"📁 Переключил на профиль {parts[1]} — готовлю ответ в этот чат.")
+            await self._start_chat_ai_reply(chat_id, principal, profile_name=parts[1], hh_chat_id=parts[2],
+                                            hh_message_id=parts[3], allow_any=True)
+            return
+
         if str(raw_data).startswith("stub:"):
             parts = str(raw_data).split(":")
             await self._answer_callback_query(callback_id)

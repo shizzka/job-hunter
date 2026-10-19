@@ -702,3 +702,16 @@ def test_callback_router_sends_accepted_template_letter(monkeypatch):
     monkeypatch.setattr(bot, "_start_manual_ai_apply", start)
     asyncio.run(bot._handle_callback_query(_callback("stub:qa:token-1")))
     assert marked == [("token-1", "qa")] and started == [("qa", "token-1")]
+
+
+def test_callback_router_answers_from_the_owner_profile(monkeypatch):
+    bot, calls = _configured_bot(monkeypatch)
+    selected, started = [], []
+    monkeypatch.setattr(bot, "_set_selected_profile", lambda user_id, name: selected.append((user_id, name)))
+
+    async def start(chat_id, principal, *, profile_name, hh_chat_id, hh_message_id, allow_any=False, **kwargs):
+        started.append((profile_name, hh_chat_id, hh_message_id, allow_any))
+
+    monkeypatch.setattr(bot, "_start_chat_ai_reply", start)
+    asyncio.run(bot._handle_callback_query(_callback("cop:qa:5717677193:15825805528")))
+    assert selected == [(1, "qa")] and started == [("qa", "5717677193", "15825805528", True)]

@@ -642,3 +642,17 @@ async def test_empty_stats_offer_refresh_and_refresh_collects_both_filters(bot, 
     await bot._dispatch_direction(1, USER, "/direction_stats_refresh", "")
     await bot.command.task
     assert calls == [False, True] and "Данные обновлены" in " ".join(m[1] for m in bot.sent)
+
+
+@run_async
+async def test_select_direction_prompt_offers_direction_buttons(bot):
+    """Owner 19.10: «надо переключить направление» must come with a button, not a menu hunt."""
+    home = bot.profiles["client_1"].home_dir
+    make_direction(home, "qa")
+    make_direction(home, "electric")
+    await bot._dispatch_direction(1, USER, "/direction_single", "")  # needs an active direction
+    text = bot.sent[-1][1]
+    actions = inline_actions(bot)
+    assert "Сначала выберите направление" in text
+    assert any(a.endswith(":choose:0") for a in actions) and any(a.endswith(":choose:1") for a in actions)
+    assert any(a.endswith(":new") for a in actions)

@@ -4028,8 +4028,17 @@ class TelegramBot(
                                                 cookies_file=self._profile(profile_name).hh.cookies_file)
                     owner = chat_context.resolve(home, hh_chat_id)
                 if owner.status == chat_context.OTHER:
+                    markup = reply_markup
+                    target = owner.owner_profile
+                    if (target and target in self._profile_names()
+                            and (principal.get("role") == ROLE_ADMIN or self._selected_profile(principal) == target)):
+                        callback = f"cop:{target}:{hh_chat_id}:{hh_message_id.partition('~')[0]}"
+                        if len(callback.encode("utf-8")) <= 64:
+                            # One tap: switch to the owning profile and answer this very chat there.
+                            markup = {"inline_keyboard": [[{"text": f"▶ Ответить из профиля {target}",
+                                                            "callback_data": callback}]]}
                     await self._send_text(chat_id, chat_context.refusal_text(owner, profile_name),
-                                          reply_markup=reply_markup)
+                                          reply_markup=markup)
                     return
                 current = directions_mod.active_direction(home)
                 if owner.status == chat_context.OWN and owner.direction and owner.direction != (current or {}).get("name"):

@@ -87,6 +87,17 @@ class TelegramDirections:
         rows.append(["🧭 Что ищу", "🏠 Главное"])
         return {"keyboard": [[{"text": label} for label in row] for row in rows], "resize_keyboard": True}
 
+    async def _ask_choose_direction(self, chat_id, principal, text):
+        """A request to pick a direction comes with the direction buttons themselves."""
+        import directions
+        profile_name, profile, active = self._direction_context(principal)
+        choices = directions.list_directions(profile.home_dir)
+        state = self._direction_bind(principal, mode="switch", choices=choices)
+        rows = [[(str(item["title"])[:60], f"choose:{i}")] for i, item in enumerate(choices)]
+        rows.append([("➕ Новое направление", "new")])
+        await self._send_text(chat_id, text if choices else "Направлений пока нет — создайте первое.",
+                              reply_markup=self._direction_inline(state, rows))
+
     def _direction_inline(self, state, rows):
         return {"inline_keyboard": [[{"text": label, "callback_data": f"dir:{state['token']}:{action}"}
                                       for label, action in row] for row in rows]}
@@ -234,7 +245,7 @@ class TelegramDirections:
         elif active:
             state = self._direction_bind(principal, mode="variant", operation=operation, draft=copy.deepcopy(active), texts={})
         else:
-            await self._send_text(chat_id, "Сначала создайте или выберите направление: /directions.")
+            await self._ask_choose_direction(chat_id, principal, "Сначала выберите направление:")
             return
         lines = ["Варианты активного направления. Отправьте номер" + ("а через пробел:" if operation != "select" else ":")]
         for index, variant in enumerate(active["variants"], 1):
@@ -253,7 +264,7 @@ class TelegramDirections:
             active = pending["draft"]
             texts = dict(pending.get("texts") or {})
         if add and not active:
-            await self._send_text(chat_id, "Сначала выберите направление: /directions.")
+            await self._ask_choose_direction(chat_id, principal, "Сначала выберите направление:")
             return
         if self._has_active_command(profile_name):
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
@@ -621,7 +632,7 @@ class TelegramDirections:
                 reply_markup=back)
         elif command in {"/direction_single", "/direction_ab"}:
             if not active:
-                await self._send_text(chat_id, "Сначала выберите направление: /directions.")
+                await self._ask_choose_direction(chat_id, principal, "Сначала выберите направление:")
                 return
             state = self._direction_bind(principal, mode="draft", draft=copy.deepcopy(active), texts={})
             state["draft"]["selection_strategy"] = "ab" if command == "/direction_ab" else "single"

@@ -69,3 +69,24 @@ def test_chat_of_this_profiles_other_direction_switches_and_restores(tmp_path, m
     bot, home, sent, runs = setup(tmp_path, monkeypatch, resume_id=500)
     drive(bot)
     assert runs == ["qa"] and directions.active_direction(home)["name"] == "electric"
+
+
+def test_refusal_offers_one_tap_answer_from_the_owner_profile(tmp_path, monkeypatch):
+    bot, home, sent, runs = setup(tmp_path, monkeypatch, resume_id=999)
+    other = tmp_path / "profiles" / "qa"
+    (other / "directions").mkdir(parents=True)
+    (other / "directions" / "d.json").write_text(json.dumps({"name": "d", "title": "QA", "variants": [
+        {"hh_resume_hash": "e" * 38, "hh_resume_numeric_id": 999, "title": "QA Engineer"}]}))
+    monkeypatch.setattr(bot, "_profile_names", lambda: ["client_1", "qa"])
+    markups = []
+
+    async def send_text(chat_id, text, **kwargs):
+        sent.append(text)
+        markups.append(kwargs.get("reply_markup"))
+        return {}
+
+    monkeypatch.setattr(bot, "_send_text", send_text)
+    drive(bot)
+    assert runs == [] and "ответьте из профиля qa" in sent[-1]
+    button = markups[-1]["inline_keyboard"][0][0]
+    assert button == {"text": "▶ Ответить из профиля qa", "callback_data": "cop:qa:77:9"}
