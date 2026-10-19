@@ -741,3 +741,39 @@ def test_queued_ai_charges_only_when_runner_starts(monkeypatch, tmp_path, kind, 
             assert any("Лимит ИИ исчерпан" in payload["text"] for payload in messages)
         await bot._shutdown_command_queue()
     asyncio.run(scenario())
+
+
+def test_healthy_hh_run_clears_a_stale_queue_stop(monkeypatch, tmp_path):
+    """19.10: a 14:22 login glitch paused the queue at 15:37 although a 15:27 search had worked."""
+    import json
+    from telegram_app.subprocesses import ActiveCommandState
+    bot, profile, _, _ = real_bot(monkeypatch, tmp_path)
+    history = tmp_path / "runs.jsonl"
+    history.write_text("")
+    monkeypatch.setattr(bot, "_schedule_queue", lambda profile: None)
+    bot._queue_stop_reasons["qa"] = "HH authentication was not proven"
+    command = ActiveCommandState("search", "qa", 1, 0, result={"ok": True})
+    snapshot = bot._queue_capture_evidence("qa")
+    with history.open("a") as stream:
+        stream.write(json.dumps({"kind": "search", "status": "finished", "finished_at": "2026-10-19T15:35:49",
+                                 "source_stats": {"hh": {"fetched": 500, "stop_reason": None}}}) + "\n")
+    bot._queue_capture_finished(command, snapshot)
+    bot._queue_command_finished("qa", command)
+    assert command.pause_reason == "" and "qa" not in bot._queue_stop_reasons
+
+
+def test_failed_hh_run_keeps_the_queue_stopped(monkeypatch, tmp_path):
+    import json
+    from telegram_app.subprocesses import ActiveCommandState
+    bot, profile, _, _ = real_bot(monkeypatch, tmp_path)
+    history = tmp_path / "runs.jsonl"
+    history.write_text("")
+    monkeypatch.setattr(bot, "_schedule_queue", lambda profile: None)
+    command = ActiveCommandState("search", "qa", 1, 0, result={"ok": True})
+    snapshot = bot._queue_capture_evidence("qa")
+    with history.open("a") as stream:
+        stream.write(json.dumps({"kind": "search", "status": "finished", "finished_at": "2026-10-19T14:22:10",
+                                 "source_stats": {"hh": {"stop_reason": "HH authentication was not proven"}}}) + "\n")
+    bot._queue_capture_finished(command, snapshot)
+    bot._queue_command_finished("qa", command)
+    assert bot._queue_stop_reasons["qa"] == "HH authentication was not proven"

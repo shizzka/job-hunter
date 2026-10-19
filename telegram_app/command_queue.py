@@ -452,6 +452,9 @@ class TelegramCommandQueue:
                             hh = (payload.get("source_stats") or {}).get("hh") or {}
                             if recovery.get("stopped") or hh.get("stop_reason"):
                                 reason = recovery.get("reason") or hh.get("stop_reason") or "hh_hard_stop"
+                            elif hh and payload.get("finished_at") and payload.get("status") == "finished":
+                                # A finished run in which hh worked proves the session again.
+                                command.hh_proven = True
                             if payload.get("error_kind") == "HHUnexpectedUI" or payload.get("error") == "hh_unexpected_ui":
                                 reason = "HHUnexpectedUI"
                             if payload.get("event") == "hh_ui_isolation" and payload.get("stopped"):
@@ -515,4 +518,8 @@ class TelegramCommandQueue:
                     entry.outcome = "остановлена пользователем" if command.cancel_requested else "ошибка выполнения (см. сообщение задачи)"
             if command.pause_reason:
                 self._queue_stop_reasons[profile] = command.pause_reason
+            elif getattr(command, "hh_proven", False) and self._queue_stop_reasons.pop(profile, None):
+                # 19.10: a stop from a 14:22 login glitch paused the queue at 15:37 although a
+                # search at 15:27 had worked with hh. A later healthy hh run clears it.
+                log.info("Queue stop reason for %s cleared by a healthy hh run", profile)
         self._schedule_queue(profile)
