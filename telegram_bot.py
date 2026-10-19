@@ -4008,7 +4008,27 @@ class TelegramBot(
 
         async def runner() -> None:
             nonlocal progress_task
+            switch_to = restore_to = None
+            import directions as directions_mod
+            home = self._profile(profile_name).home_dir
             try:
+                # B13: answer with the facts of the resume this application was sent with.
+                import chat_context
+                owner = chat_context.resolve(home, hh_chat_id)
+                if owner.status == chat_context.UNKNOWN:
+                    from hh import negotiation_snapshot
+                    with contextlib.suppress(Exception):
+                        await asyncio.to_thread(negotiation_snapshot.collect, home_dir=home,
+                                                cookies_file=self._profile(profile_name).hh.cookies_file)
+                    owner = chat_context.resolve(home, hh_chat_id)
+                if owner.status == chat_context.OTHER:
+                    await self._send_text(chat_id, chat_context.refusal_text(owner, profile_name),
+                                          reply_markup=reply_markup)
+                    return
+                current = directions_mod.active_direction(home)
+                if owner.status == chat_context.OWN and owner.direction and owner.direction != (current or {}).get("name"):
+                    switch_to, restore_to = owner.direction, (current or {}).get("name")
+                    directions_mod.set_active_direction(home, switch_to)
                 if not await self._authorize_ai_usage(
                     chat_id, principal, profile_name=profile_name, action="chat_ai_used",
                     consume=not (force_send and re.fullmatch(r"\d+~[0-9a-f]{12}", hh_message_id)),
@@ -4151,6 +4171,11 @@ class TelegramBot(
                     reply_markup=reply_markup,
                 )
             finally:
+                if switch_to:
+                    with contextlib.suppress(Exception):
+                        # Restore only if nobody changed the direction meanwhile.
+                        if (directions_mod.active_direction(home) or {}).get("name") == switch_to:
+                            directions_mod.set_active_direction(home, restore_to)
                 if progress_task:
                     progress_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):

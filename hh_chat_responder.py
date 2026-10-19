@@ -718,6 +718,25 @@ async def notify_suspicious_screening_message(
     return await notifier.send_message_with_markup(text, reply_markup=markup)
 
 
+def _chat_owner(chat_id):
+    """ChatOwner for this profile, or None when it cannot be read (then nothing changes)."""
+    try:
+        import chat_context
+        import config
+        return chat_context.resolve(config.JOB_HUNTER_HOME, str(chat_id))
+    except Exception as exc:
+        log.warning("chat owner lookup failed: %s", type(exc).__name__)
+        return None
+
+
+def _active_direction_name() -> str:
+    try:
+        import config
+        return str((getattr(config, "ACTIVE_DIRECTION", None) or {}).get("name") or "")
+    except Exception:
+        return ""
+
+
 def _latest_topic_states() -> dict[str, str]:
     """chat id -> lastState (RESPONSE / DISCARD / INVITATION / INTERVIEW…) from the profile's
     latest negotiation snapshot; empty when there is none (then nothing changes)."""
@@ -1372,6 +1391,16 @@ async def process_one(
         return {"ok": False, "reason": "stale_draft", "message": "Invalid draft revision", "chat_id": chat_id}
     if dry_run is None:
         dry_run = _default_chat_dry_run()
+    # B13: never answer with another resume's facts (profiles may share one hh account).
+    owner = _chat_owner(chat_id)
+    if owner is not None and owner.status == "other":
+        import chat_context
+        return {"ok": False, "reason": "other_profile", "chat_id": chat_id,
+                "message": chat_context.refusal_text(owner, profile_name)}
+    if owner is not None and owner.status == "own" and owner.direction and owner.direction != _active_direction_name():
+        return {"ok": False, "reason": "direction_mismatch", "chat_id": chat_id,
+                "message": f"Отклик был отправлен резюме «{owner.title}» другого направления; "
+                           "переключите направление и повторите."}
 
     if not hh_client._page:
         await hh_client.start(headless=True)
@@ -1613,6 +1642,18 @@ async def process_all(
 
                 decision, reason, last = decide_chat(msgs, chat_state, dry_run=dry_run, max_replies=max_replies)
                 message_id = str((last or {}).get("id") or "")
+                owner = _chat_owner(chat_id)
+                if owner is not None and owner.status == "other" and decision in {
+                        "hr_question", "external_invite", "ai_hh_autoreply"}:
+                    # Another profile of the same hh account owns this application (B13).
+                    decision, reason = "other_profile", owner.owner_profile or "unknown_resume"
+                    summary["skipped"] += 1
+                    continue
+                if (decision == "ai_hh_autoreply" and owner is not None and owner.status == "own"
+                        and owner.direction and owner.direction != _active_direction_name()):
+                    decision, reason = "direction_mismatch", owner.direction
+                    summary["skipped"] += 1
+                    continue
                 if decision == "hr_question" or (decision == "ours_last" and any(
                     not msg.get("is_me") and question_reason(msg) != "ambiguous_incoming_requires_review"
                     for msg in msgs[:-1]

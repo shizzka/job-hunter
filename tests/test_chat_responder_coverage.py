@@ -292,3 +292,14 @@ def test_hr_message_in_rejected_chat_goes_to_one_digest_without_reply_card(chat_
     assert first["hr_notified"] == 0  # a digest line is not a reply card
     assert asyncio.run(chat_run.run())["decisions"] == {"already_handled": 1}
     assert len(digests) == 1  # each rejection once
+
+
+def test_chat_of_another_profile_gets_no_card(chat_run, monkeypatch, tmp_path):
+    """B13 (dev 19.10): electrician profile answered QA chats with electrician facts."""
+    import config
+    home = tmp_path / "profiles" / "electrician"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "negotiation_snapshots.jsonl").write_text(json.dumps({"chatId": 42, "resumeId": 111}) + "\n")
+    monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(home))
+    summary = asyncio.run(chat_run.run())
+    assert chat_run.notifications == [] and summary["decisions"] == {"other_profile": 1}
