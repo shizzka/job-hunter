@@ -383,7 +383,7 @@ async def generate_answer(
         "\nНужен альтернативный вариант: сформулируй ответ другими словами и с другим порядком фактов, "
         "но используй только подтверждённые факты.\n"
         if alternative else ""
-    )
+    ) + _language_instruction(question)
     prompt = f"""Ты отвечаешь в чате hh.ru от лица кандидата на вопрос работодателя.
 
 Тип вопроса: {question_kind}. Если это похоже на автоматический HR-скрининг, отвечай так же конкретно, как AI-помощнику, но без упоминания, что собеседник является ботом. На вопрос о зарплатных ожиданиях отвечай по блоку зарплатных ожиданий ниже.
@@ -716,6 +716,16 @@ async def notify_suspicious_screening_message(
     )
     markup = build_suspicious_chat_reply_markup(profile_name, chat_id, message_id)
     return await notifier.send_message_with_markup(text, reply_markup=markup)
+
+
+def _language_instruction(question: str) -> str:
+    """Answer in the employer's language (B14): an English message gets an English reply."""
+    latin = len(re.findall(r"[A-Za-z]", question or ""))
+    cyrillic = len(re.findall(r"[А-Яа-яЁё]", question or ""))
+    if latin >= 20 and latin > 2 * cyrillic:
+        return ("\nСообщение работодателя на английском: напиши ответ на английском языке. Факты те же — "
+                "только подтверждённые, переводи их точно, без добавлений.\n")
+    return ""
 
 
 def _chat_owner(chat_id):
