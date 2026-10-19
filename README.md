@@ -7,7 +7,7 @@
 
 Job Hunter is a job-search automation system focused on **decision quality, not application volume**. It searches vacancies, removes obvious noise, evaluates fit against the candidate's real experience, grounds generated text in candidate data, and only then decides whether an application is safe to send automatically or needs human review.
 
-The default policy targets QA/testing roles, but search policies can be customized for other professions.
+One candidate profile can hold several **search directions** — for example QA and electrician — each with its own resumes, queries, filters, regions and positioning. The default policy targets QA/testing roles.
 
 ## Why it exists
 
@@ -48,19 +48,22 @@ The project optimizes the quality of the application decision rather than raw ap
 | Capability | Status |
 | --- | --- |
 | Multi-source vacancy search and dedupe | ✅ |
+| Several search directions per profile (resumes, queries, filters, regions) | ✅ |
 | LLM vacancy matching | ✅ |
 | Deterministic pre-filters before LLM calls | ✅ |
-| Grounded cover-letter generation | ✅ |
+| Grounded cover-letter generation (template only after the owner's decision) | ✅ |
 | Exact HH resume selection before submit | ✅ |
-| hh.ru employer questionnaires | ✅ |
+| hh.ru employer questionnaires; unanswerable questions asked once and remembered | ✅ |
 | Google Forms from recruiter chats with preview-before-submit | ✅ |
-| Telegram control plane and human approval paths | ✅ |
-| HH chat drafts / screening replies | ✅ |
+| Telegram control plane, command queue and human approval paths | ✅ |
+| Review list with paging, score sorting and bulk dismiss | ✅ |
+| HH chat drafts grounded in the resume the application was sent with | ✅ |
 | Isolated candidate profiles | ✅ |
-| Application funnel, resume A/B and analytics | ✅ |
+| Application funnel, resume A/B, vacancy market snapshots and analytics | ✅ |
 | Structured HH application traces | ✅ |
 | Multi-provider LLM fallback | ✅ |
-| Controlled Resume Tailoring | 🚧 next sprint |
+| Learning search queries from 👍/👎 feedback | 🚧 collecting data |
+| Controlled Resume Tailoring | ⏸ paused |
 
 ## Supported sources
 
@@ -240,13 +243,14 @@ Before generating text, Job Hunter selects relevant sections and combines them w
 
 Telegram acts as a control plane for workflows where human review is useful:
 
-- manual-review vacancies;
-- yellow-zone applications;
-- chat-reply approval;
+- search directions (what to look for, which resumes, regions, application mode);
+- review list: best matches first, paging, bulk dismiss, 👍/👎 feedback;
+- yellow-zone applications and a command queue instead of «busy»;
+- employer questions the bot cannot answer — asked once, the answer is remembered;
+- chat-reply drafts with approval; rejections arrive as one digest;
 - Google Form editing;
 - captcha bridge;
-- search/profile controls;
-- monitoring and analytics.
+- profile controls, vacancy market snapshots, monitoring and analytics.
 
 Risky workflows should require explicit confirmation or fail closed.
 
@@ -307,12 +311,8 @@ Runtime artifacts can contain personal data. Review and redact them before attac
 
 ## Development status
 
-Current release path:
-
-```text
-v0.8.0 stabilization frozen
-→ real soak / E2E observation
-```
+Current release: **v0.9.0** (2026-10-19) — see [CHANGELOG.md](CHANGELOG.md). Development happens on the `dev` branch;
+every change passes the full offline suite before it reaches the running bot.
 
 New abstractions should solve repeated real failure modes, not exist merely because another subsystem can be invented.
 
