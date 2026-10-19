@@ -47,6 +47,16 @@ from telegram_bot_ui import (
 log = logging.getLogger("telegram_bot")
 
 
+
+def _lists_several_chats(message: dict) -> bool:
+    """The «Ответ ИИ в чат» list carries one button per chat: keep it after a tap (B15)."""
+    rows = ((message or {}).get("reply_markup") or {}).get("inline_keyboard") or []
+    chats = {str(button.get("callback_data") or "").split(":")[2] for row in rows for button in row
+             if str(button.get("callback_data") or "").startswith(("chat_ai:", "chat_ai_any:"))
+             and len(str(button.get("callback_data") or "").split(":")) > 2}
+    return len(chats) > 1
+
+
 class TelegramCallbackRouter:
     """Route stable callback payloads to TelegramBot operations."""
 
@@ -296,7 +306,7 @@ class TelegramCallbackRouter:
                 allow_any=True,
             )
             await self._answer_callback_query(callback_id, "Генерирую ответ через ИИ…")
-            if message_id > 0:
+            if message_id > 0 and not _lists_several_chats(message):
                 await self._edit_reply_markup(chat_id, message_id)
             await self._start_chat_ai_reply(
                 chat_id,
@@ -319,7 +329,7 @@ class TelegramCallbackRouter:
                 hh_chat_id=hh_chat_id, hh_message_id=hh_message_id, allow_any=True,
             )
             await self._answer_callback_query(callback_id, "Генерирую другой вариант…")
-            if message_id > 0:
+            if message_id > 0 and not _lists_several_chats(message):
                 await self._edit_reply_markup(chat_id, message_id)
             await self._start_chat_ai_reply(
                 chat_id, principal, profile_name=profile_name, hh_chat_id=hh_chat_id,
@@ -373,7 +383,7 @@ class TelegramCallbackRouter:
                 hh_message_id=hh_message_id,
             )
             await self._answer_callback_query(callback_id, "Генерирую ответ через ИИ…")
-            if message_id > 0:
+            if message_id > 0 and not _lists_several_chats(message):
                 await self._edit_reply_markup(chat_id, message_id)
             await self._start_chat_ai_reply(
                 chat_id,
@@ -395,7 +405,7 @@ class TelegramCallbackRouter:
                 hh_chat_id=hh_chat_id, hh_message_id=hh_message_id,
             )
             await self._answer_callback_query(callback_id, "Генерирую другой вариант…")
-            if message_id > 0:
+            if message_id > 0 and not _lists_several_chats(message):
                 await self._edit_reply_markup(chat_id, message_id)
             await self._start_chat_ai_reply(
                 chat_id, principal, profile_name=profile_name, hh_chat_id=hh_chat_id,
