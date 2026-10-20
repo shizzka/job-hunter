@@ -124,7 +124,14 @@ def test_reply_binding_survives_restart_and_ignores_unrelated_messages(stored, r
 
 
 def test_list_and_controls_hide_submit_until_rechecked(stored):
+    from pathlib import Path
+    from tests.direction_view_fakes import make_direction, write_rows
+    import directions
     home, item = stored
+    make_direction(home)
+    directions.set_active_direction(home, "qa")
+    write_rows(Path(home), [{"chatId": 1, "resumeId": 111}])
+    GoogleFormStateRepository(home).remember(TOKEN, dict(item, chat_id="1"), trim_expired=False)
     bot = FakeBot(home)
     principal = {"user_id": 7, "role": "admin"}
     drafts.save_answer(home, TOKEN, 0, "29.04.1989", 7)
@@ -381,3 +388,51 @@ def test_form_callback_rejects_other_profile_before_access(monkeypatch):
     asyncio.run(Router()._handle_callback_query({"id": "cb", "from": {"id": 9},
                 "data": f"gf:view:qa:{TOKEN}:0", "message": {"chat": {"id": 9, "type": "private"}}}))
     assert "профиль вам недоступен" in calls[0][1]
+
+
+def test_form_list_uses_chat_binding_and_switches_direction(tmp_path):
+    import directions
+    from tests.direction_view_fakes import two_directions, write_rows
+    two_directions(tmp_path)
+    write_rows(tmp_path, [{"chatId": 1, "resumeId": 111, "filter": "archived"},
+                          {"chatId": 2, "resumeId": 222, "filter": "active"},
+                          {"chatId": 4, "resumeId": 999, "filter": "active"}])
+    home = str(tmp_path)
+    for number in (1, 2, 3, 4):
+        token = f"abcdef12345{number}"
+        GoogleFormStateRepository(home).remember(token, {
+            'token': token, 'status': 'preview', 'chat_id': str(number), 'message_id': f'm{number}',
+            'form_url': f'https://docs.google.com/forms/d/e/synthetic{number}/viewform',
+            'questions': [{'index': 0, 'question': 'Опыт', 'type': 'text'}],
+            'vacancy': {'title': f'Synthetic {number}'}}, trim_expired=False)
+    bot = FakeBot(home)
+    principal = {'user_id': 7, 'role': 'admin'}
+    asyncio.run(bot._list_forms(7, principal, 'qa'))
+    text = bot.sent[-1][1]
+    buttons = [b for row in bot.sent[-1][2]['reply_markup']['inline_keyboard'] for b in row]
+    assert 'Анкеты · QA Engineer' in text
+    assert [b['text'] for b in buttons if b['callback_data'].startswith('gf:')] == ['1 · Synthetic 1']
+    assert len([b for b in buttons if b['callback_data'].startswith('cbo:')]) == 1
+    assert all('Synthetic 4' not in b['text'] for b in buttons)
+    directions.set_active_direction(home, 'electric')
+    asyncio.run(bot._list_forms(7, principal, 'qa'))
+    buttons = [b for row in bot.sent[-1][2]['reply_markup']['inline_keyboard'] for b in row]
+    assert 'Анкеты · Электромонтажник' in bot.sent[-1][1]
+    assert [b['text'] for b in buttons if b['callback_data'].startswith('gf:')] == ['2 · Synthetic 2']
+
+
+def test_form_list_single_direction_keeps_bound_draft(stored):
+    import directions
+    from pathlib import Path
+    from tests.direction_view_fakes import make_direction, write_rows
+    home, item = stored
+    make_direction(home)
+    directions.set_active_direction(home, 'qa')
+    write_rows(Path(home), [{'chatId': 1, 'resumeId': 111}])
+    updated = dict(item, chat_id='1')
+    GoogleFormStateRepository(home).remember(TOKEN, updated, trim_expired=False)
+    bot = FakeBot(home)
+    asyncio.run(bot._list_forms(7, {'user_id': 7, 'role': 'admin'}, 'qa'))
+    assert 'QA Engineer' in bot.sent[-1][1]
+    buttons = [b for row in bot.sent[-1][2]['reply_markup']['inline_keyboard'] for b in row]
+    assert len(buttons) == 1 and buttons[0]['callback_data'].startswith('gf:view:qa:')

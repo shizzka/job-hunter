@@ -8,6 +8,8 @@ import re
 from google_forms import drafts
 from state_store.google_forms import GoogleFormStateRepository
 from google_forms.workflow import FormWorkflow, answers_for
+from direction_views import DirectionView
+from telegram_app.chat_ownership import ownership_review_row
 
 
 def button(label, action, profile, token, number=0):
@@ -25,9 +27,10 @@ class TelegramFormEditor:
 
     async def _list_forms(self, chat_id, principal, profile):
         home = self._form_home(profile)
+        view = DirectionView(home)
         items = GoogleFormStateRepository(home).load()["items"]
         edits = drafts.edits_store(home).load()
-        rows, seen = [], set()
+        rows, reviews, seen = [], [], set()
         for token, item in sorted(items.items(), key=lambda x: x[1].get("created_at", 0), reverse=True):
             if item.get('superseded_by') or edits.get(token, {}).get("superseded_by"):
                 continue
@@ -38,14 +41,24 @@ class TelegramFormEditor:
             if not item.get("questions") or item.get("status") in drafts.TERMINAL | {'submit_in_progress'}:
                 continue
             title = (item.get("vacancy") or {}).get("title") or "Анкета"
+            status = view.chat_status(item.get("chat_id"))
+            if status == "other":
+                continue
+            if status == "review":
+                if item.get("chat_id") and len(reviews) < 15:
+                    reviews.append(ownership_review_row(home, profile, item["chat_id"],
+                                                        item.get("message_id", ""), str(title)))
+                continue
             label = f"{str(item.get('chat_id', ''))[-4:]} · {title[:45]}"
             rows.append([button(label, "view", profile, token)])
             if len(rows) >= 15:
                 break
         await self._send_text(
-            chat_id, "Выберите черновик. Можно изменить любой ответ, затем проверить заполнение."
-            if rows else "Черновиков с доступными полями пока нет.",
-            reply_markup={"inline_keyboard": rows},
+            chat_id, (f"📝 Анкеты · {view.title}\n\n" if view.title else "") +
+            ("Выберите черновик. Можно изменить любой ответ, затем проверить заполнение."
+             if rows else "Черновиков с доступными полями пока нет.") +
+            ("\n\nЧат требует вашей проверки: выберите профиль и резюме отклика." if reviews else ""),
+            reply_markup={"inline_keyboard": rows + reviews},
         )
 
     async def _show_form(self, chat_id, principal, profile, token, offset=0):

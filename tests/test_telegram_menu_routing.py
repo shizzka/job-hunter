@@ -247,3 +247,29 @@ def test_hh_response_command_uses_saved_direction_counts_even_if_counter_fails(m
     assert 'QA Engineer' in text and '• Активные: 1' in text and '• Архив: 2' in text
     assert ('Весь аккаунт HH: всего 33' in text) != fail_counter
     assert ('Общий счётчик HH сейчас недоступен' in text) == fail_counter
+
+
+def test_chat_list_rechecks_direction_after_browser_finishes(menu_bot, tmp_path, monkeypatch):
+    import json
+    import directions
+    from tests.direction_view_fakes import two_directions, write_rows
+    two_directions(tmp_path)
+    write_rows(tmp_path, [{'chatId': 1, 'resumeId': 111}, {'chatId': 2, 'resumeId': 222}])
+    bot, workers = menu_bot
+
+    async def capture(*args, **kwargs):
+        directions.set_active_direction(str(tmp_path), 'electric')
+        candidates = [{'chat_id': str(i), 'message_id': f'm{i}', 'title': f'Synthetic {i}'} for i in (1, 2, 3)]
+        return {'ok': True, 'stdout': json.dumps({'chat_candidates': {'ok': True, 'candidates': candidates}})}
+    monkeypatch.setattr(bot, '_run_active_command_capture', capture)
+
+    async def run():
+        await bot._start_chat_ai_candidate_list.__wrapped__(bot, 42, {'user_id': 42, 'role': 'user'}, profile_name='qa')
+        await workers[-1].task
+    asyncio.run(run())
+    text = bot._send_text.call_args.args[1]
+    assert 'Электромонтажник' in text and 'Synthetic 2' in text
+    assert 'Synthetic 1' not in text and 'Synthetic 3' not in text
+    buttons = [b for r in bot._send_text.call_args.kwargs['reply_markup']['inline_keyboard'] for b in r]
+    assert any(b.get('callback_data', '').startswith('cbo:qa:') for b in buttons)
+    assert not any(':1:' in b.get('callback_data', '') or ':3:' in b.get('callback_data', '') for b in buttons)

@@ -186,13 +186,20 @@ def _build_chat_ai_candidates_text(summary: dict) -> str:
         skipped.append(f"отказы и «свяжемся» — {summary['skipped_closing']}")
     if summary.get("skipped_other_profile"):
         skipped.append(f"отклики другого профиля — {summary['skipped_other_profile']}")
+    if summary.get("skipped_other_direction"):
+        skipped.append(f"отклики другого направления — {summary['skipped_other_direction']}")
     skipped_line = ("Пропустил: " + ", ".join(skipped) + ".") if skipped else ""
+    heading = f"🤖 Ответ ИИ в чат · {summary['direction_title']}\n\n" if summary.get("direction_title") else ""
+    review_line = ("Чат требует вашей проверки: выберите профиль и резюме отклика."
+                   if summary.get("ownership_reviews") else "")
     if not candidates:
-        return "\n".join(line for line in (
-            f"Не нашёл свежих сообщений HR для ответа ({looked}).", skipped_line) if line)
+        return heading + "\n".join(line for line in (
+            f"Не нашёл свежих сообщений HR для ответа ({looked}).", skipped_line, review_line) if line)
     lines = [f"Нашёл чатов для ответа: {len(candidates)} ({looked}). Выбери, на какой ответить."]
     if skipped_line:
         lines.append(skipped_line)
+    if review_line:
+        lines.append(review_line)
     for idx, item in enumerate(candidates, 1):
         title = str(item.get("title") or "—")[:120]
         company = str(item.get("company") or "—")[:80]
@@ -201,10 +208,10 @@ def _build_chat_ai_candidates_text(summary: dict) -> str:
         question = str(item.get("question") or "").replace("\n", " ")[:220]
         marker = " 📝 анкета" if item.get("google_form_urls") else ""
         lines.append(f"\n{idx}. [{kind}]{marker} {title} @ {company}\n{author}: {question}")
-    return "\n".join(lines)[:3900]
+    return (heading + "\n".join(lines))[:3900]
 
 
-def _build_chat_ai_candidates_markup(profile_name: str, summary: dict) -> dict | None:
+def _build_chat_ai_candidates_markup(profile_name: str, summary: dict, *, home_dir=None) -> dict | None:
     rows = []
     for idx, item in enumerate(list(summary.get("candidates") or [])[:8], 1):
         chat_id = str(item.get("chat_id") or "")
@@ -225,6 +232,11 @@ def _build_chat_ai_candidates_markup(profile_name: str, summary: dict) -> dict |
                 row.append({"text": f"📝 Анкета {idx}", "callback_data": form_callback})
         row.append({"text": f"Открыть {idx}", "url": f"https://chatik.hh.ru/chat/{chat_id}"})
         rows.append(row)
+    if home_dir is not None:
+        from telegram_app.chat_ownership import ownership_review_row
+        for item in list(summary.get("ownership_reviews") or [])[:8]:
+            rows.append(ownership_review_row(home_dir, profile_name, item['chat_id'],
+                                             item.get('message_id', ''), item.get('title', '')))
     return {"inline_keyboard": rows} if rows else None
 
 
@@ -3961,10 +3973,21 @@ class TelegramBot(
                         reply_markup=reply_markup,
                     )
                     return
+                # The user may have switched direction while the browser was reading.
+                home = self._profile(profile_name).home_dir
+                view = DirectionView(home)
+                candidates, reviews = [], []
+                for item in list(summary.get("candidates") or []) + list(summary.get("ownership_reviews") or []):
+                    status = view.chat_status(item.get("chat_id"))
+                    if status == "selected":
+                        candidates.append(item)
+                    elif status == "review":
+                        reviews.append(item)
+                summary.update(candidates=candidates, ownership_reviews=reviews, direction_title=view.title)
                 await self._send_text_safely(
                     chat_id,
                     _build_chat_ai_candidates_text(summary),
-                    reply_markup=_build_chat_ai_candidates_markup(profile_name, summary) or reply_markup,
+                    reply_markup=_build_chat_ai_candidates_markup(profile_name, summary, home_dir=home) or reply_markup,
                 )
             except asyncio.CancelledError:
                 if progress_message_id > 0:

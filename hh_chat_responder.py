@@ -921,6 +921,8 @@ async def list_reply_candidates(
     runtime_paths: RuntimePaths | None = None,
 ) -> dict:
     # Return recent incoming HH chat messages that can be answered from Telegram buttons.
+    from direction_views import DirectionView
+    view = DirectionView(config.JOB_HUNTER_HOME)
     paths = runtime_paths or _runtime_paths()
     if not hh_client._page:
         await hh_client.start(headless=True)
@@ -939,6 +941,9 @@ async def list_reply_candidates(
         "read_failures": 0,
         "skipped_closing": 0,
         "skipped_other_profile": 0,
+        "skipped_other_direction": 0,
+        "ownership_reviews": [],
+        "direction_title": view.title,
         "candidates": candidates,
     }
     topics = _latest_topics()
@@ -998,6 +1003,9 @@ async def list_reply_candidates(
         if owner is not None and owner.status == "other":
             summary["skipped_other_profile"] += 1
             continue
+        if owner is not None and owner.status == "own" and owner.direction != view.name:
+            summary["skipped_other_direction"] += 1
+            continue
         vacancy = dict(data.get("vacancy") or {})
         if topic.get("title") and (not vacancy.get("title") or _normalize_ai_marker_text(
                 vacancy.get("title") or "") == "перейти"):
@@ -1016,7 +1024,7 @@ async def list_reply_candidates(
                 google_form_urls = extract_google_form_urls(msg.get("text") or "", msg.get("links") or [])
                 if google_form_urls:
                     break
-        candidates.append({
+        candidate = {
             "chat_id": chat_id,
             "message_id": message_id,
             "title": _short_chat_text(vacancy.get("title") or "—", limit=120),
@@ -1027,7 +1035,12 @@ async def list_reply_candidates(
             "kind_label": _chat_candidate_kind_label(kind),
             "allow_any": kind == "manual",
             "google_form_urls": google_form_urls[:3],
-        })
+        }
+        if owner is None or owner.status != "own" or not owner.resume_id:
+            if len(summary["ownership_reviews"]) < max(1, limit):
+                summary["ownership_reviews"].append(candidate)
+        else:
+            candidates.append(candidate)
 
     return summary
 

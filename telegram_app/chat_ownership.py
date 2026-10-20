@@ -9,6 +9,12 @@ import google_form_filler as gforms
 from telegram_bot_ui import ROLE_ADMIN
 
 
+def ownership_review_row(home, profile, chat_id, message_id="", title=""):
+    token = chat_owner_review.create_review(home, chat_id, message_id, profile)
+    return [{"text": "Чат требует вашей проверки" + (f" · {title[:45]}" if title else ""),
+             "callback_data": f"cbo:{profile}:{token}"}]
+
+
 class TelegramChatOwnership:
     async def _chat_owner_callback(self, chat_id: int, principal: dict, raw_data: str) -> None:
         def usable_rows(rows: list) -> list:
