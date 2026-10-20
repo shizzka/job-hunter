@@ -23,6 +23,7 @@ import admin_llm
 import client_hh_auth
 import hh_response_counter
 import manual_apply_queue
+from direction_views import DirectionView
 import config
 from private_logging import PrivateFileHandler, OperationalFormatter, chat_log_path
 from state_store.private_journal import append_json, read_json_records
@@ -1132,16 +1133,31 @@ class TelegramBot(
             return None
 
     async def _show_review_queue(self, chat_id: int, principal: dict, *, profile_name: str,
-                                 page: int = 0, message_id: int = 0, sort: str = "score") -> None:
+                                 page: int = 0, message_id: int = 0, sort: str = "score",
+                                 unspecified: bool = False) -> None:
         """One message per page: a short line per vacancy, a button opens its full card."""
         reply_menu = reply_menu_for_command(principal.get("role", ROLE_USER), "/review")
         self._set_selected_menu(principal["user_id"], reply_menu)
-        all_items = manual_apply_queue.list_candidates(profile_name, limit=250)
+        view = DirectionView(self._profile(profile_name).home_dir)
+        items = manual_apply_queue.list_candidates(profile_name, limit=250)
+        unknown = view.review_items(items, unspecified=True)
+        all_items = view.review_items(items, unspecified=unspecified)
+        scope = " · направление не указано" if unspecified else (f" · {view.title}" if view.title else "")
+        group = "u" if unspecified else "p"
+        group_button = ([{"text": f"Направление не указано: {len(unknown)}",
+                          "callback_data": f"rq:u:{profile_name}:0:s"}] if unknown and not unspecified else
+                        [{"text": "К выбранному направлению", "callback_data": f"rq:p:{profile_name}:0:s"}]
+                        if unspecified else [])
         if not all_items:
+            text = ("📋 На рассмотрении пока пусто" + scope + ". Подходящие вакансии появятся здесь, "
+                    "если выбран режим просмотра или подтверждения.")
+            markup = ({"inline_keyboard": [group_button]} if group_button else
+                      self._menu_reply_markup(principal, menu=reply_menu))
+            if message_id:
+                await self._edit_text(chat_id, message_id, text, reply_markup=markup)
+                return
             await self._send_text(
-                chat_id,
-                "📋 На рассмотрении пока пусто. Подходящие вакансии появятся здесь, если выбран режим просмотра или подтверждения.",
-                reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
+                chat_id, text, reply_markup=markup,
             )
             return
         sort = "new" if sort == "new" else "score"
@@ -1153,7 +1169,7 @@ class TelegramBot(
         pages = (len(all_items) + size - 1) // size
         page = max(0, min(int(page), pages - 1))
         chunk = all_items[page * size:(page + 1) * size]
-        lines = [f"📋 На рассмотрении: {len(all_items)}" + (f" · стр. {page + 1}/{pages}" if pages > 1 else ""),
+        lines = [f"📋 На рассмотрении: {len(all_items)}" + scope + (f" · стр. {page + 1}/{pages}" if pages > 1 else ""),
                  ("Сверху лучшие по баллу." if sort == "score" else "Сверху новые.")
                  + " Нажмите номер — откроется карточка с кнопками.", ""]
         buttons = []
@@ -1173,18 +1189,21 @@ class TelegramBot(
         mode = "s" if sort == "score" else "n"
         if pages > 1:
             keyboard.append([
-                {"text": "◀", "callback_data": f"rq:p:{profile_name}:{(page - 1) % pages}:{mode}"},
-                {"text": f"{page + 1}/{pages}", "callback_data": f"rq:p:{profile_name}:{page}:{mode}"},
-                {"text": "▶", "callback_data": f"rq:p:{profile_name}:{(page + 1) % pages}:{mode}"},
+                {"text": "◀", "callback_data": f"rq:{group}:{profile_name}:{(page - 1) % pages}:{mode}"},
+                {"text": f"{page + 1}/{pages}", "callback_data": f"rq:{group}:{profile_name}:{page}:{mode}"},
+                {"text": "▶", "callback_data": f"rq:{group}:{profile_name}:{(page + 1) % pages}:{mode}"},
             ])
         keyboard.append([{"text": "🆕 Сначала новые" if sort == "score" else "📊 Сначала лучшие",
-                          "callback_data": f"rq:p:{profile_name}:0:{'n' if sort == 'score' else 's'}"}])
+                          "callback_data": f"rq:{group}:{profile_name}:0:{'n' if sort == 'score' else 's'}"}])
         scored = [self._review_score(item) for item in all_items]
-        dismiss = [{"text": f"👎 < {limit}", "callback_data": f"rq:d:{profile_name}:{limit}"}
+        direction_tag = f":{view.callback_scope}" if view.name else ""
+        dismiss = [{"text": f"👎 < {limit}", "callback_data": f"rq:d:{profile_name}:{limit}{direction_tag}"}
                    for limit in self.REVIEW_DISMISS_THRESHOLDS
-                   if any(score is not None and score < limit for score in scored)]
+                   if not unspecified and any(score is not None and score < limit for score in scored)]
         if dismiss:
             keyboard.append(dismiss)
+        if group_button:
+            keyboard.append(group_button)
         text, markup = "\n".join(lines), {"inline_keyboard": keyboard}
         if message_id:
             await self._edit_text(chat_id, message_id, text, reply_markup=markup)
@@ -1192,9 +1211,13 @@ class TelegramBot(
             await self._send_text(chat_id, text, reply_markup=markup)
 
     async def _review_dismiss_below(self, chat_id: int, principal: dict, profile_name: str, limit: int,
-                                    *, confirmed: bool) -> None:
+                                    *, confirmed: bool, expected_scope: str | None = None) -> None:
         """«👎 < N»: every pending card scored below N becomes «Мимо» (kept in the feedback log)."""
-        targets = [item for item in manual_apply_queue.list_candidates(profile_name, limit=250)
+        view = DirectionView(self._profile(profile_name).home_dir)
+        if expected_scope is not None and expected_scope != view.callback_scope:
+            await self._send_text(chat_id, "Выбрано другое направление. Обновите список «На рассмотрении».")
+            return
+        targets = [item for item in view.review_items(manual_apply_queue.list_candidates(profile_name, limit=250))
                    if (score := self._review_score(item)) is not None and score < limit]
         if not targets:
             await self._send_text(chat_id, f"Вакансий с баллом ниже {limit} нет.")
@@ -1205,7 +1228,8 @@ class TelegramBot(
                 f"Убрать {len(targets)} вакансий с баллом ниже {limit}? Каждая запишется как «👎 Мимо» — "
                 "это пойдёт в обучение поиска.",
                 reply_markup={"inline_keyboard": [[
-                    {"text": f"✅ Убрать {len(targets)}", "callback_data": f"rq:D:{profile_name}:{limit}"},
+                    {"text": f"✅ Убрать {len(targets)}", "callback_data": f"rq:D:{profile_name}:{limit}" +
+                     (f":{view.callback_scope}" if view.name else "")},
                     {"text": "❌ Нет", "callback_data": f"rq:p:{profile_name}:0:s"}]]})
             return
         done = 0
@@ -1222,9 +1246,15 @@ class TelegramBot(
         if not item or item.get("status") != "pending":
             await self._send_text(chat_id, "Эта вакансия уже разобрана. Обновите список: «На разбор».")
             return
+        view = DirectionView(self._profile(profile_name).home_dir)
+        owner = view.item_direction(item)
+        if owner is not None and owner != view.name:
+            await self._send_text(chat_id, "Выбрано другое направление. Обновите список «На рассмотрении».")
+            return
         markup = manual_apply_queue.build_manual_apply_markup(
             item.get("vacancy") or {}, profile_name, token, allow_ai_apply=bool(item.get("allow_ai_apply", True)))
-        await self._send_text(chat_id, self._review_item_text(item, "•"), reply_markup=markup)
+        label = "Направление не указано.\n\n" if owner is None else (f"{view.title}\n\n" if view.title else "")
+        await self._send_text(chat_id, label + self._review_item_text(item, "•"), reply_markup=markup)
 
     async def _save_search_setting(
         self,
