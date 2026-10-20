@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import time
 import uuid
@@ -399,6 +400,81 @@ def ensure_fresh(home_dir, cookies_file, *, max_age_hours=6.0, archived=False, m
     if age is not None and age < max_age_hours:
         return None
     return collect(home_dir=home_dir, cookies_file=cookies_file, archived=archived, max_pages=max_pages)
+
+
+def refresh_for_chats(home_dir, cookies_file, *, min_interval_hours=6.0, max_pages=3,
+                      now=time.time):
+    """Reserve bounded active/archive passes together; failed attempts stay throttled.
+
+    The reservation is durable before any network work, including when a worker
+    crashes. Reserving both filters together also prevents another caller from
+    starting an archive pass while this caller checks the active session.
+    """
+    from state_store.protected import ProtectedJsonStore
+    if (isinstance(min_interval_hours, bool) or not isinstance(min_interval_hours, (int, float))
+            or not math.isfinite(min_interval_hours) or min_interval_hours <= 0):
+        raise ValueError('min_interval_hours must be positive')
+    if type(max_pages) is not int or max_pages < 1:
+        raise ValueError('max_pages must be positive')
+
+    def stopped(section, reason):
+        return {'filter': section, 'complete': False, 'pages_read': 0, 'stop_reason': reason}
+
+    reason = guard_stop_reason(home_dir)
+    if reason:
+        return [stopped('active', reason)]
+    timestamp = now()
+    if (isinstance(timestamp, bool) or not isinstance(timestamp, (int, float))
+            or not math.isfinite(timestamp) or timestamp < 0):
+        raise ValueError('now must return a valid timestamp')
+    reserved, skipped = set(), {}
+    store = ProtectedJsonStore(Path(home_dir) / 'negotiation_refresh_state.json',
+                               default_factory=lambda: {'schema_version': 1, 'attempted_at': {}})
+
+    def reserve(state):
+        if (set(state) != {'schema_version', 'attempted_at'} or type(state['schema_version']) is not int
+                or state['schema_version'] != 1 or not isinstance(state['attempted_at'], dict)):
+            raise RuntimeError('Invalid negotiation refresh state; restore a verified backup')
+        for section, value in state['attempted_at'].items():
+            if (section not in ('active', 'archived') or isinstance(value, bool)
+                    or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0):
+                raise RuntimeError('Invalid negotiation refresh state; restore a verified backup')
+        attempts = state.setdefault('attempted_at', {})
+        state['schema_version'] = 1
+        for section in ('active', 'archived'):
+            previous = attempts.get(section)
+            if previous is not None and timestamp - previous < min_interval_hours * 3600:
+                skipped[section] = stopped(section, 'refresh_throttled')
+                continue
+            age = latest_complete_age_hours(home_dir, archived=section == 'archived')
+            if age is not None and 0 <= age < min_interval_hours:
+                skipped[section] = {'filter': section, 'complete': True, 'pages_read': 0,
+                                    'stop_reason': None, 'skipped': 'recent_complete'}
+                continue
+            attempts[section] = timestamp
+            reserved.add(section)
+
+    store.update(reserve)
+    results = []
+    for section in ('active', 'archived'):
+        if section not in reserved:
+            results.append(skipped[section])
+            continue
+        reason = guard_stop_reason(home_dir)
+        if reason:
+            results.append(stopped(section, reason))
+            break
+        try:
+            summary = collect(home_dir=home_dir, cookies_file=cookies_file,
+                              archived=section == 'archived', max_pages=max_pages)
+        except Exception:
+            summary = stopped(section, 'collection_error')
+        results.append(summary)
+        # A bounded partial pass is expected. Every other failure may describe
+        # an unavailable/challenged session and stops further network work.
+        if not summary.get('complete') and summary.get('stop_reason') != 'max_pages':
+            break
+    return results
 
 
 def main(argv=None):

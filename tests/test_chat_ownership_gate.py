@@ -65,13 +65,13 @@ def test_unbound_thread_never_generates_sends_or_previews(workflow, monkeypatch,
     model.assert_not_awaited()
     send.assert_not_awaited()
     preview.assert_not_awaited()
-    assert refresh.call_count == (1 if case in {"unknown", "lookup_error"} else 0)
+    refresh.assert_not_called()
     if case in {"unknown", "lookup_error"} and entry != "raw_form":
         assert "notify" in w.calls
 
 
 @pytest.mark.parametrize("entry", ["scanner", "one", "direct_form"])
-def test_failed_refresh_still_requires_positive_owner(workflow, monkeypatch, entry):
+def test_reply_never_collects_snapshots_per_message(workflow, monkeypatch, entry):
     from hh import negotiation_snapshot
     snapshot_path(workflow).unlink()
     refresh = Mock(side_effect=OSError("Synthetic refresh failure"))
@@ -84,16 +84,20 @@ def test_failed_refresh_still_requires_positive_owner(workflow, monkeypatch, ent
         assert not asyncio.run(forms.preview_from_hh_chat(workflow.client, "chat",
                               runtime_paths=workflow.paths))["ok"]
     assert "model" not in workflow.calls and "send" not in workflow.calls
-    refresh.assert_called_once()
+    refresh.assert_not_called()
 
 
 @pytest.mark.parametrize("entry", ["scanner", "one", "direct_form"])
-def test_refresh_can_establish_positive_binding(workflow, monkeypatch, entry):
+def test_periodic_refresh_can_establish_positive_binding(workflow, monkeypatch, entry):
     from hh import negotiation_snapshot
     w = workflow
     snapshot_path(w).unlink()
-    refresh = Mock(side_effect=lambda **kwargs: set_resume(w, "111"))
+    def collect(**kwargs):
+        set_resume(w, "111")
+        return {"complete": True, "stop_reason": None}
+    refresh = Mock(side_effect=collect)
     monkeypatch.setattr(negotiation_snapshot, "collect", refresh)
+    negotiation_snapshot.refresh_for_chats(w.paths.home_dir, cr.config.HH_COOKIES_FILE)
     if entry == "scanner":
         assert asyncio.run(w.run_all(dry_run=False))["answers_sent"] == 1
     elif entry == "one":
@@ -112,8 +116,9 @@ def test_refresh_can_establish_positive_binding(workflow, monkeypatch, entry):
         assert asyncio.run(forms.preview_from_hh_chat(w.client, "chat", profile_name="synthetic",
                            runtime_paths=w.paths))["ok"]
         model.assert_awaited_once()
-    refresh.assert_called_once_with(home_dir=w.paths.home_dir,
-                                   cookies_file=cr.config.HH_COOKIES_FILE)
+    assert refresh.call_count == 2
+    assert [call.kwargs["archived"] for call in refresh.call_args_list] == [False, True]
+    assert all(call.kwargs["max_pages"] == 3 for call in refresh.call_args_list)
 
 
 @pytest.mark.parametrize("when", ["model", "before_send"])
@@ -178,14 +183,13 @@ def test_cookie_mismatch_still_blocks_before_ownership_refresh(workflow, monkeyp
     assert workflow.calls == []
 
 
-def test_direction_changed_during_refresh_cannot_replace_captured_facts(workflow, monkeypatch):
-    from hh import negotiation_snapshot
-    snapshot_path(workflow).unlink()
-    def refresh(**kwargs):
+def test_direction_changed_after_capture_cannot_replace_captured_facts(workflow, monkeypatch):
+    async def navigate(*args, **kwargs):
         set_resume(workflow, "222")
         monkeypatch.setattr(cr.config, "ACTIVE_DIRECTION", {"name": "electric"})
-    monkeypatch.setattr(negotiation_snapshot, "collect", refresh)
-    assert asyncio.run(workflow.run())["reason"] == "direction_mismatch"
+    monkeypatch.setattr(workflow.client._page, "goto", navigate)
+    with pytest.raises(RuntimeError, match="ownership changed"):
+        asyncio.run(workflow.run())
     assert "model" not in workflow.calls and "send" not in workflow.calls
 
 

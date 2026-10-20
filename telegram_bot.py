@@ -48,6 +48,7 @@ from telegram_app.api import TelegramAPIClient, TelegramAPIError, telegram_error
 from telegram_app.callbacks import TelegramCallbackRouter
 from telegram_app.forms import TelegramFormEditor
 from telegram_app.directions import TelegramDirections
+from telegram_app.chat_ownership import TelegramChatOwnership
 from telegram_app.command_queue import TelegramCommandQueue, profile_command, current_entry
 from telegram_app.subprocesses import (
     ActiveCommandState,
@@ -234,6 +235,7 @@ class TelegramBot(
     TelegramCallbackRouter,
     TelegramFormEditor,
     TelegramDirections,
+    TelegramChatOwnership,
 ):
     def __init__(
         self,
@@ -4020,8 +4022,7 @@ class TelegramBot(
             try:
                 # B13: answer with the facts of the resume this application was sent with.
                 import chat_context
-                owner = await chat_context.resolve_with_refresh(
-                    home, hh_chat_id, self._profile(profile_name).hh.cookies_file)
+                owner = chat_context.safe_resolve(home, hh_chat_id)
                 if owner.status == chat_context.OTHER:
                     markup = reply_markup
                     target = owner.owner_profile
@@ -4036,7 +4037,17 @@ class TelegramBot(
                                           reply_markup=markup)
                     return
                 if owner.status != chat_context.OWN or not owner.resume_id:
-                    await self._send_text(chat_id, chat_context.UNKNOWN_TEXT, reply_markup=reply_markup)
+                    import chat_owner_review
+                    token = chat_owner_review.create_review(
+                        home, hh_chat_id, hh_message_id.partition('~')[0], profile_name)
+                    callback = f"cbo:{profile_name}:{token}"
+                    markup = reply_markup
+                    if len(callback.encode("utf-8")) <= 64:
+                        markup = {"inline_keyboard": [[{"text": "Выбрать владельца отклика",
+                                                       "callback_data": callback}]]}
+                    reason = (chat_context.CONFLICT_TEXT if owner.status == chat_context.CONFLICT
+                              else chat_context.UNKNOWN_TEXT)
+                    await self._send_text(chat_id, reason, reply_markup=markup)
                     return
                 current = directions_mod.active_direction(home)
                 if owner.status == chat_context.OWN and owner.direction and owner.direction != (current or {}).get("name"):

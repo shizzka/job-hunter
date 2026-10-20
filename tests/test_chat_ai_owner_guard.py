@@ -68,7 +68,7 @@ def test_chat_of_another_resume_is_refused_without_running(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("lookup_error", [False, True])
-def test_unknown_after_refresh_never_runs_reply(tmp_path, monkeypatch, lookup_error):
+def test_unknown_reply_never_runs_or_refreshes(tmp_path, monkeypatch, lookup_error):
     from hh import negotiation_snapshot
     bot, home, sent, runs = setup(tmp_path, monkeypatch, resume_id=500)
     if lookup_error:
@@ -80,7 +80,7 @@ def test_unknown_after_refresh_never_runs_reply(tmp_path, monkeypatch, lookup_er
     monkeypatch.setattr(negotiation_snapshot, "collect", refresh)
     drive(bot)
     assert runs == [] and chat_context.UNKNOWN_TEXT in sent
-    refresh.assert_called_once()
+    refresh.assert_not_called()
 
 
 def test_chat_of_this_profiles_other_direction_switches_and_restores(tmp_path, monkeypatch):

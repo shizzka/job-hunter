@@ -856,17 +856,23 @@ async def _notify_ownership_review(repository, notifier, refusal, *, message_id,
     if notifier is None:
         return False
     chat_id = str(refusal["chat_id"])
-    with repository.attempt(chat_id, "notice", "ownership:" + str(message_id)) as attempt:
+    # Reissue old text-only refusals once with the new owner-selection action.
+    with repository.attempt(chat_id, "notice", "ownership-choice:" + str(message_id)) as attempt:
         if not attempt:
             return False
         repository.mark_acting(chat_id, attempt)
         vacancy = vacancy or {}
         title = _escaped_html(vacancy.get("title") or "—", limit=120)
+        from chat_owner_review import create_review
+        review_token = create_review(repository.path.parent, chat_id, message_id, profile_name)
+        choose = {"text": "Выбрать профиль и резюме", "callback_data": f"cbo:{profile_name}:{review_token}"}
+        rows = [[_human_chat_button(chat_id, profile_name)]]
+        if len(choose["callback_data"].encode()) <= 64:
+            rows.append([choose])
         text = ("<b>Чат требует вашей проверки</b>\n" + title + "\n\n"
                 + html.escape(refusal["message"]))
         try:
-            delivered = await notifier.send_message_with_markup(text, reply_markup={"inline_keyboard": [
-                [_human_chat_button(chat_id, profile_name)]]})
+            delivered = await notifier.send_message_with_markup(text, reply_markup={"inline_keyboard": rows})
         except Exception as exc:
             log.warning("chat ownership notice failed: %s", type(exc).__name__)
             delivered = False

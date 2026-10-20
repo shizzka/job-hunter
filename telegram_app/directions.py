@@ -683,13 +683,13 @@ class TelegramDirections:
             async def runner():
                 from hh import negotiation_snapshot
                 try:
-                    results = []
-                    for archived in (False, True):
-                        summary = await asyncio.to_thread(negotiation_snapshot.collect, home_dir=profile.home_dir,
-                                                          cookies_file=profile.hh.cookies_file, archived=archived)
-                        results.append(summary)
+                    results = await asyncio.to_thread(negotiation_snapshot.refresh_for_chats,
+                                                      profile.home_dir, profile.hh.cookies_file)
                     done = all(item.get("complete") for item in results)
+                    throttled = all(item.get("complete") or item.get("stop_reason") == "refresh_throttled"
+                                    for item in results)
                     note = ("✅ Данные обновлены." if done else
+                            "Данные недавно запрашивались. Покажу сохранённую статистику." if throttled else
                             "⚠️ Собрал не всё (" + ", ".join(str(item.get("stop_reason")) for item in results
                                                          if not item.get("complete")) + ") — покажу, что есть.")
                     await self._send_text(chat_id, note)

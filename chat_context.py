@@ -9,11 +9,15 @@ chat id -> resumeId comes from the profile's negotiation snapshot; resumeId ->
 direction from the profile's direction variants, or from its legacy
 HH_*_RESUME_ID hashes mapped to numeric ids through any direction variant on
 this machine (the same hh account).
+
+Chat DOM extraction has no supported application-resume field. Missing rows
+are recovered by bounded periodic active/archive collection or an explicit
+owner choice for that thread. The cached resume list can be a filtered import;
+one cached resume does not prove that the HH account has only one resume.
 """
 from __future__ import annotations
 
 import glob
-import asyncio
 import json
 import logging
 import os
@@ -23,6 +27,7 @@ from dataclasses import dataclass
 OWN = "own"          # the resume belongs to this profile (direction may be set)
 OTHER = "other"      # the resume belongs to another profile / is not this profile's
 UNKNOWN = "unknown"  # no snapshot record for this chat
+CONFLICT = "conflict"  # explicit owner choice contradicts application metadata
 
 
 @dataclass(frozen=True)
@@ -47,7 +52,7 @@ def chat_resume_id(home: str, chat_id: str) -> str:
                     continue
                 if str(row.get("chatId") or "") == str(chat_id) and row.get("resumeId"):
                     resume = str(row["resumeId"])
-    except OSError:
+    except FileNotFoundError:
         return ""
     return resume
 
@@ -106,7 +111,27 @@ def profile_resumes(home: str) -> dict[str, tuple[str, str]]:
 
 
 def resolve(home: str, chat_id: str) -> ChatOwner:
+    from chat_owner_review import confirmed_binding
     resume = chat_resume_id(home, chat_id)
+    chosen = confirmed_binding(home, chat_id)
+    if chosen:
+        if resume and resume != chosen["resume_id"]:
+            return ChatOwner(CONFLICT)
+        source_home = chosen["source_home"]
+        if source_home != os.path.abspath(home):
+            # The picker was opened from another profile on the shared account.
+            # That thread's later observations still constrain this selection.
+            if confirmed_binding(source_home, chat_id) != chosen:
+                return ChatOwner(CONFLICT)
+            observed = chat_resume_id(source_home, chat_id)
+            if observed and observed != chosen["resume_id"]:
+                return ChatOwner(CONFLICT)
+        if chosen["profile_home"] != os.path.abspath(home):
+            return ChatOwner(OTHER, chosen["resume_id"], owner_profile=chosen["profile_name"])
+        own = profile_resumes(home)
+        if own.get(chosen["resume_id"], (None,))[0] != chosen["direction"]:
+            return ChatOwner(CONFLICT)
+        return ChatOwner(OWN, chosen["resume_id"], chosen["direction"], own[chosen["resume_id"]][1])
     if not resume:
         return ChatOwner(UNKNOWN)
     own = profile_resumes(home)
@@ -136,6 +161,8 @@ UNKNOWN_TEXT = ("Не удалось определить, каким резюм
                 "Проверьте отклик в чате и выберите его профиль и направление.")
 DIRECTION_TEXT = ("Отклик отправлен резюме другого направления. "
                   "Выберите направление этого резюме и повторите.")
+CONFLICT_TEXT = ("Для этого чата указаны разные резюме. Ответ и анкету не готовлю. "
+                 "Проверьте, каким резюме был отправлен отклик.")
 
 
 def safe_resolve(home: str, chat_id: str) -> ChatOwner:
@@ -144,19 +171,6 @@ def safe_resolve(home: str, chat_id: str) -> ChatOwner:
     except Exception as exc:
         logging.getLogger(__name__).warning("chat owner lookup failed: %s", type(exc).__name__)
         return ChatOwner(UNKNOWN)
-
-
-async def resolve_with_refresh(home: str, chat_id: str, cookies_file: str) -> ChatOwner:
-    """One metadata refresh on missing/failed ownership; never infer from login."""
-    owner = safe_resolve(home, chat_id)
-    if owner.status == UNKNOWN or (owner.status == OWN and not owner.resume_id):
-        from hh import negotiation_snapshot
-        try:
-            await asyncio.to_thread(negotiation_snapshot.collect, home_dir=home, cookies_file=cookies_file)
-        except Exception as exc:
-            logging.getLogger(__name__).warning("chat owner refresh failed: %s", type(exc).__name__)
-        owner = safe_resolve(home, chat_id)
-    return owner
 
 
 @dataclass(frozen=True)
@@ -180,9 +194,11 @@ async def bind_candidate(chat_id: str, snapshot, *, home: str, profile_name: str
     if not snapshot.profile_home or os.path.abspath(home) != snapshot.profile_home:
         return None, {"ok": False, "reason": "unknown_owner", "chat_id": chat_id,
                       "message": UNKNOWN_TEXT}
-    owner = await resolve_with_refresh(snapshot.profile_home, chat_id, snapshot.cookies_path)
+    owner = safe_resolve(snapshot.profile_home, chat_id)
     reason, message = "", ""
-    if owner.status == OTHER:
+    if owner.status == CONFLICT:
+        reason, message = "owner_conflict", CONFLICT_TEXT
+    elif owner.status == OTHER:
         reason, message = "other_profile", refusal_text(owner, profile_name)
     elif owner.status != OWN or not owner.resume_id:
         reason, message = "unknown_owner", UNKNOWN_TEXT

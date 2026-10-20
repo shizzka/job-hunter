@@ -114,6 +114,14 @@ class TelegramCallbackRouter:
                 or self._selected_profile(principal) == profile_name
             )
 
+        if str(raw_data).startswith(("cbo:", "cbs:")):
+            if (message.get("chat") or {}).get("type") != "private":
+                await self._answer_callback_query(callback_id, "Откройте личный чат с ботом.", show_alert=True)
+                return
+            await self._answer_callback_query(callback_id)
+            await self._chat_owner_callback(chat_id, principal, raw_data)
+            return
+
         if str(raw_data).startswith("cop:"):
             parts = str(raw_data).split(":")
             await self._answer_callback_query(callback_id)

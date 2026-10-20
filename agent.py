@@ -2745,7 +2745,7 @@ async def do_search(dry_run: bool = False) -> dict:
             try:
                 from hh import negotiation_snapshot as _snapshots
                 await observe_hh_receipts(asyncio.to_thread(
-                    _snapshots.ensure_fresh, config.JOB_HUNTER_HOME, config.HH_COOKIES_FILE, max_age_hours=6.0))
+                    _snapshots.refresh_for_chats, config.JOB_HUNTER_HOME, config.HH_COOKIES_FILE))
             except HHUnexpectedUI:
                 raise
             except Exception as exc:
