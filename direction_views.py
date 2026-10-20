@@ -41,7 +41,10 @@ class DirectionView:
                 evidence.append({d["name"] for d in self.directions for v in d["variants"]
                                  if v.get("text_sha256") == digest})
         if evidence:
-            matches = set.intersection(*evidence)
+            # Old resume text versions may no longer be among current variants.
+            # Only recognized evidence can confirm or contradict a direction.
+            recognized = [matches for matches in evidence if matches]
+            matches = set.intersection(*recognized) if recognized else set()
             return next(iter(matches)) if len(matches) == 1 else None
         # An old profile with a single direction has no competing owner.
         if len(names) == 1:

@@ -156,6 +156,8 @@ def test_review_legacy_evidence_must_be_unambiguous(tmp_path):
     two_directions(tmp_path)
     view = DirectionView(str(tmp_path))
     assert view.item_direction({"vacancy": {"_search_query": " QA   ENGINEER "}}) == "qa"
+    assert view.item_direction({"vacancy": {"_search_query": "QA Engineer", "_resume_input_versions": {
+        "matcher": {"sha256": "old-version"}}}}) == "qa"
     assert view.item_direction({"vacancy": {"hh_resume_hash": "resume_222"}}) == "electric"
     assert view.item_direction({"vacancy": {"_search_query": "QA Engineer", "hh_resume_numeric_id": 222}}) is None
     assert view.item_direction({"vacancy": {"_search_profile": "Москва"}}) is None
