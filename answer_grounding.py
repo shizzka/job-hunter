@@ -35,6 +35,8 @@ class CandidateSnapshot:
     cookies_path: str
     # JSON freezes the corpus and remains compatible with candidate revisions.
     knowledge_index: str = ''
+    profile_home: str = ''
+    direction_name: str = ''
 
     @property
     def sources(self):
@@ -77,7 +79,9 @@ def capture_candidate(resume_text, *, settings=config, profile_builder=None,
         evidence_facts, json.dumps({key: personal[key] for key in ('do_not_claim', 'forbidden_claims')
                                    if isinstance(personal, dict) and key in personal}, ensure_ascii=False),
         os.path.abspath(config.HH_COOKIES_FILE),
-        index.to_snapshot() if index is not None else '')
+        index.to_snapshot() if index is not None else '',
+        os.path.abspath(config.JOB_HUNTER_HOME),
+        str((getattr(config, 'ACTIVE_DIRECTION', None) or {}).get('name') or ''))
 
 
 def retrieve_candidate(snapshot, query: str, *, limit_chars=12000):

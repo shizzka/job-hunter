@@ -729,7 +729,7 @@ def _language_instruction(question: str) -> str:
 
 
 def _chat_owner(chat_id):
-    """ChatOwner for this profile, or None when it cannot be read (then nothing changes)."""
+    """Informational lookup only; fact-bearing operations use bind_candidate."""
     try:
         import chat_context
         import config
@@ -849,6 +849,30 @@ async def notify_hr_message(notifier, *, chat_id, vacancy, message, profile_name
         f"<b>{_escaped_html(heading, limit=100)}</b>\n<b>Чат:</b> {title} @ {company}\n\n<i>{excerpt}</i>",
         reply_markup={"inline_keyboard": rows},
     )
+
+
+async def _notify_ownership_review(repository, notifier, refusal, *, message_id, profile_name, vacancy=None):
+    """A durable review notice without any candidate facts or generation action."""
+    if notifier is None:
+        return False
+    chat_id = str(refusal["chat_id"])
+    with repository.attempt(chat_id, "notice", "ownership:" + str(message_id)) as attempt:
+        if not attempt:
+            return False
+        repository.mark_acting(chat_id, attempt)
+        vacancy = vacancy or {}
+        title = _escaped_html(vacancy.get("title") or "—", limit=120)
+        text = ("<b>Чат требует вашей проверки</b>\n" + title + "\n\n"
+                + html.escape(refusal["message"]))
+        try:
+            delivered = await notifier.send_message_with_markup(text, reply_markup={"inline_keyboard": [
+                [_human_chat_button(chat_id, profile_name)]]})
+        except Exception as exc:
+            log.warning("chat ownership notice failed: %s", type(exc).__name__)
+            delivered = False
+        if not repository.finish(chat_id, attempt, "completed" if delivered else "uncertain"):
+            raise RuntimeError("Chat ownership notice completion lost")
+        return bool(delivered)
 
 
 def _find_message(messages: list[dict], message_id: str) -> dict | None:
@@ -1123,6 +1147,7 @@ async def _prepare_google_form_preview_from_message(
     notifier,
     runtime_paths: RuntimePaths | None = None,
     profile_name: str | None = None,
+    ownership_binding=None,
 ) -> dict:
     import google_form_filler as gforms
 
@@ -1140,6 +1165,7 @@ async def _prepare_google_form_preview_from_message(
             source_message=message.get("text") or "",
             notify=False,
             runtime_paths=paths,
+            ownership_binding=ownership_binding,
         )
         if detail.get("ok") or detail.get("questions") or detail.get("status") == "already_submitted":
             if notifier:
@@ -1208,15 +1234,17 @@ def _revision_hash(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def _candidate_revision():
+def _candidate_revision(ownership_binding=None):
     from answer_grounding import current_candidate
-    return _revision_hash([_active_profile_name(), asdict(current_candidate())])
+    return _revision_hash([_active_profile_name(), asdict(current_candidate()),
+                           asdict(ownership_binding) if ownership_binding else None])
 
 
-def _live_candidate_revision():
+def _live_candidate_revision(ownership_binding=None):
     from answer_grounding import capture_candidate
     from hh_client import _load_resume_text
-    return _revision_hash([_active_profile_name(), asdict(capture_candidate(_load_resume_text()))])
+    return _revision_hash([_active_profile_name(), asdict(capture_candidate(_load_resume_text())),
+                           asdict(ownership_binding) if ownership_binding else None])
 
 
 _reply_observation = ContextVar('chat_reply_observation', default=False)
@@ -1277,14 +1305,19 @@ async def _execute_reply(
     *, dry_run, max_replies=None, repeat_preview=False, answer_kwargs=None, notify=None,
     draft_revision="", require_draft=False, notify_preflight=None,
     quote_min_similarity=1.0,
+    ownership_binding=None,
 ) -> dict:
     """Claim before model/browser waits; persist only the owning chat's result."""
     chat_id, target_id = str(chat_id), str(target.get("id") or "")
+    from answer_grounding import current_candidate
+    if ownership_binding is None or ownership_binding.chat_id != chat_id:
+        raise RuntimeError("Chat application ownership required")
+    ownership_binding.check(current_candidate())
     target_revision = _message_revision(target)
     kind = "preview" if dry_run else "reply"
     # New replies without a stored human-approved draft must always be strict.
     quote_min_similarity = _quote_min_similarity(quote_min_similarity) if dry_run else 1.0
-    candidate_revision = _candidate_revision()
+    candidate_revision = _candidate_revision(ownership_binding)
     source_revision = _revision_hash([target_revision, messages, vacancy])
     draft = repository.load().get(chat_id, {}).get("draft")
     stored = not dry_run and (bool(draft_revision) or (isinstance(draft, dict) and draft.get("message_id") == target_id) or require_draft)
@@ -1328,6 +1361,7 @@ async def _execute_reply(
                   "vacancy": vacancy, "question": (target.get("text") or "")[:500],
                   "answer": answer, "dry_run": dry_run, "sent": False}
         if dry_run:
+            ownership_binding.check(current_candidate())
             preview = await fill_and_preview(page, chat_id, answer, runtime_paths=paths)
             detail["preview"] = preview
             if not preview.get("filled"):
@@ -1373,8 +1407,9 @@ async def _execute_reply(
                     raise RuntimeError("Chat changed before send")
                 if stored:
                     if (not matching_draft(repository.load().get(chat_id, {}).get("draft"))
-                            or _live_candidate_revision() != candidate_revision):
+                            or _live_candidate_revision(ownership_binding) != candidate_revision):
                         raise RuntimeError("Approved chat candidate/draft changed before send")
+                ownership_binding.check(current_candidate())
                 # Last synchronous durable check immediately before the click.
                 repository.mark_acting(chat_id, owner)
             ok = await send_message(page, chat_id, answer, runtime_paths=paths, before_send=before_send,
@@ -1419,16 +1454,16 @@ async def process_one(
         return {"ok": False, "reason": "stale_draft", "message": "Invalid draft revision", "chat_id": chat_id}
     if dry_run is None:
         dry_run = _default_chat_dry_run()
-    # B13: never answer with another resume's facts (profiles may share one hh account).
-    owner = _chat_owner(chat_id)
-    if owner is not None and owner.status == "other":
-        import chat_context
-        return {"ok": False, "reason": "other_profile", "chat_id": chat_id,
-                "message": chat_context.refusal_text(owner, profile_name)}
-    if owner is not None and owner.status == "own" and owner.direction and owner.direction != _active_direction_name():
-        return {"ok": False, "reason": "direction_mismatch", "chat_id": chat_id,
-                "message": f"Отклик был отправлен резюме «{owner.title}» другого направления; "
-                           "переключите направление и повторите."}
+    from answer_grounding import current_candidate
+    from chat_context import bind_candidate
+    ownership_binding, refusal = await bind_candidate(
+        chat_id, current_candidate(), home=paths.home_dir, profile_name=profile_name)
+    if refusal:
+        if notify and refusal["reason"] == "unknown_owner":
+            import notifier
+            await _notify_ownership_review(_state_repository(paths), notifier, refusal,
+                                           message_id=message_id, profile_name=profile_name)
+        return refusal
 
     if not hh_client._page:
         await hh_client.start(headless=True)
@@ -1496,6 +1531,7 @@ async def process_one(
         # The automatic scan keeps the default strict policy, even in dry-run.
         quote_min_similarity=_quote_min_similarity(os.getenv("CHAT_DRAFT_QUOTE_MIN_SIMILARITY", "0.85"))
         if dry_run else 1.0,
+        ownership_binding=ownership_binding,
         answer_kwargs={
             "question_message": target if (is_approved_suspicious or is_manual_any) else None,
             "question_kind": (
@@ -1639,8 +1675,25 @@ async def process_all(
                 hiring_research.record_screening(data.get("vacancy") or {}, msgs)
                 vac = dict(data.get("vacancy", {}) or {})
 
-                # Preserve Google Forms' existing path and precedence, including older incoming links.
+                # Resolve the application resume before chat replies or linked forms.
                 form_item = _find_unseen_google_form_message(msgs, chat_state)
+                decision, reason, last = decide_chat(msgs, chat_state, dry_run=dry_run, max_replies=max_replies)
+                message_id = str(((form_item or {}).get("message") or last or {}).get("id") or "")
+                ownership_binding = None
+                if form_item or decision in {"hr_question", "external_invite", "ai_hh_autoreply"}:
+                    from chat_context import bind_candidate
+                    ownership_binding, refusal = await bind_candidate(
+                        chat_id, current_candidate(), home=paths.home_dir, profile_name=profile_name)
+                    if refusal:
+                        decision = reason = refusal["reason"]
+                        summary["skipped"] += 1
+                        if reason == "unknown_owner":
+                            await _notify_ownership_review(repository, notifier, refusal, message_id=message_id,
+                                                           profile_name=profile_name, vacancy=vac)
+                        summary["details"].append(refusal)
+                        continue
+
+                # Older incoming form links keep precedence, after the ownership gate.
                 if form_item:
                     form_msg, form_url = form_item["message"], form_item["form_url"]
                     message_id = str(form_msg.get("id") or "")
@@ -1659,6 +1712,7 @@ async def process_all(
                             page, chat_id=chat_id, vacancy=copy.deepcopy(vac),
                             message=copy.deepcopy(form_msg), form_url=form_url,
                             notifier=notifier, runtime_paths=paths, profile_name=profile_name,
+                            ownership_binding=ownership_binding,
                         )
                         if not repository.finish(chat_id, owner, "completed", lambda current:
                                 _remember_google_form_preview(current, form_item["key"], detail)):
@@ -1668,20 +1722,6 @@ async def process_all(
                     summary["details"].append(dict(chat_id=chat_id, google_form=True, ok=bool(detail.get("ok"))))
                     continue
 
-                decision, reason, last = decide_chat(msgs, chat_state, dry_run=dry_run, max_replies=max_replies)
-                message_id = str((last or {}).get("id") or "")
-                owner = _chat_owner(chat_id)
-                if owner is not None and owner.status == "other" and decision in {
-                        "hr_question", "external_invite", "ai_hh_autoreply"}:
-                    # Another profile of the same hh account owns this application (B13).
-                    decision, reason = "other_profile", owner.owner_profile or "unknown_resume"
-                    summary["skipped"] += 1
-                    continue
-                if (decision == "ai_hh_autoreply" and owner is not None and owner.status == "own"
-                        and owner.direction and owner.direction != _active_direction_name()):
-                    decision, reason = "direction_mismatch", owner.direction
-                    summary["skipped"] += 1
-                    continue
                 if decision == "hr_question" or (decision == "ours_last" and any(
                     not msg.get("is_me") and question_reason(msg) != "ambiguous_incoming_requires_review"
                     for msg in msgs[:-1]
@@ -1773,6 +1813,7 @@ async def process_all(
                     repository, page, chat_id, copy.deepcopy(last), copy.deepcopy(msgs),
                     copy.deepcopy(vac), resume_text, paths, dry_run=dry_run, max_replies=max_replies,
                     notify=notify_reply if notifier is not None else None,
+                    ownership_binding=ownership_binding,
                 )
                 if not detail.get("answer"):
                     reason = "stale_question" if detail.get("stale") else "attempt_blocked" if detail.get("blocked") else "no_grounded_answer"

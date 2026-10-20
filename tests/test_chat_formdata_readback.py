@@ -63,6 +63,8 @@ def test_chat_approval_readback_must_not_dispatch_formdata_handler():
 
 @pytest.mark.parametrize('scenario', ['unchanged', 'late_mutation', 'formdata_transform'])
 def test_full_stored_chat_readback_does_not_send_or_make_delivery_retryable(tmp_path,monkeypatch,scenario):
+    from tests.chat_ownership_fakes import owned_chats
+    owned_chats(monkeypatch, tmp_path, ["a"])
     late_mutation = scenario != 'unchanged'
     html = CHAT_FORM
     if scenario == 'formdata_transform':

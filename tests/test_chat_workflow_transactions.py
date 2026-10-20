@@ -2,6 +2,7 @@
 from tests.browser_action_fakes import fake_cdp_context
 import asyncio
 import copy
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -25,6 +26,13 @@ def workflow(tmp_path, monkeypatch):
     import notifier
     paths = RuntimePaths(home_dir=str(tmp_path), resume_file=str(tmp_path / "resume.md"),
                          hh_state_dir=str(tmp_path / "state"))
+    monkeypatch.setattr(cr.config, "JOB_HUNTER_HOME", str(tmp_path))
+    monkeypatch.setattr(cr.config, "ACTIVE_DIRECTION", {"name": "qa"}, raising=False)
+    (tmp_path / "directions").mkdir()
+    for name, resume in (("qa", "111"), ("electric", "222")):
+        (tmp_path / "directions" / (name + ".json")).write_text(json.dumps({
+            "name": name, "variants": [{"hh_resume_numeric_id": resume, "title": "Synthetic resume"}]}))
+    (tmp_path / "negotiation_snapshots.jsonl").write_text(json.dumps({"chatId": "chat", "resumeId": "111"}) + "\n")
     repo = cr._state_repository(paths)
     message = {"id": "m1", "text": "Synthetic question", "author": "Robot",
                "is_ai": True, "is_me": False}

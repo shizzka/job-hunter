@@ -312,6 +312,8 @@ def test_forbidden_claim_constraints_survive_conflicting_positive_resume(blocks,
 
 @pytest.mark.parametrize('entrypoint', ['process_one', 'process_all'])
 def test_native_chat_captures_resume_and_client_before_browser_navigation(blocks, monkeypatch, tmp_path, entrypoint):
+    from tests.chat_ownership_fakes import owned_chats
+    owned_chats(monkeypatch, tmp_path, ["chat"])
     from answer_grounding import current_candidate, current_answer_client
     from runtime_context import RuntimePaths
     original = Responses({'status': 'skip'})

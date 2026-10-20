@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import chat_context
 import directions
 import telegram_bot
+import pytest
+from unittest.mock import Mock
 from tests.test_telegram_directions import make_direction
 
 
@@ -63,6 +65,22 @@ def test_chat_of_another_resume_is_refused_without_running(tmp_path, monkeypatch
     bot, home, sent, runs = setup(tmp_path, monkeypatch, resume_id=999)
     drive(bot)
     assert runs == [] and any("Ответ не готовлю" in text for text in sent)
+
+
+@pytest.mark.parametrize("lookup_error", [False, True])
+def test_unknown_after_refresh_never_runs_reply(tmp_path, monkeypatch, lookup_error):
+    from hh import negotiation_snapshot
+    bot, home, sent, runs = setup(tmp_path, monkeypatch, resume_id=500)
+    if lookup_error:
+        monkeypatch.setattr(chat_context, "resolve", Mock(side_effect=OSError("Synthetic lookup failure")))
+    else:
+        from pathlib import Path
+        (Path(home) / "negotiation_snapshots.jsonl").unlink()
+    refresh = Mock(return_value={"ok": True})
+    monkeypatch.setattr(negotiation_snapshot, "collect", refresh)
+    drive(bot)
+    assert runs == [] and chat_context.UNKNOWN_TEXT in sent
+    refresh.assert_called_once()
 
 
 def test_chat_of_this_profiles_other_direction_switches_and_restores(tmp_path, monkeypatch):

@@ -464,6 +464,8 @@ def test_get_messages_safe_returns_empty_result_on_timeout(monkeypatch):
 
 
 def test_process_all_uses_injected_reply_limits(tmp_path, monkeypatch):
+    from tests.chat_ownership_fakes import owned_chats
+    owned_chats(monkeypatch, tmp_path / "profile-a", ["limited", "drafted"])
     import hh_client
     import notifier
 
@@ -617,6 +619,8 @@ def test_process_all_scans_only_newest_relevant_chats(tmp_path, monkeypatch):
 
 
 def test_process_all_deduplicates_dry_run_preview_before_llm(tmp_path, monkeypatch):
+    from tests.chat_ownership_fakes import owned_chats
+    owned_chats(monkeypatch, tmp_path, ["42"])
     import hh_client
     import notifier
 

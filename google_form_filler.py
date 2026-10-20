@@ -276,9 +276,21 @@ async def preview_form(
     saved_draft: dict | None = None,
     manual_edits: dict | None = None,
     persist: bool = True,
+    ownership_binding=None,
 ) -> dict:
     from google_forms.drafts import needs_review, replay_answers
     paths = runtime_paths or _runtime_paths()
+    from answer_grounding import current_candidate
+    if chat_id:
+        if ownership_binding is None:
+            from chat_context import bind_candidate
+            ownership_binding, refusal = await bind_candidate(
+                chat_id, current_candidate(), home=paths.home_dir, profile_name=profile_name)
+            if refusal:
+                return refusal
+        if ownership_binding.chat_id != str(chat_id):
+            raise RuntimeError("Chat application ownership mismatch")
+        ownership_binding.check(current_candidate())
     browser_approval_owner = uuid.uuid4().hex
     original_form_url = form_url
     form_url = await _resolve_google_form_redirect_url(form_url)
@@ -286,6 +298,8 @@ async def preview_form(
         raise ValueError("unsafe or unresolved Google Form URL")
     await page.goto(form_url, wait_until="commit", timeout=60000)
     await page.wait_for_timeout(2500)
+    if ownership_binding is not None:
+        ownership_binding.check(current_candidate())
     page_text = ""
     try:
         page_text = await page.locator("body").inner_text(timeout=5000)
@@ -370,6 +384,8 @@ async def preview_form(
             break
 
         saved_answers, missing = replay_answers(page_questions, saved_draft, manual_edits or {}) if saved_draft else ([], page_questions)
+        if ownership_binding is not None:
+            ownership_binding.check(current_candidate())
         answers = await generate_form_answers(missing, vacancy=vacancy, source_message=source_message) if missing else []
         if not answers and not saved_draft:
             # A previous model's confidence is not proof for the current candidate
@@ -382,6 +398,8 @@ async def preview_form(
         answer_map.update({int(a["index"]): a for a in saved_answers})
         answers = [answer_map.get(int(q["index"]), {"index": q["index"], "skip": True, "confidence": "low"}) for q in page_questions]
         safe_answers = [{**a, "skip": True} if needs_review(q, a) else a for q, a in zip(page_questions, answers)]
+        if ownership_binding is not None:
+            ownership_binding.check(current_candidate())
         fill_result = await fill_form(page, page_questions, safe_answers, approval_owner=browser_approval_owner)
 
         all_questions.extend(page_questions)
@@ -473,6 +491,16 @@ async def preview_from_hh_chat(
     import hh_chat_responder as cr
 
     paths = runtime_paths or _runtime_paths()
+    from answer_grounding import current_candidate
+    from chat_context import bind_candidate
+    ownership_binding, refusal = await bind_candidate(
+        chat_id, current_candidate(), home=paths.home_dir, profile_name=profile_name)
+    if refusal:
+        if notify and refusal["reason"] == "unknown_owner":
+            import notifier
+            await cr._notify_ownership_review(cr._state_repository(paths), notifier, refusal,
+                                             message_id=message_id, profile_name=profile_name)
+        return refusal
     if not hh_client._page:
         await hh_client.start(headless=True)
     page = hh_client._page
@@ -506,6 +534,7 @@ async def preview_from_hh_chat(
             source_message=(target.get("text") or ""),
             notify=notify,
             runtime_paths=paths,
+            ownership_binding=ownership_binding,
         )
     finally:
         with contextlib.suppress(Exception):

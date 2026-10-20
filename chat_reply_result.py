@@ -8,6 +8,9 @@ _FACT_REASONS = {
 }
 _CHECK_REASONS = {'invalid_check', 'incomplete_check', 'invalid_evidence', 'invalid_grounding_check'}
 _MESSAGES = {
+    'unknown_owner': 'не удалось определить, каким резюме отправлен отклик. Проверьте отклик в чате и выберите его профиль и направление',
+    'other_profile': 'отклик относится к резюме другого профиля. Выберите профиль этого резюме',
+    'direction_mismatch': 'отклик относится к другому направлению. Выберите направление этого резюме',
     'model_unavailable': 'модель недоступна. Попробуйте ещё раз позже',
     'grounding_unavailable': 'модель проверки фактов недоступна. Попробуйте ещё раз позже',
     'generation_incomplete': 'модель вернула неполный ответ',

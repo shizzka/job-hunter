@@ -11,6 +11,7 @@ import pytest
 import hh_chat_responder as cr
 from hh.chat import ChatList
 from runtime_context import ChatResponderLimits, RuntimePaths
+from tests.chat_ownership_fakes import owned_chats
 
 native_get_messages = cr.get_messages
 
@@ -21,6 +22,7 @@ def chat_run(tmp_path, monkeypatch):
     import hiring_research
     import notifier
     paths = RuntimePaths(str(tmp_path), str(tmp_path / "state"), str(tmp_path / "resume.md"))
+    owned_chats(monkeypatch, tmp_path, ["42", "ai", "hr", "invite", "form"])
     messages = {"42": {"messages": [dict(id="1", text="Когда готовы приступить?", is_me=False)],
                         "vacancy": {"title": "Synthetic QA", "company": "Synthetic Company"}}}
     rows = ChatList([dict(chat_id="42", preview="Synthetic preview")],
@@ -271,11 +273,9 @@ def test_hr_message_in_rejected_chat_goes_to_one_digest_without_reply_card(chat_
     """B1 (18.10): 7 of 11 «Вопрос HR» cards were chats the employer had already rejected."""
     import config
     import notifier
-    home = tmp_path / "snapshot_home"
-    home.mkdir(exist_ok=True)
-    monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(home))
+    home = tmp_path
     (home / "negotiation_snapshots.jsonl").write_text(json.dumps(
-        {"chatId": 42, "lastState": "DISCARD", "company_name": "Snapshot Company", "vacancy_name": "Snapshot QA"}) + "\n")
+        {"chatId": 42, "resumeId": "111", "lastState": "DISCARD", "company_name": "Snapshot Company", "vacancy_name": "Snapshot QA"}) + "\n")
     chat_run.messages["42"]["vacancy"] = {"title": "Перейти", "company": "—"}
     chat_run.messages["42"]["messages"][0]["text"] = "К сожалению, мы не готовы пригласить вас. Есть вопросы?"
     digests = []
@@ -297,8 +297,8 @@ def test_hr_message_in_rejected_chat_goes_to_one_digest_without_reply_card(chat_
 def test_chat_of_another_profile_gets_no_card(chat_run, monkeypatch, tmp_path):
     """B13 (dev 19.10): electrician profile answered QA chats with electrician facts."""
     import config
-    home = tmp_path / "profiles" / "electrician"
-    home.mkdir(parents=True, exist_ok=True)
+    home = tmp_path
+    (home / "directions" / "synthetic.json").unlink()
     (home / "negotiation_snapshots.jsonl").write_text(json.dumps({"chatId": 42, "resumeId": 111}) + "\n")
     monkeypatch.setattr(config, "JOB_HUNTER_HOME", str(home))
     summary = asyncio.run(chat_run.run())

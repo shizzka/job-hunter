@@ -17,6 +17,8 @@ import aiohttp
 from aiohttp import web
 
 def chat_setup(monkeypatch,page,tmp_path):
+    from tests.chat_ownership_fakes import owned_chats
+    owned_chats(monkeypatch, tmp_path, ['a', 'b'])
     paths=RuntimePaths(str(tmp_path),str(tmp_path/'state'),str(tmp_path/'resume.md'))
     message={'id':'m1','text':'Synthetic question','author':'Robot','is_ai':True,'is_me':False}
     data={'messages':[message],'vacancy':{'title':'Synthetic QA','company':'Example'}}

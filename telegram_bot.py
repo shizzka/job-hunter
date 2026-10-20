@@ -4020,13 +4020,8 @@ class TelegramBot(
             try:
                 # B13: answer with the facts of the resume this application was sent with.
                 import chat_context
-                owner = chat_context.resolve(home, hh_chat_id)
-                if owner.status == chat_context.UNKNOWN:
-                    from hh import negotiation_snapshot
-                    with contextlib.suppress(Exception):
-                        await asyncio.to_thread(negotiation_snapshot.collect, home_dir=home,
-                                                cookies_file=self._profile(profile_name).hh.cookies_file)
-                    owner = chat_context.resolve(home, hh_chat_id)
+                owner = await chat_context.resolve_with_refresh(
+                    home, hh_chat_id, self._profile(profile_name).hh.cookies_file)
                 if owner.status == chat_context.OTHER:
                     markup = reply_markup
                     target = owner.owner_profile
@@ -4039,6 +4034,9 @@ class TelegramBot(
                                                             "callback_data": callback}]]}
                     await self._send_text(chat_id, chat_context.refusal_text(owner, profile_name),
                                           reply_markup=markup)
+                    return
+                if owner.status != chat_context.OWN or not owner.resume_id:
+                    await self._send_text(chat_id, chat_context.UNKNOWN_TEXT, reply_markup=reply_markup)
                     return
                 current = directions_mod.active_direction(home)
                 if owner.status == chat_context.OWN and owner.direction and owner.direction != (current or {}).get("name"):
