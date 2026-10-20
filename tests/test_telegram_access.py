@@ -46,6 +46,13 @@ def user_bot(tmp_path, monkeypatch):
     return bot, {"role": ui.ROLE_USER, "user_id": 42, "profile": "qa"}
 
 
+@pytest.fixture
+def owned_user_chat(user_bot, tmp_path):
+    from tests.chat_ownership_fakes import owned_telegram_chats
+    owned_telegram_chats(tmp_path, ["123"])
+    return user_bot
+
+
 def test_only_agreed_commands_are_opened():
     assert ui.ADMIN_ONLY_COMMANDS == {
         "/direction_csv",  # /direction_stats открыт клиенту (DIR-3: статистика своих резюме)
@@ -95,8 +102,8 @@ def test_user_ai_operations_share_existing_limit_and_stop_before_subprocess(user
 
 
 @pytest.mark.parametrize("kind", ["chat", "form"])
-def test_granted_credit_allows_one_user_ai_operation(user_bot, kind):
-    bot, principal = user_bot
+def test_granted_credit_allows_one_user_ai_operation(owned_user_chat, kind):
+    bot, principal = owned_user_chat
     assert limits.consume_ai_usage(42, profile_name="qa", action="used")
     limits.grant_bonus(42, amount=1, actor_user_id=1)
     async def run():
@@ -111,8 +118,8 @@ def test_granted_credit_allows_one_user_ai_operation(user_bot, kind):
     assert limits.get_user_snapshot(42)["available_soft"] == 0
 
 
-def test_user_can_send_approved_chat_draft_without_another_ai_credit(user_bot):
-    bot, principal = user_bot
+def test_user_can_send_approved_chat_draft_without_another_ai_credit(owned_user_chat):
+    bot, principal = owned_user_chat
     assert limits.consume_ai_usage(42, profile_name="qa", action="chat_ai_used")
     async def run():
         await bot._start_chat_ai_reply(42, principal, profile_name="qa", hh_chat_id="123",
@@ -159,10 +166,10 @@ def test_new_diagnosis_action_uses_latest_selected_profile_run(user_bot, monkeyp
 @pytest.mark.parametrize('reason,retryable', [('unsupported_claims', True), ('model_unavailable', True),
                                               ('stale_question', False), ('attempt_blocked', False)])
 @pytest.mark.parametrize('allow_any', [False, True])
-def test_chat_preview_failure_is_honest_and_retry_preserves_approval_lane(user_bot, monkeypatch, reason, retryable, allow_any):
+def test_chat_preview_failure_is_honest_and_retry_preserves_approval_lane(owned_user_chat, monkeypatch, reason, retryable, allow_any):
     import json
     from chat_reply_result import reply_result
-    bot, principal = user_bot
+    bot, principal = owned_user_chat
     metadata = reply_result({'ok': False, 'reason': reason, 'dry_run': True})
     bot._run_active_command_capture.return_value = {
         'ok': True, 'returncode': 0, 'stdout': json.dumps({'chat_reply_result': metadata})}

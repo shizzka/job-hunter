@@ -672,6 +672,10 @@ def test_queued_ai_charges_only_when_runner_starts(monkeypatch, tmp_path, kind, 
     import telegram_bot
     import telegram_resume_limits as limits
 
+    if kind == "chat":
+        from tests.chat_ownership_fakes import owned_telegram_chats
+        owned_telegram_chats(tmp_path, ["123"])
+
     monkeypatch.setattr(config, "TELEGRAM_AI_LIMITS_FILE", str(tmp_path / "limits.json"))
     limits.reset_free_limit(1, free_total=1)
     principal = {"user_id": 1, "role": "user", "profile": "qa"}

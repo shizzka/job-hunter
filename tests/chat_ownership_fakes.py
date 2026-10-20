@@ -16,3 +16,14 @@ def owned_chats(monkeypatch, home, chat_ids):
     with (home / "negotiation_snapshots.jsonl").open("a") as stream:
         for chat_id in chat_ids:
             stream.write(json.dumps({"chatId": chat_id, "resumeId": "111"}) + "\n")
+
+
+def owned_telegram_chats(home, chat_ids):
+    """The controller also loads the active direction before launching a child."""
+    import directions
+    from tests.test_telegram_directions import make_direction
+    make_direction(str(home), "synthetic")
+    directions.set_active_direction(str(home), "synthetic")
+    with (Path(home) / "negotiation_snapshots.jsonl").open("a") as stream:
+        for chat_id in chat_ids:
+            stream.write(json.dumps({"chatId": chat_id, "resumeId": "1"}) + "\n")
