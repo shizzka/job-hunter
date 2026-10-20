@@ -227,3 +227,23 @@ def test_alias_command_returns_the_same_owner(menu_bot, role, command, menu, lab
                  if "keyboard" in (call.kwargs.get("reply_markup") or {})]
     assert keyboards
     assert all(label in [b["text"] for row in markup["keyboard"] for b in row] for markup in keyboards)
+
+
+@pytest.mark.parametrize('fail_counter', [False, True])
+def test_hh_response_command_uses_saved_direction_counts_even_if_counter_fails(menu_bot, tmp_path, monkeypatch, fail_counter):
+    from tests.direction_view_fakes import two_directions, write_rows, snapshot
+    two_directions(tmp_path)
+    write_rows(tmp_path, snapshot('active', 'active', [111, 222]) + snapshot('archive', 'archived', [111, 111]))
+    bot, workers = menu_bot
+
+    def refresh(**kwargs):
+        if fail_counter:
+            raise telegram_bot.hh_response_counter.HHResponseCounterError('Synthetic failure')
+        return {'profile': 'qa', 'active': 10, 'archived': 20, 'deleted': 3, 'total': 33}
+    monkeypatch.setattr(telegram_bot.hh_response_counter, 'refresh', refresh)
+    principal = {'user_id': 42, 'role': ui.ROLE_USER, 'profile': 'qa'}
+    asyncio.run(bot._dispatch(42, principal, '/hh_responses', ''))
+    text = bot._send_text.call_args.args[1]
+    assert 'QA Engineer' in text and '• Активные: 1' in text and '• Архив: 2' in text
+    assert ('Весь аккаунт HH: всего 33' in text) != fail_counter
+    assert ('Общий счётчик HH сейчас недоступен' in text) == fail_counter

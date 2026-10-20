@@ -190,3 +190,60 @@ def test_chat_failure_texts_are_plain_and_do_not_expose_process_details(reason, 
         'stderr': 'Private transport details'})
     assert text.startswith('Не удалось подготовить ответ: ') and fragment in text
     assert '✅' not in text and 'Private' not in text
+
+
+def test_response_counts_use_latest_complete_per_filter_and_switch(tmp_path):
+    import directions
+    from direction_views import response_counts
+    from tests.direction_view_fakes import two_directions, write_rows, snapshot
+    two_directions(tmp_path)
+    rows = snapshot("old", "active", [111, 111, 111])
+    rows += snapshot("new", "active", [111, 222, 999], day=2)
+    rows += snapshot("partial", "active", [111, 111, 111, 111], complete=False, day=3)
+    rows += snapshot("archive", "archived", [222, 222, 111, 999], day=2)
+    # Incomplete tail with no summary is never a complete observation.
+    rows += [{"snapshot_id": "tail", "filter": "archived", "id": 99, "resumeId": 111}]
+    write_rows(tmp_path, rows)
+    counts = response_counts(str(tmp_path))
+    assert counts['active']['selected'] == 1 and counts['active']['unmapped'] == 1
+    assert counts['active']['complete'] and counts['active']['newer_partial']
+    account = {"profile": "synthetic", "active": 20, "archived": 30, "deleted": 7, "total": 57}
+    text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
+    assert "Отклики HH — QA Engineer" in text
+    assert "• Активные: 1" in text and "• Архив: 1" in text
+    assert "Направление не указано: активные — 1, архив — 1" in text
+    assert "Весь аккаунт HH: всего 57, удалённые — 7" in text
+    assert "последнее обновление неполное" in text
+    directions.set_active_direction(str(tmp_path), "electric")
+    text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
+    assert "Отклики HH — Электромонтажник" in text and "• Архив: 2" in text
+
+
+def test_response_counts_missing_partial_archive_and_archive_only(tmp_path):
+    from tests.direction_view_fakes import two_directions, write_rows, snapshot
+    two_directions(tmp_path)
+    account = {"total": 12, "deleted": 2}
+    write_rows(tmp_path, snapshot("active", "active", []))
+    text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
+    assert "Активные: 0" in text and "Архив: ещё не собран" in text
+    write_rows(tmp_path, snapshot("archive", "archived", [111, 111, 222, 999], complete=False))
+    text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
+    assert "Активные: ещё не собраны" in text
+    assert "Архив: не меньше 2 — собрана только часть" in text
+    assert "архив — не меньше 1" in text
+    write_rows(tmp_path, snapshot("archive", "archived", [111, 111]))
+    text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
+    assert "Архив: 2" in text and "не меньше" not in text
+
+
+def test_response_counts_single_direction_and_legacy_profile(tmp_path):
+    import directions
+    from tests.direction_view_fakes import make_direction, write_rows, snapshot
+    account = {"profile": "synthetic", "active": 2, "archived": 1, "deleted": 0, "total": 3}
+    assert ui.build_hh_response_count_text(account, home_dir=str(tmp_path)) == ui.build_hh_response_count_text(account)
+    make_direction(tmp_path)
+    directions.set_active_direction(str(tmp_path), "qa")
+    write_rows(tmp_path, snapshot("a", "active", [111, 111]) + snapshot("b", "archived", [111]))
+    text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
+    assert "QA Engineer" in text and "• Активные: 2" in text and "• Архив: 1" in text
+    assert "Направление не указано: активные — 0, архив — 0" in text

@@ -1853,7 +1853,40 @@ def _format_counter_number(value: object) -> str:
     return f"{number:,}".replace(",", " ")
 
 
-def build_hh_response_count_text(snapshot: dict) -> str:
+def build_hh_response_count_text(snapshot: dict, *, home_dir: str | None = None) -> str:
+    if home_dir is not None:
+        from direction_views import DirectionView, response_counts
+        view = DirectionView(home_dir)
+        if view.directions:
+            counts = response_counts(home_dir)
+            title = view.title or "направление не выбрано"
+            lines = [f"📨 Отклики HH — {title}", ""]
+            for section, label in (("active", "Активные"), ("archived", "Архив")):
+                value = counts[section]
+                if value is None:
+                    lines.append(f"• {label}: ещё не собран" if section == "archived" else
+                                 "• Активные: ещё не собраны")
+                    continue
+                number = _format_counter_number(value['selected'])
+                lines.append(f"• {label}: {number}" if value['complete'] else
+                             f"• {label}: не меньше {number} — собрана только часть")
+                if value['newer_partial']:
+                    lines.append(f"{label}: последнее обновление неполное, показаны последние полные данные.")
+                if value['fetched_at']:
+                    lines.append(f"  Обновлено: {value['fetched_at'].replace('T', ' ', 1)}")
+            unknown = []
+            for section, label in (("active", "активные"), ("archived", "архив")):
+                value = counts[section]
+                number = (_format_counter_number(value['unmapped']) if value else "нет данных")
+                if value and not value['complete']:
+                    number = "не меньше " + number
+                unknown.append(f"{label} — {number}")
+            lines.extend(["", "Направление не указано: " + ", ".join(unknown) + "."])
+            if snapshot.get('total') is not None:
+                lines.extend(["", f"Весь аккаунт HH: всего {_format_counter_number(snapshot['total'])}, "
+                              f"удалённые — {_format_counter_number(snapshot.get('deleted'))}.",
+                              "Удалённые по направлениям не разделены."])
+            return "\n".join(lines)
     profile_name = str(snapshot.get("profile") or "default")
     lines = [
         f"📨 Отклики HH — {_pretty_profile_name(profile_name)}",

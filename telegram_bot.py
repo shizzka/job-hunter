@@ -3214,24 +3214,19 @@ class TelegramBot(
                     base_url=config.HH_BASE_URL,
                 )
             except hh_response_counter.HHResponseCounterError as exc:
-                log.warning(
-                    "HH response counter failed for profile %s: %s",
-                    profile_name,
-                    exc,
-                )
-                await self._send_text(
-                    chat_id,
-                    f"❌ Не удалось обновить счётчик HH:\n{exc}",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-                return
+                log.warning("HH response counter failed for profile %s: %s", profile_name, exc)
+                counter_error = f"❌ Не удалось обновить счётчик HH:\n{exc}"
+                snapshot = None
             except Exception:
                 log.exception("Unexpected HH response counter failure for %s", profile_name)
-                await self._send_text(
-                    chat_id,
-                    "❌ Не удалось обновить счётчик HH. Подробности записаны в лог бота.",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
+                counter_error = "❌ Не удалось обновить счётчик HH. Подробности записаны в лог бота."
+                snapshot = None
+            if snapshot is None:
+                text = counter_error
+                if DirectionView(target_profile.home_dir).directions:
+                    text = (build_hh_response_count_text({}, home_dir=target_profile.home_dir) +
+                            "\n\nОбщий счётчик HH сейчас недоступен.")
+                await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal))
                 return
 
             self._append_debug_log(
@@ -3244,7 +3239,7 @@ class TelegramBot(
             )
             await self._send_text(
                 chat_id,
-                build_hh_response_count_text(snapshot),
+                build_hh_response_count_text(snapshot, home_dir=target_profile.home_dir),
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
