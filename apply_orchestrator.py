@@ -9,6 +9,7 @@ import uuid
 import analytics
 import resume_versions
 import direction_runtime
+import work_conditions
 
 import config
 import company_blacklist
@@ -96,6 +97,10 @@ async def fetch_vacancy_details(
             from salary_policy import read_hh_salary_warning
             page = getattr(hh_client, "_page", None)
             if page is not None:
+                # These are required decision inputs, separate from free description.
+                vacancy["_hh_work_conditions"] = {"formats": [], "fly_in_fly_out": False}
+                vacancy["_hh_work_conditions"] = work_conditions.from_hh_page(
+                    await page.content(), str(vacancy.get("id", "")))
                 # Optional read-only hint; it must never break details handling.
                 try:
                     vacancy["_hh_salary_warning"] = await read_hh_salary_warning(page)
@@ -195,6 +200,9 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
         selection = direction_runtime.prepare(vacancy)
     except (ValueError, OSError) as exc:
         return {"ok": False, "reason": "direction_variant_unavailable", "message": str(exc)}
+    conditions = work_conditions.check(vacancy)
+    if conditions["status"] != "allow":
+        return work_conditions.apply_block(conditions)
     if selection and vacancy.get("source", "hh") == "hh":
         kwargs["preferred_resume_id"] = selection["hh_resume_hash"]
         kwargs["preferred_resume_title"] = selection["title"]

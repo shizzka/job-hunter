@@ -39,6 +39,7 @@ import seen
 import analytics
 import search_pipeline
 import apply_orchestrator
+import work_conditions
 import invitation_sync
 import manual_apply_queue
 from state_store.json_store import JsonStore, atomic_write_text
@@ -638,8 +639,13 @@ async def do_manual_apply_token(token: str) -> dict:
     evaluation = dict(item.get("evaluation") or {})
     details = str(item.get("details") or "")
     source = vacancy.get("source", "hh")
-    score = int(evaluation.get("score") or 0)
+    score = int(evaluation["score"]) if evaluation.get("score") is not None else None
     reason = str(evaluation.get("reason") or "")
+    conditions = work_conditions.check(vacancy, details)
+    if conditions["status"] != "allow":
+        manual_apply_queue.mark_candidate(token, "conditions_blocked", conditions["reason"])
+        print(f"⏭ Отклик не отправлен: {conditions['reason']}")
+        return work_conditions.apply_block(conditions)
 
     if source != "hh":
         message = f"ИИ-отклик по кнопке пока поддержан только для hh.ru, источник: {source}."
@@ -746,8 +752,14 @@ async def do_manual_apply_token(token: str) -> dict:
             print(f"⏸ {guard_note}")
             return {"ok": False, "message": guard_note, "deferred": True}
 
-        if not details:
+        if not details or getattr(config, "ACTIVE_DIRECTION", None):
             details = await apply_orchestrator.fetch_vacancy_details(vacancy, hh_client=hh_client)
+        conditions = work_conditions.check(vacancy, details)
+        if conditions["status"] != "allow":
+            await stop_manual_result(work_conditions.apply_block(conditions), raise_on_uncertain=True)
+            finish("conditions_blocked", conditions["reason"])
+            print(f"⏭ Отклик не отправлен: {conditions['reason']}")
+            return work_conditions.apply_block(conditions)
         if _looks_like_closed_or_archived(vacancy, details):
             message = "Вакансия закрыта или в архиве"
             await stop_manual_result({"ok": False, "message": message}, raise_on_uncertain=True)
@@ -836,6 +848,11 @@ async def do_manual_apply_token(token: str) -> dict:
         if question_answer_note:
             apply_note_text = (apply_note_text + "\n\n" + question_answer_note).strip()
         apply_message = str(apply_result.get("message", ""))
+
+        if apply_result.get("reason") == "work_conditions":
+            finish("conditions_blocked", apply_message)
+            print(f"⏭ Отклик не отправлен: {apply_result.get('work_conditions_reason', apply_message)}")
+            return apply_result
 
         if apply_result.get("closed_or_archived") or _looks_like_closed_or_archived(vacancy, apply_message):
             seen.mark_seen(vacancy.get("id", token), vacancy, "manual_ai_archived")
@@ -1113,7 +1130,7 @@ async def _mark_manual(
     manual_note: str,
     v: dict,
     vid: str,
-    score: int,
+    score: int | None,
     reason: str,
     evaluation: dict,
     details: str,
@@ -1133,6 +1150,10 @@ async def _mark_manual(
     """Общий хелпер для пометки вакансии как manual (ручной разбор)."""
     source = v.get("source", "unknown")
     source_label = v.get("source_label") or _source_label(source)
+    if evaluation.get("score") is None:
+        score = None
+        reason = evaluation.get("reason") or reason or "Не удалось проверить вакансию до оценки; нужна ручная проверка страницы HH."
+    owner_note = manual_note if score is not None else reason
     async def wait(operation):
         if receipt is not None:
             return await receipt.wait(operation)
@@ -1158,17 +1179,17 @@ async def _mark_manual(
         await wait(before_notify())
     await wait(set_hunter_status("search_manual", status_msg, "busy"))
     create_task(
-        f"Ручной отклик: {v['title']} @ {v['company']}",
+        f"{'Ручной отклик' if score is not None else 'Разбор вакансии'}: {v['title']} @ {v['company']}",
         (
-            f"Источник: {source_label}\n"
-            f"Score: {score}/100\n"
+            f"Источник: {source_label}\n" +
+            (f"Совпадение: {score}/100\n" if score is not None else f"Оценка не проводилась: {reason}\n") +
             f"{reason}\n"
             f"URL: {v.get('url', '')}\n"
-            f"Причина: {manual_note}"
+            f"Причина: {owner_note}"
         ),
         "medium",
     )
-    await wait(notify_needs_manual(v, score, reason, note=manual_note, reply_markup=reply_markup,
+    await wait(notify_needs_manual(v, score, reason, note=owner_note, reply_markup=reply_markup,
                                  **({"uncertain": True} if decision == DECISION_APPLY_UNCERTAIN else {})))
 
 
@@ -1656,7 +1677,30 @@ async def do_search(dry_run: bool = False) -> dict:
             finally:
                 receipt.notifying = False
 
-        async def record_hh_ui_incident(v, vid, bucket, score=0, reason="", evaluation=None,
+        async def handle_work_conditions(v, vid, bucket, conditions, details="", receipt=None):
+            if conditions["status"] == "allow":
+                return False
+            log.info("Skipped vacancy=%s work conditions: %s", vid, conditions["reason"])
+            if conditions["status"] == "reject":
+                seen.mark_seen(vid, v, "skipped_work_conditions")
+                hh_pipeline.mark_terminal(vid, "work_conditions")
+                result["skipped"] += 1
+                bucket["rejected"] += 1
+                analytics.record_decision(run_id=run_id, vacancy=v, decision="skipped_work_conditions",
+                                          evaluation=work_conditions.unevaluated(conditions),
+                                          details=details, note=conditions["reason"])
+                if receipt is not None:
+                    receipt.account("rejected")
+            else:
+                await observe_hh_receipts(_mark_manual(
+                    "Нужен разбор условий работы", "manual_work_conditions", "manual_work_conditions",
+                    conditions["reason"], v, vid, None, conditions["reason"],
+                    work_conditions.unevaluated(conditions), details,
+                    result, bucket, run_id, set_hunter_status, receipt=receipt,
+                    observe=observe_hh_receipts))
+            return True
+
+        async def record_hh_ui_incident(v, vid, bucket, score=None, reason="", evaluation=None,
                                         details="", fingerprint="", recovered=False, message="", receipt=None,
                                         navigation_failure=None):
             failure_id = None
@@ -1700,7 +1744,7 @@ async def do_search(dry_run: bool = False) -> dict:
             if hh_breaker.stopped:
                 await set_hunter_status("hh_ui_blocked", hh_breaker.reason, "busy")
 
-        async def handle_hh_unexpected(exc, v, vid, bucket, *, score=0, reason="", evaluation=None, details="", receipt=None):
+        async def handle_hh_unexpected(exc, v, vid, bucket, *, score=None, reason="", evaluation=None, details="", receipt=None):
             if v.get("source", "hh") != "hh":
                 raise exc
             if getattr(exc, "hh_uncertain", False):
@@ -1760,6 +1804,12 @@ async def do_search(dry_run: bool = False) -> dict:
             source = v.get("source", "hh")
             bucket = search_pipeline.get_source_bucket(result["source_stats"], v)
             if skip_stopped_hh(v, vid, bucket):
+                continue
+            # Reject known conflicts before opening details. Missing fields can
+            # still be resolved by the actual vacancy page below.
+            conditions = work_conditions.check(v)
+            if conditions["status"] == "reject":
+                await handle_work_conditions(v, vid, bucket, conditions)
                 continue
             processed_by_source[source] += 1
             source_index = processed_by_source[source]
@@ -1833,6 +1883,9 @@ async def do_search(dry_run: bool = False) -> dict:
                 )
                 continue
 
+            if await handle_work_conditions(v, vid, bucket, work_conditions.check(v, details), details):
+                continue
+
             # LLM-оценка. Retry-кандидаты уже проходили матчинг при первом отклике,
             # поэтому здесь только проверяем, что вакансия не закрыта, и пробуем
             # следующий вариант резюме в рамках staged pipeline.
@@ -1868,6 +1921,11 @@ async def do_search(dry_run: bool = False) -> dict:
                     evaluation = await observe_hh_receipts(analytics.tracked_call("matcher", run_id, v, evaluate_vacancy, v, details))
                     if not is_deferred_evaluation(evaluation):
                         evaluation_cache.store(v, evaluation)
+            if evaluation.get("work_conditions_status") in {"reject", "review"}:
+                await handle_work_conditions(v, vid, bucket, {
+                    "status": evaluation["work_conditions_status"], "reason": evaluation["reason"],
+                }, details)
+                continue
             if is_deferred_evaluation(evaluation):
                 evaluation = {**evaluation, "score": None, "should_apply": False,
                               "evaluation_status": "deferred_unscored"}
@@ -2435,6 +2493,12 @@ async def do_search(dry_run: bool = False) -> dict:
                         v, vid, bucket, score=score, reason=reason, evaluation=cover_evaluation, details=details,
                         message=apply_result.get("hh_recovery_reason") or "HH: безопасное восстановление не доказано",
                         navigation_failure=apply_result.get("hh_navigation_failure"), receipt=receipt))
+                    continue
+                if apply_result.get("reason") == "work_conditions":
+                    await receipt.wait(handle_work_conditions(v, vid, bucket, {
+                        "status": apply_result["work_conditions_status"],
+                        "reason": apply_result.get("work_conditions_reason", apply_result["message"]),
+                    }, details, receipt=receipt))
                     continue
                 if source == "hh":
                     _record_hh_questionnaire_analytics(
@@ -3169,7 +3233,7 @@ async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> d
             trace.finish(ok=False, message=result["message"], failure_stage=failure_stage)
             return result
 
-        details = await client.get_vacancy_details(vacancy["url"])
+        details = await apply_orchestrator.fetch_vacancy_details(vacancy, hh_client=client)
 
         async def page_text(selector: str) -> str:
             try:
@@ -3183,6 +3247,12 @@ async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> d
             "[data-qa='vacancy-company-name'], [data-qa='vacancy-company-name-text']"
         )
         vacancy["details"] = details
+        conditions = work_conditions.check(vacancy, details)
+        if conditions["status"] != "allow":
+            result = work_conditions.apply_block(conditions)
+            trace.event("WORK_CONDITIONS", ok=False, **conditions)
+            trace.finish(ok=False, message=result["message"], failure_stage="WORK_CONDITIONS")
+            return result
         trace.event(
             "VACANCY_PREFLIGHT",
             ok=bool(details),

@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 
 from hh.response_path import is_response_path
 from hh import observation
+import work_conditions
 
 from state_store.native_apply import NativeApplyRepository, run_native_attempt
 import os
@@ -977,6 +978,7 @@ async def _apply_to_vacancy(
     vacancy_url = absolute_hh_url(vacancy_url)
     response_url = absolute_hh_url(response_url)
     preferred_resume_id = str(preferred_resume_id or "").strip()
+    conditions_failure = None
     if not preferred_resume_id:
         return {"ok": False, "reason": "hh_resume_target_unresolved",
                 "message": "Exact HH resume ID не задан — отклик не отправлен",
@@ -1054,6 +1056,17 @@ async def _apply_to_vacancy(
             message=str(result.get("message") or ""),
         )
 
+    async def verify_work_conditions():
+        nonlocal conditions_failure
+        if conditions_failure is not None:
+            return False
+        conditions = await work_conditions.recheck_before_submit(session, vacancy_url, vacancy_context)
+        trace_event("WORK_CONDITIONS", ok=conditions["status"] == "allow", **conditions)
+        if conditions["status"] != "allow":
+            conditions_failure = work_conditions.apply_block(conditions)
+            return False
+        return True
+
     async def answer_questions_with_verified_resume():
         nonlocal cover_letter_filled
         await ensure_session_ui(session, "answer_questions", allowed=("response",))
@@ -1084,7 +1097,9 @@ async def _apply_to_vacancy(
                         return False
                 elif not cover_letter_filled:
                     return False
-            return await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title)
+            if not await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
+                return False
+            return await verify_work_conditions()
         return await session._try_auto_answer_questions(vacancy_context=vacancy_context, before_submit=verify_before_submit)
 
     detect_response_controls = session._detect_response_controls
@@ -1346,6 +1361,14 @@ async def _apply_to_vacancy(
         await save_debug_snapshot("debug_vacancy_not_ready")
         return {"ok": False, "message": "Страница вакансии не готова или открыта не та вакансия"}
 
+    conditions = work_conditions.check({
+        "_hh_work_conditions": work_conditions.from_hh_page(page_html, expected_vacancy_id),
+        "title": vacancy_context,
+    })
+    trace_event("WORK_CONDITIONS", ok=conditions["status"] == "allow", **conditions)
+    if conditions["status"] != "allow":
+        return work_conditions.apply_block(conditions)
+
     wants_specific_resume = bool(preferred_resume_title or preferred_resume_id)
     resume_verified = False
     existing_response = await session._has_existing_response_ui()
@@ -1461,6 +1484,8 @@ async def _apply_to_vacancy(
         if questions_required:
             logger.info("Vacancy requires employer questions — trying auto-answer")
             auto_question_result = await answer_questions_with_verified_resume()
+            if conditions_failure is not None:
+                return conditions_failure
             auto_answer_notes.extend(auto_question_result.get("notes") or [])
             auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
             if auto_question_result.get("ok"):
@@ -1536,6 +1561,8 @@ async def _apply_to_vacancy(
     if questions_required:
         logger.info("Vacancy requires employer questions — trying auto-answer")
         auto_question_result = await answer_questions_with_verified_resume()
+        if conditions_failure is not None:
+            return conditions_failure
         record_question_result(auto_question_result)
         auto_answer_notes.extend(auto_question_result.get("notes") or [])
         auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])
@@ -1679,7 +1706,7 @@ async def _apply_to_vacancy(
         if await count_unanswered_required_questions(session, logger=logger):
             return False
         resume_verified = await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title)
-        return resume_verified
+        return resume_verified and await verify_work_conditions()
 
     if submit_btn:
         (
@@ -1735,6 +1762,8 @@ async def _apply_to_vacancy(
             selector=submit_selector if submit_method == "selector" else "",
         )
         if not clicked:
+            if conditions_failure is not None:
+                return conditions_failure
             return {"ok": False, "message": "Не удалось нажать кнопку подтверждения"}
         await session._page.wait_for_timeout(4000)
 
@@ -1751,6 +1780,8 @@ async def _apply_to_vacancy(
     if await session._response_requires_questions():
         logger.info("Vacancy requires employer questions after submit — trying auto-answer")
         auto_question_result = await answer_questions_with_verified_resume()
+        if conditions_failure is not None:
+            return conditions_failure
         record_question_result(auto_question_result)
         auto_answer_notes.extend(auto_question_result.get("notes") or [])
         auto_answer_question_answers.extend(auto_question_result.get("question_answers") or [])

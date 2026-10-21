@@ -78,6 +78,7 @@ def _compact_vacancy(vacancy: dict) -> dict:
         "id", "source", "source_label", "title", "company", "salary", "url",
         "snippet", "response_url", "apply_mode", "_search_query", "_search_profile",
         "_resume_input_versions", "_direction_selection", "_hh_salary_warning",
+        "_hh_work_conditions",
     )
     compact = {key: vacancy.get(key) for key in keys if vacancy.get(key) not in (None, "")}
     if "source" not in compact:
@@ -92,6 +93,7 @@ def _compact_evaluation(evaluation: dict) -> dict:
         "score", "response_probability_score", "reason", "should_apply",
         "cluster", "resume_variant", "cover_style", "red_flags", "guard_flags",
         "soft_flags", "hard_flags", "error_kind",
+        "evaluation_status", "work_conditions_status",
     )
     return {key: evaluation.get(key) for key in keys if evaluation.get(key) not in (None, "", [])}
 

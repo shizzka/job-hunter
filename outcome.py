@@ -45,7 +45,7 @@ def application_outcome(result: dict) -> str:
     return ("sent" if server_delivery_confirmed(result) else
             "uncertain" if apply_result_is_uncertain(result) else
             "already_applied" if result.get("already_applied") else
-            "blocked" if result.get("reason") == "company_blacklisted" else
+            "blocked" if result.get("reason") in {"company_blacklisted", "work_conditions"} else
             "sent" if result.get("ok") else "failed")
 
 
@@ -69,6 +69,9 @@ def server_delivery_note(result: dict) -> str:
 
 def application_result_for_owner(result: dict) -> dict:
     """Present delivery without changing any safety/processing success signal."""
+    if (result.get("reason") == "work_conditions" and not apply_result_is_uncertain(result)
+            and not server_delivery_confirmed(result)):
+        return result
     from hh.delivery import fact
     record = fact(result)
     note = server_delivery_note(result)

@@ -505,7 +505,7 @@ async def notify_invitation(invitation: dict):
 
 async def notify_needs_manual(
     vacancy: dict,
-    score: int,
+    score: int | None,
     reason: str,
     note: str | None = None,
     reply_markup: dict | None = None,
@@ -521,13 +521,17 @@ async def notify_needs_manual(
     url = _html(vacancy.get("url", ""), 2000)
     heading = "❔ Исход отклика не подтверждён — нужна ручная сверка" if uncertain else "📝 Подходящая вакансия (нужен ручной отклик)"
     link_label = "Открыть и проверить" if uncertain else "Открыть и откликнуться"
+    match_text = f"📊 Совпадение: {score}/100" if score is not None else "Оценка не проводилась: " + _html(reason or extra_note, 600)
+    if score is None and not uncertain:
+        heading = "📝 Вакансия на разбор"
+        link_label = "Открыть и проверить"
     text = (
         f"<b>{heading}</b>\n\n"
         f"<b>{title}</b>\n"
         f"🌐 {source}\n"
         f"🏢 {company}\n"
         f"💰 {salary}\n"
-        f"📊 Совпадение: {score}/100\n\n"
+        f"{match_text}\n\n"
         f"⚠️ {_html(extra_note, 600)}\n"
         f"💡 {_html(reason[:250] if reason else 'Нужно проверить вакансию вручную', 300)}\n\n"
         f"<a href=\"{url}\">{link_label}</a>"

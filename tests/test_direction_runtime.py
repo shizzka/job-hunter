@@ -153,7 +153,7 @@ def test_dispatch_records_request_and_outcome_with_bound_identity(active_directi
     monkeypatch.setattr(config, "ANALYTICS_EVENTS_FILE", str(events))
     monkeypatch.setattr(config, "HH_APPLY_TRACE_ENABLED", False)
     monkeypatch.setattr(apply_orchestrator.company_blacklist, "is_blocked", lambda _: False)
-    vacancy = {"id": "740", "source": "hh"}
+    vacancy = {"id": "740", "source": "hh", "_hh_work_conditions": {"formats": ["remote"], "fly_in_fly_out": False}}
     chosen = direction_runtime.prepare(vacancy)
     observed = []
 
@@ -257,7 +257,8 @@ def test_offline_direction_profile_matcher_queue_dispatch_smoke(active_direction
     (tmp_path / "facts.json").write_text('{"confirmed": {"profession": "электрик"}}')
     vacancy_id = next(str(i) for i in range(100) if directions.select_variant(direction, str(i))["hh_resume_hash"] != "hash-0")
     vacancy = {"id": vacancy_id, "source": "hh", "title": "Электрик", "company": "Synthetic employer",
-               "url": f"https://hh.ru/vacancy/{vacancy_id}"}
+               "url": f"https://hh.ru/vacancy/{vacancy_id}",
+               "_hh_work_conditions": {"formats": ["remote"], "fly_in_fly_out": False}}
     searches = []
     class CollectionClient:
         async def is_logged_in(self):

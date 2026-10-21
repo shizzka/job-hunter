@@ -61,6 +61,10 @@ def test_known_optional_modal_closes_without_answers_then_refetches(tmp_path, ti
     '<div role="dialog" data-qa="whats-new-modal"><h2>Unknown replacement</h2><button type="button" aria-label="Закрыть">X</button></div>',
     '<div role="dialog"><h2>Расскажите о себе</h2><button type="button" aria-label="Закрыть" disabled>X</button></div>',
     optional() + '<div role="dialog"><h2>Unknown second modal</h2></div>',
+    '<div role="dialog"><h2>Работа вахтовая. Вам удобно так работать?</h2>'
+    '<label><input type="radio" name="shift" value="">Да, указать это в резюме</label>'
+    '<label><input type="radio" name="shift" value="">Нет</label>'
+    '<button type="submit">Сохранить и продолжить</button></div>',
 ])
 def test_unknown_or_unsafe_modal_blocks_without_close_fill_or_submit(tmp_path, html):
     async def check(page):

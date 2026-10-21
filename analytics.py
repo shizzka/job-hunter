@@ -77,6 +77,8 @@ def decision_outcome(decision, evaluation=None, note=""):
         return "skipped", "red_flags"
     if decision == "skipped_unavailable":
         return "skipped", "vacancy_forbidden"
+    if decision == "skipped_work_conditions":
+        return "skipped", "work_conditions"
     if decision == "skipped_low_score":
         return "skipped", "closed_or_archived" if "closed_or_archived" in note else "low_score"
     if decision == "deferred_unscored":

@@ -955,6 +955,8 @@ def _manual_review_score_window() -> tuple[int, int]:
 
 
 def is_manual_review_candidate(result: dict) -> bool:
+    if result.get("work_conditions_status") in {"reject", "review"}:
+        return False
     if not getattr(config, "HH_MATCHER_MANUAL_REVIEW_ENABLED", True):
         return False
     if result.get("should_apply") or result.get("red_flags") or result.get("error_kind"):
@@ -1356,12 +1358,16 @@ async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
 
     Возвращает:
     {
-        "score": 0-100,       # оценка релевантности
+        "score": 0-100,       # None, если условия работы блокируют оценку
         "reason": "...",      # почему подходит/не подходит
         "should_apply": bool, # рекомендация
         "red_flags": [...]    # красные флаги если есть
     }
     """
+    import work_conditions
+    conditions = work_conditions.check(vacancy, details)
+    if conditions["status"] != "allow":
+        return work_conditions.unevaluated(conditions)
     resume = _resume_for_vacancy(vacancy, details)
     resume_versions.record_input(vacancy, resume, "matcher")
     truth_block = (_build_matcher_truth_block() if filters.uses_qa_policy()

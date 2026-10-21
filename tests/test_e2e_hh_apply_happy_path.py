@@ -60,7 +60,7 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                       continue_after_apply=False, stale_receipt=False,
                       confirmation_html=APPLIED_HTML, form_disappears=False,
                       session_failure='', repeat_run=False, apply_next=False,
-                      post_submit_effect=''):
+                      post_submit_effect='', conditions_case=''):
     """Reuse the confirmed-success harness; replace transport and search inputs only."""
     for key, name in {
         "JOB_HUNTER_HOME": "", "SEEN_VACANCIES_FILE": "seen.json",
@@ -75,6 +75,16 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
     monkeypatch.setattr(config, "HH_BASE_URL", "https://hh.ru")
     monkeypatch.setattr(config, "HH_PRIMARY_RESUME_ID", TARGET_RESUME)
     monkeypatch.setattr(config, "HH_PRIMARY_RESUME_TITLE", "Configured resume")
+    if conditions_case:
+        import directions
+        direction = directions.save_direction(tmp_path, {
+            "name": "synthetic", "title": "Проверка", "filter_policy": "generic",
+            "search_queries": ["Проверка"], "relevant_keywords": [], "exclude_keywords": [],
+            "search_profiles": [{"area": 113, "schedule": "remote"}],
+            "variants": [{"hh_resume_hash": TARGET_RESUME, "title": "Configured resume"}],
+        }, texts={TARGET_RESUME: "Synthetic resume"})
+        directions.set_active_direction(tmp_path, direction["name"])
+        monkeypatch.setattr(config, "ACTIVE_DIRECTION", direction, raising=False)
     monkeypatch.setattr(agent.search_pipeline.filters, "check_vacancy", lambda vacancy: None)
     # The happy gate uses the description supplied by synthetic search, as in
     # configure_synthetic_search. The continuity gate exercises real GET handling.
@@ -100,6 +110,9 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
         "title": "Synthetic QA vacancy", "company": f"Synthetic employer {vid}",
         "url": f"https://hh.ru/vacancy/{vid}",
     } for vid in ids]
+    if conditions_case:
+        for vacancy in vacancies:
+            vacancy["_hh_work_conditions"] = {"formats": ["remote"], "fly_in_fly_out": False}
     monkeypatch.setattr(agent.search_pipeline, "collect_all", AsyncMock(return_value=vacancies))
     matched = []
 
@@ -193,6 +206,8 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                     status = 403 if continuity and vid == "1" else 200
                     body = "<main>Вакансия недоступна</main>" if status == 403 else (
                         APPLIED_HTML if vid in submitted else VACANCY_HTML.replace('vacancyId=2', f'vacancyId={vid}'))
+                    if conditions_case and vid not in submitted:
+                        body += '<p data-qa="work-formats-text">Формат работы: удалённо</p>'
                     return PassiveResponse(url, body, status)
                 raise AssertionError(f"Unexpected offline document: {url}")
 
@@ -205,6 +220,14 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
 
             async def readonly_get(url, **kwargs):
                 fresh_gets.append({"url": url, **kwargs})
+                if conditions_case and url == VACANCY_URL and "2" not in submitted:
+                    body = VACANCY_HTML
+                    if conditions_case != 'unknown':
+                        format_label = 'на месте работодателя' if conditions_case == 'on_site' else 'удалённо'
+                        body += f'<p data-qa="work-formats-text">Формат работы: {format_label}</p>'
+                    if conditions_case == 'fly':
+                        body += '<div data-qa="common-employment-text">Вахта на 30 смен</div>'
+                    return PassiveResponse(url, body)
                 if url == AUTH_URL and session_failure == 'auth_server':
                     return PassiveResponse(url, '<script>{"userType":"anonymous"}</script>')
                 if url == VACANCY_URL and "2" in submitted:
@@ -386,6 +409,25 @@ def test_hh_apply_happy_path_through_real_page_noise(tmp_path, monkeypatch):
     assert gate.result["hh_recovery"]["stopped"] is False, gate.evidence
     confirmation = [call for call in gate.fresh_gets if call["url"] == VACANCY_URL]
     assert len(confirmation) == 1 and confirmation[0]["max_redirects"] == 0, gate.evidence
+
+
+@pytest.mark.parametrize('case', ['fly', 'on_site', 'unknown', 'allowed'])
+def test_direction_conditions_rechecked_on_actual_page_before_submit(tmp_path, monkeypatch, case):
+    gate = asyncio.run(run_hh_gate(tmp_path, monkeypatch, noise=False, conditions_case=case))
+    assert gate.evidence['matched'] == gate.evidence['dispatched'] == ['2'], gate.evidence
+    if case == 'allowed':
+        assert gate.result['applied'] == 1 and len(gate.application_posts) == 1, gate.evidence
+        assert gate.entries['2']['action'] == 'applied'
+        assert len([call for call in gate.fresh_gets if call['url'] == VACANCY_URL]) == 2
+    else:
+        assert gate.result['applied'] == 0 and not gate.application_posts, gate.evidence
+        assert gate.dispatch_results[0]['reason'] == 'work_conditions', gate.evidence
+        assert gate.entries['2']['action'] == ('manual_work_conditions' if case == 'unknown' else 'skipped_work_conditions')
+        assert len([call for call in gate.fresh_gets if call['url'] == VACANCY_URL]) == 1
+        if case == 'unknown':
+            assert gate.notices[0].args[1:3] == (None, 'формат не указан')
+        else:
+            assert not gate.notices
 
 
 def test_confirmed_success_after_hidden_vendor_iframe_preserves_run_continuity(tmp_path, monkeypatch):
