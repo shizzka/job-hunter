@@ -115,7 +115,11 @@ def validate_direction(value):
     if "application_mode" in result and result["application_mode"] not in {"auto", "confirm", "preview"}:
         raise DirectionError("application_mode: auto, confirm или preview.")
     if "cover_letter_fallback" in result:
-        _text(result["cover_letter_fallback"], "cover_letter_fallback", empty=True)
+        from fallback_letter import validate
+        try:
+            result["cover_letter_fallback"] = validate(result["cover_letter_fallback"], empty=True)
+        except ValueError as exc:
+            raise DirectionError(str(exc)) from exc
     variants = result.get("variants")
     if not isinstance(variants, list):
         raise DirectionError("variants: ожидается список.")

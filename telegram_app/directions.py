@@ -135,6 +135,7 @@ class TelegramDirections:
                     f"\nГорода места работы: {', '.join(conditions.get('allowed_cities', [])) or 'без ограничений'}." +
                     f"\nЗарплата от: {draft.get('salary_baseline') or 'не задана'} ₽\n"
                     f"Выбор резюме: {STRATEGY_LABELS.get(draft.get('selection_strategy'), 'одно резюме')}\n" + variants)
+            text += "\n\nЗапасное письмо:\n" + (draft.get("cover_letter_fallback") or "Не задано — используется общее короткое письмо.")
             rows = [[("✏️ Изменить", "editmenu"), ("🧾 Резюме", "variants")],
                     [("🔀 Как выбирать резюме", "strategy"), ("📊 Статистика", "stats")]]
             if not state.get("summary"):
@@ -150,6 +151,7 @@ class TelegramDirections:
                   ("Запросы", "queries"), ("Город", "city"), ("Формат поиска", "format"), ("Города и форматы", "search_profiles"),
                   ("Допустимые форматы работы", "work_formats"), ("Разрешена ли вахта", "fly_allowed"),
                   ("Города места работы", "work_cities"),
+                  ("Запасное письмо", "cover_letter_fallback"),
                   ("Зарплата", "salary"), ("Подходящие слова", "relevant"), ("Исключения", "exclude")]
         await self._send_text(chat_id, "Что изменить?", reply_markup=self._direction_inline(state,
             [[(label, f"edit:{field}")] for label, field in labels] + [[("Назад", "back"), ("Отмена", "cancel")]]))
@@ -188,6 +190,26 @@ class TelegramDirections:
                 await self._direction_edit_menu(chat_id, state)
             elif action == "edit":
                 await self._dispatch_direction(chat_id, principal, "/direction_edit", parts[3])
+            elif action == "letteroffer" and state.get("field") == "cover_letter_fallback":
+                from fallback_letter import legacy_offer
+                letter = legacy_offer(state["home_dir"])
+                if not letter:
+                    raise ValueError("Сохранённого письма нет или его нужно исправить.")
+                state["letter_offer"] = letter
+                await self._send_text(chat_id,
+                    f"Ранее сохранённое письмо:\n\n{letter}\n\n"
+                    f"Использовать это письмо для направления «{state['draft']['title']}»? "
+                    "Выберите его, только если опыт и профессия совпадают.",
+                    reply_markup=self._direction_inline(state, [[("Да, добавить в черновик", "letteruse")], [("Назад", "back")]]))
+            elif action == "letteruse" and state.get("letter_offer") and state.get("mode") == "edit" and state.get("field") == "cover_letter_fallback":
+                from fallback_letter import validate
+                state["draft"]["cover_letter_fallback"] = validate(state.pop("letter_offer"))
+                state.update(mode="draft", summary=False)
+                await self._direction_show_draft(chat_id, principal, state)
+            elif action == "letterclear" and state.get("mode") == "edit" and state.get("field") == "cover_letter_fallback":
+                state["draft"]["cover_letter_fallback"] = ""
+                state.update(mode="draft", summary=False)
+                await self._direction_show_draft(chat_id, principal, state)
             elif action == "preset" and state.get("mode") == "edit":
                 values = {"moscow": "1", "spb": "2", "russia": "113", "remote": "remote", "office": "fullDay", "fly": "flyInFlyOut", "any": "любой"}
                 await self._accept_direction_input(chat_id, principal, values[parts[3]])
@@ -503,6 +525,9 @@ class TelegramDirections:
                     if len(text.strip()) > 1500:
                         raise ValueError("Позиционирование: до 1500 символов.")
                     state["draft"][field] = text.strip()
+                elif field == "cover_letter_fallback":
+                    from fallback_letter import validate
+                    state["draft"][field] = validate(text)
                 elif field == "salary_baseline":
                     if text.strip() == "0":
                         state["draft"].pop(field, None)
@@ -680,10 +705,25 @@ class TelegramDirections:
             field = arg.strip() or "search_queries"
             aliases = {"queries": "search_queries", "filter": "filter_policy", "relevant": "relevant_keywords", "exclude": "exclude_keywords", "salary": "salary_baseline"}
             field = aliases.get(field, field)
-            if field not in {"title", "search_queries", "relevant_keywords", "exclude_keywords", "filter_policy", "positioning", "goal", "city", "format", "search_profiles", "salary_baseline", "work_formats", "fly_allowed", "work_cities"}:
+            if field not in {"title", "search_queries", "relevant_keywords", "exclude_keywords", "filter_policy", "positioning", "goal", "city", "format", "search_profiles", "salary_baseline", "work_formats", "fly_allowed", "work_cities", "cover_letter_fallback"}:
                 await self._send_text(chat_id, "Поля: /direction_edit title|queries|relevant|exclude|filter")
                 return
             state.update(mode="edit", field=field)
+            if field == "cover_letter_fallback":
+                from fallback_letter import legacy_offer
+                rows = []
+                if state["draft"].get(field):
+                    rows.append([("Убрать письмо", "letterclear")])
+                if not state["draft"].get(field) and legacy_offer(profile.home_dir):
+                    rows.append([("Посмотреть прежнее письмо", "letteroffer")])
+                rows.append([("Назад", "back"), ("Отмена", "cancel")])
+                await self._send_text(chat_id,
+                    f"Запасное письмо · {state['draft']['title']}\n\n" +
+                    (state["draft"].get(field) or "Пока не задано.") +
+                    "\n\nОтправьте новый текст — до 1500 символов. Он используется, если не удалось подготовить письмо для вакансии. "
+                    "Изменения вступят в силу после сохранения направления.",
+                    reply_markup=self._direction_inline(state, rows))
+                return
             if field == "work_cities":
                 await self._send_text(chat_id,
                     "В каких городах допустима работа с выездом к работодателю? Укажите полные названия через запятую, например: Санкт-Петербург.\n"
