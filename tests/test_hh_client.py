@@ -1,3 +1,4 @@
+import pytest
 from tests.browser_action_fakes import fake_cdp_context
 import asyncio
 from types import SimpleNamespace
@@ -464,6 +465,10 @@ class FakeDirectResponsePage:
 class RecordingApplyTrace:
     def __init__(self):
         self.events = []
+
+    @property
+    def last_stage(self):
+        return self.events[-1]["stage"] if self.events else "TRACE_STARTED"
 
     def event(self, stage, *, ok=None, **fields):
         self.events.append({"stage": stage, "ok": ok, **fields})
@@ -1369,3 +1374,39 @@ def test_questionnaire_stops_if_answers_clear_letter(monkeypatch):
     result = asyncio.run(client.apply_to_vacancy('https://hh.ru/vacancy/1', cover_letter='required letter', preferred_resume_id='synthetic-resume'))
     assert result['ok'] is False
     assert result['message'] == 'stopped before submit'
+
+
+@pytest.mark.parametrize("clear_letter", [False, True])
+def test_questionnaire_final_gate_follows_conditions_fetch(monkeypatch, clear_letter):
+    import work_conditions
+    client = HHClient()
+    client._page = FakeAutoAnswerQuestionPage(question_text='Ваши зарплатные ожидания?')
+    attach_fake_apply_navigation(client)
+    client._page.on = lambda *args: None
+    monkeypatch.setattr(client, '_is_captcha_page', lambda: asyncio.sleep(0, result=False))
+    trace = RecordingApplyTrace()
+    async def fresh(*args):
+        if clear_letter:
+            client._page.letter.value = ''
+        return {"status": "allow", "reason": ""}
+    monkeypatch.setattr(work_conditions, 'recheck_before_submit', fresh)
+    gates = []
+    async def answer(vacancy_context='', *, before_submit=None):
+        allowed = await before_submit()
+        gates.append(allowed)
+        if clear_letter:
+            assert not allowed
+            return {'ok': False, 'message': 'letter changed'}
+        assert allowed
+        assert [event['stage'] for event in trace.events[-2:]] == ['WORK_CONDITIONS', 'PRE_SUBMIT_VERIFY']
+        # The renderer fails before a click receipt can be recorded.
+        raise RuntimeError('synthetic questionnaire renderer failure')
+    monkeypatch.setattr(client, '_try_auto_answer_questions', answer)
+    result = asyncio.run(client.apply_to_vacancy('https://hh.ru/vacancy/1',
+        cover_letter='required letter', preferred_resume_id='synthetic-resume', trace=trace))
+    assert gates == [not clear_letter]
+    assert not result['ok']
+    if not clear_letter:
+        failure = _trace_event(trace, 'APPLY_EXCEPTION')
+        assert failure['previous_stage'] == 'PRE_SUBMIT_VERIFY', (trace.events, result)
+        assert not any(event['stage'] == 'SUBMIT_CLICK' for event in trace.events)

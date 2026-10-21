@@ -61,7 +61,7 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                       continue_after_apply=False, stale_receipt=False,
                       confirmation_html=APPLIED_HTML, form_disappears=False,
                       session_failure='', repeat_run=False, apply_next=False,
-                      post_submit_effect='', conditions_case=''):
+                      post_submit_effect='', conditions_case='', questionnaire=False):
     """Reuse the confirmed-success harness; replace transport and search inputs only."""
     for key, name in {
         "JOB_HUNTER_HOME": "", "SEEN_VACANCIES_FILE": "seen.json",
@@ -96,6 +96,12 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
              if stale_receipt or form_disappears or conditions_case else None)
     monkeypatch.setattr(apply_orchestrator, "create_hh_apply_trace",
                         lambda vacancy, **kwargs: trace if vacancy['id'] == '2' else None)
+    if questionnaire:
+        async def answer_questions(self, vacancy_context="", *, before_submit=None):
+            # Answer authoring is independent of the final native submit gate.
+            submitted = await self._submit_employer_questions(before_submit=before_submit)
+            return {"ok": submitted, "message": "Synthetic questionnaire"}
+        monkeypatch.setattr(HHClient, "_try_auto_answer_questions", answer_questions)
     dispatch_results = []
 
     async def observed_dispatch(*args, **kwargs):
@@ -203,6 +209,8 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                     form = (FIXTURE.replace("'2':{resumes:", f"'{vid}':{{resumes:")
                             .replace('vacancyId:2,', f'vacancyId:{vid},')
                             .replace("vacancyId:'2'", f"vacancyId:'{vid}'"))
+                    if questionnaire:
+                        form += '<h2>Ответьте на вопросы</h2>'
                     return PassiveResponse(url, form + script)
                 if urlsplit(url).path.startswith("/vacancy/"):
                     vid = url.rsplit("/", 1)[-1]
@@ -556,3 +564,16 @@ def test_post_submit_navigation_error_without_server_proof_stays_uncertain(tmp_p
     assert attempt.repository.get(VACANCY_URL)["status"] == "uncertain"
     assert attempt.repository.claim(VACANCY_URL, "", "") is None
     assert gate.entries["2"]["action"] == "apply_uncertain", gate.evidence
+
+
+def test_questionnaire_renderer_failure_keeps_final_verification_stage(tmp_path, monkeypatch):
+    gate = asyncio.run(run_hh_gate(tmp_path, monkeypatch, noise=False, stale_receipt=True,
+                                  conditions_case='allowed', questionnaire=True))
+    assert gate.application_posts == [('POST', POPUP_URL)], gate.evidence
+    failure = next(event for event in gate.trace._events if event['stage'] == 'APPLY_EXCEPTION')
+    assert failure['previous_stage'] == 'PRE_SUBMIT_VERIFY'
+    stages = [event['stage'] for event in gate.trace._events]
+    final = stages.index('PRE_SUBMIT_VERIFY')
+    assert stages[final - 1] == 'WORK_CONDITIONS'
+    assert failure['native_acting'] and not failure['proven_no_action']
+    assert gate.entries['2']['action'] == 'applied'

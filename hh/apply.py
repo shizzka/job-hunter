@@ -1086,6 +1086,10 @@ async def _apply_to_vacancy(
                     return {"ok": False, "message": "Сопроводительное в анкете не сохранилось — отклик остановлен"}
                 cover_letter_filled = True
         async def verify_before_submit():
+            # The fresh request can rerender the questionnaire. Verify the live
+            # payload afterwards, leaving the final gate in the dispatch trace.
+            if not await verify_work_conditions():
+                return False
             from salary_policy import unapproved_hh_salary_warning
             if await unapproved_hh_salary_warning(session):
                 return False
@@ -1097,9 +1101,10 @@ async def _apply_to_vacancy(
                         return False
                 elif not cover_letter_filled:
                     return False
-            if not await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
-                return False
-            return await verify_work_conditions()
+            resume_match = await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title)
+            trace_event("PRE_SUBMIT_VERIFY", ok=resume_match, resume_match=resume_match,
+                        letter_match=True, questionnaire=True)
+            return resume_match
         return await session._try_auto_answer_questions(vacancy_context=vacancy_context, before_submit=verify_before_submit)
 
     detect_response_controls = session._detect_response_controls
