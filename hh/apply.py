@@ -1696,6 +1696,10 @@ async def _apply_to_vacancy(
 
     async def verify_final_submit():
         nonlocal resume_verified
+        # The passive conditions GET awaits; verify the live form afterwards.
+        # PRE_SUBMIT_VERIFY must remain the final gate for dispatch diagnostics.
+        if not await verify_work_conditions():
+            return False
         if await unapproved_hh_salary_warning(session):
             return False
         await session._dismiss_magritte_dropdowns()
@@ -1703,10 +1707,18 @@ async def _apply_to_vacancy(
             current_letter = (await refetch_response_controls())[4]
             if not current_letter or normalize_text(await current_letter.input_value()) != normalize_text(cover_letter):
                 return False
-        if await count_unanswered_required_questions(session, logger=logger):
+        final_unanswered = await count_unanswered_required_questions(session, logger=logger)
+        if final_unanswered:
             return False
         resume_verified = await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title)
-        return resume_verified and await verify_work_conditions()
+        trace_event(
+            "PRE_SUBMIT_VERIFY",
+            ok=resume_verified,
+            resume_match=resume_verified,
+            letter_match=True,
+            unanswered_required=final_unanswered,
+        )
+        return resume_verified
 
     if submit_btn:
         (
@@ -1735,14 +1747,14 @@ async def _apply_to_vacancy(
                 return {"ok": False, "message": "Сопроводительное изменилось перед отправкой — отклик остановлен"}
             logger.info("Cover letter verified before submit (chars=%d)", len(cover_letter))
             await save_debug_snapshot("debug_apply_before_submit")
-        trace_event(
-            "PRE_SUBMIT_VERIFY",
-            ok=bool(resume_match and letter_match and unanswered_required in (0, None)),
-            resume_match=resume_match,
-            letter_match=letter_match,
-            unanswered_required=unanswered_required,
-        )
         if unanswered_required:
+            trace_event(
+                "PRE_SUBMIT_VERIFY",
+                ok=False,
+                resume_match=resume_match,
+                letter_match=letter_match,
+                unanswered_required=unanswered_required,
+            )
             await save_debug_snapshot("debug_required_questions_unanswered")
             return {
                 "ok": False,

@@ -11,6 +11,7 @@ from playwright.async_api import Route, async_playwright
 import agent
 import apply_orchestrator
 import config
+import matcher
 import seen
 from debug_trace import ApplyTrace
 from hh.recovery import AUTH_URL, BLOCK_WORKER_CONSTRUCTORS, monitor_page
@@ -92,7 +93,7 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
         monkeypatch.setattr(apply_orchestrator, "fetch_vacancy_details", REAL_DETAILS)
     trace = (ApplyTrace.create(home_dir=str(tmp_path), source="hh", vacancy_id="2",
                                profile="synthetic", mode="auto")
-             if stale_receipt or form_disappears else None)
+             if stale_receipt or form_disappears or conditions_case else None)
     monkeypatch.setattr(apply_orchestrator, "create_hh_apply_trace",
                         lambda vacancy, **kwargs: trace if vacancy['id'] == '2' else None)
     dispatch_results = []
@@ -125,7 +126,9 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                 "should_apply": should_apply, "red_flags": []}
 
     monkeypatch.setattr(agent, "evaluate_vacancy", evaluate)
-    monkeypatch.setattr(agent, "generate_cover_letter", AsyncMock(return_value=COVER_LETTER))
+    # Keep F15's resume/letter binding; stub only the generated text.
+    monkeypatch.setattr(matcher, "_generate_cover_letter", AsyncMock(return_value=COVER_LETTER))
+    monkeypatch.setattr(agent, "generate_cover_letter", matcher.generate_cover_letter)
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=[
@@ -419,6 +422,10 @@ def test_direction_conditions_rechecked_on_actual_page_before_submit(tmp_path, m
         assert gate.result['applied'] == 1 and len(gate.application_posts) == 1, gate.evidence
         assert gate.entries['2']['action'] == 'applied'
         assert len([call for call in gate.fresh_gets if call['url'] == VACANCY_URL]) == 2
+        stages = [event['stage'] for event in gate.trace._events
+                  if event['stage'] in {'WORK_CONDITIONS', 'PRE_SUBMIT_VERIFY', 'SUBMIT_CLICK'}]
+        submit = stages.index('SUBMIT_CLICK')
+        assert stages[submit - 2:submit] == ['WORK_CONDITIONS', 'PRE_SUBMIT_VERIFY']
     else:
         assert gate.result['applied'] == 0 and not gate.application_posts, gate.evidence
         assert gate.dispatch_results[0]['reason'] == 'work_conditions', gate.evidence
@@ -496,6 +503,7 @@ def test_post_submit_lifecycle_error_uses_fresh_receipt_before_recovery(tmp_path
     stages = [event["stage"] for event in gate.trace._events]
     assert "PRE_SUBMIT_VERIFY" in stages and "SUBMIT_CLICK" not in stages
     failure = next(event for event in gate.trace._events if event["stage"] == "APPLY_EXCEPTION")
+    assert failure["previous_stage"] == "PRE_SUBMIT_VERIFY"
     assert failure["error_kind"] == ("TimeoutError" if form_disappears else "Error")
     assert failure["native_acting"] is True
     assert failure["proven_no_action"] is False

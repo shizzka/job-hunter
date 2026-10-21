@@ -35,11 +35,18 @@ def test_structured_shift_work_rejected_before_matching(monkeypatch, fields):
 @pytest.mark.parametrize("case", ["fly", "on_site", "unknown", "allowed"])
 def test_search_conditions_gate_all_modes_before_evaluation(tmp_path, monkeypatch, mode, case):
     import agent
+    import directions
     from tests.test_observability import configure_synthetic_search
+    from tests.test_directions import saved
     from hh import negotiation_snapshot
     configure_synthetic_search(monkeypatch, tmp_path)
     monkeypatch.setattr(config, "HH_APPLICATION_MODE", mode)
-    monkeypatch.setattr(config, "ACTIVE_DIRECTION", policy(allowed_formats=["remote", "hybrid"]), raising=False)
+    # F15 records the selected variant even when conditions reject before matching.
+    direction = saved(tmp_path, count=1)
+    direction["work_conditions"] = policy(allowed_formats=["remote", "hybrid"])["work_conditions"]
+    direction = directions.save_direction(tmp_path, direction)
+    directions.set_active_direction(tmp_path, direction["name"])
+    monkeypatch.setattr(config, "ACTIVE_DIRECTION", direction, raising=False)
     monkeypatch.setattr(negotiation_snapshot, "refresh_for_chats", lambda *a: [])
     fields = {"workFormats": ["ON_SITE" if case == "on_site" else "REMOTE"]}
     if case == "fly":

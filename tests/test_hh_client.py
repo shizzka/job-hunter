@@ -1300,10 +1300,12 @@ def test_apply_trace_records_dom_submit_fallback(monkeypatch, tmp_path):
 
     async def failed_control_click(element, label, *, before_click=None):
         assert before_click is not None and await before_click()
+        assert [event["stage"] for event in trace.events[-2:]] == ["WORK_CONDITIONS", "PRE_SUBMIT_VERIFY"]
         return False
 
     async def dom_submit(*, before_submit=None):
         assert before_submit is not None and await before_submit()
+        assert [event["stage"] for event in trace.events[-2:]] == ["WORK_CONDITIONS", "PRE_SUBMIT_VERIFY"]
         client._page.stage = "success"
         return True
 
