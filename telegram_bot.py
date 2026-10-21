@@ -1813,7 +1813,7 @@ class TelegramBot(
             self._update_state(record_alert)
             self._append_debug_log("health_alert_sent", profile_name=self.profile_name, failed=len(failed), recipients=sent)
 
-    def _recent_runs(self, profile_name: str, limit: int = 5) -> list[dict]:
+    def _recent_runs(self, profile_name: str, limit: int = 5, *, scope="active") -> list[dict]:
         profile = self._profile(profile_name)
         run_history_file = profile.run_history_file
         if limit <= 0 or not os.path.exists(run_history_file):
@@ -1822,15 +1822,16 @@ class TelegramBot(
             items = read_json_records(run_history_file)
         except OSError:
             return []
+        items = analytics.scoped_runs(items, events_file=profile.analytics_events_file, scope=scope)
         return list(reversed(analytics.reconcile_run_records(items, events_file=profile.analytics_events_file)[-limit:]))
 
-    def _stats_snapshot(self, profile_name: str) -> dict:
+    def _stats_snapshot(self, profile_name: str, *, scope="active") -> dict:
         profile = self._profile(profile_name)
         return {
             "profile_name": profile_name,
-            "seen_stats": seen.stats_from_file(profile.seen_file),
-            "analytics_summary": analytics.summarize(events_file=profile.analytics_events_file, all_time=True),
-            "recent_runs": self._recent_runs(profile_name, limit=3),
+            "seen_stats": seen.stats_from_file(profile.seen_file, scope=scope),
+            "analytics_summary": analytics.summarize(events_file=profile.analytics_events_file, all_time=True, scope=scope),
+            "recent_runs": self._recent_runs(profile_name, limit=3, scope=scope),
         }
 
     def _daily_summary_snapshot(self, profile_name: str, *, now: datetime | None = None) -> dict:
@@ -3127,21 +3128,37 @@ class TelegramBot(
 
         if command == "/seen_reset":
             import seen_reset
+            from telegram_app import history
             parts = arg.split()
             home = self._profile(profile_name).home_dir
+            if parts and parts[0] == "do" and len(parts) != 4:
+                await self._send_text(chat_id, "Эта кнопка устарела. Откройте сброс заново.")
+                return
+            direction_scope = history.scope_arg(parts[2] if len(parts) > 2 else "")
+            if len(parts) > 3 and parts[3] != history.token(home):
+                await self._send_text(chat_id, "Направление изменилось. Откройте сброс заново.")
+                return
+            if parts and parts[0] == "view":
+                direction_scope = history.scope_arg(parts[1])
+                parts = []
+            direction_label = history.HistoryScope(home, direction_scope).title
+            choice = {"*": "all", "?": "unspecified"}.get(direction_scope, "active")
+            binding = history.token(home)
             if self._has_active_command(profile_name):
                 await self._send_busy_status(chat_id, principal, profile_name=profile_name)
                 return
             if not parts:
                 owner_menu = reply_menu_for_command(role, "/seen_reset") or MENU_ADMIN
                 self._set_selected_menu(principal["user_id"], owner_menu)
-                await self._send_text(chat_id, f"🧹 Сброс просмотренных для профиля {profile_name}.\n"
+                await self._send_text(chat_id, f"🧹 Сброс просмотренных · {direction_label}.\n"
                                       "Бот забудет пропущенные вакансии и переоценит их в следующем поиске. "
                                       "Отклики, ручные карточки и неопределённые исходы не трогаются.",
                                       reply_markup=self._menu_reply_markup(principal, menu=owner_menu))
                 await self._send_text(chat_id, "За какой период?", reply_markup={"inline_keyboard": [[
-                    {"text": label.capitalize(), "callback_data": f"sr:ask:{scope}"}
-                    for scope, label in seen_reset.SCOPES.items()]]})
+                    {"text": label.capitalize(), "callback_data": f"sr:ask:{scope}:{choice}:{binding}"}
+                    for scope, label in seen_reset.SCOPES.items()], [
+                    {"text": label, "callback_data": f"sr:view:{scope}:view:{binding}"}
+                    for label, scope in (("Это направление", "active"), ("Все направления", "all"), ("Направление не указано", "unspecified"))]]})
                 return
             action, scope = (parts + [""])[:2]
             if scope not in seen_reset.SCOPES:
@@ -3149,13 +3166,13 @@ class TelegramBot(
                 return
             try:
                 if action == "ask":
-                    count = len(seen_reset.plan(home, scope))
+                    count = len(seen_reset.plan(home, scope, direction_scope=direction_scope))
                     await self._send_text(chat_id, f"Снять {count} отметок «пропущено» ({seen_reset.SCOPES[scope]}) "
-                                          f"у профиля {profile_name}?", reply_markup={"inline_keyboard": [[
-                                              {"text": "✅ Да, сбросить", "callback_data": f"sr:do:{scope}"},
+                                          f"для «{direction_label}»?", reply_markup={"inline_keyboard": [[
+                                              {"text": "✅ Да, сбросить", "callback_data": f"sr:do:{scope}:{choice}:{binding}"},
                                               {"text": "❌ Нет", "callback_data": "sr:no:"}]]})
                 elif action == "do":
-                    count = seen_reset.apply(home, scope)
+                    count = seen_reset.apply(home, scope, direction_scope=direction_scope)
                     await self._send_text(chat_id, f"✅ Снято {count} отметок ({seen_reset.SCOPES[scope]}). "
                                           "Следующий поиск переоценит эти вакансии. Копия списка сохранена.",
                                           reply_markup=self._menu_reply_markup(principal))
@@ -3271,44 +3288,19 @@ class TelegramBot(
             )
             return
 
-        if command == "/research":
-            import hiring_research
-            profile = self._profile(profile_name)
-            report = hiring_research.summarize(profile.analytics_events_file)
-            for text in hiring_research.render(report):
-                await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal))
-            return
-
-        if command == "/stats":
-            if role == ROLE_ADMIN:
-                ordered_profiles = [profile_name] + [name for name in self._profile_names() if name != profile_name]
-                snapshots = []
-                for name in ordered_profiles:
-                    snapshot = self._stats_snapshot(name)
-                    snapshot["selected"] = name == profile_name
-                    snapshots.append(snapshot)
-                text = build_stats_text(
-                    profile_name=profile_name,
-                    seen_stats=snapshots[0]["seen_stats"],
-                    analytics_summary=snapshots[0]["analytics_summary"],
-                    recent_runs=snapshots[0]["recent_runs"],
-                    selected=True,
-                    profile_snapshots=snapshots,
-                )
-            else:
-                snapshot = self._stats_snapshot(profile_name)
-                text = build_stats_text(
-                    profile_name=profile_name,
-                    seen_stats=snapshot["seen_stats"],
-                    analytics_summary=snapshot["analytics_summary"],
-                    recent_runs=snapshot["recent_runs"],
-                    selected=True,
-                )
-            await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal))
+        from telegram_app import history
+        if command in history.COMMANDS:
+            if reply_menu is None:
+                canonical = {"/hunter_log": "/log", "/hunter_chat_log": "/chat_log"}.get(command, command)
+                owner_menu = reply_menu_for_command(role, canonical)
+                if owner_menu is not None:
+                    self._set_selected_menu(principal["user_id"], owner_menu)
+            await history.show(self, chat_id, principal, profile_name, command, arg)
             return
 
         if command == "/why_no_apply":
-            run = self._latest_run(profile_name)
+            runs = self._recent_runs(profile_name, limit=1)
+            run = runs[0] if runs else None
             diagnosis = analytics.zero_apply_diagnosis(run) if run else ""
             await self._send_text(chat_id, diagnosis or (
                 "В последнем прогоне есть подтверждённые отклики." if run and (run.get("funnel") or run).get("applied")
@@ -3316,24 +3308,8 @@ class TelegramBot(
                 reply_markup=self._menu_reply_markup(principal))
             return
 
-        if command == "/runs":
-            await self._send_text(chat_id, build_runs_text(self._recent_runs(profile_name, limit=5)), reply_markup=self._menu_reply_markup(principal))
-            return
-
-        if command in {"/log", "/hunter_log"}:
-            if reply_menu is None:
-                self._set_selected_menu(principal["user_id"], reply_menu_for_command(role, "/log"))
-            await self._send_run_summary(chat_id, principal, profile_name=profile_name, run_id=arg or None)
-            return
-
         if command == "/raw_log":
             await self._send_log_tail(chat_id, principal, profile_name=profile_name, kind="log")
-            return
-
-        if command in {"/chat_log", "/hunter_chat_log"}:
-            if reply_menu is None:
-                self._set_selected_menu(principal["user_id"], reply_menu_for_command(role, "/chat_log"))
-            await self._send_log_tail(chat_id, principal, profile_name=profile_name, kind="chat_log")
             return
 
         if command in {"/chat_ai", "/ai_chat", "/chat_answer"}:

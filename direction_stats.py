@@ -164,23 +164,29 @@ def resume_mismatches(home_dir, snapshots=None, events_path=None):
         resume_hash = str(event.get("requested_resume_id") or "")
         vacancy = str(event.get("vacancy_id") or "")
         if resume_hash in numeric and vacancy:
-            requested[vacancy] = (numeric[resume_hash], str(event.get("title") or ""), str(event.get("company") or ""))
-    actual = {}
+            requested[(vacancy, resume_hash)] = (numeric[resume_hash], str(event.get("title") or ""), str(event.get("company") or ""))
+    latest_topics = {}
     for index, record in enumerate(_records(home_dir, snapshots)):
         if not isinstance(record, dict) or record.get("kind") is not None:
             continue
         vacancy, resume = str(record.get("vacancyId") or ""), _number(record.get("resumeId"))
         if vacancy and resume is not None:
-            previous = actual.get(vacancy)
+            key = record.get("id", (vacancy, resume))
+            previous = latest_topics.get(key)
             if previous is None or _time(record, index) >= previous[0]:
-                actual[vacancy] = (_time(record, index), resume)
+                latest_topics[key] = (_time(record, index), vacancy, resume)
+    actual = {}
+    for _, vacancy, resume in latest_topics.values():
+        actual.setdefault(vacancy, set()).add(resume)
     result = []
-    for vacancy, (wanted, title, company) in sorted(requested.items()):
-        seen = actual.get(vacancy)
-        if seen is not None and seen[1] != wanted:
+    for (vacancy, resume_hash), (wanted, title, company) in sorted(requested.items()):
+        resumes = actual.get(vacancy, set())
+        observed = next(iter(resumes)) if len(resumes) == 1 else None
+        if observed is not None and observed != wanted:
             result.append({"vacancy_id": vacancy, "title": title, "company": company,
-                           "requested_resume_numeric_id": wanted, "actual_resume_numeric_id": seen[1],
-                           "requested_title": titles.get(wanted, ""), "actual_title": titles.get(seen[1], "")})
+                           "requested_resume_hash": resume_hash,
+                           "requested_resume_numeric_id": wanted, "actual_resume_numeric_id": observed,
+                           "requested_title": titles.get(wanted, ""), "actual_title": titles.get(observed, "")})
     return result
 
 
@@ -193,3 +199,18 @@ def export_csv(summary):
     for name in ("unmatched", "ambiguous"):
         writer.writerow({"direction": name, **summary[name]})
     return stream.getvalue()
+
+
+def scoped(summary, home, scope="active"):
+    """Keep the numeric-resume report intact; apply a display scope afterwards."""
+    from direction_history import ALL, UNSPECIFIED, HistoryScope
+    view = HistoryScope(home, scope)
+    if scope == ALL:
+        return {**summary, "direction_title": view.title}
+    rows = view.records(summary["rows"])
+    unknown = scope == UNSPECIFIED or not view.directions
+    unmatched = summary["unmatched"] if unknown else _empty()
+    ambiguous = summary["ambiguous"] if unknown else _empty()
+    return {**summary, "rows": rows, "unmatched": unmatched, "ambiguous": ambiguous,
+            "total_topics": sum(row["topics"] for row in rows) + unmatched["topics"] + ambiguous["topics"],
+            "direction_title": view.title}

@@ -38,18 +38,20 @@ def _bucket(seconds):
     return '≥24 ч'
 
 
-def summarize(events_file, *, now=None, days=30):
+def summarize(events_file, *, now=None, days=30, scope="active"):
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=MOSCOW)
     start = (now.astimezone(MOSCOW).replace(hour=0, minute=0, second=0, microsecond=0)
              - timedelta(days=days - 1))
     rows = []
-    for event in analytics._iter_events(events_file):
+    for event in analytics.history_events(events_file, scope=scope):
         if not isinstance(event, dict):
             continue
         dt = _time(event.get('observed_at_utc') or event.get('created_at') or event.get('recorded_at_utc'))
         key = _key(event)
+        if key:
+            key = (*key, event.get("_history_owner", event.get("direction")))
         if dt and key and dt <= now:
             rows.append((dt, key, event))
     rows.sort(key=lambda row: row[0])
@@ -103,6 +105,7 @@ def summarize(events_file, *, now=None, days=30):
             app['last_poll'] = dt
     cohort = [app for key, app in applications.items() if app['at'] >= start and key not in repeats]
     report = {'verifications': verifications, 'days': days, 'total': len(cohort), 'excluded_repeats': len(repeats & recent_application_keys),
+              'direction_title': analytics.direction_history.for_events(events_file, scope).title,
               'outcomes': Counter(), 'rejection_delays': Counter(), 'rejection_views': Counter(),
               'groups': {name: defaultdict(Counter) for name in ('mode', 'cover', 'resume', 'screening')},
               'recent': 0, 'start': start.isoformat()}
@@ -142,7 +145,7 @@ def summarize(events_file, *, now=None, days=30):
 def render(report):
     total = report['total']
     states = report['outcomes']
-    lines = [f"🔬 Отказы и конверсии · {report['days']} календарных дней (МСК)",
+    lines = [f"🔬 Отказы и конверсии · {report.get('direction_title', '')} · {report['days']} календарных дней (МСК)",
              f"Подтверждённых откликов: {total}",
              f"Текущий статус: положительный {states['positive']}, отказ {states['rejected']}, ожидание {states['pending']}, неизвестно {states['unknown']}.",
              f"Моложе 7 дней: {report['recent']}. Результаты ещё меняются.",

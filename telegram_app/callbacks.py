@@ -84,7 +84,20 @@ class TelegramCallbackRouter:
             if action == "no":
                 await self._send_text(chat_id, "Сброс отменён.")
             elif principal.get("role") == ROLE_ADMIN:
-                await self._dispatch(chat_id, principal, "/seen_reset", f"{action} {scope}")
+                await self._dispatch(chat_id, principal, "/seen_reset", f"{action} {scope}".replace(":", " "))
+            return
+
+        if str(raw_data).startswith("hist:"):
+            from telegram_app import history
+            parts = str(raw_data).split(":")
+            home = self._profile(self._selected_profile(principal)).home_dir
+            await self._answer_callback_query(callback_id)
+            if (len(parts) != 4 or parts[1] != history.token(home)
+                    or "/" + parts[2] not in history.COMMANDS | {"/direction_stats"}
+                    or parts[3] not in {"active", "all", "unspecified"}):
+                await self._send_text(chat_id, "Направление изменилось. Откройте экран заново.")
+                return
+            await self._dispatch(chat_id, principal, "/" + parts[2], parts[3])
             return
 
         if str(raw_data) in {"kbu:save", "kbu:cancel"}:

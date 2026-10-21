@@ -2,6 +2,7 @@
 import asyncio
 import json
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -345,6 +346,7 @@ def test_offline_real_search_matcher_journal_and_telegram_dispatch(runtime, monk
     assert {e["failure_id"] for e in decisions} == {root["failure_id"]}
     assert all(e["score"] is None for e in decisions)
     bot = bot_for_profile(monkeypatch, runtime)
+    runtime.home_dir = str(Path(runtime.analytics_events_file).parent)
     monkeypatch.setattr(bot, "_log_tail", lambda *args, **kwargs: ("synthetic.log", "RAW-ONLY-MARKER"))
     principal = {"user_id": 1, "role": telegram_bot.ROLE_ADMIN}
     asyncio.run(bot._dispatch(1, principal, "/log", summary["run_id"]))

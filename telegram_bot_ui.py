@@ -1480,6 +1480,7 @@ def build_daily_summary_text(
     last_run = recent_runs[0] if recent_runs else None
     lines = [
         "📌 Ежедневная сводка Job Hunter",
+        analytics_summary.get("direction_title", ""),
         f"Профиль {_pretty_profile_name(profile_name)} · "
         f"{period_label or _format_days_label(max(1, int(days or 1)))}",
         "",
@@ -1570,6 +1571,7 @@ def build_stats_text(
 
     lines = [
         f"{'✅' if selected else '📁'} Профиль {_pretty_profile_name(profile_name)}{' · текущий' if selected else ''}",
+        analytics_summary.get("direction_title", ""),
         "",
         "📬 Отклики и исходы:",
         f"• Отправлено: {sent_total}",
@@ -1723,6 +1725,8 @@ def build_runs_text(recent_runs: list[dict]) -> str:
     lines = ["🕓 Последние прогоны"]
     for idx, run in enumerate(recent_runs, start=1):
         summary_lines = format_run_summary(run).splitlines()
+        if run.get("direction_title"):
+            summary_lines[0] += " · " + str(run["direction_title"])
         lines.extend(["", f"{idx}. {summary_lines[0]}"])
         lines.extend(summary_lines[1:])
     return "\n".join(lines)

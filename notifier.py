@@ -309,6 +309,12 @@ async def notify_hh_session_required(profile_name: str = "default", reason: str 
     return await send_message_with_markup(text, reply_markup=build_hh_reauth_markup(profile_name))
 
 
+def _direction_label():
+    import analytics
+    return html.escape(analytics.current_context().get("direction_title") or
+        (getattr(config, "ACTIVE_DIRECTION", None) or {}).get("title") or "направление не указано")
+
+
 async def notify_search_started(source_labels: list[str]):
     """Уведомить о старте прогона поиска."""
     if not source_labels or not _telegram_flag("TELEGRAM_NOTIFY_SEARCH_STARTED", False):
@@ -316,7 +322,7 @@ async def notify_search_started(source_labels: list[str]):
 
     sources = ", ".join(source_labels)
     text = (
-        f"🚀 <b>Запуск поиска вакансий</b>\n\n"
+        f"🚀 <b>Запуск поиска вакансий</b> · {_direction_label()}\n\n"
         f"Начата процедура поиска вакансий.\n"
         f"🌐 Площадки: {sources}"
     )
@@ -621,8 +627,8 @@ async def notify_summary(total_found: int, applied: int, skipped: int, source_st
     apply_label = "🧪 Dry-run matches" if dry_run else ("📨 Подтверждённых откликов" if uncertain_total else "📨 Откликов")
 
     text = (
-        f"📋 <b>Итог поиска</b>\n\n"
-        f"🔍 Keyword pass: {total_found}\n"
+        f"📋 <b>Итог поиска</b> · {_direction_label()}\n\n"
+        f"🔍 Прошло отбор по словам: {total_found}\n"
         f"{apply_label}: {applied}\n"
         f"📝 Ручной разбор: {manual_total}\n"
         f"⏭ Не отправлено автоматически: {max(0, skipped - uncertain_total)}"
@@ -700,9 +706,14 @@ async def notify_digest(analytics_summary: dict):
     if not _resolve_bot_token(_active_profile()) or not _resolve_target_chat_ids(_active_profile()):
         return
 
+    await send_message(build_digest_text(analytics_summary))
+
+
+def build_digest_text(analytics_summary):
+
     days = analytics_summary.get("days", 30)
     text = (
-        f"📈 <b>Дайджест за {days} дн.</b>\n\n"
+        f"📈 <b>Дайджест за {days} дн.</b> · {html.escape(analytics_summary.get('direction_title', ''))}\n\n"
         f"решений: {analytics_summary.get('decisions', 0)} | "
         f"автооткликов: {analytics_summary.get('auto_applied', 0)} | "
         f"ручных: {analytics_summary.get('manual', 0)}\n"
@@ -711,7 +722,7 @@ async def notify_digest(analytics_summary: dict):
         f"низкий балл: {analytics_summary.get('low_score', 0)}\n"
         f"анкеты: {analytics_summary.get('questionnaires', 0)} | "
         f"успешно: {analytics_summary.get('questionnaire_successes', 0)} | "
-        f"best_guess: {analytics_summary.get('questionnaire_best_guess', 0)}"
+        f"предположений: {analytics_summary.get('questionnaire_best_guess', 0)}"
     )
 
     if analytics_summary.get("uncertain"):
@@ -723,7 +734,7 @@ async def notify_digest(analytics_summary: dict):
     text += _format_conversion_group("✉️ Стили сопроводов", analytics_summary.get("by_cover_style", {}))
     text += _format_ab_resume(analytics_summary.get("by_resume_variant", {}))
 
-    await send_message(text)
+    return text
 
 
 _COOKIE_WARN_INTERVAL = 24 * 3600  # раз в сутки

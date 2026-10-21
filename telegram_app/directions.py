@@ -788,12 +788,15 @@ class TelegramDirections:
                 return
             import direction_stats
             summary = direction_stats.summarize(profile.home_dir)
+            from telegram_app import history
+            scope = history.scope_arg(arg)
+            summary = direction_stats.scoped(summary, profile.home_dir, scope)
             if command == "/direction_csv":
                 await self._send_document(chat_id, filename=f"{profile_name}_directions.csv", content=direction_stats.export_csv(summary).encode("utf-8-sig"))
             else:
                 rows = summary.get("rows", [])
                 owner = f" · профиль {profile_name}" if principal.get("role") == "admin" else ""
-                lines = [f"📊 Как работают ваши резюме{owner} (по данным hh, откликов всего: {summary.get('total_topics', 0)})", ""]
+                lines = [f"📊 Как работают ваши резюме · {summary['direction_title']}{owner} (по данным hh, откликов всего: {summary.get('total_topics', 0)})", ""]
                 for row in rows[:12]:
                     title = str(row.get("direction_title") or row.get("direction") or "Направление")[:100]
                     variant = str(row.get("variant_title") or "Резюме")[:80]
@@ -805,8 +808,13 @@ class TelegramDirections:
                                  f"ждут ответа {row.get('no_response', 0)}")
                 other = summary.get('unmatched', {}).get('topics', 0)
                 if other:
-                    lines.append(f"Другими резюме (не из направлений): откликов {other}")
+                    lines.append(f"Направление не указано: откликов {other}")
+                ambiguous = summary.get("ambiguous", {}).get("topics", 0)
+                if ambiguous:
+                    lines.append(f"Направление не указано (резюме относится к нескольким): {ambiguous}")
                 mismatches = direction_stats.resume_mismatches(profile.home_dir)
+                view = history.HistoryScope(profile.home_dir, scope)
+                mismatches = [m for m in mismatches if view.matches({"requested_resume_id": m.get("requested_resume_hash")})]
                 if mismatches:
                     lines += ["", f"⚠️ Ушли НЕ тем резюме: {len(mismatches)}"]
                     for item in mismatches[:5]:
@@ -815,10 +823,11 @@ class TelegramDirections:
                 lines.append("")
                 lines.append("Приглашение = работодатель позвал дальше (собеседование, тест, оффер).")
                 if principal.get("role") == "admin":
-                    lines.append("/direction_csv — полная выгрузка")
+                    lines.append("/direction_csv — выгрузить этот список; /direction_csv all — все направления")
                 if not summary.get("total_topics"):
-                    lines = ["📊 Данных об откликах пока нет — их нужно один раз собрать с hh.",
+                    lines = [f"📊 {summary['direction_title']} · Данных об откликах пока нет — их нужно один раз собрать с hh.",
                              "Нажмите «🔄 Обновить данные» (только чтение, пара минут). Дальше бот обновляет их сам после поиска."]
                 state = state or self._direction_bind(principal, mode="switch", choices=[])
-                await self._send_text(chat_id, str("\n".join(lines)), reply_markup=self._direction_inline(
-                    state, [[("🔄 Обновить данные", "statsrefresh")], [("К направлениям", "list")]]))
+                buttons = self._direction_inline(state, [[("🔄 Обновить данные", "statsrefresh")], [("К направлениям", "list")]])
+                buttons["inline_keyboard"] += history.markup(profile.home_dir, "/direction_stats")["inline_keyboard"]
+                await self._send_text(chat_id, str("\n".join(lines)), reply_markup=buttons)

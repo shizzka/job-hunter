@@ -300,6 +300,7 @@ def load_recent_run_history(limit: int = 5) -> list[dict]:
             items.append(json.loads(line))
         except json.JSONDecodeError:
             continue
+    items = analytics.scoped_runs(items, events_file=config.ANALYTICS_EVENTS_FILE)
     return list(reversed(analytics.reconcile_run_records(items, events_file=config.ANALYTICS_EVENTS_FILE)[-limit:]))
 
 
@@ -308,7 +309,7 @@ def print_stats(days: int | None = None):
     s = seen.stats()
     recent_runs = load_recent_run_history(limit=5)
     analytics_summary = analytics.summarize(days=days)
-    print(f"\n📊 Статистика Job Hunter")
+    print(f"\n📊 Статистика Job Hunter · {analytics_summary['direction_title']}")
     print(f"{'='*40}")
     print(f"  Всего обработано: {s['total']}")
     print(f"  Откликов:        {s['applied']}")
@@ -484,7 +485,7 @@ def print_filter_audit(days: int | None = None, *, limit: int = 20):
     audit = analytics.audit_filters(days=days, limit=limit)
     scope = "all-time" if audit.get("all_time") else f"{audit['days']} дн."
     print()
-    print(f"Аудит фильтров за {scope}:")
+    print(f"Аудит фильтров · {audit.get('direction_title', '')} · за {scope}:")
     print(f"{'='*40}")
     print(f"  решений проверено: {audit.get('decisions', 0)}")
 
