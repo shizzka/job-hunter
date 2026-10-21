@@ -97,6 +97,28 @@ USER = {"user_id": 1, "role": "user", "profile": "client_1"}
 ADMIN = {"user_id": 99, "role": "admin"}
 
 
+@run_async
+async def test_work_conditions_edit_is_a_confirmed_direction_draft(bot):
+    home = Path(bot.profiles["client_1"].home_dir)
+    original = make_direction(home)
+    directions.set_active_direction(home, original["name"])
+    await bot._dispatch_direction(1, USER, "/direction_edit", "work_formats")
+    state = bot._direction_sessions()[1]
+    assert await bot._accept_direction_input(1, USER, "удалённо, гибрид")
+    assert directions.active_direction(home) == original
+    assert state["draft"]["work_conditions"]["allowed_formats"] == ["remote", "hybrid"]
+    assert "Вахта: не разрешена" in bot.sent[-1][1]
+    await bot._dispatch_direction(1, USER, "/direction_edit", "fly_allowed")
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:conditionpreset:yes")
+    await bot._dispatch_direction(1, USER, "/direction_edit", "work_cities")
+    await bot._accept_direction_input(1, USER, "Город Пример")
+    await bot._dispatch_direction(1, USER, "/direction_save", "")
+    saved = directions.active_direction(home)
+    assert saved["work_conditions"] == {"allowed_formats": ["remote", "hybrid"], "allow_fly_in_fly_out": True, "allowed_cities": ["Город Пример"]}
+    assert saved["search_queries"] == original["search_queries"]
+    assert saved["variants"] == original["variants"]
+
+
 @pytest.fixture
 def bot(tmp_path):
     return Harness(tmp_path)

@@ -103,6 +103,12 @@ def validate_direction(value):
                 raise DirectionError("search_profiles: регион — номер hh, формат — один из известных.")
             item["area"] = int(item["area"])
             item.setdefault("schedule", "")
+    import work_conditions
+    try:
+        result["work_conditions"] = work_conditions.validate(
+            result.get("work_conditions", work_conditions.defaults(result)))
+    except ValueError as exc:
+        raise DirectionError(str(exc)) from exc
     strategy = result.setdefault("selection_strategy", "single")
     if strategy not in {"single", "ab", "closest"}:
         raise DirectionError("selection_strategy: single, ab или closest.")

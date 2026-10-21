@@ -16,6 +16,7 @@ import re
 import uuid
 
 import search_query_suggester
+import work_conditions
 
 
 def _fingerprint(value):
@@ -123,11 +124,15 @@ class TelegramDirections:
             cities = {"1": "Москва", "2": "Санкт-Петербург", "113": "Россия"}
             formats = {"": "любой формат", "remote": "удалённо", "fullDay": "офис", "flyInFlyOut": "вахта", "shift": "сменный", "flexible": "гибкий"}
             profile_labels = [f"{cities.get(str(x['area']), str(x['area']))} / {formats.get(x['schedule'], x['schedule'])}" for x in profiles]
+            conditions = draft.get("work_conditions", work_conditions.defaults(draft))
+            allowed = ", ".join(work_conditions.FORMAT_LABELS[f] for f in conditions["allowed_formats"])
             text = (f"{'Черновик' if not state.get('summary') else 'Мой поиск'}: {draft.get('title', '')}\n"
                     f"Позиционирование: {draft.get('positioning') or 'не задано'}\n"
                     f"Цель: {', '.join(draft.get('goal', [])) or 'не задана'}\n"
                     "Запросы:\n" + "\n".join(draft.get("search_queries", [])) +
                     "\nГород / формат: " + (", ".join(profile_labels) or "из профиля") +
+                    f"\nДопустимая работа: {allowed}. Вахта: {'разрешена' if conditions['allow_fly_in_fly_out'] else 'не разрешена'}." +
+                    f"\nГорода места работы: {', '.join(conditions.get('allowed_cities', [])) or 'без ограничений'}." +
                     f"\nЗарплата от: {draft.get('salary_baseline') or 'не задана'} ₽\n"
                     f"Выбор резюме: {STRATEGY_LABELS.get(draft.get('selection_strategy'), 'одно резюме')}\n" + variants)
             rows = [[("✏️ Изменить", "editmenu"), ("🧾 Резюме", "variants")],
@@ -142,7 +147,9 @@ class TelegramDirections:
 
     async def _direction_edit_menu(self, chat_id, state):
         labels = [("Название", "title"), ("Позиционирование", "positioning"), ("Цель", "goal"),
-                  ("Запросы", "queries"), ("Город", "city"), ("Формат работы", "format"), ("Города и форматы", "search_profiles"),
+                  ("Запросы", "queries"), ("Город", "city"), ("Формат поиска", "format"), ("Города и форматы", "search_profiles"),
+                  ("Допустимые форматы работы", "work_formats"), ("Разрешена ли вахта", "fly_allowed"),
+                  ("Города места работы", "work_cities"),
                   ("Зарплата", "salary"), ("Подходящие слова", "relevant"), ("Исключения", "exclude")]
         await self._send_text(chat_id, "Что изменить?", reply_markup=self._direction_inline(state,
             [[(label, f"edit:{field}")] for label, field in labels] + [[("Назад", "back"), ("Отмена", "cancel")]]))
@@ -183,6 +190,9 @@ class TelegramDirections:
                 await self._dispatch_direction(chat_id, principal, "/direction_edit", parts[3])
             elif action == "preset" and state.get("mode") == "edit":
                 values = {"moscow": "1", "spb": "2", "russia": "113", "remote": "remote", "office": "fullDay", "fly": "flyInFlyOut", "any": "любой"}
+                await self._accept_direction_input(chat_id, principal, values[parts[3]])
+            elif action == "conditionpreset" and state.get("mode") == "edit":
+                values = {"yes": "да", "no": "нет", "remote": "удалённо, гибрид", "any": "любой"}
                 await self._accept_direction_input(chat_id, principal, values[parts[3]])
             elif action == "pair" and state.get("draft"):
                 pairs = {"spb": {"area": "2", "schedule": ""}, "fly": {"area": "113", "schedule": "flyInFlyOut"}}
@@ -462,6 +472,26 @@ class TelegramDirections:
                 field = state.get("field", "search_queries")
                 if field == "search_queries":
                     state["draft"][field] = search_query_suggester.normalize_queries(text)
+                elif field in {"work_formats", "fly_allowed", "work_cities"}:
+                    conditions = copy.deepcopy(state["draft"].get("work_conditions", work_conditions.defaults(state["draft"])))
+                    value = text.strip().casefold().replace("ё", "е")
+                    if field == "work_cities":
+                        conditions["allowed_cities"] = [] if value == "любой" else [v.strip() for v in text.split(",")]
+                    elif field == "fly_allowed":
+                        if value not in {"да", "нет"}:
+                            raise ValueError("Разрешена ли вахта? Отправьте «да» или «нет».")
+                        conditions["allow_fly_in_fly_out"] = value == "да"
+                    else:
+                        labels = {"удаленно": "remote", "гибрид": "hybrid", "на месте": "on_site",
+                                  "на месте работодателя": "on_site", "офис": "on_site", "разъездная": "field"}
+                        values = [v.strip() for v in value.split(",")]
+                        if value == "любой":
+                            conditions["allowed_formats"] = list(work_conditions.FORMAT_LABELS)
+                        elif not values or any(v not in labels for v in values):
+                            raise ValueError("Укажите через запятую: удалённо, гибрид, на месте, разъездная. Или «любой».")
+                        else:
+                            conditions["allowed_formats"] = list(dict.fromkeys(labels[v] for v in values))
+                    state["draft"]["work_conditions"] = work_conditions.validate(conditions)
                 elif field in {"relevant_keywords", "exclude_keywords"}:
                     values = list(dict.fromkeys(v.strip() for v in re.split(r"[\n,]+", text) if v.strip()))
                     if len(values) > 30 or any(len(value) > 100 for value in values):
@@ -650,10 +680,25 @@ class TelegramDirections:
             field = arg.strip() or "search_queries"
             aliases = {"queries": "search_queries", "filter": "filter_policy", "relevant": "relevant_keywords", "exclude": "exclude_keywords", "salary": "salary_baseline"}
             field = aliases.get(field, field)
-            if field not in {"title", "search_queries", "relevant_keywords", "exclude_keywords", "filter_policy", "positioning", "goal", "city", "format", "search_profiles", "salary_baseline"}:
+            if field not in {"title", "search_queries", "relevant_keywords", "exclude_keywords", "filter_policy", "positioning", "goal", "city", "format", "search_profiles", "salary_baseline", "work_formats", "fly_allowed", "work_cities"}:
                 await self._send_text(chat_id, "Поля: /direction_edit title|queries|relevant|exclude|filter")
                 return
             state.update(mode="edit", field=field)
+            if field == "work_cities":
+                await self._send_text(chat_id,
+                    "В каких городах допустима работа с выездом к работодателю? Укажите полные названия через запятую, например: Санкт-Петербург.\n"
+                    "«Любой» — убрать ограничение. На полностью удалённую работу это ограничение не влияет.",
+                    reply_markup=self._direction_inline(state, [[("Назад", "back"), ("Отмена", "cancel")]]))
+                return
+            if field in {"work_formats", "fly_allowed"}:
+                message = ("Какая работа допустима? Укажите через запятую: удалённо, гибрид, на месте, разъездная. Или «любой»."
+                           if field == "work_formats" else "Разрешена ли вахта в этом направлении? Отправьте «да» или «нет».")
+                choices = ([("Удалённо и гибрид", "remote"), ("Любой формат", "any")] if field == "work_formats" else
+                           [("Да", "yes"), ("Нет", "no")])
+                rows = [[(label, "conditionpreset:" + value)] for label, value in choices]
+                rows.append([("Назад", "back"), ("Отмена", "cancel")])
+                await self._send_text(chat_id, message, reply_markup=self._direction_inline(state, rows))
+                return
             if field in {"city", "format", "search_profiles"}:
                 choices = ({"Москва": "moscow", "Санкт-Петербург": "spb", "Россия": "russia"} if field == "city" else
                            {"Удалённо": "remote", "Офис": "office", "Вахта": "fly", "Любой": "any"})

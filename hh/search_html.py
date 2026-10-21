@@ -228,6 +228,19 @@ def parse_hh_search_html(html: str, *, base_url: str) -> list[dict]:
         raise ValueError("unrecognized HH search results")
     extra, complete = _state_vacancies(html, base_url, seen)
     vacancies.extend(extra)
+    # Enrich SSR cards too: their IDs were already in `seen` above.
+    from hh.observation import initial_state
+    from work_conditions import from_hh_fields
+    try:
+        items = (initial_state(html).get("vacancySearchResult") or {}).get("vacancies") or []
+        fields = {str(item.get("vacancyId")): from_hh_fields(item)
+                  for item in items if isinstance(item, dict)}
+        for vacancy in vacancies:
+            evidence = fields.get(vacancy["id"])
+            if evidence and (evidence["formats"] or evidence["fly_in_fly_out"] or evidence.get("city")):
+                vacancy["_hh_work_conditions"] = evidence
+    except (ValueError, TypeError, AttributeError):
+        pass
     return SearchPage(vacancies, complete=complete)
 
 
