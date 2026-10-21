@@ -33,6 +33,11 @@ class ChatJournal:
         self.latest_threads = {}
 
     def write(self, event, **fields):
+        if fields.get("chat_id"):
+            import chat_context
+            owner = chat_context.safe_resolve(str(self.home), str(fields["chat_id"]))
+            fields.update(direction=owner.direction if owner.status == chat_context.OWN else None,
+                          hh_resume_numeric_id=owner.resume_id or None)
         snapshot_id = uuid.uuid4().hex
         record = dict(schema_version=1, event=event, snapshot_id=snapshot_id,
                       run_id=self.run_id, observed_at=datetime.now(timezone.utc).isoformat(),

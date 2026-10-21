@@ -299,6 +299,8 @@ def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -
     entry = {**result, "kind": "search", "run_id": result.get("_run_id", ""),
              "ok": ok, "mode": mode, "error_kind": error,
              "created_at": datetime.now().isoformat(timespec="seconds")}
+    from direction_history import runtime_metadata
+    entry.update(runtime_metadata())
     entry.update(analytics.run_observation_fields(entry))
     _append_run_history(entry)
     analytics.record_search_finished(run_id=entry["run_id"], mode=mode, result=entry)
@@ -334,7 +336,8 @@ def _observe_search(function):
                     observation.result.update({field: entry[field] for field in
                         ("run_id", "started_at", "finished_at", "ok", "new", "manual", "funnel",
                          "reason_breakdown", "failure_stage", "error_kind", "stage_failures", "source_stats",
-                         "execution_status", "application_outcome", "zero_apply_diagnosis")})
+                         "execution_status", "application_outcome", "zero_apply_diagnosis", "direction",
+                         "direction_title", "hh_resume_hash", "hh_resume_numeric_id")})
                     _append_run_history(entry, path=observation.history_file)
                     analytics.record_search_finished(run_id=run_id, mode=mode, result=entry)
                 except Exception as exc:
@@ -3112,12 +3115,13 @@ def do_hh_retry_company_guard(action: str, company: str = "") -> None:
 async def do_analytics_backfill():
     """Аккуратно подтянуть исторические hh-статусы и seen-решения в аналитику."""
     run_id = analytics.new_run_id("analytics-backfill")
-    seen_entries = seen.all_entries()
+    seen_entries = seen.raw_entries()
     seen_backfill = analytics.backfill_seen_decisions(seen_entries, run_id=run_id)
 
     tracked_hh_ids = set()
     tracked_hh_keys = set()
-    for vacancy_id, payload in seen_entries.items():
+    for entry_key, payload in seen_entries.items():
+        vacancy_id = str(payload.get("vacancy_id") or entry_key)
         if ":" in vacancy_id:
             source = vacancy_id.split(":", 1)[0]
             local_id = vacancy_id.split(":", 1)[1]
@@ -3134,7 +3138,8 @@ async def do_analytics_backfill():
         tracked_hh_ids.add(local_id)
         tracked_hh_keys.add(search_pipeline.vacancy_match_key(payload.get("title", ""), payload.get("company", "")))
 
-    for vacancy_id, payload in hh_pipeline.all_entries().items():
+    for payload in hh_pipeline.history_entries():
+        vacancy_id = payload.get("id", "")
         tracked_hh_ids.add(str(vacancy_id))
         tracked_hh_keys.add(search_pipeline.vacancy_match_key(payload.get("title", ""), payload.get("company", "")))
 

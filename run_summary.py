@@ -216,6 +216,7 @@ def build_run_summary(run, events=(), *, profile=""):
     observation = run_observation_fields({**data, "status": "incomplete" if incomplete else data.get("status"),
                                          "funnel": {**funnel, **counters}, "stage_failures": failures})
     return {"run_id": run_id, "profile": profile, "profile_id": data.get("profile_id") or started.get("profile_id"),
+        "direction": data.get("direction"), "direction_title": data.get("direction_title", ""),
         "started_at": start_at, "finished_at": finish_at, "duration_seconds": duration,
         "sources": sources, "source_stats": data.get("source_stats") or {},
         "stage_failures": failures, "status": status, "counters": counters,

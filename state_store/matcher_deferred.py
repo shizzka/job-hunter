@@ -39,10 +39,32 @@ def _valid_state(state):
 
 class MatcherDeferredQueue:
     def __init__(self, home_dir, *, cooldown_seconds=300, clock=None):
-        self.path = Path(home_dir) / "matcher_deferred.json"
+        import directions
+        active = directions.active_direction(home_dir) or {}
+        self.direction = active
+        self.path = Path(home_dir) / (f"matcher_deferred.{active['name']}.json" if active else "matcher_deferred.json")
         self.clock = clock or time.time
         self.cooldown_seconds = max(1, int(cooldown_seconds))
         self.store = ProtectedJsonStore(self.path, default_factory=lambda: {"items": {}}, validator=_valid_state)
+        self.legacy_store = (ProtectedJsonStore(Path(home_dir) / "matcher_deferred.json",
+            default_factory=lambda: {"items": {}}, validator=_valid_state) if active else None)
+
+    def _legacy_items(self):
+        if self.legacy_store is None or not self.legacy_store.path.exists():
+            return {}
+        from direction_history import HistoryScope
+        view = HistoryScope(self.path.parent, self.direction["name"])
+        return {key: entry for key, entry in self.legacy_store.load()["items"].items()
+                if view.matches(entry["vacancy"])}
+
+    def _resolve_legacy(self, vacancy):
+        key, revision = self.key(vacancy), vacancy.get("_matcher_deferred_revision")
+        if not revision or key not in self._legacy_items():
+            return
+        def remove(state):
+            if state["items"].get(key, {}).get("revision") == revision:
+                del state["items"][key]
+        self.legacy_store.update(remove)
 
     @staticmethod
     def key(vacancy):
@@ -56,6 +78,14 @@ class MatcherDeferredQueue:
         snapshot = copy.deepcopy({k: v for k, v in vacancy.items() if not k.startswith("_matcher_deferred_")})
         snapshot["source"] = snapshot.get("source") or "hh"
         snapshot["id"] = str(snapshot["id"]).strip()
+        metadata = {"direction": None, "hh_resume_hash": "", "hh_resume_numeric_id": None}
+        if self.direction:
+            import directions
+            variant = snapshot.get("_direction_selection") or directions.select_variant(
+                self.direction, snapshot["id"], "\n".join(str(snapshot.get(k) or "") for k in ("title", "snippet", "details")))
+            metadata = {"direction": self.direction["name"], "hh_resume_hash": variant["hh_resume_hash"],
+                        "hh_resume_numeric_id": variant.get("hh_resume_numeric_id")}
+            snapshot.update(metadata)
         if not isinstance(snapshot["source"], str) or snapshot["source"] not in {"hh", "habr", "geekjob", "superjob"}:
             raise ValueError("Unknown deferred vacancy source")
         now = self.clock()
@@ -65,7 +95,7 @@ class MatcherDeferredQueue:
         def update(state):
             previous = state["items"].get(key, {})
             state["items"][key] = {
-                **previous, "vacancy": snapshot, "details": str(details or previous.get("details") or ""),
+                **previous, **metadata, "vacancy": snapshot, "details": str(details or previous.get("details") or ""),
                 "error_kind": str(error_kind), "revision": uuid.uuid4().hex,
                 "attempts": previous.get("attempts", 0) + 1,
                 "updated_at": max(now, previous.get("updated_at", 0)),
@@ -74,6 +104,7 @@ class MatcherDeferredQueue:
             return state
 
         self.store.update(update)
+        self._resolve_legacy(vacancy)
 
     def resolve(self, vacancy):
         """Only the observed revision may be removed; never a newer deferral."""
@@ -87,10 +118,11 @@ class MatcherDeferredQueue:
             return state
 
         self.store.update(update)
+        self._resolve_legacy(vacancy)
 
     def merge_ready(self, vacancies, enabled_sources):
         """Retry even if discovery no longer returns the vacancy; enforce cooldown."""
-        items = self.store.load()["items"]
+        items = {**self._legacy_items(), **self.store.load()["items"]}
         now = self.clock()
         if not isinstance(now, (int, float)) or isinstance(now, bool) or not math.isfinite(now):
             raise ValueError("Invalid deferred queue clock")

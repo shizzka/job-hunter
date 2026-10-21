@@ -12,6 +12,7 @@ import os
 import time
 
 import config
+import direction_history
 
 CACHE_FILE = "evaluation_cache.json"
 TTL_SECONDS = 3 * 24 * 3600
@@ -23,8 +24,12 @@ def _path() -> str:
 
 
 def _key(vacancy: dict) -> str:
-    direction = (getattr(config, "ACTIVE_DIRECTION", None) or {}).get("name") or ""
-    return f"{vacancy.get('source') or 'hh'}:{vacancy.get('id') or ''}:{direction}"
+    # A/B and closest variants must not reuse each other's verdict either.
+    metadata = direction_history.runtime_metadata(vacancy)
+    direction = metadata.get("direction") or ""
+    variant = metadata.get("hh_resume_hash") or ""
+    digest = metadata.get("variant_text_sha256") or ""
+    return f"{vacancy.get('source') or 'hh'}:{vacancy.get('id') or ''}:{direction}:{variant}:{digest}"
 
 
 def _read() -> dict:
@@ -38,6 +43,9 @@ def _read() -> dict:
 
 def lookup(vacancy: dict) -> dict | None:
     if not vacancy.get("id"):
+        return None
+    bound = vacancy.get("_direction_selection") or {}
+    if bound and bound.get("direction") != (getattr(config, "ACTIVE_DIRECTION", None) or {}).get("name"):
         return None
     entry = _read().get(_key(vacancy))
     if not isinstance(entry, dict) or time.time() - float(entry.get("at") or 0) > TTL_SECONDS:
@@ -54,7 +62,7 @@ def store(vacancy: dict, evaluation: dict) -> None:
         now = time.time()
         data = {key: value for key, value in _read().items()
                 if isinstance(value, dict) and now - float(value.get("at") or 0) <= TTL_SECONDS}
-        data[_key(vacancy)] = {"at": now, "evaluation": {key: value for key, value in evaluation.items()
+        data[_key(vacancy)] = {"at": now, **direction_history.runtime_metadata(vacancy), "evaluation": {key: value for key, value in evaluation.items()
                                                          if key != "evaluation_cached"}}
         if len(data) > MAX_ENTRIES:
             data = dict(sorted(data.items(), key=lambda item: item[1]["at"])[-MAX_ENTRIES:])
@@ -71,3 +79,16 @@ def dry_run_cap() -> int:
         return max(0, int(os.getenv("DRY_RUN_MAX_LLM_EVALUATIONS", "30")))
     except ValueError:
         return 30
+
+
+def reset(home, *, direction_scope="active", since=""):
+    from datetime import datetime
+    from state_store.protected import ProtectedJsonStore
+    scope = direction_history.HistoryScope(home, direction_scope)
+    cutoff = datetime.fromisoformat(since).timestamp() if since else 0
+    store = ProtectedJsonStore(os.path.join(home, CACHE_FILE))
+    def forget(data):
+        for key in list(data):
+            if scope.matches(data[key]) and float(data[key].get("at") or 0) >= cutoff:
+                del data[key]
+    store.update(forget)

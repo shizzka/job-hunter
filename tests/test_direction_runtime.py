@@ -276,6 +276,8 @@ def test_offline_direction_profile_matcher_queue_dispatch_smoke(active_direction
     scoring = client_for(json.dumps({"score": 95, "should_apply": True, "reason": "Подходит", "red_flags": []}))
     monkeypatch.setattr(matcher, "_get_client", lambda: scoring)
     evaluation = asyncio.run(matcher.evaluate_vacancy(vacancy, "Проверка щитов"))
+    assert evaluation["direction"] == direction["name"]
+    assert evaluation["hh_resume_hash"] == vacancy["_direction_selection"]["hh_resume_hash"]
     cover_client = client_for(claim + " Обсудим детали?", json.dumps(approved(claim)))
     monkeypatch.setattr(matcher, "_get_client", lambda: cover_client)
     cover = asyncio.run(matcher.generate_cover_letter(vacancy, "Проверка щитов"))

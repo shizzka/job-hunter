@@ -15,6 +15,7 @@ from functools import wraps
 
 import config
 import resume_versions
+import direction_history
 from state_store.json_store import JsonStore
 from state_store.private_journal import append_json, read_json_records
 from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket, application_outcome
@@ -121,6 +122,7 @@ class SearchObservation:
         self.source_stop_failures = {}
         self.uncertain_failures = {}
         self.history_file = config.RUN_HISTORY_FILE
+        self.direction = direction_history.runtime_metadata()
 
     def entry(self, *, incomplete=False):
         stats = self.result.get("source_stats", {})
@@ -155,6 +157,7 @@ class SearchObservation:
         if incomplete:
             entry = incomplete_run_counts(entry, totals["applied"],
                 {source: bucket["funnel"]["applied"] for source, bucket in sources.items()})
+        entry.update(self.direction)
         entry.update(run_observation_fields(entry))
         return entry
 
@@ -163,7 +166,7 @@ class SearchObservation:
 def observe_search(run_id, mode):
     observation = SearchObservation(run_id, mode)
     token = _run_observation.set(observation)
-    with event_context(run_id=run_id, stage="startup", channel="search"):
+    with event_context(run_id=run_id, stage="startup", channel="search", **observation.direction):
         try:
             yield observation
         finally:
@@ -563,6 +566,10 @@ def _normalize(value: str) -> str:
 def _vacancy_key(payload: dict) -> str:
     vacancy_id = str(payload.get("vacancy_id") or payload.get("id") or "").strip()
     source = str(payload.get("source") or "").strip()
+    vacancy_id = vacancy_id.removeprefix(source + ":") if source else vacancy_id
+    direction = payload.get("_history_owner", payload.get("direction"))
+    if direction:
+        source += ":direction:" + direction
     if vacancy_id:
         return f"{source}:{vacancy_id}"
 
@@ -638,14 +645,15 @@ def _reconcile_event_tail(state: dict) -> dict:
                     continue
                 kind = event.get("event")
                 vacancy_id = str(event.get("vacancy_id") or "").strip()
+                state_key = vacancy_id + (":" + event["direction"] if event.get("direction") else "")
                 if kind == "negotiation_status" and vacancy_id:
                     status = event.get("status")
                     if isinstance(status, str) and status.strip():
-                        state["negotiation_status_by_vacancy"][vacancy_id] = status.strip()
+                        state["negotiation_status_by_vacancy"][state_key] = status.strip()
                 elif kind == "negotiation_observation" and vacancy_id:
                     observed_at = event.get("observed_at_utc")
                     if isinstance(observed_at, str) and observed_at:
-                        state["last_poll_by_vacancy"][vacancy_id] = observed_at
+                        state["last_poll_by_vacancy"][state_key] = observed_at
                 elif kind == "invitation":
                     try:
                         invitation_keys.add(_vacancy_key(event))
@@ -655,7 +663,7 @@ def _reconcile_event_tail(state: dict) -> dict:
                     decision = event.get("decision")
                     if vacancy_id and isinstance(decision, str) and decision:
                         source = event.get("source") or _source_from_vacancy_id(vacancy_id)
-                        historical_keys.add(f"{source}:{vacancy_id}:{decision}")
+                        historical_keys.add(f"{source}:{vacancy_id}:{decision}" + (":" + event["direction"] if event.get("direction") else ""))
             state["_journal_checkpoint"] = {"identity": identity, "offset": stream.tell()}
     except FileNotFoundError:
         pass
@@ -722,7 +730,7 @@ def _append_event(payload: dict, *, durable: bool = False) -> bool:
     if not config.ANALYTICS_ENABLED:
         return False
 
-    payload = {**_event_context.get(), **payload}
+    payload = {**direction_history.runtime_metadata(), **_event_context.get(), **payload}
     payload.setdefault("schema_version", 2)
     payload.setdefault("event_id", uuid.uuid4().hex)
     payload.setdefault("recorded_at_utc", datetime.now(timezone.utc).isoformat())
@@ -951,6 +959,8 @@ def record_decision(
         payload["failure_id"] = failure_id
     payload.update(_resume_variant_payload(resume_variant))
     payload.update(resume_versions.payload(vacancy))
+    payload.update(direction_history.runtime_metadata(vacancy))
+    payload["resume_id"] = payload.get("resume_id") or payload.get("hh_resume_hash", "")
     _append_event(payload)
 
 
@@ -964,24 +974,26 @@ def record_negotiation_statuses(items: list[dict]) -> None:
 def _record_negotiation_statuses(state: dict, items: list[dict]) -> None:
     last_status_by_vacancy = state.setdefault("negotiation_status_by_vacancy", {})
 
-    for item in items:
+    for item, metadata in zip(items, observation_metadata(items)):
         vacancy_id = str(item.get("id") or "").strip()
         status_text = str(item.get("status") or "").strip()
         if not vacancy_id or not status_text:
             continue
+
+        state_key = vacancy_id + (":" + metadata["direction"] if metadata.get("direction") else "")
 
         polls = state.setdefault("last_poll_by_vacancy", {})
         observed_at = datetime.now(timezone.utc).isoformat()
         if not _append_event({
             "event": "negotiation_observation", "vacancy_id": vacancy_id,
             "source": "hh", "observed_at_utc": observed_at,
-            "previous_poll_at": polls.get(vacancy_id),
+            "previous_poll_at": polls.get(state_key), **metadata,
             "status_bucket": _status_bucket(status_text),
             "status_detail_bucket": _status_detail_bucket(status_text),
         }, durable=True):
             continue
-        polls[vacancy_id] = observed_at
-        prev_status = last_status_by_vacancy.get(vacancy_id, "")
+        polls[state_key] = observed_at
+        prev_status = last_status_by_vacancy.get(state_key, "")
         if prev_status == status_text:
             continue
 
@@ -998,10 +1010,11 @@ def _record_negotiation_statuses(state: dict, items: list[dict]) -> None:
             "status_bucket": _status_bucket(status_text),
             "status_detail_bucket": _status_detail_bucket(status_text),
             "prev_status": prev_status,
+            **metadata,
         }
         if not _append_event(payload, durable=True):
             continue
-        last_status_by_vacancy[vacancy_id] = status_text
+        last_status_by_vacancy[state_key] = status_text
 
 
 def _questionnaire_items_payload(items: list[dict]) -> list[dict]:
@@ -1061,6 +1074,7 @@ def record_questionnaire(
             "starred_count": sum(1 for item in items if item.get("starred")),
             "best_guess_count": sum(1 for item in items if item.get("best_guess")),
             "question_answers": items,
+            **direction_history.runtime_metadata(vacancy),
         }
     )
 
@@ -1075,13 +1089,14 @@ def record_invitations(items: list[dict]) -> None:
 def _record_invitations(state: dict, items: list[dict]) -> None:
     invitation_keys = set(state.setdefault("invitation_keys", []))
 
-    for item in items:
+    for item, metadata in zip(items, observation_metadata(items)):
         payload = {
             "vacancy_id": str(item.get("id") or "").strip(),
             "title": item.get("title", ""),
             "company": item.get("company", ""),
             "url": item.get("url", ""),
             "source": "hh",
+            **metadata,
         }
         key = _vacancy_key(payload)
         if key in invitation_keys:
@@ -1134,14 +1149,18 @@ def _backfill_seen_decisions(state: dict, entries: dict, run_id: str) -> dict:
     decision_counter = Counter()
     added = 0
     backfill_run_id = run_id or new_run_id("analytics-backfill")
+    view = direction_history.HistoryScope(_destination()[2])
 
-    for vacancy_id, payload in entries.items():
+    for entry_key, payload in entries.items():
         if not isinstance(payload, dict):
             continue
 
+        vacancy_id = str(payload.get("vacancy_id") or entry_key)
         source = _source_from_vacancy_id(vacancy_id)
         decision, note = _map_historical_action(str(payload.get("action") or "").strip())
-        historical_key = f"{source}:{vacancy_id}:{decision}"
+        metadata = view.metadata(payload)
+        metadata["variant_text_sha256"] = payload.get("variant_text_sha256")
+        historical_key = f"{source}:{vacancy_id}:{decision}" + (":" + metadata["direction"] if metadata.get("direction") else "")
         if historical_key in historical_keys:
             continue
 
@@ -1166,7 +1185,7 @@ def _backfill_seen_decisions(state: dict, entries: dict, run_id: str) -> dict:
                 "salary": "",
                 "snippet": "",
                 "details": "",
-                "search_query": "",
+                "search_query": payload.get("search_query") or payload.get("_search_query", ""),
                 "search_profile": "historical_seen",
                 "search_path": "",
                 "is_retry": False,
@@ -1179,7 +1198,8 @@ def _backfill_seen_decisions(state: dict, entries: dict, run_id: str) -> dict:
                 "note": note,
                 "resume_variant": "",
                 "resume_title": "",
-                "resume_id": "",
+                "resume_id": metadata["hh_resume_hash"],
+                **metadata,
             },
             durable=True,
         ):
@@ -1204,7 +1224,35 @@ def _iter_events(events_file: str | None = None) -> list[dict]:
         return []
 
 
-def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile=""):
+def history_events(events_file=None, *, scope="active"):
+    view = direction_history.for_events(events_file, scope)
+    return view.records(view.events(_iter_events(events_file)))
+
+
+def scoped_runs(records, *, events_file=None, scope="active"):
+    view = direction_history.for_events(events_file, scope)
+    events = view.events(_iter_events(events_file))
+    owners = {e.get("run_id"): view.owner(e) for e in events if view.owner(e) is not None
+              and e.get("event") in {"search_started", "search_finished"}}
+    result = []
+    for r in records:
+        row = dict(r, direction=r.get("direction") or owners.get(r.get("run_id")))
+        owner = view.owner(row)
+        row["direction_title"] = next((d["title"] for d in view.directions if d["name"] == owner), "направление не указано")
+        result.append(row)
+    return view.records(result)
+
+
+def observation_metadata(items):
+    """Account observations cannot inherit the active search's profession."""
+    view = direction_history.HistoryScope(_destination()[2])
+    records = [{**item, "event": "negotiation_status", "source": "hh",
+                "vacancy_id": str(item.get("id") or "")} for item in items]
+    applications = [e for e in _iter_events() if e.get("event") == "decision" and e.get("decision") == "applied_auto"]
+    return [view.metadata(record) for record in view.events(records + applications)[:len(records)]]
+
+
+def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile="", scope="active"):
     """Read a selected/latest search run from profile-owned existing storage."""
     from run_summary import build_run_summary
     path = history_file if history_file is not None else config.RUN_HISTORY_FILE
@@ -1216,6 +1264,13 @@ def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile
         events = read_json_records(events_file or _destination()[0], strip_nuls=True)
     except FileNotFoundError:
         events = []
+    view = direction_history.for_events(events_file, scope)
+    events = view.events(events)
+    owners = {e.get("run_id"): view.owner(e) for e in events if view.owner(e) is not None
+              and e.get("event") in {"search_started", "search_finished"}}
+    records = [dict(r, direction=r.get("direction") or owners.get(r.get("run_id"))) for r in records]
+    records = view.records(records)
+    events = view.records(events)
     searches = [r for r in records if r.get("kind") == "search" or r.get("mode") in {"search", "dry-run"}]
     if run_id:
         run = next((r for r in reversed(searches) if r.get("run_id") == run_id), None)
@@ -1243,7 +1298,10 @@ def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile
         run_id = run.get("run_id")
     if run.get("status") == "incomplete":
         run = reconcile_run_records([run], events_file=events_file)[0]
-    return build_run_summary(run, events, profile=profile)
+    summary = build_run_summary(run, events, profile=profile)
+    owner = view.owner(run)
+    summary["direction_title"] = next((d["title"] for d in view.directions if d["name"] == owner), "направление не указано")
+    return summary
 
 
 FILTER_AUDIT_ALLOWED_DECISIONS = {
@@ -1292,6 +1350,7 @@ def audit_filters(
     all_time: bool = False,
     limit: int = 20,
     min_viable_score: int = 50,
+    scope="active",
 ) -> dict:
     """Replay current deterministic vacancy classifier over analytics history."""
     from matcher import classify_vacancy_cluster
@@ -1305,7 +1364,7 @@ def audit_filters(
     low_score_viable = []
     keyword_filtered_viable = []
 
-    for event in _iter_events(events_file):
+    for event in history_events(events_file, scope=scope):
         if event.get("event") != "decision":
             continue
         created_at = _parse_dt(event.get("created_at"))
@@ -1340,6 +1399,7 @@ def audit_filters(
         "days": days,
         "all_time": all_time,
         "decisions": audited_decisions,
+        "direction_title": direction_history.for_events(events_file, scope).title,
         "by_cluster": cluster_counter.most_common(),
         "by_decision_cluster": [
             {"decision": decision, "cluster": cluster, "count": count}
@@ -1368,13 +1428,15 @@ def summarize(
     all_time: bool = False,
     start_at: datetime | None = None,
     end_at: datetime | None = None,
+    scope="active",
 ) -> dict:
     days = days if days is not None else config.ANALYTICS_RECENT_DAYS
     cutoff = start_at if start_at is not None else (
         None if all_time else (_now() - timedelta(days=max(0, days)))
     )
     events = []
-    for event in _iter_events(events_file):
+    view = direction_history.for_events(events_file, scope)
+    for event in history_events(events_file, scope=scope):
         created_at = _parse_dt(event.get("created_at"))
         if created_at is None:
             continue
@@ -1388,7 +1450,7 @@ def summarize(
     # run. Preserve the journal, but report only its sticky uncertainty for
     # that vacancy/run rather than counting an obsolete failed/sent decision.
     def decision_key(event):
-        return (event.get("run_id"), event.get("source"), event.get("vacancy_id"))
+        return (event.get("run_id"), _vacancy_key(event))
 
     uncertain_decisions = {
         decision_key(event): index for index, event in enumerate(events)
@@ -1401,6 +1463,7 @@ def summarize(
 
     summary = {
         "days": days,
+        "direction_title": view.title,
         "all_time": all_time,
         "events": len(events),
         "search_runs": 0,
@@ -1439,6 +1502,7 @@ def summarize(
         "reason_breakdown": {},
         "reason_groups": {},
         "search_funnel": {},
+        "by_direction": {},
     }
 
     decision_counter = Counter()
@@ -1467,6 +1531,10 @@ def summarize(
 
     for event in events:
         event_type = event.get("event")
+        if event_type == "decision":
+            owner = view.owner(event)
+            label = next((d["title"] for d in view.directions if d["name"] == owner), "направление не указано")
+            summary["by_direction"][label] = summary["by_direction"].get(label, 0) + 1
         if event_type == "search_finished":
             summary["search_runs"] += 1
             for field, count in (event.get("funnel") or {}).items():

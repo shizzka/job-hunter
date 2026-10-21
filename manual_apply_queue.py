@@ -14,6 +14,7 @@ from pathlib import Path
 
 import config
 import company_blacklist
+from direction_history import runtime_metadata
 from state_store.protected import ProtectedJsonStore
 
 log = logging.getLogger(__name__)
@@ -94,6 +95,7 @@ def _compact_evaluation(evaluation: dict) -> dict:
         "cluster", "resume_variant", "cover_style", "red_flags", "guard_flags",
         "soft_flags", "hard_flags", "error_kind",
         "evaluation_status", "work_conditions_status",
+        "direction", "direction_title", "hh_resume_hash", "hh_resume_numeric_id", "variant_text_sha256",
     )
     return {key: evaluation.get(key) for key in keys if evaluation.get(key) not in (None, "", [])}
 
@@ -140,6 +142,7 @@ def create_candidate(
     )
     token = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
     item = {
+        **runtime_metadata(vacancy),
         "token": token,
         "profile_name": _safe_profile(profile_name or os.getenv("JOB_HUNTER_DEFAULT_PROFILE", "default")),
         "status": "pending",
@@ -323,6 +326,11 @@ def _append_feedback_log(item: dict, profile_name: str | None) -> None:
     }
     try:
         path = _queue_path(profile_name).with_name(FEEDBACK_LOG)
+        from direction_history import HistoryScope
+        scope = HistoryScope(path.parent)
+        record.update(scope.metadata(item))
+        record["direction"] = selection.get("direction") or record["direction"]
+        record["variant_text_sha256"] = selection.get("text_sha256")
         with path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as exc:  # the button must keep working even if the log is not writable

@@ -1350,6 +1350,12 @@ def _build_cover_letter_style_block(vacancy: dict, details: str = "", cover_styl
 
 
 async def evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
+    from direction_history import runtime_metadata
+    result = await _evaluate_vacancy(vacancy, details)
+    return {**result, **runtime_metadata(vacancy)}
+
+
+async def _evaluate_vacancy(vacancy: dict, details: str = "") -> dict:
     """
     Оценить вакансию на релевантность.
 

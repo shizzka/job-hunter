@@ -144,8 +144,13 @@ def _corrupt_state() -> dict:
 
 
 def _store() -> JsonStore:
+    from pathlib import Path
+    path = Path(config.HH_RESUME_PIPELINE_FILE)
+    direction = getattr(config, "ACTIVE_DIRECTION", None) or {}
+    if direction:
+        path = path.with_name(path.stem + "." + direction["name"] + path.suffix)
     return JsonStore(
-        config.HH_RESUME_PIPELINE_FILE,
+        path,
         corrupt_factory=_corrupt_state,
         logger=log,
         read_error_message="HH resume pipeline state read failed",
@@ -277,6 +282,26 @@ def all_entries() -> dict:
     }
 
 
+def history_entries() -> list[dict]:
+    """All saved attempts for read-only account backfill, including legacy state."""
+    import json
+    from pathlib import Path
+    import directions
+    base = Path(config.HH_RESUME_PIPELINE_FILE)
+    paths = [base, *(base.with_name(base.stem + "." + d["name"] + base.suffix)
+                    for d in directions.list_directions(config.JOB_HUNTER_HOME))]
+    result = []
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        if isinstance(data, dict):
+            result.extend({"id": key, **entry} for key, entry in data.items()
+                          if not str(key).startswith("_") and isinstance(entry, dict))
+    return result
+
+
 def _blocked_company_state(state: dict | None = None) -> dict:
     state = state if state is not None else _load()
     blocked = state.get("_blocked_companies", {})
@@ -358,6 +383,8 @@ def _ensure_entry(vacancy: dict, state: dict | None = None) -> dict:
     entry["company"] = vacancy.get("company", entry.get("company", ""))
     entry["url"] = vacancy.get("url", entry.get("url", ""))
     entry["response_url"] = vacancy.get("response_url", entry.get("response_url", ""))
+    from direction_history import runtime_metadata
+    entry.update(runtime_metadata(vacancy))
     return entry
 
 
@@ -429,6 +456,7 @@ def record_successful_apply(vacancy: dict, variant: dict) -> None:
 
 def _record_successful_apply(state: dict, vacancy: dict, variant: dict) -> None:
     entry = _ensure_entry(vacancy, state)
+    entry["hh_resume_hash"] = variant.get("id") or entry.get("hh_resume_hash", "")
     if entry.get("completed_reason") == "apply_uncertain":
         return
     attempts = entry.setdefault("attempts", [])
@@ -444,6 +472,9 @@ def _record_successful_apply(state: dict, vacancy: dict, variant: dict) -> None:
                 "resume_title": variant.get("title", ""),
                 "resume_id": variant.get("id", ""),
                 "applied_at": _to_iso(_now()),
+                "direction": entry.get("direction"),
+                "hh_resume_hash": entry.get("hh_resume_hash") or variant.get("id", ""),
+                "hh_resume_numeric_id": entry.get("hh_resume_numeric_id"),
                 **retry_payload,
             }
         )

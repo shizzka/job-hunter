@@ -19,7 +19,7 @@ def _resettable(entry: dict) -> bool:
     return str(entry.get("action") or "").startswith(_RESETTABLE_PREFIXES)
 
 
-def _since(home_dir: str, scope: str) -> str:
+def _since(home_dir: str, scope: str, direction_scope="active") -> str:
     if scope == "all":
         return ""
     if scope == "day":
@@ -38,6 +38,8 @@ def _since(home_dir: str, scope: str) -> str:
                 continue
             if isinstance(row, dict) and row.get("started_at"):
                 runs.append(row)
+        import analytics
+        runs = analytics.scoped_runs(runs, events_file=os.path.join(home_dir, "analytics_events.jsonl"), scope=direction_scope)
         # A run still in progress (started by cron or by hand) is not «the last run».
         finished = [row for row in runs if row.get("finished_at")]
         if finished or runs:
@@ -46,29 +48,38 @@ def _since(home_dir: str, scope: str) -> str:
     raise ValueError(f"Неизвестный период: {scope}")
 
 
-def plan(home_dir: str, scope: str) -> list[str]:
-    since = _since(home_dir, scope)
+def plan(home_dir: str, scope: str, *, direction_scope="active") -> list[str]:
+    import direction_history
+    view = direction_history.HistoryScope(home_dir, direction_scope)
+    since = _since(home_dir, scope, direction_scope)
     try:
         with open(os.path.join(home_dir, "seen_vacancies.json"), encoding="utf-8") as stream:
             seen = json.load(stream)
     except (OSError, ValueError):
         return []
     return [key for key, entry in seen.items()
-            if isinstance(entry, dict) and _resettable(entry) and str(entry.get("date") or "") >= since]
+            if isinstance(entry, dict) and view.matches(entry) and _resettable(entry) and str(entry.get("date") or "") >= since]
 
 
-def apply(home_dir: str, scope: str) -> int:
-    keys = set(plan(home_dir, scope))
+def apply(home_dir: str, scope: str, *, direction_scope="active") -> int:
+    keys = set(plan(home_dir, scope, direction_scope=direction_scope))
+    since = _since(home_dir, scope, direction_scope)
+    import evaluation_cache
     if not keys:
+        evaluation_cache.reset(home_dir, direction_scope=direction_scope, since=since)
         return 0
     path = os.path.join(home_dir, "seen_vacancies.json")
     shutil.copy2(path, path + time.strftime(".bak-%Y%m%d-%H%M%S"))
-    with open(path, encoding="utf-8") as stream:
-        seen = json.load(stream)
-    for key in keys:
-        seen.pop(key, None)
-    temp = path + ".tmp"
-    with open(temp, "w", encoding="utf-8") as stream:
-        json.dump(seen, stream, ensure_ascii=False, indent=2)
-    os.replace(temp, path)
-    return len(keys)
+    from seen import _store
+    removed = 0
+    def forget(data):
+        nonlocal removed
+        for key in keys:
+            # A concurrent result can promote a skipped vacancy to applied.
+            if key in data and _resettable(data[key]):
+                del data[key]
+                removed += 1
+    _store(path).update(forget)
+    # Re-evaluation also means forgetting remembered scores in this direction.
+    evaluation_cache.reset(home_dir, direction_scope=direction_scope, since=since)
+    return removed
