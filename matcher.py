@@ -5,7 +5,6 @@ import logging
 import math
 import os
 import re
-import unicodedata
 from datetime import datetime
 
 import config
@@ -1078,13 +1077,11 @@ def _fallback_cover_letter(vacancy: dict, details: str = "", cover_style: str = 
         except OSError:
             log.warning("Profile fallback letter rejected: unreadable")
     if raw is not None:
-        text = raw.strip()
-        if any(unicodedata.category(char) == "Cc" and char != "\n" for char in raw):
-            log.warning("Profile fallback letter rejected: control_characters")
-        elif not text:
-            log.warning("Profile fallback letter rejected: empty")
-        elif len(text) > 1500:
-            log.warning("Profile fallback letter rejected: too_long length=%d", len(text))
+        from fallback_letter import LetterError, validate
+        try:
+            text = validate(raw)
+        except LetterError as exc:
+            log.warning("Profile fallback letter rejected: %s", exc.reason)
         else:
             # Owner-authored, resume-checked text; never send it to the LLM.
             return text
@@ -1627,6 +1624,15 @@ def _build_cover_letter_instructions() -> str:
 
 
 async def generate_cover_letter(vacancy: dict, details: str = "") -> str:
+    # Capture before generation; a changed selection must never relabel a letter.
+    selected = direction_runtime.prepare(vacancy, details)
+    cover = await _generate_cover_letter(vacancy, details)
+    if direction_runtime.prepare(vacancy) != selected:
+        raise ValueError("Резюме для письма изменилось. Подготовьте письмо заново.")
+    return direction_runtime.bind_cover(vacancy, cover)
+
+
+async def _generate_cover_letter(vacancy: dict, details: str = "") -> str:
     """Сгенерировать сопроводительное письмо для вакансии."""
     resume = _resume_for_vacancy(vacancy)
     resume_versions.record_input(vacancy, resume, "cover_letter")

@@ -37,6 +37,7 @@ import reporting
 import runtime_control
 import seen
 import analytics
+import direction_runtime
 import search_pipeline
 import apply_orchestrator
 import work_conditions
@@ -782,7 +783,7 @@ async def do_manual_apply_token(token: str) -> dict:
         cover = await analytics.tracked_call("cover_letter", run_id, vacancy, generate_cover_letter, vacancy, details)
         cover = cover or ""
         if len(cover) > cover_limit:
-            cover = cover[:cover_limit]
+            cover = direction_runtime.trim_cover(vacancy, cover, cover_limit)
         cover_evaluation = _evaluation_with_cover_letter(evaluation, cover)
         if not (cover or "").strip():
             message = "ИИ-сопровод не сгенерировался; отклик без текста не отправляю."
@@ -2255,12 +2256,12 @@ async def do_search(dry_run: bool = False) -> dict:
             cover = cover or ""
             cover_fallback_used = False
             if not (cover or "").strip() and v.get("_hh_retry"):
-                cover = _build_hh_retry_cover_letter(v, hh_resume_variant)
+                cover = direction_runtime.bind_cover(v, _build_hh_retry_cover_letter(v, hh_resume_variant))
                 cover_fallback_used = True
                 log.info("  hh retry fallback cover letter used for %s", vid)
             cover_meta = analyze_cover_letter(cover)
             if len(cover) > cover_limit:
-                cover = cover[:cover_limit]
+                cover = direction_runtime.trim_cover(v, cover, cover_limit)
             if apply_trace is not None:
                 apply_trace.event(
                     "COVER_LETTER_GENERATED",
@@ -3265,7 +3266,7 @@ async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> d
 
         cover = await generate_cover_letter(vacancy, details)
         cover_meta = analyze_cover_letter(cover or "")
-        cover = (cover or "")[: apply_orchestrator.get_cover_letter_limit("hh")]
+        cover = direction_runtime.trim_cover(vacancy, cover or "", apply_orchestrator.get_cover_letter_limit("hh"))
         trace.event(
             "COVER_LETTER_GENERATED",
             ok=bool(cover.strip()),

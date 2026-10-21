@@ -163,6 +163,7 @@ def test_dispatch_records_request_and_outcome_with_bound_identity(active_directi
         return {"ok": False, "message": "synthetic no-submit"}
 
     monkeypatch.setattr(apply_orchestrator, "_dispatch_apply", dispatch)
+    direction_runtime.bind_cover(vacancy, "Тестовое письмо")
     result = asyncio.run(apply_orchestrator.dispatch_apply(
         vacancy, "Тестовое письмо", preferred_resume_id="legacy-configured-id"))
     assert result["ok"] is False

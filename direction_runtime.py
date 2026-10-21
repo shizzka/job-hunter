@@ -124,3 +124,42 @@ def application_context(vacancy: dict):
 
 def application_resume() -> str | None:
     return _application_resume.get()
+
+
+def bind_cover(vacancy, cover):
+    """Capture the letter's verified resume before any asynchronous dispatch."""
+    selection = prepare(vacancy)
+    vacancy["_cover_letter_selection"] = {
+        "profile_home": os.path.realpath(config.JOB_HUNTER_HOME),
+        "direction": selection["direction"] if selection else "",
+        "hh_resume_hash": selection["hh_resume_hash"] if selection else "",
+        "sha256": hashlib.sha256(cover.encode()).hexdigest(),
+    }
+    return cover
+
+
+def check_cover(vacancy, cover):
+    selection = prepare(vacancy)
+    if selection:
+        import directions
+        owners = {d["name"] for d in directions.list_directions(config.JOB_HUNTER_HOME)
+                  for v in d["variants"] if v["hh_resume_hash"] == selection["hh_resume_hash"] or (
+                      selection.get("hh_resume_numeric_id") is not None
+                      and v.get("hh_resume_numeric_id") == selection["hh_resume_numeric_id"])}
+        if owners != {selection["direction"]}:
+            raise ValueError("Резюме относится к нескольким направлениям. Уточните выбор перед откликом.")
+    binding = vacancy.get("_cover_letter_selection")
+    if selection or binding:
+        expected = {"profile_home": os.path.realpath(config.JOB_HUNTER_HOME),
+                    "direction": selection["direction"] if selection else "",
+                    "hh_resume_hash": selection["hh_resume_hash"] if selection else "",
+                    "sha256": hashlib.sha256(cover.encode()).hexdigest()}
+        if binding != expected:
+            raise ValueError("Письмо подготовлено для другого резюме или изменилось. Подготовьте его заново.")
+
+
+def trim_cover(vacancy, cover, limit):
+    if len(cover) <= limit:
+        return cover
+    check_cover(vacancy, cover)
+    return bind_cover(vacancy, cover[:limit])

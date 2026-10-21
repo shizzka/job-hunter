@@ -198,6 +198,7 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
         return {"ok": False, "message": "Компания в чёрном списке", "reason": "company_blacklisted"}
     try:
         selection = direction_runtime.prepare(vacancy)
+        direction_runtime.check_cover(vacancy, cover_letter)
     except (ValueError, OSError) as exc:
         return {"ok": False, "reason": "direction_variant_unavailable", "message": str(exc)}
     conditions = work_conditions.check(vacancy)
@@ -347,6 +348,8 @@ async def _dispatch_apply(
 ) -> dict:
     """Отправить отклик через соответствующий клиент источника."""
     source = vacancy.get("source", "hh")
+    # Recheck after awaited catalog/trace work, immediately before the client.
+    direction_runtime.check_cover(vacancy, cover_letter)
     if company_blacklist.is_blocked(vacancy.get("company", "")):
         return {"ok": False, "message": "Компания в чёрном списке", "reason": "company_blacklisted"}
 
