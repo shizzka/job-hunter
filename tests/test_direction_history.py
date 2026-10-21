@@ -170,6 +170,20 @@ def test_decision_evaluation_feedback_and_backfill_keep_their_owner(account, mon
     assert analytics.summarize(all_time=True)["auto_applied"] == 0
 
 
+def test_pre_match_cards_use_recorded_direction_even_with_shared_queries(account):
+    from direction_views import DirectionView
+    home, select = account
+    for name in ("qa", "electric"):
+        value = directions.load_direction(home, name)
+        value["search_queries"] = ["Общий запрос"]
+        directions.save_direction(home, value)
+    select("qa")
+    item = manual_apply_queue.create_candidate({"id": "early", "_search_query": "Общий запрос"}, {"score": None})
+    assert DirectionView(home).review_items([item]) == [item]
+    select("electric")
+    assert DirectionView(home).review_items([item]) == []
+
+
 def test_summaries_and_legacy_status_join_use_application_resume(account):
     home, select = account
     rows = [decision("qa", run_id="q"), decision("electric", run_id="e"),

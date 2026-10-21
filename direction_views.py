@@ -20,6 +20,11 @@ class DirectionView:
 
     def item_direction(self, item):
         """Use recorded evidence, never vacancy titles or the current selection."""
+        if item.get("direction"):
+            # F15 also records ownership before matcher/variant binding (for
+            # example, a card blocked on work conditions).
+            from direction_history import HistoryScope
+            return HistoryScope(self.home).owner(item)
         vacancy = item.get("vacancy") or {}
         selection = vacancy.get("_direction_selection") or {}
         names = {d["name"] for d in self.directions}
