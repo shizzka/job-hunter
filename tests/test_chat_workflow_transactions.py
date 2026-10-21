@@ -581,3 +581,15 @@ def test_reply_attempt_records_early_and_exception_exits(workflow, monkeypatch, 
     assert attempts[0]['reason'] == {'stale': 'stale_question', 'empty': 'empty_answer',
                                     'fill': 'chat_unavailable', 'exception': 'preparation_error'}[failure]
     assert 'Private body' not in json.dumps(attempts)
+
+
+def test_scan_records_screening_with_chat_owner_before_direction_refusal(workflow, monkeypatch):
+    import hiring_research
+    rows = []
+    monkeypatch.setattr(hiring_research, 'record_screening', lambda vacancy, messages, owner: rows.append(owner))
+    path = workflow.paths.home_dir + '/negotiation_snapshots.jsonl'
+    with open(path, 'w') as stream:
+        stream.write(json.dumps({'chatId': 'chat', 'resumeId': '222'}) + '\n')
+    asyncio.run(workflow.run_all())
+    assert len(rows) == 1
+    assert rows[0].direction == 'electric' and rows[0].resume_id == '222'

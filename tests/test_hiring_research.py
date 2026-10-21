@@ -121,3 +121,20 @@ def test_unknown_poll_does_not_falsely_narrow_rejection_interval(tmp_path):
     result = report(tmp_path, [apply(), status('2026-09-28T13:59:00+00:00', 'unknown'),
                                status('2026-09-28T14:00:00+00:00', 'rejected', previous_poll_at='2026-09-28T13:59:00+00:00')])
     assert result['rejection_delays']['интервал пересекает границы'] == 1
+
+
+def test_screening_uses_application_owner_and_preserves_unknown(tmp_path, monkeypatch):
+    from chat_context import ChatOwner, OWN, UNKNOWN, OTHER, CONFLICT
+    monkeypatch.setattr(config, 'ACTIVE_DIRECTION', {'name': 'qa', 'title': 'QA'}, raising=False)
+    monkeypatch.setattr(config, 'ANALYTICS_ENABLED', True)
+    path = tmp_path / 'events.jsonl'
+    monkeypatch.setattr(config, 'ANALYTICS_EVENTS_FILE', str(path))
+    monkeypatch.setattr(config, 'ANALYTICS_STATE_FILE', str(tmp_path / 'state.json'))
+    for owner in (ChatOwner(OWN, '222', 'electric'), ChatOwner(UNKNOWN),
+                  ChatOwner(OTHER, '333'), ChatOwner(CONFLICT)):
+        research.record_screening({'url': 'https://hh.ru/vacancy/123'}, [{'is_ai': True}], owner)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert rows[0]['direction'] == 'electric' and rows[0]['hh_resume_numeric_id'] == '222'
+    for row in rows[1:]:
+        assert row['direction'] is None and row['hh_resume_numeric_id'] is None
+        assert row['hh_resume_hash'] == '' and row['variant_text_sha256'] is None

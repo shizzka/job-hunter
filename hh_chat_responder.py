@@ -1691,7 +1691,9 @@ async def process_all(
                 msgs = data.get("messages", [])
                 snapshot_ref = data.get("_journal_snapshot_id") or journal.thread(chat_id, data)
                 import hiring_research
-                hiring_research.record_screening(data.get("vacancy") or {}, msgs)
+                from chat_context import safe_resolve
+                hiring_research.record_screening(data.get("vacancy") or {}, msgs,
+                                                 safe_resolve(paths.home_dir, chat_id))
                 vac = dict(data.get("vacancy", {}) or {})
 
                 # Resolve the application resume before chat replies or linked forms.

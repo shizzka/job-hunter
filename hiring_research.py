@@ -176,9 +176,15 @@ def render(report):
         yield '\n'.join(lines)
 
 
-def record_screening(vacancy, messages):
+def record_screening(vacancy, messages, owner=None):
     """Store evidence categories, not message bodies; absence of AI is not proof of a human."""
     from chat_screening import AI_ASSISTANT_AVATAR_URLS
+    from chat_context import OWN
+    # Observations belong to the application, independent of the active search.
+    metadata = {"direction": None, "direction_title": "", "hh_resume_hash": "",
+                "hh_resume_numeric_id": None, "variant_text_sha256": None}
+    if owner is not None and owner.status == OWN:
+        metadata.update(direction=owner.direction, hh_resume_numeric_id=owner.resume_id)
     category, evidence = 'unknown', 'no_verified_marker'
     for message in messages:
         if message.get('is_me'):
@@ -191,4 +197,4 @@ def record_screening(vacancy, messages):
     key = _key({'source': 'hh', 'vacancy_id': vacancy.get('id'), 'url': vacancy.get('url', '')})
     if key:
         analytics._append_event({'event': 'screening_observation', 'source': key[0], 'vacancy_id': key[1],
-                                 'screening_type': category, 'evidence': evidence, 'classifier_version': 'screening-v1'})
+                                 'screening_type': category, 'evidence': evidence, 'classifier_version': 'screening-v1', **metadata})
