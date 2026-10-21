@@ -646,7 +646,9 @@ async def do_manual_apply_token(token: str) -> dict:
     score = int(evaluation["score"]) if evaluation.get("score") is not None else None
     reason = str(evaluation.get("reason") or "")
     conditions = work_conditions.check(vacancy, details)
-    if conditions["status"] != "allow":
+    # Legacy cards may lack structured fields. Refresh missing evidence below;
+    # a known conflict still cannot be overridden by manual approval.
+    if conditions["status"] == "reject":
         manual_apply_queue.mark_candidate(token, "conditions_blocked", conditions["reason"])
         print(f"⏭ Отклик не отправлен: {conditions['reason']}")
         return work_conditions.apply_block(conditions)

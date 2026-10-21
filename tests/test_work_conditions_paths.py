@@ -81,7 +81,7 @@ def test_search_conditions_gate_all_modes_before_evaluation(tmp_path, monkeypatc
 
 
 
-@pytest.mark.parametrize("case", ["fly", "on_site", "unknown"])
+@pytest.mark.parametrize("case", ["fly", "on_site"])
 def test_manual_queue_cannot_override_work_conditions(tmp_path, monkeypatch, case):
     import agent
     import direction_runtime
@@ -160,3 +160,40 @@ def test_guard_stop_before_evaluation_does_not_invent_a_zero_score(tmp_path, mon
     card = agent.notify_needs_manual.await_args
     assert card.args[1] is None and "до оценки" in card.args[2]
     assert "fingerprint" not in card.kwargs["note"] and "UI" not in card.kwargs["note"]
+
+
+@pytest.mark.parametrize("fresh_format", ["REMOTE", "ON_SITE", None])
+def test_legacy_manual_card_refreshes_missing_conditions(monkeypatch, fresh_format):
+    import agent
+    import direction_runtime
+    import manual_apply_queue
+    from types import SimpleNamespace
+    monkeypatch.setattr(config, "ACTIVE_DIRECTION", policy(allowed_formats=["remote", "hybrid"]), raising=False)
+    monkeypatch.setattr(config, "HH_APPLICATION_MODE", "confirm")
+    monkeypatch.setattr(direction_runtime, "validate_queued", lambda v: None)
+    item = manual_apply_queue.create_candidate(vacancy(), {"score": 95}, "Старое описание")
+    client = SimpleNamespace(start=AsyncMock(), is_logged_in=AsyncMock(return_value=True), stop=AsyncMock())
+    monkeypatch.setattr(agent, "HHClient", lambda: client)
+    monkeypatch.setattr(agent.hh_guard, "can_auto_apply", lambda: (True, ""))
+    async def fresh(v, **kwargs):
+        v["_hh_work_conditions"] = wc.from_hh_fields({"workFormats": [fresh_format] if fresh_format else []})
+        return "Новое описание"
+    fetch = AsyncMock(side_effect=fresh)
+    monkeypatch.setattr(agent.apply_orchestrator, "fetch_vacancy_details", fetch)
+    cover = AsyncMock(return_value="")
+    monkeypatch.setattr(agent, "generate_cover_letter", cover)
+    monkeypatch.setattr(agent, "notify_needs_manual", AsyncMock())
+    dispatch = AsyncMock()
+    monkeypatch.setattr(agent.apply_orchestrator, "dispatch_apply", dispatch)
+    result = asyncio.run(agent.do_manual_apply_token(item["token"]))
+    fetch.assert_awaited_once()
+    client.stop.assert_awaited_once()
+    dispatch.assert_not_awaited()
+    if fresh_format == "REMOTE":
+        cover.assert_awaited_once()
+        assert result["no_cover"]
+    else:
+        cover.assert_not_awaited()
+        assert result["reason"] == "work_conditions"
+        assert result["work_conditions_status"] == ("reject" if fresh_format else "review")
+        assert manual_apply_queue.get_candidate(item["token"])["status"] == "conditions_blocked"
