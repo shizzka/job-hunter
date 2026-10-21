@@ -38,8 +38,8 @@ def flow(tmp_path, monkeypatch):
     monkeypatch.setattr(gforms, '_safe_screenshot', AsyncMock())
     clicks = []
     async def click(page, *, before_click=None, on_no_action=None, approval_id=None):
-        if before_click:
-            before_click()
+        if before_click and not await before_click():
+            return False
         clicks.append('click')
         return True
     monkeypatch.setattr(gforms, '_click_google_form_submit', click)
@@ -94,7 +94,7 @@ def test_click_timeout_is_uncertain(flow, monkeypatch):
     paths, repo, client, _ = flow
     async def click(page, *, before_click=None, on_no_action=None, approval_id=None):
         if before_click:
-            before_click()
+            assert await before_click()
         raise TimeoutError('Synthetic click timeout')
     monkeypatch.setattr(gforms, '_click_google_form_submit', click)
     with pytest.raises(TimeoutError):

@@ -261,6 +261,24 @@ def _reuse_cached_answers(
 from answer_grounding import candidate_operation
 
 
+async def _form_conditions(page, vacancy, *, chat_id, profile_name, paths, ownership_binding=None):
+    import work_conditions
+    from answer_grounding import current_candidate
+    from chat_context import bind_candidate
+    snapshot = current_candidate()
+    if chat_id:
+        if ownership_binding is None:
+            ownership_binding, refusal = await bind_candidate(
+                chat_id, snapshot, home=paths.home_dir, profile_name=profile_name)
+            if refusal:
+                return refusal, None
+        ownership_binding.check(snapshot)
+    result = await work_conditions.recheck_linked_form(page, vacancy or {}, ownership_binding, snapshot)
+    if result["status"] != "allow":
+        return work_conditions.apply_block(result), ownership_binding
+    return None, ownership_binding
+
+
 @candidate_operation(client_factory=lambda: get_llm_client())
 async def preview_form(
     page,
@@ -291,6 +309,10 @@ async def preview_form(
         if ownership_binding.chat_id != str(chat_id):
             raise RuntimeError("Chat application ownership mismatch")
         ownership_binding.check(current_candidate())
+    refusal, ownership_binding = await _form_conditions(page, vacancy, chat_id=chat_id,
+        profile_name=profile_name, paths=paths, ownership_binding=ownership_binding)
+    if refusal:
+        return {**refusal, "status": "conditions_blocked", "chat_id": chat_id, "form_url": form_url}
     browser_approval_owner = uuid.uuid4().hex
     original_form_url = form_url
     form_url = await _resolve_google_form_redirect_url(form_url)
@@ -442,6 +464,8 @@ async def preview_form(
         os.makedirs(os.path.dirname(shot_path), exist_ok=True)
         await _safe_screenshot(page, shot_path)
     detail = {
+        "application_owner": ({"direction": ownership_binding.direction, "resume_id": ownership_binding.resume_id}
+                              if ownership_binding is not None else None),
         "ok": preview_ok,
         "message": preview_message,
         "token": token,
@@ -541,6 +565,7 @@ async def preview_from_hh_chat(
             await form_page.close()
 
 
+@candidate_operation(client_factory=lambda: get_llm_client())
 async def submit_saved_preview(
     hh_client,
     token: str,
@@ -588,6 +613,15 @@ async def _submit_claimed_preview(hh_client, token, item, paths, workflow, attem
 
 
 async def _submit_claimed_preview_on_page(page, token, item, paths, workflow, attempt):
+    from answer_grounding import current_candidate
+    refusal, binding = await _form_conditions(page, item.get("vacancy"), chat_id=item.get("chat_id", ""),
+        profile_name=item.get("profile_name", "default"), paths=paths)
+    if refusal:
+        return {**refusal, "token": token, "submitted": False}
+    if binding is not None and item.get("application_owner") != {
+            "direction": binding.direction, "resume_id": binding.resume_id}:
+        return {"ok": False, "submitted": False, "token": token,
+                "message": "Владелец черновика не подтверждён; подготовьте анкету заново."}
     await page.goto(item["form_url"], wait_until="domcontentloaded", timeout=60000)
     await page.wait_for_timeout(2500)
 
@@ -637,7 +671,17 @@ async def _submit_claimed_preview_on_page(page, token, item, paths, workflow, at
         ready = False
         validation_message = "Изменился состав страниц формы. Требуется новый preview."
     if ready:
-        submitted = await _click_google_form_submit(page, before_click=lambda: workflow.mark_submitting(token, attempt),
+        async def before_click():
+            nonlocal validation_message
+            refusal, _ = await _form_conditions(page, item.get("vacancy"), chat_id=item.get("chat_id", ""),
+                profile_name=item.get("profile_name", "default"), paths=paths, ownership_binding=binding)
+            if refusal:
+                validation_message = refusal["message"]
+                return False
+            if binding is not None:
+                binding.check(current_candidate())
+            return workflow.mark_submitting(token, attempt)
+        submitted = await _click_google_form_submit(page, before_click=before_click,
                                                     on_no_action=lambda: workflow.confirm_no_action(token, attempt),
                                                     approval_id=page_results[-1]["fill_result"].get("browser_approval_id"))
         if submitted:

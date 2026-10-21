@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import contextlib
 import logging
 import time
@@ -340,8 +342,12 @@ async def _click_google_form_submit(page, *, before_click=None, on_no_action=Non
             return !!approval && approval.bind(el);
         }""", boundary_id) is not True:
             return False
-        if before_click is not None and not before_click():
-            return False
+        if before_click is not None:
+            allowed = before_click()
+            if inspect.isawaitable(allowed):
+                allowed = await allowed
+            if not allowed:
+                return False
         if not await dispatch_approved(page,button,boundary_id,on_no_action=on_no_action):
             return False
     finally:

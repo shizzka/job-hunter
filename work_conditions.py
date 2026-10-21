@@ -226,3 +226,61 @@ async def recheck_before_submit(session, vacancy_url: str, vacancy_context: str 
     finally:
         if response is not None:
             await response.dispose()
+
+
+async def recheck_linked_form(page, vacancy: dict, binding, snapshot) -> dict:
+    """Read fresh HH evidence without navigating away from a linked questionnaire."""
+    import copy
+    from hh.recovery import AUTH_URL, _auth_cookies
+    from hh.vacancy_details import safe_navigation_url
+    from hh.search_html import search_antibot_kind
+    direction = copy.deepcopy(getattr(config, "ACTIVE_DIRECTION", None))
+    review = {"status": "review", "reason": "Не удалось проверить условия работы анкеты; нужна ручная проверка."}
+    if not direction:
+        return review if binding is not None and binding.direction else {"status": "allow", "reason": ""}
+    if binding is None or snapshot is None or binding.direction != direction.get("name"):
+        return review
+    url = safe_navigation_url(vacancy.get("url", ""))
+    if not url:
+        return review
+    vacancy_id = url.rstrip("/").split("/")[-1]
+    if not vacancy_id.isdigit():
+        return review
+    context = page.context
+    request = context.request
+    response = None
+    def unchanged():
+        binding.check(snapshot)
+        if (getattr(config, "ACTIVE_DIRECTION", None) != direction
+                or page.context is not context or context.request is not request):
+            raise ValueError("Form application context changed")
+    try:
+        unchanged()
+        before = _auth_cookies(await context.cookies([AUTH_URL]))
+        unchanged()
+        if not before:
+            return review
+        response = await request.get(url, max_redirects=0, timeout=15000, headers={"Cache-Control": "no-cache"})
+        unchanged()
+        if (response.url != url or response.status != 200
+                or response.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "text/html"):
+            return review
+        markup = await response.text()
+        unchanged()
+        if search_antibot_kind(markup) or re.search(r'"userType"\s*:\s*"anonymous"', markup):
+            return review
+        after = _auth_cookies(await context.cookies([AUTH_URL]))
+        unchanged()
+        if after != before:
+            return review
+        fields = from_hh_page(markup, vacancy_id)
+        result = check({**vacancy, "source": "hh", "_hh_work_conditions": fields}, direction=direction)
+        await response.dispose()
+        response = None
+        unchanged()
+        return result
+    except Exception:
+        return review
+    finally:
+        if response is not None:
+            await response.dispose()
