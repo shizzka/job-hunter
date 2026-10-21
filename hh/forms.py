@@ -1093,6 +1093,13 @@ async def try_auto_answer_questions(
 
     import question_memory
     memory_home = str(getattr(settings, "JOB_HUNTER_HOME", "") or "")
+    payload = getattr(session, "_approved_hh_payload", None)
+    memory_owner = question_memory.ownership(settings=settings,
+        resume_id=payload.get("resume_id", "") if isinstance(payload, dict) else "")
+    from answer_grounding import current_candidate
+    snapshot = current_candidate()
+    if snapshot is not None:
+        memory_owner["direction"] = snapshot.direction_name
 
     def pending(field, question_text, control):
         return {"question_text": question_text, "control": control,
@@ -1104,7 +1111,7 @@ async def try_auto_answer_questions(
         control = (field.get("control") or "").strip().lower()
 
         # The user's own earlier answer to this exact question comes first (never a guess).
-        remembered = question_memory.lookup(memory_home, question_text) if memory_home and question_text else None
+        remembered = question_memory.lookup(memory_home, question_text, **memory_owner) if memory_home and question_text else None
         if remembered and control in ("radio", "checkbox", "select"):
             indices = question_memory.choice_indices(remembered, field.get("options") or [])
             if indices and (control == "checkbox" or len(indices) == 1):

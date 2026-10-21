@@ -1,4 +1,4 @@
-"""Answers the user gave to employer questions, remembered per profile.
+"""Answers the user gave to employer questions, scoped to profile/direction/resume.
 
 Employer questionnaires repeat the same personal questions (military ID, a
 salary bank card, «работали ли с SQL»…) that no fact base answers with
@@ -45,23 +45,38 @@ def _write(path: str, data: dict) -> None:
     os.replace(temp, path)
 
 
-def lookup(home_dir: str, question: str) -> dict | None:
+def ownership(*, settings, vacancy=None, resume_id=None) -> dict:
+    selected = (vacancy or {}).get("_direction_selection") or {}
+    direction = selected.get("direction", (getattr(settings, "ACTIVE_DIRECTION", None) or {}).get("name", ""))
+    resume = (resume_id if resume_id is not None else selected.get("hh_resume_hash")
+              or ((vacancy or {}).get("_requested_resume") or {}).get("id")
+              or getattr(settings, "HH_PRIMARY_RESUME_ID", ""))
+    return {"direction": str(direction or ""), "resume_id": str(resume or "")}
+
+
+def _key(question, direction, resume_id):
+    return json.dumps([direction, resume_id, normalize(question)], ensure_ascii=False)
+
+
+def lookup(home_dir: str, question: str, *, direction: str = "", resume_id: str = "") -> dict | None:
     key = normalize(question)
     if not key:
         return None
-    item = _read(os.path.join(home_dir, MEMORY_FILE)).get(key)
-    return item if isinstance(item, dict) and item.get("answer") else None
+    item = _read(os.path.join(home_dir, MEMORY_FILE)).get(_key(question, direction, resume_id))
+    return item if (isinstance(item, dict) and item.get("answer")
+                    and item.get("direction") == direction and item.get("resume_id") == resume_id) else None
 
 
-def remember(home_dir: str, question: str, answer: str, *, control: str = "", labels: list[str] | None = None) -> dict:
+def remember(home_dir: str, question: str, answer: str, *, control: str = "", labels: list[str] | None = None,
+             direction: str = "", resume_id: str = "") -> dict:
     key = normalize(question)
     if not key or not str(answer or "").strip():
         raise ValueError("Пустой вопрос или ответ.")
     path = os.path.join(home_dir, MEMORY_FILE)
     data = _read(path)
     item = {"question": str(question).strip(), "answer": str(answer).strip(), "control": control,
-            "labels": list(labels or []), "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
-    data[key] = item
+            "labels": list(labels or []), "direction": direction, "resume_id": resume_id, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    data[_key(question, direction, resume_id)] = item
     _write(path, data)
     return item
 
@@ -79,7 +94,8 @@ def choice_indices(item: dict, options: list[dict]) -> list[int]:
 
 
 def create_pending(home_dir: str, *, question: str, control: str, options: list[str], token: str,
-                   profile_name: str, vacancy_title: str = "", company: str = "", url: str = "") -> str:
+                   profile_name: str, vacancy_title: str = "", company: str = "", url: str = "",
+                   direction: str = "", resume_id: str = "") -> str:
     path = os.path.join(home_dir, PENDING_FILE)
     data = _read(path)
     now = time.time()
@@ -88,12 +104,13 @@ def create_pending(home_dir: str, *, question: str, control: str, options: list[
     qid = secrets.token_hex(5)
     data[qid] = {"question": question, "control": control, "options": list(options)[:MAX_OPTIONS_IN_CARD],
                  "token": token, "profile_name": profile_name, "vacancy_title": vacancy_title,
-                 "company": company, "url": url, "created_at": now}
+                 "company": company, "url": url, "direction": direction, "resume_id": resume_id, "created_at": now}
     _write(path, data)
     return qid
 
 
-def find_pending(home_dir: str, *, question: str, url: str = "", vacancy_title: str = "", company: str = "") -> str:
+def find_pending(home_dir: str, *, question: str, url: str = "", vacancy_title: str = "", company: str = "",
+                 direction: str = "", resume_id: str = "") -> str:
     """qid of a live card with the same question for the same vacancy, or ""."""
     wanted = normalize(question)
     now = time.time()
@@ -102,7 +119,8 @@ def find_pending(home_dir: str, *, question: str, url: str = "", vacancy_title: 
             continue
         same_vacancy = (url and item.get("url") == url) or (
             not url and item.get("vacancy_title") == vacancy_title and item.get("company") == company)
-        if same_vacancy and normalize(item.get("question", "")) == wanted:
+        if (same_vacancy and normalize(item.get("question", "")) == wanted
+                and item.get("direction") == direction and item.get("resume_id") == resume_id):
             return qid
     return ""
 

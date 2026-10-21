@@ -1013,9 +1013,10 @@ async def _notify_employer_question(vacancy: dict, evaluation: dict, details: st
     and the application is retried. Returns False when no card could be created."""
     import html as _html
     import question_memory
+    memory_owner = question_memory.ownership(settings=config, vacancy=vacancy)
     existing = question_memory.find_pending(
         config.JOB_HUNTER_HOME, question=str(pending.get("question_text") or ""), url=str(vacancy.get("url") or ""),
-        vacancy_title=str(vacancy.get("title") or ""), company=str(vacancy.get("company") or ""))
+        vacancy_title=str(vacancy.get("title") or ""), company=str(vacancy.get("company") or ""), **memory_owner)
     if existing:
         # A repeated tap must not stack identical cards (prod 19.10: two per vacancy).
         return True
@@ -1030,7 +1031,7 @@ async def _notify_employer_question(vacancy: dict, evaluation: dict, details: st
             config.JOB_HUNTER_HOME, question=str(pending.get("question_text") or "вопрос работодателя"),
             control=str(pending.get("control") or ""), options=options, token=token, profile_name=profile_name,
             vacancy_title=str(vacancy.get("title") or ""), company=str(vacancy.get("company") or ""),
-            url=str(vacancy.get("url") or ""))
+            url=str(vacancy.get("url") or ""), **memory_owner)
     except Exception as exc:
         log.warning("employer question card failed: %s", type(exc).__name__)
         return False

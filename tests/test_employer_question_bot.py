@@ -52,3 +52,16 @@ def test_client_cannot_answer_for_another_profile(tmp_path, monkeypatch):
     qid = qm.create_pending(home, question="Q?", control="radio", options=["A"], token="x", profile_name="client_2")
     asyncio.run(bot._answer_employer_question(1, principal, "client_2", qid, "0"))
     assert started == [] and qm.peek_pending(home, qid) is not None
+
+
+def test_answer_keeps_pending_owner_after_active_direction_changes(tmp_path, monkeypatch):
+    bot, _, started, principal = make_bot(tmp_path, monkeypatch)
+    home = str(tmp_path / "client_1")
+    owner = {"direction": "electric", "resume_id": "electric-resume"}
+    qid = qm.create_pending(home, question="Сколько лет опыта?", control="radio", options=["Пять лет"],
+                            token="t", profile_name="client_1", **owner)
+    monkeypatch.setattr(telegram_bot.config, "ACTIVE_DIRECTION", {"name": "qa"}, raising=False)
+    asyncio.run(bot._answer_employer_question(1, principal, "client_1", qid, "0"))
+    assert qm.lookup(home, "Сколько лет опыта?", **owner)["answer"] == "Пять лет"
+    assert qm.lookup(home, "Сколько лет опыта?", direction="qa", resume_id="qa-resume") is None
+    assert started == [("client_1", "t")]

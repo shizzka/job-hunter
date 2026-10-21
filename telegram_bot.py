@@ -823,7 +823,8 @@ class TelegramBot(
         if not answer:
             await self._send_text(chat_id, "Пустой ответ — пришлите текст.")
             return
-        question_memory.remember(home, pending["question"], answer, control=pending.get("control", ""), labels=labels)
+        question_memory.remember(home, pending["question"], answer, control=pending.get("control", ""), labels=labels,
+                                 direction=pending.get("direction", ""), resume_id=pending.get("resume_id", ""))
         question_memory.pop_pending(home, qid)
         self._clear_search_settings_state(principal["user_id"], "question_answer")
         await self._send_text(chat_id, str(
