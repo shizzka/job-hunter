@@ -240,6 +240,35 @@ def test_runs_do_not_borrow_another_direction_or_ambiguous_aggregate(account):
     assert len(analytics.scoped_runs(runs, scope=ALL)) == 3
 
 
+@pytest.mark.parametrize("scope,expected", [("active", ["qa"]), (ALL, ["unknown", "electric", "qa"]),
+                                           (UNSPECIFIED, ["unknown"])])
+def test_run_readers_skip_malformed_records_without_rewriting_history_or_journals(account, monkeypatch, scope, expected):
+    import reporting
+
+    home, _ = account
+    malformed = [None, "old", [], [1], 7, 2.5, True]
+    runs = [{"run_id": name or "unknown", "direction": name, "kind": "search", "ok": True, "applied": 1}
+            for name in ("qa", "electric", None)]
+    rows = malformed + runs + malformed
+    paths = [home / "run_history.jsonl", home / "analytics_events.jsonl", home / "negotiation_snapshots.jsonl"]
+    write(paths[0], rows)
+    write(paths[1], malformed + [{**r, "event": "search_finished"} for r in runs] + malformed)
+    write(paths[2], malformed)
+    for path in paths:
+        with path.open("a") as stream:
+            stream.write('{"truncated":\n')
+    original = {path: path.read_bytes() for path in paths}
+    bot = telegram_bot.TelegramBot.__new__(telegram_bot.TelegramBot)
+    monkeypatch.setattr(bot, "_profile", lambda name: SimpleNamespace(
+        run_history_file=str(paths[0]), analytics_events_file=str(paths[1])))
+
+    assert [r["run_id"] for r in reversed(analytics.scoped_runs(rows, scope=scope))] == expected
+    assert [r["run_id"] for r in bot._recent_runs("synthetic", scope=scope)] == expected
+    assert analytics.get_run_summary(scope=scope)["run_id"] == expected[0]
+    assert [r["run_id"] for r in reporting.load_recent_run_history()] == ["qa"]
+    assert {path: path.read_bytes() for path in paths} == original
+
+
 def test_direction_reset_and_hh_attempts_are_separate(account):
     home, select = account
     for name in ("qa", "electric"):

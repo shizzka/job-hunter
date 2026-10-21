@@ -330,6 +330,7 @@ def _append_feedback_log(item: dict, profile_name: str | None) -> None:
         scope = HistoryScope(path.parent)
         record.update(scope.metadata(item))
         record["direction"] = selection.get("direction") or record["direction"]
+        record["direction_title"] = selection.get("direction_title") or item.get("direction_title") or record["direction_title"]
         record["variant_text_sha256"] = selection.get("text_sha256")
         with path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, ensure_ascii=False) + "\n")

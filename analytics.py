@@ -1236,9 +1236,15 @@ def scoped_runs(records, *, events_file=None, scope="active"):
               and e.get("event") in {"search_started", "search_finished"}}
     result = []
     for r in records:
-        row = dict(r, direction=r.get("direction") or owners.get(r.get("run_id")))
+        if not isinstance(r, dict):
+            continue
+        row = dict(r)
+        direction = r.get("direction") or owners.get(r.get("run_id"))
+        if direction:
+            row["direction"] = direction
         owner = view.owner(row)
-        row["direction_title"] = next((d["title"] for d in view.directions if d["name"] == owner), "направление не указано")
+        if view.directions:
+            row["direction_title"] = next((d["title"] for d in view.directions if d["name"] == owner), "направление не указано")
         result.append(row)
     return view.records(result)
 

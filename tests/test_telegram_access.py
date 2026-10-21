@@ -155,10 +155,21 @@ def test_back_follows_menu_tree(user_bot, monkeypatch, menu, parent):
     assert bot._send_menu.call_args.kwargs["menu"] == parent
 
 
-def test_new_diagnosis_action_uses_latest_selected_profile_run(user_bot, monkeypatch):
+def test_new_diagnosis_action_uses_latest_selected_profile_direction_run(user_bot, monkeypatch, tmp_path):
+    import json
+    from tests.direction_view_fakes import two_directions
+
     bot, principal = user_bot
-    run = {"ok": True, "applied": 0, "found": 3, "reason_breakdown": {"low_score": 3}}
-    monkeypatch.setattr(bot, "_latest_run", lambda profile: run if profile == "qa" else None)
+    two_directions(tmp_path)
+    run = {"run_id": "selected-latest", "direction": "qa", "ok": True, "applied": 0,
+           "found": 3, "reason_breakdown": {"low_score": 3}}
+    runs = [{**run, "run_id": "selected-older", "applied": 1}, run,
+            {**run, "run_id": "other-direction-newer", "direction": "electric", "applied": 2}]
+    history_file = tmp_path / "run_history.jsonl"
+    history_file.write_text("".join(json.dumps(row) + "\n" for row in runs))
+    monkeypatch.setattr(bot, "_profile", lambda name: SimpleNamespace(
+        home_dir=str(tmp_path), run_history_file=str(history_file),
+        analytics_events_file=str(tmp_path / "analytics_events.jsonl")) if name == "qa" else None)
     asyncio.run(bot._dispatch(42, principal, "/why_no_apply", ""))
     assert bot._send_text.call_args.args[1] == analytics.zero_apply_diagnosis(run)
 

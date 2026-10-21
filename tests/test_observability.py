@@ -538,7 +538,7 @@ def test_existing_search_notification_has_truthful_keyword_and_dry_run_labels(mo
     monkeypatch.setattr(notifier, "_telegram_flag", lambda *a: True)
     asyncio.run(notifier.notify_summary(5, 2, 3, {"hh": {"keyword_pass": 5, "new": 8}}, dry_run=dry_run))
     text = send.call_args.args[0]
-    assert "Keyword pass: 5" in text and "релевант" not in text.casefold()
+    assert "Прошло отбор по словам: 5" in text and "релевант" not in text.casefold()
     assert ("Dry-run matches: 2" if dry_run else "Откликов: 2") in text
 
 
