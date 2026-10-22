@@ -16,6 +16,7 @@ umask 077
 #   ./run.sh stats       — статистика
 #   ./run.sh analytics [days] — аналитика за N дней
 #   ./run.sh run-summary [run_id] — детерминированная JSON-сводка запуска
+#   ./run.sh audit [--run id|--since ISO] — аудит завершённых запусков
 #   ./run.sh filter-audit [days] — replay-аудит фильтров по analytics
 #   ./run.sh analytics-backfill — подтянуть историю в аналитику
 #   ./run.sh retry-preview — показать HH retry-кандидатов без откликов
@@ -125,6 +126,9 @@ case "$MODE" in
         ;;
     run-summary)
         $VENV agent.py $PROFILE_ARG --run-summary "${2:-}"
+        ;;
+    audit)
+        $VENV agent.py $PROFILE_ARG --audit "${@:2}"
         ;;
     analytics|funnel)
         DAYS="${2:-}"
@@ -255,7 +259,7 @@ case "$MODE" in
         $VENV job_hunter_ctl.py $PROFILE_ARG daemon-stop
         ;;
     *)
-        echo "Usage: $0 [--profile <name>] {login|google-login|search|trace-apply|fresh-search|check|negotiations-snapshot|daemon|bot|bot-daemon|status|bot-status|stats|analytics|filter-audit|digest|dry-run|grab-resume|resume-status|resume-boost|google-form-preview|google-form-submit|chat-respond|chat-respond-one|retry-preview|retry-block-company|retry-unblock-company|retry-blocked-companies|create-profile|profiles|bot-stop|stop}"
+        echo "Usage: $0 [--profile <name>] {login|google-login|search|trace-apply|fresh-search|check|negotiations-snapshot|daemon|bot|bot-daemon|status|bot-status|stats|analytics|audit|filter-audit|digest|dry-run|grab-resume|resume-status|resume-boost|google-form-preview|google-form-submit|chat-respond|chat-respond-one|retry-preview|retry-block-company|retry-unblock-company|retry-blocked-companies|create-profile|profiles|bot-stop|stop}"
         exit 1
         ;;
 esac

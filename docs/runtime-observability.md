@@ -47,6 +47,7 @@ fallback policy is unchanged.
 
 ## Interfaces
 
+- Automatic run checks and owner-only reports: [F16 run auditor](f16-run-auditor.md).
 - Telegram: **📊 Последний запуск**, `/log`, or `/log <run_id>`.
 - Telegram: **🧾 Raw log** or `/raw_log` retains the existing private logfile tail.
 - CLI: `./run.sh --profile qa run-summary [run_id]` returns JSON.

@@ -14,6 +14,7 @@ Job Hunter Agent — автоматический поиск и отклик н�
 import argparse
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -98,8 +99,11 @@ class HHRecoveryBreaker:
         self.reason = ""
 
     def hard_stop(self, reason: str) -> None:
+        first_stop = not self.stopped
         self.stopped = True
         self.reason = reason
+        if first_stop:
+            analytics.record_event({"event": "hh_breaker_stop", "source": "hh", "reason": reason})
 
     def recovered_incident(self, fingerprint: str) -> None:
         self.incidents += 1
@@ -306,11 +310,72 @@ def _record_search_run(result: dict, dry_run: bool, ok: bool, error: str = "") -
     analytics.record_search_finished(run_id=entry["run_id"], mode=mode, result=entry)
 
 
+def _audit_destination() -> dict:
+    # Snapshot before yielding: another task may activate a different profile.
+    active = getattr(profile_mod, "_active_profile", None)
+    return {"home": os.path.realpath(config.JOB_HUNTER_HOME),
+            "profile": getattr(active, "name", "default")}
+
+
+async def _audit_completed_run(run_id: str, destination: dict) -> None:
+    try:
+        import run_auditor
+        await run_auditor.audit_completed_run(run_id, **destination)
+    except Exception as exc:
+        log.warning("Run audit failed: error_kind=%s", type(exc).__name__)
+        try:
+            import run_auditor
+            await run_auditor.report_audit_error(run_id, **destination)
+        except Exception as report_exc:
+            log.warning("Run audit error reporting failed: error_kind=%s", type(report_exc).__name__)
+
+
+def _observe_manual_apply(mode):
+    def decorate(function):
+        @wraps(function)
+        async def wrapped(*args, **kwargs):
+            run_id = analytics.new_run_id(mode)
+            destination = _audit_destination()
+            history_file = config.RUN_HISTORY_FILE
+            from direction_history import runtime_metadata
+            entry = {"kind": "manual-apply", "mode": mode, "run_id": run_id,
+                     "audit_direction": analytics.audit_direction_snapshot(),
+                     "started_at": datetime.now().isoformat(timespec="seconds"),
+                     "status": "incomplete", "finished_at": None, "ok": None,
+                     **runtime_metadata()}
+            result = {}
+            error_kind = ""
+            with analytics.event_context(run_id=run_id, channel="search", **runtime_metadata()):
+                _append_run_history(entry, path=history_file)
+                analytics.record_event({**entry, "event": "manual_started"})
+                try:
+                    result = await function(*args, **kwargs)
+                    return result
+                except BaseException as exc:
+                    error_kind = type(exc).__name__
+                    raise
+                finally:
+                    try:
+                        from outcome import application_outcome
+                        entry.update(status="finished", finished_at=datetime.now().isoformat(timespec="seconds"),
+                                     ok=bool(result.get("ok")) and not error_kind, error_kind=error_kind,
+                                     application_outcome=application_outcome(result))
+                        # Do not copy messages, queue tokens, letters or employer answers.
+                        _append_run_history(entry, path=history_file)
+                        analytics.record_event({**entry, "event": "manual_finished"})
+                    except Exception as exc:
+                        log.warning("Manual apply diagnostics finalization failed: error_kind=%s", type(exc).__name__)
+                    await _audit_completed_run(run_id, destination)
+        return wrapped
+    return decorate
+
+
 def _observe_search(function):
     @wraps(function)
     async def wrapped(dry_run=False):
         mode = "dry-run" if dry_run else "search"
         run_id = analytics.new_run_id(mode)
+        audit_destination = _audit_destination()
         with analytics.observe_search(run_id, mode) as observation:
             _append_run_history(observation.entry(incomplete=True), path=observation.history_file)
             enabled = [label for enabled, label in ((config.HH_ENABLED, "hh.ru"),
@@ -342,6 +407,7 @@ def _observe_search(function):
                     analytics.record_search_finished(run_id=run_id, mode=mode, result=entry)
                 except Exception as exc:
                     log.warning("Search diagnostics finalization failed: error_kind=%s", type(exc).__name__)
+                await _audit_completed_run(run_id, audit_destination)
     return wrapped
 
 
@@ -618,6 +684,7 @@ async def do_grab_resume():
 
 
 
+@_observe_manual_apply("manual-ai-apply")
 async def do_manual_apply_token(token: str) -> dict:
     """Отправить подтвержденный человеком yellow-zone отклик по token из очереди."""
     item = manual_apply_queue.get_candidate(token)
@@ -678,7 +745,7 @@ async def do_manual_apply_token(token: str) -> dict:
     def begin_external():
         return valid() and manual_apply_queue.begin_external(token, owner, store=queue_store)
 
-    run_id = analytics.new_run_id("manual-ai-apply")
+    run_id = analytics.current_context()["run_id"]
     vacancy["_analytics_run_id"] = run_id
     vacancy["_analytics_apply_mode"] = "manual"
     hh_client = HHClient()
@@ -938,6 +1005,7 @@ async def do_manual_apply_token(token: str) -> dict:
         manual_result.update(ok=False, uncertain=True, message=message)
         return manual_result
     except HHUnexpectedUI as exc:
+        analytics.record_failure("manual_apply", exc, source="hh", continued=False)
         uncertain = bool(getattr(exc, "hh_uncertain", False) or
                          (dispatch_started and getattr(exc, "hh_recovered", None) is not True))
         await stop_manual_result({"ok": False, "uncertain": uncertain, "reason": "hh_unexpected_ui"})
@@ -966,6 +1034,7 @@ async def do_manual_apply_token(token: str) -> dict:
         if shutdown_failed:
             record_manual_uncertain()
             raise
+        analytics.record_failure("manual_apply", exc, source="hh", continued=False)
         message = f"{type(exc).__name__}: {exc}"
         result = await stop_manual_result({"ok": False, "uncertain": dispatch_started, "message": message})
         uncertain = apply_result_is_uncertain(result)
@@ -3000,6 +3069,7 @@ async def do_daemon():
         last_search = 0
         last_fresh_search = asyncio.get_event_loop().time()
         last_invite_check = 0
+        last_audit_day = None
 
         stop_event = asyncio.Event()
 
@@ -3013,6 +3083,14 @@ async def do_daemon():
 
         while not stop_event.is_set():
             now = asyncio.get_event_loop().time()
+            today = datetime.now().date()
+            if last_audit_day != today:
+                try:
+                    import run_auditor
+                    await run_auditor.audit_daily_summary(**_audit_destination())
+                    last_audit_day = today
+                except Exception as exc:
+                    log.warning("Daily audit summary failed: error_kind=%s", type(exc).__name__)
 
             # Полный поиск
             if now - last_search >= search_interval:
@@ -3195,6 +3273,7 @@ async def do_analytics_backfill():
     print()
 
 
+@_observe_manual_apply("trace-apply")
 async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> dict:
     """Run one real HH application with an isolated structured trace."""
     if not confirm_real:
@@ -3217,6 +3296,7 @@ async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> d
         "source": "hh",
         "url": f"https://hh.ru/vacancy/{vacancy_id}",
         "_analytics_apply_mode": "trace-apply",
+        "_analytics_run_id": analytics.current_context()["run_id"],
     }
     trace = apply_orchestrator.create_hh_apply_trace(vacancy, mode="trace-apply", force=True)
     if trace is None:
@@ -3304,6 +3384,7 @@ async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> d
         return result
     except Exception as exc:
         failure_stage = trace.last_stage
+        analytics.record_failure("trace_apply", exc, source="hh", continued=False)
         if client._page is not None:
             await trace.capture(client._page, "failure", screenshot=True, html=True)
         result = {"ok": False, "message": f"{type(exc).__name__}: {exc}"}
@@ -3354,6 +3435,10 @@ async def main():
     group.add_argument("--analytics-backfill", action="store_true", help="Подтянуть историю в аналитику")
     group.add_argument("--analytics-report", nargs="?", const=config.ANALYTICS_RECENT_DAYS, type=int, help="Отчет аналитики за N дней")
     group.add_argument("--run-summary", nargs="?", const="", help="JSON-сводка последнего или выбранного run_id")
+    group.add_argument("--audit", action="store_true", help="Аудит завершённых запусков")
+    audit_selector = parser.add_mutually_exclusive_group()
+    audit_selector.add_argument("--run", dest="audit_run", metavar="RUN_ID", help="ID запуска для --audit")
+    audit_selector.add_argument("--since", dest="audit_since", metavar="ISO", help="Начало периода для --audit")
     group.add_argument("--filter-audit", nargs="?", const=config.ANALYTICS_RECENT_DAYS, type=int, help="Replay-аудит текущих фильтров по analytics history за N дней")
     group.add_argument("--hh-retry-preview", action="store_true", help="Показать HH retry-кандидатов без откликов")
     group.add_argument("--hh-retry-block-company", metavar="COMPANY", help="Не отправлять retry-отклики в компанию")
@@ -3389,6 +3474,8 @@ async def main():
     parser.add_argument("--hh-resume-boost-confirm", default="", help="Слово подтверждения для --hh-resume-boost")
 
     args = parser.parse_args()
+    if (args.audit_run is not None or args.audit_since is not None) and not args.audit:
+        parser.error("--run and --since require --audit")
 
     # Команды управления профилями (не требуют активации)
     if args.create_profile:
@@ -3430,6 +3517,7 @@ async def main():
         or args.manual_apply_token
         or args.filter_audit
         or args.run_summary is not None
+        or args.audit
         or args.hh_resume_boost_status
     ):
         profile_mod.activate_no_lock(args.profile)
@@ -3476,6 +3564,15 @@ async def main():
         elif args.run_summary is not None:
             print(json.dumps(analytics.get_run_summary(args.run_summary or None, profile=args.profile),
                              ensure_ascii=False, indent=2))
+        elif args.audit:
+            import run_auditor
+            audit_args = (["--run", args.audit_run] if args.audit_run is not None else
+                          ["--since", args.audit_since] if args.audit_since is not None else [])
+            audit_result = run_auditor.main(audit_args)
+            if inspect.isawaitable(audit_result):
+                audit_result = await audit_result
+            if isinstance(audit_result, int) and audit_result:
+                raise SystemExit(audit_result)
         elif args.filter_audit is not None:
             await do_filter_audit(args.filter_audit)
         elif args.hh_retry_preview:
