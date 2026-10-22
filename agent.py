@@ -921,11 +921,6 @@ async def do_manual_apply_token(token: str) -> dict:
             # Project the saved uncertainty after current browser reconciliation;
             # no new attempt occurred and the historical record stays unchanged.
             return {**apply_result, "uncertain": True} if historical_uncertain else apply_result
-        _record_hh_questionnaire_analytics(
-            run_id=run_id,
-            vacancy=vacancy,
-            apply_result=apply_result,
-        )
         cover_evaluation["cover_letter_status"] = apply_result.get("cover_letter_status", "unknown")
         apply_notes = apply_result.get("notes") or []
         apply_note_text = "; ".join(str(item) for item in apply_notes if item)
@@ -1063,8 +1058,13 @@ async def do_manual_apply_token(token: str) -> dict:
         result.update(ok=False, uncertain=uncertain, message=message)
         return result
     finally:
-        if not shutdown_started:
-            await stop_manual_result({"ok": False, "uncertain": dispatch_started})
+        try:
+            if not shutdown_started:
+                await stop_manual_result({"ok": False, "uncertain": dispatch_started})
+        finally:
+            if dispatch_started and manual_result is not None and not manual_result.get("already_handled"):
+                _record_hh_questionnaire_analytics(run_id=run_id, vacancy=vacancy,
+                                                  apply_result=manual_result)
 
 
 class _HHApplyUncertain(Exception):
@@ -2586,12 +2586,6 @@ async def do_search(dry_run: bool = False) -> dict:
                         "reason": apply_result.get("work_conditions_reason", apply_result["message"]),
                     }, details, receipt=receipt))
                     continue
-                if source == "hh":
-                    _record_hh_questionnaire_analytics(
-                        run_id=run_id,
-                        vacancy=v,
-                        apply_result=apply_result,
-                    )
                 apply_notes = apply_result.get("notes") or []
                 apply_note_text = "; ".join(str(item) for item in apply_notes if item)
                 question_answer_note = _format_hh_question_answers_for_note(apply_result)
@@ -2972,18 +2966,27 @@ async def do_search(dry_run: bool = False) -> dict:
             acknowledge_processed_deferred()
         except Exception as exc:
             log.warning("Deferred queue acknowledgement failed; records retained: %s", type(exc).__name__)
-        if hh_client and not hh_shutdown_started:
-            try:
-                await observe_hh_receipts(hh_client.stop())
-            finally:
-                reconcile_hh_receipts()
-        if superjob_client:
-            await observe_hh_receipts(superjob_client.stop())
-        if habr_client:
-            await observe_hh_receipts(habr_client.stop())
-            await observe_hh_receipts(habr_client.stop_browser())
-        if geekjob_client:
-            await observe_hh_receipts(geekjob_client.stop())
+        try:
+            if hh_client and not hh_shutdown_started:
+                try:
+                    await observe_hh_receipts(hh_client.stop())
+                finally:
+                    reconcile_hh_receipts()
+            if superjob_client:
+                await observe_hh_receipts(superjob_client.stop())
+            if habr_client:
+                await observe_hh_receipts(habr_client.stop())
+                await observe_hh_receipts(habr_client.stop_browser())
+            if geekjob_client:
+                await observe_hh_receipts(geekjob_client.stop())
+        finally:
+            # Shutdown/consumer awaits may change delivery or uncertainty after
+            # the preliminary result. Record each questionnaire exactly once.
+            reconcile_hh_receipts()
+            for receipt in hh_receipts:
+                if receipt.result is not None and not receipt.result.get("already_handled"):
+                    _record_hh_questionnaire_analytics(run_id=run_id, vacancy=receipt.vacancy,
+                                                      apply_result=receipt.result)
 
     return result
 

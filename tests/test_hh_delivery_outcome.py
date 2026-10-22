@@ -83,6 +83,12 @@ def test_real_browser_dirty_receipt_stays_stopped_but_counts_sent(tmp_path, monk
     import hh.apply as hh_apply
     from hh_client import HHClient
     from tests.test_hh_post_submit_verification import APPLIED_HTML, VACANCY_URL
+    dispatch = gate_module.REAL_DISPATCH
+    async def with_questionnaire(*args, **kwargs):
+        result = await dispatch(*args, **kwargs)
+        result['question_answers'] = [{'question': 'Synthetic question', 'answer': 'Synthetic answer'}]
+        return result
+    monkeypatch.setattr(gate_module, 'REAL_DISPATCH', with_questionnaire)
     monkeypatch.setattr(gate_module, 'VACANCY_HTML', gate_module.VACANCY_HTML + html('2'))
     after_html = APPLIED_HTML + html('2', [5600000002])
     original_init = HHClient.__init__
@@ -130,6 +136,9 @@ def test_real_browser_dirty_receipt_stays_stopped_but_counts_sent(tmp_path, monk
     else: isolated_get.assert_not_awaited()
     events = read_json_records(config.ANALYTICS_EVENTS_FILE)
     assert [e['outcome'] for e in events if e.get('event')=='application_result']==['sent']
+    questionnaire, = [e for e in events if e.get('event') == 'questionnaire']
+    assert questionnaire['success'] is True
+    assert questionnaire['vacancy_id'] == '2'
 
 
 def test_manual_queue_remains_uncertain_while_owner_is_told_sent(tmp_path, monkeypatch):
@@ -155,7 +164,8 @@ def test_manual_queue_remains_uncertain_while_owner_is_told_sent(tmp_path, monke
     monkeypatch.setattr(agent, 'notify_needs_manual', AsyncMock())
     vacancy = {'id':'130000002','source':'hh','url':attempt.url,'title':'QA','company':'Synthetic'}
     candidate = manual_apply_queue.create_candidate(vacancy, {'score':55,'reason':'synthetic'}, details='Synthetic')
-    raw = delivery.result_with_delivery({'ok':False,'uncertain':True,'hh_hard_stop':True}, attempt)
+    raw = delivery.result_with_delivery({'ok':False,'uncertain':True,'hh_hard_stop':True,
+        'question_answers': [{'question': 'Synthetic question', 'answer': 'Synthetic answer'}]}, attempt)
     dispatch = AsyncMock(return_value=raw)
     monkeypatch.setattr(apply_orchestrator, 'dispatch_apply', dispatch)
     result = asyncio.run(agent.do_manual_apply_token(candidate['token']))
@@ -168,6 +178,10 @@ def test_manual_queue_remains_uncertain_while_owner_is_told_sent(tmp_path, monke
     agent.notify_needs_manual.assert_not_awaited()
     decisions = [e['decision'] for e in read_json_records(config.ANALYTICS_EVENTS_FILE) if e.get('event')=='decision']
     assert decisions==['applied_auto']
+    questionnaire, = [e for e in read_json_records(config.ANALYTICS_EVENTS_FILE)
+                      if e.get('event') == 'questionnaire']
+    assert questionnaire['success'] is True
+    assert questionnaire['vacancy_id'] == '130000002'
 
 
 def test_delivery_presentation_exception_preserves_old_outcome(tmp_path, monkeypatch):

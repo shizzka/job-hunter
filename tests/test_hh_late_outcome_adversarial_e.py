@@ -80,7 +80,9 @@ def run_case(monkeypatch, home, point, stop_outcome='success'):
             if point.startswith('failure'):
                 return {'ok': False, 'message': 'Synthetic known no-action refusal'}
             return {'ok': False, 'message': 'Вопросы, пропускаем', 'requires_questions': True}
-        return await run_native_attempt(client, repository, URL, operation)
+        result = await run_native_attempt(client, repository, URL, operation)
+        result['question_answers'] = [{'question': 'Synthetic question', 'answer': 'Synthetic answer'}]
+        return result
 
     async def capture(*args, **kwargs):
         if point in {'trace_capture', 'trace_capture_error', 'trace_capture_cancel', 'exception_capture'}:
@@ -182,6 +184,7 @@ def run_case(monkeypatch, home, point, stop_outcome='success'):
         'decisions': [event['decision'] for event in events if event.get('event') == 'decision'
                       and event.get('vacancy_id') == '4'],
         'applications': [event['outcome'] for event in events if event.get('event') == 'application_result'],
+        'questionnaires': [event for event in events if event.get('event') == 'questionnaire'],
         'uncertain': funnel.get('uncertain', 0), 'applied': funnel.get('applied', 0),
         'stopped': (result or {}).get('hh_recovery', {}).get('stopped'),
         'hard_stops': client.hard_stop_browser.await_count,
@@ -244,6 +247,8 @@ def test_search_final_cookie_capture_promotes_owned_terminal_disposition(monkeyp
     assert observed['uncertain'] == 1 and observed['applied'] == 0, observed
     assert observed['decisions'][-1] == 'apply_uncertain', observed
     assert observed['calls'] == observed['details_calls'] == ['4'], observed
+    questionnaire, = observed['questionnaires']
+    assert questionnaire['success'] is False
 
 
 def test_late_action_during_between_vacancy_pause_stops_before_next_details(monkeypatch, tmp_path):
@@ -325,7 +330,8 @@ def test_manual_token_final_shutdown_cannot_return_stale_owned_receipt(monkeypat
 
     async def lower(*args, **kwargs):
         async def operation():
-            return {'ok': preliminary_ok, 'message': 'Synthetic clean owned outcome'}
+            return {'ok': preliminary_ok, 'message': 'Synthetic clean owned outcome',
+                    'question_answers': [{'question': 'Synthetic question', 'answer': 'Synthetic answer'}]}
         return await run_native_attempt(client, repository, URL, operation)
 
     monkeypatch.setattr(apply_orchestrator, '_dispatch_apply', lower)
@@ -335,6 +341,8 @@ def test_manual_token_final_shutdown_cannot_return_stale_owned_receipt(monkeypat
                 'queue': manual_apply_queue.get_candidate(candidate['token'])['status'], 'result': returned,
                 'decisions': [event['decision'] for event in events if event.get('event') == 'decision']}
     assert preliminary == ['completed' if preliminary_ok else 'failed']
+    questionnaire, = [event for event in events if event.get('event') == 'questionnaire']
+    assert questionnaire['success'] is (preliminary_ok and not deliver_late)
     context.cookies.assert_awaited_once()
     assert client._page is None and client._context is None
     if not deliver_late:
