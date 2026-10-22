@@ -257,7 +257,19 @@ def after_stop(ctx, rule):
 
 def submit_unverified(ctx, rule):
     sent = ctx.applications()
-    for trace in ctx.traces:
+    traces = list(ctx.traces)
+    compact = {}
+    for result in sent:
+        if vacancy_key(result)[0] != 'hh' or ctx.trace_for(result) or not result.get('application_id'):
+            continue
+        stages = [e for e in ctx.events if e.get('event') == 'application_safety'
+                  and e.get('run_id') == result.get('run_id')
+                  and e.get('application_id') == result['application_id']
+                  and vacancy_key(e) == vacancy_key(result)]
+        if stages:
+            compact[result['application_id']] = result
+            traces.append({**result, 'events': stages, 'compact': True})
+    for trace in traces:
         check = {}
         submitted = False
         for row in trace['events']:
@@ -272,12 +284,13 @@ def submit_unverified(ctx, rule):
                 submitted |= row.get('ok') is True
                 # Every dispatch needs fresh verification, including retries.
                 check = {}
-        relevant = [e for e in sent if trace in ctx.trace_for(e)]
+        relevant = ([compact[trace['application_id']]] if trace.get('compact') else
+                    [e for e in sent if trace in ctx.trace_for(e)])
         if relevant and not submitted:
             if check.get('ok') is not True or check.get('resume_match') is False or check.get('letter_match') is False:
                 yield finding(rule, ctx, relevant[-1], trace_id=trace.get('trace_id'), verification=check)
     for row in sent:
-        if vacancy_key(row)[0] == 'hh' and not ctx.trace_for(row):
+        if vacancy_key(row)[0] == 'hh' and not ctx.trace_for(row) and row.get('application_id') not in compact:
             yield finding(rule, ctx, row, application_id=row.get('application_id'), verification=None)
 
 

@@ -285,3 +285,16 @@ def test_a06_sent_without_submit_stage_still_rejects_stale_final_gate():
     result = record(event='application_result', outcome='sent', application_id='one')
     t = trace({'stage': 'PRE_SUBMIT_VERIFY', 'ok': True}, {'stage': 'WORK_CONDITIONS', 'ok': False})
     assert check('A06', context([result], traces=[t]))
+
+
+@pytest.mark.parametrize('other_attempt', [False, True])
+def test_a06_compact_evidence_is_correlated_and_enforces_the_same_order(other_attempt):
+    result = record(event='application_result', outcome='sent', application_id='one')
+    verify = record(event='application_safety', stage='PRE_SUBMIT_VERIFY', ok=True,
+                    resume_match=True, letter_match=True, application_id='other' if other_attempt else 'one')
+    submit = record(event='application_safety', stage='SUBMIT_CLICK', ok=True, application_id='one')
+    ctx = context([verify, submit, result])
+    assert bool(check('A06', ctx)) is other_attempt
+    change = record(event='application_safety', stage='WORK_CONDITIONS', ok=False, application_id='one')
+    ctx.events.insert(1, change)
+    assert check('A06', ctx)

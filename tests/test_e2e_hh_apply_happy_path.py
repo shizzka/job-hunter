@@ -577,3 +577,24 @@ def test_questionnaire_renderer_failure_keeps_final_verification_stage(tmp_path,
     assert stages[final - 1] == 'WORK_CONDITIONS'
     assert failure['native_acting'] and not failure['proven_no_action']
     assert gate.entries['2']['action'] == 'applied'
+
+
+@pytest.mark.parametrize('questionnaire', [False, True])
+def test_trace_disabled_application_keeps_auditable_final_verification(tmp_path, monkeypatch, questionnaire):
+    import run_auditor
+    from tests.test_run_audit_rules import context
+    monkeypatch.setattr(config, 'HH_APPLY_TRACE_ENABLED', False)
+    gate = asyncio.run(run_hh_gate(tmp_path, monkeypatch, noise=False, questionnaire=questionnaire))
+    assert gate.trace is None and gate.result['applied'] == 1
+    assert len(gate.application_posts) == 1
+    events = read_json_records(config.ANALYTICS_EVENTS_FILE)
+    result = next(e for e in events if e['event'] == 'application_result' and e['outcome'] == 'sent')
+    ctx = context(events)
+    ctx.run['run_id'] = result['run_id']
+    rule = next(r for r in run_auditor.RULES if r.id == 'A06')
+    assert not list(rule.check(ctx, rule))
+    proof = [e for e in events if e['event'] == 'application_safety'
+             and e['stage'] == 'PRE_SUBMIT_VERIFY' and e.get('ok') is True]
+    assert proof and proof[-1]['application_id'] == result['application_id']
+    assert proof[-1]['resume_match'] is True and proof[-1]['letter_match'] is True
+    assert not {'letter', 'cover_letter', 'resume_title', 'selector'} & proof[-1].keys()

@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 
 from hh.response_path import is_response_path
 from hh import observation
+import apply_audit
 import work_conditions
 
 from state_store.native_apply import NativeApplyRepository, run_native_attempt
@@ -987,6 +988,7 @@ async def _apply_to_vacancy(
     legacy_save_debug_snapshot = session._save_debug_snapshot
 
     def trace_event(stage: str, *, ok: bool | None = None, **fields) -> None:
+        apply_audit.record_stage(stage, ok=ok, **fields)
         if trace is not None:
             trace.event(stage, ok=ok, **fields)
 
