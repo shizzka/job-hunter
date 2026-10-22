@@ -704,10 +704,12 @@ async def do_manual_apply_token(token: str) -> dict:
         return {"ok": False, "reason": "direction_context_changed", "message": message}
     handled = apply_orchestrator.handled_application_result(vacancy)
     if handled:
+        historical_uncertain = handled["handled_action"] == "apply_uncertain"
         manual_apply_queue.mark_candidate(
-            token, "already_applied" if handled["already_applied"] else "dismissed", handled["message"])
+            token, "uncertain" if historical_uncertain else
+            "already_applied" if handled["already_applied"] else "dismissed", handled["message"])
         print(f"ℹ️ {handled['message']}")
-        return handled
+        return {**handled, "uncertain": True} if historical_uncertain else handled
     evaluation = dict(item.get("evaluation") or {})
     details = str(item.get("details") or "")
     source = vacancy.get("source", "hh")
@@ -910,10 +912,14 @@ async def do_manual_apply_token(token: str) -> dict:
             apply_result['message'] = manual_note
             return apply_result
         if apply_result.get("already_handled"):
-            finish("already_applied" if apply_result["already_applied"] else "dismissed",
+            historical_uncertain = apply_result["handled_action"] == "apply_uncertain"
+            finish("uncertain" if historical_uncertain else
+                   "already_applied" if apply_result["already_applied"] else "dismissed",
                    str(apply_result.get("message") or ""))
             print(f"ℹ️ {apply_result.get('message', '')}")
-            return apply_result
+            # Project the saved uncertainty after current browser reconciliation;
+            # no new attempt occurred and the historical record stays unchanged.
+            return {**apply_result, "uncertain": True} if historical_uncertain else apply_result
         _record_hh_questionnaire_analytics(
             run_id=run_id,
             vacancy=vacancy,

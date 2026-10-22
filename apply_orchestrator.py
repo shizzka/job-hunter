@@ -210,6 +210,7 @@ def handled_application_result(vacancy):
         return {"ok": applied, "already_applied": applied, "already_handled": True,
                 "handled_action": action, "reason": "already_applied" if applied else "already_handled",
                 "message": ("Отклик уже был отправлен; повтор запрещён" if applied else
+                            "Исход прежнего отклика не подтверждён; повторная отправка запрещена" if action == "apply_uncertain" else
                             "Вакансия уже обработана; повторная отправка запрещена")}
     return None
 

@@ -34,6 +34,11 @@ def vacancy():
             "url": "https://hh.ru/vacancy/7"}
 
 
+def card_status(action):
+    return ("uncertain" if action == "apply_uncertain" else
+            "already_applied" if action in seen.APPLIED_ACTIONS else "dismissed")
+
+
 @pytest.mark.parametrize("checkpoint", ["dispatch_apply", "_dispatch_apply"])
 @pytest.mark.parametrize("owner", [None, "qa", "electric"])
 @pytest.mark.parametrize("action", TERMINAL_ACTIONS)
@@ -71,8 +76,8 @@ def test_saved_card_cannot_reopen_terminal_outcome(search_harness, monkeypatch, 
 
     assert result["already_handled"] and result["handled_action"] == action
     assert result["already_applied"] == (action in seen.APPLIED_ACTIONS)
-    assert manual_apply_queue.get_candidate(card["token"])["status"] == (
-        "already_applied" if action in seen.APPLIED_ACTIONS else "dismissed")
+    assert manual_apply_queue.get_candidate(card["token"])["status"] == card_status(action)
+    assert bool(result.get("uncertain")) == (action == "apply_uncertain")
     factory.assert_not_called()
     client.apply_to_vacancy.assert_not_awaited()
     assert (home / "seen.json").read_bytes() == before
@@ -111,8 +116,8 @@ def test_manual_caller_preserves_terminal_record_found_after_await(search_harnes
 
     assert result["already_handled"] and result["handled_action"] == action
     assert result["already_applied"] == (action in seen.APPLIED_ACTIONS)
-    assert manual_apply_queue.get_candidate(card["token"])["status"] == (
-        "already_applied" if action in seen.APPLIED_ACTIONS else "dismissed")
+    assert manual_apply_queue.get_candidate(card["token"])["status"] == card_status(action)
+    assert bool(result.get("uncertain")) == (action == "apply_uncertain")
     client.get_resume_ids.assert_awaited_once()
     client.apply_to_vacancy.assert_not_awaited()
     notice.assert_not_awaited()
