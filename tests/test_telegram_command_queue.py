@@ -342,10 +342,13 @@ def real_bot(monkeypatch, tmp_path):
 
 
 async def spin_until(predicate):
-    for _ in range(100):
+    # Run completion now includes an auditor thread and durable journal writes;
+    # count elapsed time, not event-loop turns that can outrun that thread.
+    deadline = asyncio.get_running_loop().time() + 5
+    while asyncio.get_running_loop().time() < deadline:
         if predicate():
             return
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.001)
     raise AssertionError("Expected asynchronous transition did not occur")
 
 
