@@ -31,6 +31,7 @@ class ChatJournal:
         self.profile = profile
         self.run_id = uuid.uuid4().hex
         self.latest_threads = {}
+        self._standalone_sent = False
 
     def write(self, event, **fields):
         if fields.get("chat_id"):
@@ -56,7 +57,22 @@ class ChatJournal:
             finally:
                 if fd >= 0:
                     os.close(fd)
+        if (event == 'chat_reply_sent' and fields.get('sent') is True
+                and not (fields.get('audit_evidence') or {}).get('analytics_run_id')):
+            self._standalone_sent = True
         return snapshot_id
+
+    def complete_audit(self):
+        """Only standalone sends need a separate audit; parent searches own the rest."""
+        if not self._standalone_sent:
+            return
+        try:
+            import run_auditor
+            if run_auditor.enqueue_completed_run(self.run_id, home=str(self.home), profile=self.profile):
+                self._standalone_sent = False
+        except Exception as exc:
+            import logging
+            logging.getLogger('run_auditor').warning('Chat audit handoff failed: error_kind=%s', type(exc).__name__)
 
     def thread(self, chat_id, data):
         # Whitelist fields: never serialize a page, cookies, storage or transport details.

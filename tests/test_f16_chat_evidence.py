@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock
+import pytest
 
 import analytics
 import chat_context
@@ -123,3 +124,62 @@ def test_unconfirmed_send_does_not_emit_sent_proof(workflow, monkeypatch):
     monkeypatch.setattr(cr, 'send_message', send)
     assert not asyncio.run(workflow.run())['sent']
     assert not sent_events(workflow)
+
+
+def test_standalone_reply_enqueues_a08_audit_after_final_observation(workflow, monkeypatch):
+    import run_auditor
+    from state_store.private_journal import read_json_records
+    queued = []
+    def enqueue(run_id, **destination):
+        rows = read_json_records(Path(destination['home']) / 'chat_journal.jsonl')
+        assert rows[-1]['event'] == 'chat_reply_attempt'
+        assert rows[-1]['reason'] == 'sent'
+        queued.append((run_id, destination))
+        return True
+    monkeypatch.setattr(run_auditor, 'enqueue_completed_run', enqueue)
+    # Audit telemetry is synthetic; the actual reply gates still see own binding.
+    monkeypatch.setattr(cr, '_reply_audit_evidence', lambda *args: {'ownership_status': 'unknown'})
+    assert asyncio.run(workflow.run())['sent']
+    (run_id, destination), = queued
+    # The workflow's minimal ownership-only definitions predate the full
+    # direction schema required by the auditor loader.
+    from tests.test_directions import saved
+    saved(Path(destination['home']), 'qa', count=1)
+    saved(Path(destination['home']), 'electric', count=1)
+    report, = run_auditor.audit_runs(home=destination['home'], profile=destination['profile'], run_id=run_id)
+    assert [r['rule_id'] for r in report['findings']] == ['A08']
+
+
+@pytest.mark.parametrize('dry_run', [False, True])
+def test_search_owned_reply_and_preview_do_not_enqueue_standalone_audit(workflow, monkeypatch, dry_run):
+    import run_auditor
+    from unittest.mock import Mock
+    enqueue = Mock(return_value=True)
+    monkeypatch.setattr(run_auditor, 'enqueue_completed_run', enqueue)
+    with analytics.event_context(run_id='search-run'):
+        result = asyncio.run(workflow.run(dry_run=dry_run))
+    assert result['ok'] and (dry_run or result['sent'])
+    enqueue.assert_not_called()
+
+
+def test_standalone_chat_scan_enqueues_once_after_all_decisions(workflow, monkeypatch):
+    import run_auditor
+    from state_store.private_journal import read_json_records
+    queued = []
+    def enqueue(run_id, **destination):
+        rows = read_json_records(Path(destination['home']) / 'chat_journal.jsonl')
+        assert rows[-1]['event'] == 'chat_decision' and rows[-1]['reason'] == 'sent'
+        assert cr.active_chat_journal.get() is None
+        queued.append(run_id)
+        return True
+    monkeypatch.setattr(run_auditor, 'enqueue_completed_run', enqueue)
+    result = asyncio.run(workflow.run_all(dry_run=False))
+    assert result['answers_sent'] == 1 and queued == [result['run_id']]
+
+
+def test_chat_audit_handoff_failure_preserves_successful_reply(workflow, monkeypatch):
+    import run_auditor
+    def fail(*args, **kwargs):
+        raise OSError('synthetic handoff failure')
+    monkeypatch.setattr(run_auditor, 'enqueue_completed_run', fail)
+    assert asyncio.run(workflow.run())['sent']

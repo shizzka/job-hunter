@@ -1311,6 +1311,7 @@ def _observe_reply_attempt(operation):
             return await operation(*args, **kwargs)
         values = signature.bind(*args, **kwargs).arguments
         paths = values.get('runtime_paths') or values.get('paths') or _runtime_paths()
+        owns_journal = active_chat_journal.get() is None
         journal = active_chat_journal.get() or ChatJournal(
             _state_repository(paths).path.parent, _active_profile_name())
         journal_token = active_chat_journal.set(journal)
@@ -1347,6 +1348,8 @@ def _observe_reply_attempt(operation):
             finally:
                 _reply_observation.reset(token)
                 active_chat_journal.reset(journal_token)
+                if owns_journal:
+                    journal.complete_audit()
     return wrapped
 
 
@@ -1894,10 +1897,13 @@ async def process_all(
 
     finally:
         active_chat_journal.reset(journal_token)
-        for chat in scan_chats:
-            chat_id = str(chat["chat_id"])
-            if chat_id not in decided_chat_ids:
-                record_decision(chat_id, "", "out_of_batch", "run_stopped_before_open", list_ref)
+        try:
+            for chat in scan_chats:
+                chat_id = str(chat["chat_id"])
+                if chat_id not in decided_chat_ids:
+                    record_decision(chat_id, "", "out_of_batch", "run_stopped_before_open", list_ref)
+        finally:
+            journal.complete_audit()
 
     log.info("chat scan complete: read=%d/%d, failures=%d",
              summary["chats_read"], summary["chats_scanned"], summary["read_failures"])
