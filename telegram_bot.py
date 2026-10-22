@@ -1819,7 +1819,11 @@ class TelegramBot(
         )
         sent = 0
         for user_id in self._profile_recipient_ids(self.profile_name):
-            principal = telegram_access.resolve_user(user_id)
+            try:
+                principal = telegram_access.resolve_user(user_id)
+            except PermissionError:
+                # Deny this recipient without blocking alerts to other users.
+                continue
             if principal and principal.get("role") == telegram_access.ROLE_TESTER:
                 # Diagnostics contain profile-wide log evidence; they cannot
                 # establish ownership of each line by the tester's direction.
