@@ -117,6 +117,13 @@ def isolated_profile_home(tmp_path, monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
+def isolate_automatic_audit_worker(monkeypatch):
+    """Background process integration is exercised explicitly in its own tests."""
+    import audit_worker
+    monkeypatch.setattr(audit_worker, 'submit', lambda job: True)
+
+
+@pytest.fixture(autouse=True)
 def deny_test_network(monkeypatch):
     """Ordinary tests use fake transports, never real IP connections.
 

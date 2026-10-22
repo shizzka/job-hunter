@@ -320,14 +320,9 @@ def _audit_destination() -> dict:
 async def _audit_completed_run(run_id: str, destination: dict) -> None:
     try:
         import run_auditor
-        await run_auditor.audit_completed_run(run_id, **destination)
+        run_auditor.enqueue_completed_run(run_id, **destination)
     except Exception as exc:
-        log.warning("Run audit failed: error_kind=%s", type(exc).__name__)
-        try:
-            import run_auditor
-            await run_auditor.report_audit_error(run_id, **destination)
-        except Exception as report_exc:
-            log.warning("Run audit error reporting failed: error_kind=%s", type(report_exc).__name__)
+        log.warning("Run audit handoff failed: error_kind=%s", type(exc).__name__)
 
 
 def _observe_manual_apply(mode):
@@ -3087,8 +3082,8 @@ async def do_daemon():
             if last_audit_day != today:
                 try:
                     import run_auditor
-                    await run_auditor.audit_daily_summary(**_audit_destination())
-                    last_audit_day = today
+                    if run_auditor.enqueue_daily_summary(**_audit_destination()):
+                        last_audit_day = today
                 except Exception as exc:
                     log.warning("Daily audit summary failed: error_kind=%s", type(exc).__name__)
 

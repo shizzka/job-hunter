@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -18,7 +18,7 @@ from state_store.private_journal import read_json_records
 
 @pytest.fixture
 def auditor(monkeypatch):
-    module = SimpleNamespace(audit_completed_run=AsyncMock(), report_audit_error=AsyncMock())
+    module = SimpleNamespace(enqueue_completed_run=Mock(return_value=True))
     monkeypatch.setitem(sys.modules, "run_auditor", module)
     return module
 
@@ -28,7 +28,7 @@ def auditor(monkeypatch):
 def test_search_audited_after_cleanup_and_final_history(monkeypatch, auditor, dry_run, exit_kind):
     order = []
 
-    async def audit(run_id, **destination):
+    def audit(run_id, **destination):
         final = read_json_records(config.RUN_HISTORY_FILE)[-1]
         events = read_json_records(config.ANALYTICS_EVENTS_FILE)
         assert final["run_id"] == run_id and final["status"] == "finished"
@@ -37,7 +37,7 @@ def test_search_audited_after_cleanup_and_final_history(monkeypatch, auditor, dr
         assert order == ["cleanup"]
         order.append("audit")
 
-    auditor.audit_completed_run.side_effect = audit
+    auditor.enqueue_completed_run.side_effect = audit
 
     @agent._observe_search
     async def search(dry_run=False):
@@ -60,20 +60,18 @@ def test_search_audited_after_cleanup_and_final_history(monkeypatch, auditor, dr
     else:
         asyncio.run(search(dry_run=dry_run))
     assert order == ["cleanup", "audit"]
-    auditor.audit_completed_run.assert_awaited_once()
+    auditor.enqueue_completed_run.assert_called_once()
 
 
 def test_auditor_failure_does_not_replace_result_or_exception(monkeypatch, auditor, caplog):
-    auditor.audit_completed_run.side_effect = RuntimeError("PRIVATE_AUDIT_ERROR")
-    auditor.report_audit_error.side_effect = OSError("PRIVATE_REPORT_ERROR")
+    auditor.enqueue_completed_run.side_effect = RuntimeError("PRIVATE_AUDIT_ERROR")
 
     @agent._observe_search
     async def search(dry_run=False):
         return {"ok": "original"}
 
     assert asyncio.run(search()) == {"ok": "original"}
-    auditor.report_audit_error.assert_awaited_once()
-    assert "Run audit failed: error_kind=RuntimeError" in caplog.text
+    assert "Run audit handoff failed: error_kind=RuntimeError" in caplog.text
     assert "PRIVATE" not in caplog.text
 
     @agent._observe_search
@@ -92,7 +90,7 @@ def test_auditor_runs_even_if_search_finalization_fails(monkeypatch, auditor):
         return {"found": 2}
 
     assert asyncio.run(search()) == {"found": 2}
-    auditor.audit_completed_run.assert_awaited_once()
+    auditor.enqueue_completed_run.assert_called_once()
 
 
 def test_audit_destination_is_captured_before_profile_switch(monkeypatch, auditor, tmp_path):
@@ -107,7 +105,7 @@ def test_audit_destination_is_captured_before_profile_switch(monkeypatch, audito
         return {}
 
     asyncio.run(search())
-    assert auditor.audit_completed_run.await_args.kwargs == {"home": home, "profile": "first"}
+    assert auditor.enqueue_completed_run.call_args.kwargs == {"home": home, "profile": "first"}
 
 
 @pytest.mark.parametrize("exit_kind", ["success", "exception", "cancelled"])
@@ -127,7 +125,7 @@ def test_manual_audit_has_correlated_final_entry_after_cleanup(auditor, exit_kin
         finally:
             order.append("cleanup")
 
-    async def audit(run_id, **destination):
+    def audit(run_id, **destination):
         assert order == ["cleanup"]
         final = read_json_records(config.RUN_HISTORY_FILE)[-1]
         assert final["run_id"] == run_id == run_ids[0]
@@ -136,20 +134,20 @@ def test_manual_audit_has_correlated_final_entry_after_cleanup(auditor, exit_kin
         assert "PRIVATE" not in json.dumps(final)
         assert read_json_records(config.ANALYTICS_EVENTS_FILE)[-1]["event"] == "manual_finished"
 
-    auditor.audit_completed_run.side_effect = audit
+    auditor.enqueue_completed_run.side_effect = audit
     if exit_kind == "success":
         assert asyncio.run(apply())["ok"] is True
     else:
         with pytest.raises(ValueError if exit_kind == "exception" else asyncio.CancelledError):
             asyncio.run(apply())
-    auditor.audit_completed_run.assert_awaited_once()
+    auditor.enqueue_completed_run.assert_called_once()
 
 
 def test_manual_missing_token_and_trace_unconfirmed_still_audited(monkeypatch, auditor):
     monkeypatch.setattr(agent.manual_apply_queue, "get_candidate", lambda token: None)
     assert asyncio.run(agent.do_manual_apply_token("PRIVATE_TOKEN"))["ok"] is False
     assert asyncio.run(agent.do_trace_apply("123"))["ok"] is False
-    assert auditor.audit_completed_run.await_count == 2
+    assert auditor.enqueue_completed_run.call_count == 2
     records = read_json_records(config.RUN_HISTORY_FILE)
     assert [entry["mode"] for entry in records if entry["status"] == "finished"] == ["manual-ai-apply", "trace-apply"]
     assert "PRIVATE_TOKEN" not in json.dumps(records)
@@ -178,7 +176,7 @@ def test_trace_dispatch_reuses_audited_run_id(monkeypatch, auditor):
     monkeypatch.setattr(agent.apply_orchestrator, "dispatch_apply", dispatch)
     monkeypatch.setattr(agent, "generate_cover_letter", AsyncMock(return_value="Cover letter"))
     assert asyncio.run(agent.do_trace_apply("123", confirm_real=True))["ok"] is True
-    assert dispatch.await_args.args[0]["_analytics_run_id"] == auditor.audit_completed_run.await_args.args[0]
+    assert dispatch.call_args.args[0]["_analytics_run_id"] == auditor.enqueue_completed_run.call_args.args[0]
 
 
 @pytest.mark.parametrize("selector", [[], ["--run", "run-123"], ["--since", "2026-10-01T00:00:00+03:00"]])

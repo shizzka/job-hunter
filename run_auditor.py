@@ -390,27 +390,45 @@ async def audit_daily_summary(*, home, profile, target=None, now=None):
         await _notice(home, 'daily:' + day.isoformat(), text, target=target, now=now)
 
 
-async def report_audit_error(run_id, *, home=None, profile=None):
+async def report_audit_error(run_id, *, home=None, profile=None, target=None):
     """Last-resort owner notice. A broken disk must not prevent the notice."""
     import config
     import notifier
     home = Path(home or config.JOB_HUNTER_HOME).resolve()
     profile = profile or 'default'
+    target = notifier.capture_audit_owner_target() if target is None else target
     text = f'⚠️ Прогон {html.escape(str(run_id))}, {html.escape(profile)}' + (' [dev]' if profile.endswith('-dev') else '') + ': аудитор не смог проверить.'
     try:
-        await _notice(home, 'audit_error:' + str(run_id), text, target=notifier.capture_audit_owner_target())
+        await _notice(home, 'audit_error:' + str(run_id), text, target=target)
     except Exception:
-        await notifier.notify_audit_owner(text, target=notifier.capture_audit_owner_target())
+        await notifier.notify_audit_owner(text, target=target)
 
 
-async def audit_completed_run(run_id, *, home=None, profile=None):
+def _enqueue(kind, *, run_id=None, home, profile, target=None):
+    import audit_worker
+    import notifier
+    return audit_worker.submit({'kind': kind, 'run_id': run_id, 'destination': {
+        'home': str(home), 'profile': profile,
+        'target': notifier.capture_audit_owner_target() if target is None else target}})
+
+
+def enqueue_completed_run(run_id, **destination):
+    return _enqueue('run', run_id=run_id, **destination)
+
+
+def enqueue_daily_summary(**destination):
+    return _enqueue('daily', **destination)
+
+
+async def audit_completed_run(run_id, *, home=None, profile=None, target=None, offload=True):
     import config
     import notifier
     home = Path(home or config.JOB_HUNTER_HOME).resolve()
     profile = profile or 'default'
-    target = notifier.capture_audit_owner_target()
+    target = notifier.capture_audit_owner_target() if target is None else target
     try:
-        reports = await asyncio.to_thread(audit_runs, home=home, profile=profile, run_id=run_id)
+        reports = (await asyncio.to_thread(audit_runs, home=home, profile=profile, run_id=run_id)
+                   if offload else audit_runs(home=home, profile=profile, run_id=run_id))
         for report in reports:
             delivered = {i for r in _records(home, JOURNAL) if r.get('event') == 'notice_delivered' for i in r.get('finding_ids', [])}
             pending = [r for r in report['findings'] if r['finding_id'] not in delivered]
@@ -423,7 +441,7 @@ async def audit_completed_run(run_id, *, home=None, profile=None):
     except Exception as exc:
         log.warning('Run audit failed: error_kind=%s', type(exc).__name__)
         try:
-            await report_audit_error(run_id, home=home, profile=profile)
+            await report_audit_error(run_id, home=home, profile=profile, target=target)
         except Exception as report_exc:
             log.warning('Audit error notice failed: error_kind=%s', type(report_exc).__name__)
 
