@@ -203,14 +203,19 @@ def _apply_result_with_current_uncertainty(vacancy: dict, hh_client, result: dic
     return result
 
 
-def _duplicate_application(vacancy):
-    if vacancy.get("id") and seen.is_applied(vacancy["id"]):
-        return {"ok": False, "reason": "already_applied", "message": "Отклик уже был отправлен; повтор запрещён"}
+def handled_application_result(vacancy):
+    action = seen.terminal_action(vacancy["id"]) if vacancy.get("id") else None
+    if action:
+        applied = action in seen.APPLIED_ACTIONS
+        return {"ok": applied, "already_applied": applied, "already_handled": True,
+                "handled_action": action, "reason": "already_applied" if applied else "already_handled",
+                "message": ("Отклик уже был отправлен; повтор запрещён" if applied else
+                            "Вакансия уже обработана; повторная отправка запрещена")}
     return None
 
 
 async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> dict:
-    duplicate = _duplicate_application(vacancy)
+    duplicate = handled_application_result(vacancy)
     if duplicate:
         return duplicate
     # Do not navigate to the resume catalog for a blocked company; still recheck
@@ -380,7 +385,7 @@ async def _dispatch_apply(
     """Отправить отклик через соответствующий клиент источника."""
     source = vacancy.get("source", "hh")
     # Recheck after awaited catalog/trace work, immediately before the client.
-    duplicate = _duplicate_application(vacancy)
+    duplicate = handled_application_result(vacancy)
     if duplicate:
         return duplicate
     direction_runtime.check_cover(vacancy, cover_letter)

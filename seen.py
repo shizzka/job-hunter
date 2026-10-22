@@ -68,6 +68,7 @@ ACCOUNT_SAFETY_ACTIONS = {
     "applied", "already_applied", "apply_uncertain", "dismissed", "мимо",
     "skipped_feedback_bad", "apply_unconfirmed_no_manual",
 }
+APPLIED_ACTIONS = {"applied", "already_applied", "manual_ai_applied"}
 
 
 def is_terminal_action(action):
@@ -93,9 +94,21 @@ def is_applied(vacancy_id):
     identity = str(vacancy_id).removeprefix("hh:")
     return any(
         _identity(key, entry).removeprefix("hh:") == identity
-        and entry.get("action") in {"applied", "already_applied", "manual_ai_applied"}
+        and entry.get("action") in APPLIED_ACTIONS
         for key, entry in _load().items()
     )
+
+
+def terminal_action(vacancy_id):
+    """Read all raw records so a direction-local skip cannot mask a terminal outcome."""
+    identity = str(vacancy_id).removeprefix("hh:")
+    actions = [entry.get("action") for key, entry in _load().items()
+               if _identity(key, entry).removeprefix("hh:") == identity
+               and is_terminal_action(entry.get("action"))]
+    # Never present an unresolved outcome as a confirmed earlier application.
+    priority = {"apply_uncertain": 3, "manual_hh_guard_stop": 2,
+                **{action: 1 for action in APPLIED_ACTIONS}}
+    return max(actions, key=lambda action: priority.get(action, 0), default=None)
 
 
 def _key(vacancy_id, metadata=None):
@@ -135,6 +148,9 @@ def mark_seen(vacancy_id: str, vacancy: dict, action: str = "applied"):
             prior == "manual_hh_guard_stop" and action not in {prior, "apply_uncertain"}
         ):
             raise RuntimeError("HH outcome requires manual verification before changing its outcome")
+        if data.get(key, {}).get("action") in APPLIED_ACTIONS and action not in {
+                "apply_uncertain", "manual_hh_guard_stop"}:
+            return
         data[key] = entry
 
     _store().update(remember)

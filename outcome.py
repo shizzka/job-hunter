@@ -45,7 +45,7 @@ def application_outcome(result: dict) -> str:
     return ("sent" if server_delivery_confirmed(result) else
             "uncertain" if apply_result_is_uncertain(result) else
             "already_applied" if result.get("already_applied") else
-            "blocked" if result.get("reason") in {"company_blacklisted", "work_conditions"} else
+            "blocked" if result.get("already_handled") or result.get("reason") in {"company_blacklisted", "work_conditions"} else
             "sent" if result.get("ok") else "failed")
 
 

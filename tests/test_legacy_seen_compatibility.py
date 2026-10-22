@@ -102,7 +102,7 @@ def test_dispatch_cannot_repeat_application_even_if_later_direction_has_skip(sea
     for identity in ("7", "hh:7"):
         result = asyncio.run(apply_orchestrator.dispatch_apply(
             {"id": identity, "source": "hh", "url": "https://hh.ru/vacancy/7"}, "", hh_client=client))
-        assert result["reason"] == "already_applied" and not result["ok"]
+        assert result["reason"] == "already_applied" and result["already_applied"] and result["ok"]
     client.apply_to_vacancy.assert_not_awaited()
     client.get_resume_ids.assert_not_awaited()
     assert (home / "seen.json").read_bytes() == before

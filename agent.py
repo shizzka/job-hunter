@@ -702,6 +702,12 @@ async def do_manual_apply_token(token: str) -> dict:
         message = str(exc)
         manual_apply_queue.mark_candidate(token, "stale", message)
         return {"ok": False, "reason": "direction_context_changed", "message": message}
+    handled = apply_orchestrator.handled_application_result(vacancy)
+    if handled:
+        manual_apply_queue.mark_candidate(
+            token, "already_applied" if handled["already_applied"] else "dismissed", handled["message"])
+        print(f"ℹ️ {handled['message']}")
+        return handled
     evaluation = dict(item.get("evaluation") or {})
     details = str(item.get("details") or "")
     source = vacancy.get("source", "hh")
@@ -902,6 +908,11 @@ async def do_manual_apply_token(token: str) -> dict:
             manual_note = record_manual_uncertain()
             await _notify_hh_delivery_or_uncertain(vacancy, score, reason, apply_result, manual_note)
             apply_result['message'] = manual_note
+            return apply_result
+        if apply_result.get("already_handled"):
+            finish("already_applied" if apply_result["already_applied"] else "dismissed",
+                   str(apply_result.get("message") or ""))
+            print(f"ℹ️ {apply_result.get('message', '')}")
             return apply_result
         _record_hh_questionnaire_analytics(
             run_id=run_id,
@@ -2662,6 +2673,17 @@ async def do_search(dry_run: bool = False) -> dict:
                     continue
 
                 # 8. Обработка результата
+                if apply_result.get("already_handled"):
+                    result["skipped"] += 1
+                    bucket["rejected"] += 1
+                    receipt.account("rejected")
+                    analytics.record_decision(
+                        run_id=run_id, vacancy=v,
+                        decision=DECISION_ALREADY_APPLIED if apply_result["already_applied"] else "not_processed",
+                        evaluation=cover_evaluation, details=details, resume_variant=hh_resume_variant,
+                        note=f"already_seen:{apply_result['handled_action']}",
+                    )
+                    continue
                 if apply_result.get("already_applied"):
                     if apply_result.get("resume_selection_status") == "unknown_existing_response":
                         await receipt.wait(notify_needs_manual(v, score, reason, note=str(apply_result.get("message") or "Исходное HH-резюме не подтверждено")))
