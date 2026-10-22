@@ -43,3 +43,29 @@ def test_last_run_ignores_a_run_still_in_progress(tmp_path):
                                  "finished_at": (now - timedelta(hours=2, minutes=50)).isoformat()}) + "\n")
         stream.write(json.dumps({"started_at": now.isoformat(), "finished_at": None}) + "\n")
     assert sorted(seen_reset.plan(str(home), "last_run")) == ["2", "5"]
+
+
+@pytest.mark.parametrize('kind', [None, 'search'])
+@pytest.mark.parametrize('mode', ['search', 'dry-run'])
+def test_last_run_ignores_later_manual_audit_records(tmp_path, kind, mode):
+    home = setup(tmp_path)
+    now = datetime.now()
+    search = {'started_at': (now - timedelta(hours=3)).isoformat(),
+              'finished_at': (now - timedelta(hours=2, minutes=50)).isoformat(), 'mode': mode}
+    if kind:
+        search['kind'] = kind
+    manual = {'kind': 'manual-apply', 'mode': 'manual-ai-apply',
+              'started_at': (now - timedelta(hours=1)).isoformat(),
+              'finished_at': now.isoformat(), 'ok': False}
+    (home / 'run_history.jsonl').write_text('\n'.join(json.dumps(row) for row in [search, manual]) + '\n')
+    assert sorted(seen_reset.plan(str(home), 'last_run')) == ['2', '5']
+    assert seen_reset.apply(str(home), 'last_run') == 2
+    assert sorted(json.loads((home / 'seen_vacancies.json').read_text())) == ['1', '3', '4', '6']
+
+
+def test_last_run_with_only_manual_records_has_no_search(tmp_path):
+    (tmp_path / 'run_history.jsonl').write_text(json.dumps({
+        'kind': 'manual-apply', 'started_at': '2026-10-21T11:00:00',
+        'finished_at': '2026-10-21T11:01:00'}) + '\n')
+    with pytest.raises(ValueError, match='Прогонов ещё не было'):
+        seen_reset.plan(str(tmp_path), 'last_run')

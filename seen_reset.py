@@ -36,7 +36,8 @@ def _since(home_dir: str, scope: str, direction_scope="active") -> str:
                 row = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(row, dict) and row.get("started_at"):
+            if (isinstance(row, dict) and row.get("started_at")
+                    and row.get("kind", "search") == "search"):
                 runs.append(row)
         import analytics
         runs = analytics.scoped_runs(runs, events_file=os.path.join(home_dir, "analytics_events.jsonl"), scope=direction_scope)
