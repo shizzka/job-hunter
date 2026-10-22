@@ -18,7 +18,7 @@ import telegram_access
 import telegram_bot
 import telegram_bot_ui as ui
 import telegram_clients
-from tests.direction_view_fakes import two_directions
+from tests.direction_view_fakes import make_direction, two_directions
 
 
 @pytest.fixture
@@ -130,10 +130,108 @@ def tester(dev_bot, monkeypatch):
     return dev_bot, principal
 
 
-@pytest.mark.parametrize('profile,direction', [('qa', 'qa'), ('synthetic-dev', 'qa'), ('qa-dev', 'electric'), ('qa-dev', '')])
+@pytest.mark.parametrize('profile,direction', [('qa', 'qa'), ('default', 'qa'), ('../qa-dev', 'qa'),
+                                              ('qa-dev', '../qa'), ('qa-dev', '')])
 def test_invalid_tester_binding_is_rejected(profile, direction):
     assert telegram_access._normalize_entry({'user_id': 202, 'role': 'tester',
                                             'profile': profile, 'direction': direction}) is None
+
+
+@pytest.fixture(params=['qa-dev', 'synthetic-dev'])
+def generated_tester(dev_bot, synthetic_profiles, request):
+    profile_name = request.param
+    home = synthetic_profiles / 'profiles' / profile_name
+    direction_name = 'direction_a1b2c3d4'
+    make_direction(home, direction_name, 333, 'QA Engineer')
+    directions.set_active_direction(home, direction_name)
+    principal = telegram_access.upsert_user(202, profile=profile_name, role='tester', direction=direction_name)
+    return dev_bot, principal, home
+
+
+def test_generated_tester_binding_used_by_commands_scope_and_workers(generated_tester):
+    bot, principal, home = generated_tester
+    profile_name, direction_name = principal['profile'], principal['direction']
+    assert telegram_access.resolve_user(202) == principal
+    # Stored selections cannot redirect the bound profile or its stable name.
+    bot._update_user_state('user_state', 202, fields={'selected_profile': 'client'})
+    telegram_clients.save_registry({'clients': [{'user_id': 202, 'profile_name': 'client'}]})
+    assert bot._selected_profile(principal) == profile_name
+    with access.principal_scope(principal):
+        assert profiles.list_profiles() == [profile_name]
+        assert profiles.load_profile(profile_name).direction_name == direction_name
+        assert [d['name'] for d in directions.list_directions(home)] == [direction_name]
+        env = access.worker_environment()
+        assert env['JOB_HUNTER_SCOPED_PROFILE'] == profile_name
+        assert env['JOB_HUNTER_SCOPED_DIRECTION'] == direction_name
+        with pytest.raises(PermissionError):
+            directions.load_direction(home, 'qa')
+    asyncio.run(bot._dispatch(202, principal, '/menu', ''))
+    assert profile_name in bot._send_text.call_args.args[1]
+    assert '🔒' not in bot._send_text.call_args.args[1]
+    assert not access.current_scope()[0]
+
+
+@pytest.mark.parametrize('active', [None, 'other'])
+def test_generated_tester_refuses_mismatched_active_direction(generated_tester, active):
+    bot, principal, home = generated_tester
+    if active:
+        # Even the same display title does not establish the bound identity.
+        make_direction(home, active, 444, 'QA Engineer')
+    directions.set_active_direction(home, active)
+    bot._cancel_active_command = AsyncMock()
+    asyncio.run(bot._dispatch(202, principal, '/cancel_active', ''))
+    bot._cancel_active_command.assert_not_awaited()
+    assert '🔒' in bot._send_text.call_args.args[1]
+    assert not access.current_scope()[0]
+
+
+def test_generated_tester_missing_direction_refused(generated_tester):
+    bot, principal, home = generated_tester
+    (home / 'directions' / (principal['direction'] + '.json')).unlink()
+    with pytest.raises(PermissionError):
+        telegram_access.resolve_user(202)
+    with pytest.raises(PermissionError):
+        telegram_access.upsert_user(303, profile=principal['profile'], role='tester', direction=principal['direction'])
+    with pytest.raises(PermissionError):
+        with access.principal_scope(principal):
+            pytest.fail('A missing bound direction must not establish a scope')
+    assert not telegram_access.notification_allowed(202, profile_name=principal['profile'], direction=principal['direction'])
+    bot._cancel_active_command = AsyncMock()
+    asyncio.run(bot._dispatch(202, principal, '/cancel_active', ''))
+    bot._cancel_active_command.assert_not_awaited()
+    assert '🔒' in bot._send_text.call_args.args[1]
+    assert not access.current_scope()[0]
+
+
+def test_generated_tester_event_ownership_and_instance_boundary(generated_tester, monkeypatch):
+    _, principal, home = generated_tester
+    # Event ownership remains authoritative even after an active selection change.
+    directions.set_active_direction(home, None)
+    assert telegram_access.notification_allowed(202, profile_name=principal['profile'], direction=principal['direction'])
+    for direction in ('qa', 'QA Engineer', None):
+        assert not telegram_access.notification_allowed(202, profile_name=principal['profile'], direction=direction)
+    assert not telegram_access.notification_allowed(202, profile_name='client', direction=principal['direction'])
+    monkeypatch.setattr(config, 'JOB_HUNTER_INSTANCE_KIND', 'prod')
+    # Keep the registry identity across instances, but deny access in PROD.
+    assert telegram_access.load_registry()['users'] == [principal]
+    with pytest.raises(PermissionError):
+        telegram_access.resolve_user(202)
+    with pytest.raises(PermissionError):
+        with access.principal_scope(principal):
+            pytest.fail('PROD must refuse a tester scope')
+    assert not telegram_access.notification_allowed(202, profile_name=principal['profile'], direction=principal['direction'])
+    assert not access.current_scope()[0]
+
+
+def test_tester_non_dev_profile_refused_even_on_prod(dev_bot, monkeypatch):
+    principal = {'user_id': 202, 'role': 'tester', 'profile': 'qa', 'direction': 'direction_a1b2c3d4'}
+    monkeypatch.setattr(config, 'JOB_HUNTER_INSTANCE_KIND', 'prod')
+    with pytest.raises(ValueError):
+        telegram_access.upsert_user(202, profile=principal['profile'], role='tester', direction=principal['direction'])
+    with pytest.raises(PermissionError):
+        with access.principal_scope(principal):
+            pytest.fail('A tester must always bind to a -dev profile')
+    assert not access.current_scope()[0]
 
 
 def test_tester_scope_confines_profile_direction_and_registries(tester):
@@ -195,7 +293,7 @@ def test_tester_cannot_use_stale_direction_callback(tester):
     asyncio.run(bot._handle_callback_query({'id': 'test', 'from': {'id': 202},
         'data': f"dir:{state['token']}:choose:0",
         'message': {'chat': {'id': 202, 'type': 'private'}, 'message_id': 1}}))
-    assert 'QA' in bot._send_text.call_args.args[1]
+    assert 'направление' in bot._send_text.call_args.args[1]
     assert directions.active_direction(home)['name'] == 'qa'
 
 
@@ -206,7 +304,7 @@ def test_tester_refuses_changed_active_direction_before_command(tester):
     bot._cancel_active_command = AsyncMock()
     asyncio.run(bot._dispatch(202, principal, '/cancel_active', ''))
     bot._cancel_active_command.assert_not_awaited()
-    assert 'QA' in bot._send_text.call_args.args[1]
+    assert 'привязанное направление' in bot._send_text.call_args.args[1]
 
 
 @pytest.mark.parametrize('kind,forbidden', [('dev', 'client'), ('prod', 'synthetic-dev')])

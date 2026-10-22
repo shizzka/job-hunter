@@ -573,8 +573,8 @@ class TelegramBot(
 
     def _selected_profile(self, principal: dict) -> str:
         if principal.get("role") == telegram_access.ROLE_TESTER:
-            profile_access.require_profile(profile_access.TESTER_PROFILE)
-            return profile_access.TESTER_PROFILE
+            profile_name, _ = profile_access.require_tester_binding(principal)
+            return profile_name
         default_profile = self._default_profile_name()
         if principal.get("role") != ROLE_ADMIN:
             available_profiles = set(self._profile_names())

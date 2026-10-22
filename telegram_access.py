@@ -34,12 +34,12 @@ def scoped_request(fn):
             with profile_access.principal_scope(principal):
                 if principal and principal.get("role") == ROLE_TESTER:
                     import profile as profile_mod
-                    # Missing/changed QA selection blocks even commands which
+                    # Missing/changed bound selection blocks even commands which
                     # only inspect queues or cancel a running profile command.
                     try:
-                        profile_mod.load_profile(profile_access.TESTER_PROFILE)
-                    except FileNotFoundError as exc:
-                        raise PermissionError("Профиль tester или направление QA не подготовлены.") from exc
+                        profile_mod.load_profile(principal["profile"])
+                    except (OSError, ValueError) as exc:
+                        raise PermissionError("Профиль tester или привязанное направление не подготовлены.") from exc
                 return await fn(self, *args, **kwargs)
         except PermissionError as exc:
             if callback:
@@ -82,9 +82,11 @@ def _normalize_entry(entry: dict) -> dict | None:
 
     profile = str(entry.get("profile") or "default").strip() or "default"
     direction = str(entry.get("direction") or "").strip()
-    if role == ROLE_TESTER and (
-            profile != profile_access.TESTER_PROFILE or direction != profile_access.TESTER_DIRECTION):
-        return None
+    if role == ROLE_TESTER:
+        try:
+            profile_access.tester_binding({"profile": profile, "direction": direction})
+        except PermissionError:
+            return None
     enabled = bool(entry.get("enabled", True))
     label = str(entry.get("label") or "").strip()
     result = {
@@ -191,6 +193,8 @@ def resolve_user(user_id: int) -> dict | None:
                 result.update(role=ROLE_USER, profile=acting["profile"], impersonating=True)
             if result.get("role") != ROLE_ADMIN:
                 profile_access.require_profile(result["profile"])
+            if result.get("role") == ROLE_TESTER:
+                profile_access.require_tester_binding(result)
             return result
     return None
 
@@ -244,9 +248,11 @@ def notification_allowed(user_id: int, *, profile_name: str | None, direction: s
                 return False
             if item.get("role") != ROLE_TESTER:
                 return True
-            return bool(profile_name == profile_access.TESTER_PROFILE
-                        and direction == item["direction"] == profile_access.TESTER_DIRECTION
-                        and profile_access.profile_allowed(profile_name))
+            try:
+                profile_access.require_tester_binding(item)
+            except PermissionError:
+                return False
+            return direction == item["direction"]
     return False
 
 
@@ -270,7 +276,9 @@ def upsert_user(user_id: int, *, profile: str, role: str = ROLE_USER, label: str
         "direction": direction,
     })
     if not normalized:
-        raise ValueError("Invalid telegram user id or tester binding (qa-dev/qa required)")
+        raise ValueError("Invalid telegram user id or tester binding (*-dev profile and stable direction name required)")
+    if normalized["role"] == ROLE_TESTER:
+        profile_access.require_tester_binding(normalized)
 
     def mutate(registry):
         for idx, item in enumerate(registry["users"]):

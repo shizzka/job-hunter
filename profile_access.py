@@ -3,12 +3,11 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
 import os
+from pathlib import Path
 import re
 
 import config
 
-TESTER_PROFILE = "qa-dev"
-TESTER_DIRECTION = "qa"  # stable direction name; display title is QA
 _scope = ContextVar("profile_access_scope", default=None)
 
 
@@ -34,12 +33,10 @@ def current_scope():
 @contextmanager
 def principal_scope(principal):
     if principal and principal.get("role") == "tester":
-        if (principal.get("profile") != TESTER_PROFILE
-                or principal.get("direction") != TESTER_DIRECTION):
-            raise PermissionError("Некорректная привязка tester.")
-        token = _scope.set((TESTER_PROFILE, TESTER_DIRECTION, str(principal["user_id"])))
+        profile, direction = tester_binding(principal)
+        token = _scope.set((profile, direction, str(principal["user_id"])))
         try:
-            require_profile(TESTER_PROFILE)
+            require_tester_binding(principal)
             yield
         finally:
             _scope.reset(token)
@@ -49,6 +46,33 @@ def principal_scope(principal):
             yield
         finally:
             _scope.reset(token)
+
+
+def tester_binding(principal):
+    """Validate registry identity without filtering other instances' entries."""
+    profile, direction = principal.get("profile"), principal.get("direction")
+    if (not isinstance(profile, str) or re.fullmatch(r"[A-Za-z0-9_-]+", profile) is None
+            or not profile.endswith("-dev")
+            or not isinstance(direction, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", direction) is None):
+        raise PermissionError("Некорректная привязка tester.")
+    return profile, direction
+
+
+def require_tester_binding(principal):
+    """Check the bound direction exists, independently of the active selection."""
+    import directions
+    import profile as profile_mod
+
+    profile, direction = tester_binding(principal)
+    require_profile(profile)
+    try:
+        env_path = Path(profile_mod.profile_env_path(profile))
+        if not env_path.is_file():
+            raise FileNotFoundError(env_path)
+        directions.load_direction(env_path.parent, direction)
+    except (OSError, ValueError) as exc:
+        raise PermissionError("Профиль tester или привязанное направление не подготовлены.") from exc
+    return profile, direction
 
 
 def profile_allowed(name):
@@ -71,7 +95,7 @@ def require_profile(name):
 def require_direction(name):
     _, direction, _ = current_scope()
     if direction and name != direction:
-        raise PermissionError("Tester доступно только направление QA; переключение запрещено.")
+        raise PermissionError("Tester доступно только привязанное направление; переключение запрещено.")
 
 
 def worker_environment():
