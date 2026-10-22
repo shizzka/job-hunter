@@ -82,6 +82,10 @@ class AuditContext:
 
     def applications(self, *, history=False):
         events = self.all_events if history else self.events
+        decisions = defaultdict(list)
+        for e in events:
+            if e.get('event') == 'decision' and is_sent(e):
+                decisions[(e.get('run_id'), *vacancy_key(e))].append(e)
         receipts = [e for e in events if is_sent(e) and e.get('event') == 'application_result']
         covered = {(e.get('run_id'), *vacancy_key(e)) for e in receipts}
         receipts += [e for e in events if is_sent(e) and e.get('event') == 'decision'
@@ -90,8 +94,7 @@ class AuditContext:
         for e in receipts:
             # Legacy workflow receipts omitted labels that their terminal
             # decision saved. Join within the same run/source/vacancy only.
-            matches = [d for d in events if d.get('event') == 'decision' and is_sent(d)
-                       and d.get('run_id') == e.get('run_id') and vacancy_key(d) == vacancy_key(e)]
+            matches = decisions[(e.get('run_id'), *vacancy_key(e))]
             e = dict(e)
             for name in ('title', 'company', 'url', 'direction', 'employer_id'):
                 if not e.get(name):
@@ -288,8 +291,12 @@ def delivery_mismatch(ctx, rule):
                           mismatch='sent_without_confirmation', server_delivery=result.get('server_delivery'))
     for trace in ctx.traces:
         delivery = [e for e in trace['events'] if e.get('stage') == 'HH_SERVER_DELIVERY']
-        if delivery and delivery[-1].get('status') == 'confirmed' and not any(trace in ctx.trace_for(e) for e in results):
-            yield finding(rule, ctx, trace, mismatch='confirmation_without_result', trace_id=trace.get('trace_id'), delivery=delivery[-1])
+        native = [e for e in trace['events'] if e.get('stage') == 'POST_SUBMIT_RECONCILIATION'
+                  and e.get('step') == 'verified' and e.get('ok') is True]
+        confirmation = (delivery[-1] if delivery and delivery[-1].get('status') == 'confirmed'
+                        else native[-1] if native else None)
+        if confirmation and not any(trace in ctx.trace_for(e) for e in results):
+            yield finding(rule, ctx, trace, mismatch='confirmation_without_result', trace_id=trace.get('trace_id'), delivery=confirmation)
 
 
 def chat_context_violation(ctx, rule):

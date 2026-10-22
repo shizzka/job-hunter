@@ -19,9 +19,10 @@ from tests.test_run_audit_rules import record
 
 @pytest.fixture
 def home(tmp_path):
+    finished = datetime.now().astimezone().isoformat()
     append_json(tmp_path / 'run_history.jsonl', {'run_id': 'run', 'direction': 'qa', 'direction_title': 'Тестирование',
-        'status': 'finished', 'finished_at': datetime.now().astimezone().isoformat(), 'ok': True})
-    append_json(tmp_path / 'analytics_events.jsonl', record(event='search_finished', ok=True))
+        'status': 'finished', 'finished_at': finished, 'ok': True})
+    append_json(tmp_path / 'analytics_events.jsonl', record(event='search_finished', ok=True, finished_at=finished))
     return tmp_path
 
 
@@ -218,6 +219,13 @@ def test_loader_joins_queue_and_chat_evidence_to_exact_run(home):
         'chat_id': '1', 'audit_evidence': {'analytics_run_id': 'run', 'ownership_status': 'unknown'}})
     report = audit.audit_runs(home=home, run_id='run')[0]
     assert [r['rule_id'] for r in report['findings']] == ['A03', 'A08']
+
+
+def test_final_event_survives_missing_final_history_append(home):
+    (home / 'run_history.jsonl').write_text(json.dumps({'run_id': 'run', 'status': 'incomplete', 'finished_at': None}) + '\n')
+    report = audit.audit_runs(home=home, run_id='run')[0]
+    assert report['run']['status'] == 'finished' and report['run']['finished_at']
+    assert not report['errors']
 
 
 def test_legacy_chat_sent_decision_cannot_be_reported_clean(home):

@@ -181,6 +181,14 @@ def test_a07_delivery_receipt_mismatch_both_directions_and_negative():
     assert not check('A07', ctx)
 
 
+def test_a07_native_verified_receipt_without_result_is_not_silently_lost():
+    t = trace({'stage': 'POST_SUBMIT_RECONCILIATION', 'step': 'verified', 'ok': True})
+    ctx = context(traces=[t])
+    assert check('A07', ctx)[0]['evidence']['mismatch'] == 'confirmation_without_result'
+    ctx.events = [record(event='application_result', outcome='sent', application_id='one', trace_id='trace')]
+    assert not check('A07', ctx)
+
+
 def test_a08_reply_requires_positive_ownership_and_same_direction_facts():
     evidence = {'ownership_status': 'own', 'ownership_resume_id': '100', 'binding_resume_id': '100',
                 'ownership_direction': 'qa', 'binding_direction': 'qa', 'facts_direction': 'qa',

@@ -96,6 +96,13 @@ def _load(home):
     for row in history:
         if row.get('run_id'):
             runs[row['run_id']] = {**runs.get(row['run_id'], {}), **row}
+    # A final analytics record survives a failed final history append. An old
+    # incomplete checkpoint must not overwrite that explicit completion.
+    for row in events:
+        if row.get('event') in {'search_finished', 'manual_finished'} and row.get('run_id'):
+            runs[row['run_id']] = {**runs.get(row['run_id'], {}), **row,
+                                  'status': row.get('status') or 'finished',
+                                  'finished_at': row.get('finished_at') or row.get('created_at')}
     # Old manual runs may have receipts but predate lifecycle instrumentation.
     for row in events:
         if row.get('run_id') and not row.get('historical') and row.get('mode') != 'historical':
