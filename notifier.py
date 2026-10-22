@@ -7,6 +7,8 @@ import os
 import re
 import time
 import uuid
+from contextvars import ContextVar
+from functools import wraps
 import aiohttp
 
 import config
@@ -21,6 +23,34 @@ log = logging.getLogger("notifier")
 _session: aiohttp.ClientSession | None = None
 _session_uses_proxy = False
 _session_proxy_url = ""
+_delivery_direction = ContextVar("notification_event_direction", default=None)
+
+
+def _owned_event_notification(fn):
+    """Bind one notification to saved event evidence instead of active config."""
+    @wraps(fn)
+    async def wrapped(*args, **kwargs):
+        from direction_history import HistoryScope
+        record = args[0] if args else kwargs.get("vacancy", kwargs.get("invitation", {}))
+        profile = _active_profile()
+        direction = None
+        if profile is not None:
+            try:
+                direction = HistoryScope(profile.home_dir).owner(record)
+            except (OSError, ValueError):
+                pass
+        token = _delivery_direction.set(direction)
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            _delivery_direction.reset(token)
+    return wrapped
+
+
+def _delivery_allowed(user_id, profile=None):
+    return telegram_access.notification_allowed(
+        user_id, profile_name=str(getattr(profile, "name", "") or "") if profile is not None else None,
+        direction=_delivery_direction.get())
 
 
 def _build_connector(use_proxy: bool, proxy_url: str) -> tuple[aiohttp.BaseConnector | None, bool]:
@@ -52,7 +82,8 @@ def _resolve_target_chat_ids(profile) -> list[int]:
             if user_id <= 0 or not item.get("enabled", True):
                 continue
             if str(item.get("profile") or "").strip() == profile_name:
-                matched.append(user_id)
+                if _delivery_allowed(user_id, profile):
+                    matched.append(user_id)
         if matched:
             return sorted(set(matched))
 
@@ -62,10 +93,10 @@ def _resolve_target_chat_ids(profile) -> list[int]:
     except (TypeError, ValueError):
         configured_chat_id = 0
     if configured_chat_id > 0:
-        return [configured_chat_id]
+        return [configured_chat_id] if _delivery_allowed(configured_chat_id, profile) else []
 
     fallback_chat_id = int(config.NOTIFY_CHAT_ID or 0)
-    return [fallback_chat_id] if fallback_chat_id > 0 else []
+    return [fallback_chat_id] if fallback_chat_id > 0 and _delivery_allowed(fallback_chat_id, profile) else []
 
 
 def _resolve_bot_token(profile) -> str:
@@ -164,7 +195,10 @@ async def _send_to_chats(method: str, build_request, *, multipart: bool = False,
 
     url = f"https://api.telegram.org/bot{bot_token}/{method}"
     use_proxy = bool(proxy_url)
+    delivered = False
     for chat_id in chat_ids:
+        if not _delivery_allowed(chat_id):
+            continue
         try:
             payload = build_request(chat_id)
             if multipart:
@@ -177,7 +211,8 @@ async def _send_to_chats(method: str, build_request, *, multipart: bool = False,
             return False
         if ok is not True:
             return False
-    return True
+        delivered = True
+    return delivered
 
 
 def _build_text_payload(text: str, parse_mode: str, reply_markup: dict | None):
@@ -476,6 +511,7 @@ def _format_autoanswer_notes(note: str) -> str:
     return block
 
 
+@_owned_event_notification
 async def notify_application(
     vacancy: dict,
     score: int,
@@ -517,6 +553,7 @@ async def notify_application(
     await send_message(text)
 
 
+@_owned_event_notification
 async def notify_invitation(invitation: dict):
     """Уведомить о приглашении на собеседование!"""
     title = _html(invitation.get("title", "—"), 300)
@@ -532,6 +569,7 @@ async def notify_invitation(invitation: dict):
     await send_message(text)
 
 
+@_owned_event_notification
 async def notify_needs_manual(
     vacancy: dict,
     score: int | None,

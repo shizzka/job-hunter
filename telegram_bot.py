@@ -727,6 +727,8 @@ class TelegramBot(
         kind: str = "log",
         lines: int = 80,
     ) -> None:
+        if profile_access.current_scope()[1] or principal.get("role") == telegram_access.ROLE_TESTER:
+            raise PermissionError("Сырой лог недоступен. /log — записи направления QA.")
         path, content = self._log_tail(profile_name, kind=kind, lines=lines)
         await self._send_text(
             chat_id,
@@ -1816,6 +1818,10 @@ class TelegramBot(
         sent = 0
         for user_id in self._profile_recipient_ids(self.profile_name):
             principal = telegram_access.resolve_user(user_id)
+            if principal and principal.get("role") == telegram_access.ROLE_TESTER:
+                # Diagnostics contain profile-wide log evidence; they cannot
+                # establish ownership of each line by the tester's direction.
+                continue
             reply_markup = self._menu_reply_markup(principal) if principal else None
             result = await self._send_text_safely(user_id, text, reply_markup=reply_markup)
             if result is not None:
@@ -1902,18 +1908,19 @@ class TelegramBot(
         for user_id, principal in sorted(recipients.items()):
             profile_name = str(principal.get("profile") or self.profile_name or "default")
             try:
-                snapshot = self._daily_summary_snapshot(profile_name, now=datetime.now())
-                text = build_daily_summary_text(
-                    profile_name=profile_name,
-                    analytics_summary=snapshot["analytics_summary"],
-                    recent_runs=snapshot["recent_runs"],
-                    period_label=snapshot["period_label"],
-                )
-                result = await self._send_text_safely(
-                    user_id,
-                    text,
-                    reply_markup=self._menu_reply_markup(principal),
-                )
+                with profile_access.principal_scope(principal):
+                    snapshot = self._daily_summary_snapshot(profile_name, now=datetime.now())
+                    text = build_daily_summary_text(
+                        profile_name=profile_name,
+                        analytics_summary=snapshot["analytics_summary"],
+                        recent_runs=snapshot["recent_runs"],
+                        period_label=snapshot["period_label"],
+                    )
+                    result = await self._send_text_safely(
+                        user_id,
+                        text,
+                        reply_markup=self._menu_reply_markup(principal),
+                    )
                 if result is not None:
                     sent += 1
             except Exception as exc:
@@ -3328,6 +3335,9 @@ class TelegramBot(
             return
 
         if command == "/raw_log":
+            if role == telegram_access.ROLE_TESTER:
+                await self._send_text(chat_id, "🔒 Сырой лог недоступен. /log — записи направления QA.")
+                return
             await self._send_log_tail(chat_id, principal, profile_name=profile_name, kind="log")
             return
 

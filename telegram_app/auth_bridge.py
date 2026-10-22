@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
+import profile_access
 
 
 def clean_hh_auth_code_text(text: str) -> str:
@@ -24,6 +25,8 @@ def can_answer_hh_auth_prompt(
     admin_role: str = "admin",
 ) -> bool:
     profile_name = str(pending.get("profile_name") or "")
+    if not profile_access.profile_allowed(profile_name):
+        return False
     if principal.get("role") == admin_role:
         return True
     return bool(profile_name) and (

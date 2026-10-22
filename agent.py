@@ -3004,7 +3004,7 @@ async def do_check_invitations():
         await office_log("check_invitations", "Проверяю инвайты", "thinking")
 
         sync_result = await invitation_sync.check_invitations(client)
-        invitations = sync_result["invitations"]
+        invitations = invitation_sync.authorized_observations(sync_result["invitations"])
 
         if invitations:
             log.info("Found %d invitations!", len(invitations))

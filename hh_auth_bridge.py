@@ -21,6 +21,7 @@ from typing import Optional
 from pathlib import Path
 
 import config
+import profile_access
 from state_store.json_store import atomic_write_json
 from state_store.prompt_mailbox import PromptMailbox, read_prompt
 
@@ -43,6 +44,7 @@ def _normalized_profile_name(profile_name: str | None) -> str:
 
 def _profile_file_key(profile_name: str | None) -> str:
     name = _normalized_profile_name(profile_name)
+    profile_access.require_profile(name)
     if re.fullmatch(r"[A-Za-z0-9_-]+", name):
         return name
     return hashlib.sha256(name.encode("utf-8")).hexdigest()[:24]
@@ -59,7 +61,8 @@ def _response_path(profile_name: str | None = None) -> str:
 
 
 def _pending_paths() -> list[str]:
-    return sorted(glob.glob(os.path.join(_state_dir(), "hh_auth_pending.*.json")))
+    return [path for path in sorted(glob.glob(os.path.join(_state_dir(), "hh_auth_pending.*.json")))
+            if profile_access.profile_allowed(Path(path).name[len("hh_auth_pending."):-len(".json")])]
 
 
 def _atomic_write(path: str, data: dict) -> None:
@@ -77,9 +80,12 @@ def _mailbox(profile_name):
 
 
 def _request_mailbox(request_id, profile_name=""):
+    if profile_name:
+        profile_access.require_profile(_normalized_profile_name(profile_name))
     cached = _request_channels.get(request_id)
     if cached:
         name, mailbox = cached
+        profile_access.require_profile(name)
         if profile_name and _normalized_profile_name(profile_name) != name:
             raise ValueError("Auth request belongs to another profile")
         return mailbox
@@ -137,6 +143,7 @@ async def wait_for_response(
     deadline = time.monotonic() + max(1, int(timeout_s or 1))
     mailbox = _request_mailbox(request_id, profile_name)
     while mailbox is not None and time.monotonic() < deadline:
+        profile_access.require_profile(mailbox.profile_name)
         active, answer = mailbox.answer(request_id)
         if not active:
             return None
@@ -161,7 +168,9 @@ def peek_pending(profile_name: str | None = None) -> Optional[dict]:
     pending_items = []
     for path in paths:
         candidate = Path(path)
-        mailbox = PromptMailbox(candidate, candidate.with_name(candidate.name.replace("hh_auth_pending.", "hh_auth_response.", 1)))
+        # Bind ownership before peek: expired prompts can be deleted by peek.
+        name = candidate.name[len("hh_auth_pending."):-len(".json")]
+        mailbox = _mailbox(name)
         data = mailbox.peek()
         if not data:
             continue

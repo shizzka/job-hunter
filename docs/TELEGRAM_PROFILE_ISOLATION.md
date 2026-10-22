@@ -72,3 +72,28 @@ receive `JOB_HUNTER_SCOPED_PROFILE`, `JOB_HUNTER_SCOPED_DIRECTION` and
 `JOB_HUNTER_SCOPED_USER` from the launcher; these are internal scope propagation
 values, not alternatives to the instance kind setting. Changing QA's active
 direction outside the tester session fails closed on subsequent commands.
+
+## Asynchronous delivery and account observations
+
+HH login mailbox discovery filters profile filenames before opening or expiring
+prompts. All mailbox operations recheck the instance/request boundary, including
+requests cached before a scope change. An admin's SMS reply cannot answer the
+other bot's pending request.
+
+Tester cannot use `/raw_log` or read legacy text logs through `/chat_log`.
+Structured history remains available when saved evidence verifies QA ownership.
+Daily summaries run in each recipient's principal scope; a different active
+direction prevents delivery to tester. Profile-wide diagnostic alerts are also
+withheld from tester.
+
+Worker delivery authorizes tester from the notification event's recorded
+ownership, not the current active direction. Application/manual-review/invitation
+notifications bind their event evidence for delivery. Notifications without
+verified direction are withheld from tester, including configured fallback and
+captured explicit targets. Other recipients retain the existing delivery rules.
+
+The account-wide `/check` results are resolved against saved resume/application
+and negotiation snapshot evidence before analytics, pipeline synchronization,
+task creation or notification. Only QA observations reach a scoped tester
+worker; ambiguous and unowned invitations are excluded. A vacancy title or the
+current active direction does not establish ownership.

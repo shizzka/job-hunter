@@ -45,7 +45,7 @@ def chat_rows(home, legacy_text=""):
         result.append(row)
     # Text logs predate the journal. A chat id is the only supported bridge to
     # B22 ownership; never attribute a whole process log to its active direction.
-    if not result:
+    if not result and not profile_access.current_scope()[1]:
         for line in legacy_text.splitlines():
             match = re.search(r"\bchat(?:_id)?[=: ]+(\d+)\b", line)
             owner = chat_context.safe_resolve(str(home), match[1]) if match else None

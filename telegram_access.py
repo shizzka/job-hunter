@@ -228,6 +228,29 @@ def require_user_access(user_id: int) -> None:
             return
 
 
+def notification_allowed(user_id: int, *, profile_name: str | None, direction: str | None) -> bool:
+    """Authorize tester delivery from event ownership, never current selection.
+
+    Inspect the raw registry so an explicit/cached target or a configured owner
+    fallback cannot hide a tester entry behind a different request scope.
+    """
+    for item in load_registry()["users"]:
+        if item["user_id"] == int(user_id) and item.get("role") == ROLE_TESTER:
+            if profile_name is None:
+                # Owner-only notices must not activate or inspect a client just
+                # to route a message. Only tester targets need this lookup.
+                import profile as profile_mod
+                try:
+                    profile_name = profile_mod.active().name
+                except (OSError, ValueError):
+                    return False
+            return bool(item.get("enabled", True)
+                        and profile_name == item["profile"] == profile_access.TESTER_PROFILE
+                        and direction == item["direction"] == profile_access.TESTER_DIRECTION
+                        and profile_access.profile_allowed(profile_name))
+    return True
+
+
 def upsert_user(user_id: int, *, profile: str, role: str = ROLE_USER, label: str = "", enabled: bool = True,
                 direction: str = "") -> dict:
     profile_access.require_profile(profile)
