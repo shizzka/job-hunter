@@ -136,6 +136,24 @@ def _load(home):
     return runs, events, cards, chats, snapshots, definitions
 
 
+def _trace_belongs_to(home, path, run_id):
+    """Discover ownership without validating unrelated retained artifacts.
+
+    Current traces carry ownership in their first row. Legacy traces may only
+    acquire it at APPLICATION_CONTEXT; tolerate bad rows during discovery, then
+    read a matching trace strictly (including those bad rows).
+    """
+    with _inside(home, path).open(encoding='utf-8') as stream:
+        for line in stream:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get('run_id'):
+                return row['run_id'] == run_id
+    return False
+
+
 def _traces(home, run, events):
     refs = {}
     for row in events:
@@ -145,6 +163,8 @@ def _traces(home, run, events):
     for path in _inside(home, 'traces').glob('*/*/trace.jsonl'):
         path = _inside(home, path)
         if str(path) not in refs:
+            if not _trace_belongs_to(home, path, run['run_id']):
+                continue
             records = _records(home, path)
             context = next((r for r in records if r.get('run_id') == run['run_id']), None)
             if context:

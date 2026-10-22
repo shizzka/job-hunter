@@ -266,3 +266,30 @@ def test_trace_discovery_uses_own_run_context_even_without_reference(home):
     append_json(path, record(stage='HH_SERVER_DELIVERY', trace_id='trace', status='confirmed'))
     report = audit.audit_runs(home=home, run_id='run')[0]
     assert [f['rule_id'] for f in report['findings']] == ['A07']
+
+
+@pytest.mark.parametrize('owner_id', ['old-run', None])
+def test_unrelated_corrupt_trace_does_not_abort_new_audit(home, owner, owner_id):
+    path = home / 'traces' / '2026-10-01' / 'old' / 'trace.jsonl'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'stage': 'TRACE_STARTED', 'run_id': owner_id}) + '\n{broken\n')
+    asyncio.run(audit.audit_completed_run('run', home=home, profile='client'))
+    completed = read_json_records(home / audit.JOURNAL)[-1]
+    assert completed['event'] == 'audit_completed' and completed['errors'] == []
+    owner.assert_not_awaited()
+
+
+@pytest.mark.parametrize('referenced', [False, True])
+@pytest.mark.parametrize('broken_first', [False, True])
+def test_relevant_corrupt_trace_still_reports_audit_failure(home, owner, referenced, broken_first):
+    path = home / 'traces' / '2026-10-21' / 'current' / 'trace.jsonl'
+    path.parent.mkdir(parents=True)
+    context = json.dumps({'stage': 'APPLICATION_CONTEXT', 'run_id': 'run'}) + '\n'
+    path.write_text('{broken\n' + context if broken_first else context + '{broken\n')
+    if referenced:
+        append_json(home / 'analytics_events.jsonl', record(event='debug_artifact',
+            artifact_type='apply_trace', artifact_ref=str(path)))
+    asyncio.run(audit.audit_completed_run('run', home=home, profile='client'))
+    owner.assert_awaited_once()
+    assert 'не смог проверить' in owner.await_args.args[0]
+    assert not any(r['event'] == 'audit_completed' for r in read_json_records(home / audit.JOURNAL))
