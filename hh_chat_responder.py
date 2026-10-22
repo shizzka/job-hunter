@@ -1266,6 +1266,38 @@ def _live_candidate_revision(ownership_binding=None):
                            asdict(ownership_binding) if ownership_binding else None])
 
 
+@analytics.best_effort
+def _reply_audit_evidence(binding, snapshot):
+    """Passive proof from the candidate and application checked before the click."""
+    import chat_context
+    owner = chat_context.safe_resolve(binding.home, binding.chat_id)
+    return {
+        "ownership_status": owner.status,
+        "ownership_resume_id": owner.resume_id,
+        "ownership_direction": owner.direction,
+        "binding_resume_id": binding.resume_id,
+        "binding_direction": binding.direction,
+        "binding_profile_home": binding.home,
+        "facts_profile_home": snapshot.profile_home,
+        "facts_direction": snapshot.direction_name,
+        "facts_digest": _revision_hash([snapshot.facts, snapshot.evidence_facts,
+                                         snapshot.fact_constraints, snapshot.confirmed]),
+        "resume_digest": hashlib.sha256(snapshot.resume.encode()).hexdigest(),
+        "candidate_revision": _candidate_revision(binding),
+        "analytics_run_id": str(analytics.current_context().get("run_id") or ""),
+    }
+
+
+@analytics.best_effort
+def _record_reply_sent(chat_id, target_id, vacancy, answer, evidence):
+    journal = active_chat_journal.get()
+    if journal is not None:
+        journal.write("chat_reply_sent", chat_id=chat_id, message_id=target_id,
+                      sent=True, vacancy=vacancy, audit_evidence=evidence,
+                      answer_digest=hashlib.sha256(answer.encode()).hexdigest(),
+                      snapshot_ref=journal.latest_threads.get(chat_id, ""))
+
+
 _reply_observation = ContextVar('chat_reply_observation', default=False)
 
 
@@ -1419,7 +1451,9 @@ async def _execute_reply(
             if not repository.finish(chat_id, owner, "completed", remember):
                 raise RuntimeError("Chat preview completion ownership lost")
         else:
+            audit_evidence = None
             async def before_send():
+                nonlocal audit_evidence
                 data = await _extract_messages(page)
                 latest = (data.get("messages") or [{}])[-1]
                 if _message_revision(latest) != target_revision or latest.get("is_me"):
@@ -1429,6 +1463,7 @@ async def _execute_reply(
                             or _live_candidate_revision(ownership_binding) != candidate_revision):
                         raise RuntimeError("Approved chat candidate/draft changed before send")
                 ownership_binding.check(current_candidate())
+                audit_evidence = _reply_audit_evidence(ownership_binding, current_candidate())
                 # Last synchronous durable check immediately before the click.
                 repository.mark_acting(chat_id, owner)
             ok = await send_message(page, chat_id, answer, runtime_paths=paths, before_send=before_send,
@@ -1437,6 +1472,7 @@ async def _execute_reply(
             if not ok:
                 detail.update(ok=False, reason="send_uncertain", message="send failed or uncertain; inspect state")
                 return detail
+            _record_reply_sent(chat_id, target_id, vacancy, answer, audit_evidence)
             if not repository.finish(chat_id, owner, "completed"):
                 raise RuntimeError("Chat send completion ownership lost")
             if notify is not None:

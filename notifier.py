@@ -132,6 +132,29 @@ def capture_delivery_target():
     return (_resolve_bot_token(profile), tuple(_resolve_target_chat_ids(profile)), _resolve_proxy_url(profile))
 
 
+def capture_audit_owner_target():
+    """Pin the control bot's owner channel, independent of active client config.
+
+    Profile activation replaces config.NOTIFY_CHAT_ID. The process environment
+    remains the source of the original owner-notices destination.
+    """
+    raw_owner = os.getenv("NOTIFY_CHAT_ID", os.getenv("OWNER_CHAT_ID", "0"))
+    try:
+        owner_id = int(raw_owner or 0)
+    except (TypeError, ValueError):
+        owner_id = 0
+    token = str(getattr(config, "TELEGRAM_CONTROL_BOT_TOKEN", "") or "").strip()
+    return (token, (owner_id,) if owner_id > 0 else (),
+            os.getenv("TELEGRAM_PROXY", "").strip())
+
+
+async def notify_audit_owner(text: str, *, target=None) -> bool:
+    """Send pre-escaped HTML only to a captured owner target; never broadcast."""
+    pinned = capture_audit_owner_target() if target is None else target
+    return await _send_to_chats("sendMessage", _build_text_payload(text, "HTML", None),
+                                target=pinned)
+
+
 async def _send_to_chats(method: str, build_request, *, multipart: bool = False, target=None) -> bool:
     """One request per recipient. Lost acknowledgment must never cause replay."""
     bot_token, chat_ids, proxy_url = capture_delivery_target() if target is None else target

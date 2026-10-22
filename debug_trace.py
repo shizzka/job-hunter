@@ -279,6 +279,7 @@ class ApplyTrace:
     def event(self, stage: str, *, ok: bool | None = None, **fields: Any) -> None:
         try:
             event = {
+                "run_id": self.run_context.get("run_id", ""),
                 "t": round(time.monotonic() - self._started_monotonic, 3),
                 "ts": datetime.now().astimezone().isoformat(timespec="milliseconds"),
                 "trace_id": self.trace_id,

@@ -79,7 +79,7 @@ def _compact_vacancy(vacancy: dict) -> dict:
         "id", "source", "source_label", "title", "company", "salary", "url",
         "snippet", "response_url", "apply_mode", "_search_query", "_search_profile",
         "_resume_input_versions", "_direction_selection", "_cover_letter_selection", "_hh_salary_warning",
-        "_hh_work_conditions",
+        "_hh_work_conditions", "_analytics_run_id",
     )
     compact = {key: vacancy.get(key) for key in keys if vacancy.get(key) not in (None, "")}
     if "source" not in compact:
@@ -142,6 +142,7 @@ def create_candidate(
     )
     token = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
     item = {
+        "run_id": vacancy.get("_analytics_run_id") or "",
         **runtime_metadata(vacancy),
         "token": token,
         "profile_name": _safe_profile(profile_name or os.getenv("JOB_HUNTER_DEFAULT_PROFILE", "default")),

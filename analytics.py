@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import fcntl
 import logging
 import os
@@ -21,6 +22,15 @@ from state_store.private_journal import append_json, read_json_records
 from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket, application_outcome
 
 log = logging.getLogger("analytics")
+
+
+def audit_direction_snapshot():
+    """Policy and identities at run time, without candidate text or letters."""
+    direction = getattr(config, "ACTIVE_DIRECTION", None) or {}
+    if not direction:
+        return None
+    return copy.deepcopy({key: direction[key] for key in
+        ("name", "title", "work_conditions", "search_profiles", "variants") if key in direction})
 
 _event_context = ContextVar("analytics_context", default={})
 _event_destination = ContextVar("analytics_destination", default=None)
@@ -123,6 +133,7 @@ class SearchObservation:
         self.uncertain_failures = {}
         self.history_file = config.RUN_HISTORY_FILE
         self.direction = direction_history.runtime_metadata()
+        self.audit_direction = audit_direction_snapshot()
 
     def entry(self, *, incomplete=False):
         stats = self.result.get("source_stats", {})
@@ -158,6 +169,7 @@ class SearchObservation:
             entry = incomplete_run_counts(entry, totals["applied"],
                 {source: bucket["funnel"]["applied"] for source, bucket in sources.items()})
         entry.update(self.direction)
+        entry["audit_direction"] = self.audit_direction
         entry.update(run_observation_fields(entry))
         return entry
 
@@ -791,6 +803,7 @@ def record_search_started(
         "run_id": run_id,
         "mode": mode,
         "enabled_sources": enabled_sources,
+        "audit_direction": audit_direction_snapshot(),
     })
 
 
@@ -816,7 +829,7 @@ def record_search_finished(
         "ok": result.get("ok", True),
         **{field: result.get(field) for field in ("started_at", "finished_at", "status", "new",
             "funnel", "reason_breakdown", "failure_stage", "error_kind", "stage_failures", "hh_recovery",
-            "execution_status", "application_outcome", "zero_apply_diagnosis") if field in result},
+            "execution_status", "application_outcome", "zero_apply_diagnosis", "audit_direction") if field in result},
     })
 
 
@@ -947,6 +960,13 @@ def record_decision(
         "preferred_resume_variant": evaluation.get("preferred_resume_variant", ""),
         "should_apply": bool(evaluation.get("should_apply", False)),
         "evaluation_status": evaluation.get("evaluation_status", "scored"),
+        "evaluation_present": bool(evaluation),
+        "_evaluation_selection": {key: evaluation[key] for key in
+            ("direction", "hh_resume_hash", "hh_resume_numeric_id", "variant_text_sha256") if key in evaluation},
+        "_hh_work_conditions": copy.deepcopy(vacancy.get("_hh_work_conditions")),
+        "audit_direction": audit_direction_snapshot(),
+        "_cover_letter_selection": {key: value for key, value in
+            (vacancy.get("_cover_letter_selection") or {}).items() if key != "profile_home"},
         "error_kind": evaluation.get("error_kind", ""),
         "reason": evaluation.get("reason", ""),
         "red_flags": list(evaluation.get("red_flags", []) or []),

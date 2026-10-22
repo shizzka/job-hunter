@@ -27,6 +27,17 @@ from geekjob_client import GeekJobClient
 log = logging.getLogger("agent")
 
 
+def _audit_result_fields(result):
+    """Serialize diagnostics from the owned delivery capability, never a dict claim."""
+    try:
+        from hh.delivery import fact, _fields
+        record = fact(result)
+        return {"submission_status": result.get("submission_status"),
+                "server_delivery": _fields(record) if record is not None else None}
+    except Exception:
+        return {}
+
+
 def _knowledge_file_names(home_dir: str) -> list[str]:
     knowledge_dir = os.path.join(home_dir, "knowledge")
     try:
@@ -251,6 +262,10 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
                 requested_resume_title=kwargs.get("preferred_resume_title", ""),
             )
     application_id = uuid.uuid4().hex
+    trace = kwargs.get("trace")
+    if trace is not None:
+        trace.event("APPLICATION_CONTEXT", run_id=vacancy.get("_analytics_run_id", ""),
+                    application_id=application_id, **resume_versions.payload(vacancy))
     vacancy["_requested_resume"] = {"id": kwargs.get("preferred_resume_id", ""),
                                     "title": kwargs.get("preferred_resume_title", "")}
     with analytics.event_context(
@@ -261,7 +276,12 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
         stage="apply",
         apply_mode=vacancy.get("_analytics_apply_mode", "unknown"),
         has_cover_letter=bool(cover_letter.strip()),
+        trace_id=getattr(trace, "trace_id", ""),
         resume_id=kwargs.get("preferred_resume_id", ""),
+        title=vacancy.get("title", ""), company=vacancy.get("company", ""), url=vacancy.get("url", ""),
+        _hh_work_conditions=vacancy.get("_hh_work_conditions"),
+        _cover_letter_selection={key: value for key, value in
+            (vacancy.get("_cover_letter_selection") or {}).items() if key != "profile_home"},
         **resume_versions.payload(vacancy),
     ):
         analytics.record_event({"event": "application_attempt"})
@@ -293,7 +313,7 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
                 result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
                 analytics.record_event({"event": "application_result",
                     "outcome": application_outcome(result) if apply_result_is_uncertain(result) else "error",
-                    "error_kind": type(exc).__name__})
+                    "error_kind": type(exc).__name__, **_audit_result_fields(result)})
                 if isinstance(trace, ApplyTrace):
                     trace.update_application_outcome(application_outcome(result))
             if apply_result_is_uncertain(result):
@@ -327,6 +347,7 @@ async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> d
             result = apply_result_with_current_uncertainty(vacancy, hh_client, result, owned_attempt=owned_attempt)
             outcome = application_outcome(result)
             analytics.record_event({"event": "application_result", "outcome": outcome,
+                **_audit_result_fields(result),
                 "cover_letter_status": result.get("cover_letter_status", "unknown"),
                 "resume_selection_verified": result.get("resume_selection_verified", False),
                 "selected_resume_id": result.get("selected_resume_id", "")})
