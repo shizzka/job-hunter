@@ -17,6 +17,8 @@ import uuid
 
 import search_query_suggester
 import work_conditions
+import profile_access
+import telegram_access
 
 
 def _fingerprint(value):
@@ -156,6 +158,7 @@ class TelegramDirections:
         await self._send_text(chat_id, "Что изменить?", reply_markup=self._direction_inline(state,
             [[(label, f"edit:{field}")] for label, field in labels] + [[("Назад", "back"), ("Отмена", "cancel")]]))
 
+    @telegram_access.scoped_request
     async def _direction_callback(self, chat_id, principal, data):
         parts = str(data).split(":")
         state = self._direction_sessions().get(principal["user_id"])
@@ -180,6 +183,7 @@ class TelegramDirections:
                                           [state["catalog"][i] for i in sorted(selected)])
             elif action == "choose" and state.get("mode") == "switch":
                 item = state["choices"][int(parts[3])]
+                profile_access.require_direction(item["name"])
                 _, _, active = self._direction_context(principal)
                 state.update(mode="draft", draft=copy.deepcopy(item), activate=not active or item["name"] != active["name"],
                              summary=bool(active and item["name"] == active["name"]))
@@ -598,8 +602,12 @@ class TelegramDirections:
             "❌ Отменить направление": "/direction_cancel",
         }
 
+    @telegram_access.scoped_request
     async def _dispatch_direction(self, chat_id, principal, command, arg):
         import directions
+        if (profile_access.current_scope()[1]
+                and command in {"/direction_switch", "/direction_new"}):
+            raise PermissionError("Tester не может создавать или переключать направление.")
         profile_name, profile, active = self._direction_context(principal)
         state = self._direction_sessions().get(principal["user_id"])
         if state and not self._direction_valid(principal, state):
@@ -613,7 +621,9 @@ class TelegramDirections:
             state = self._direction_bind(principal, mode="switch", choices=choices)
             rows = [[(("✅ " if active and item["name"] == active["name"] else "") + item["title"], f"choose:{i}")]
                     for i, item in enumerate(choices)]
-            rows += [[("➕ Новое направление", "new"), ("📊 Статистика", "stats")]]
+            if not profile_access.current_scope()[1]:
+                rows += [[("➕ Новое направление", "new")]]
+            rows += [[("📊 Статистика", "stats")]]
             await self._send_text(chat_id, "🧭 Что ищу — ваши направления поиска. Выберите кнопкой ниже.",
                                   reply_markup=self._direction_markup())
             await self._send_text(chat_id, str(f"Направления · {profile_name}\nАктивное: " + (active["title"] if active else "нет")),

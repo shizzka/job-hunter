@@ -11,6 +11,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+import profile_access
 
 from state_store.json_store import atomic_create_text, atomic_write_json, file_lock
 
@@ -49,6 +50,7 @@ def _root(home_dir):
 
 def _path(home_dir, name):
     validate_direction_name(name)
+    profile_access.require_direction(name)
     root = _root(home_dir)
     return _inside(root / (name + ".json"), root)
 
@@ -190,7 +192,9 @@ def list_directions(home_dir):
     root = _root(home_dir)
     if not root.exists():
         return []
-    return [load_direction(home_dir, path.stem) for path in sorted(root.glob("*.json"))]
+    scoped_direction = profile_access.current_scope()[1]
+    return [load_direction(home_dir, path.stem) for path in sorted(root.glob("*.json"))
+            if not scoped_direction or path.stem == scoped_direction]
 
 
 def save_direction(home_dir, direction, *, texts=None):
@@ -250,16 +254,20 @@ def active_direction(home_dir):
         with path.open(encoding="utf-8") as stream:
             state = json.load(stream)
     except FileNotFoundError:
+        profile_access.require_direction(None)
         return None
     if not isinstance(state, dict) or set(state) != {"active_direction"}:
         raise DirectionError("Некорректное состояние активного направления.")
     name = state["active_direction"]
+    profile_access.require_direction(name)
     if name is None:
         return None
     return load_direction(home_dir, name)
 
 
 def set_active_direction(home_dir, name):
+    if profile_access.current_scope()[1]:
+        raise PermissionError("Tester не может переключать направление.")
     if name is not None:
         load_direction(home_dir, name)
     path = _state_path(home_dir)

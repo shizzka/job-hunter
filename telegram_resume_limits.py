@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import datetime
 
 import config
+import profile_access
+import telegram_access
 from state_store.registry import RegistryStore
 
 MAX_EVENTS = 100
@@ -184,7 +186,7 @@ def _snapshot(entry: dict) -> dict:
         "bonus_total": int(entry.get("bonus_total", 0)),
         "available_soft": available_soft,
         "analysis_total": analysis_total,
-        "profiles": profiles,
+        "profiles": {name: bucket for name, bucket in profiles.items() if profile_access.profile_allowed(name)},
         "updated_at": str(entry.get("updated_at") or ""),
     }
 
@@ -195,7 +197,11 @@ def get_user_snapshot(user_id: int) -> dict:
 
 def list_user_snapshots(user_ids: list[int] | None = None) -> list[dict]:
     if user_ids is None:
-        return [_snapshot(item) for item in load_registry()["users"]]
+        scoped_user = profile_access.current_scope()[2]
+        return [_snapshot(item) for item in load_registry()["users"]
+                if not scoped_user or str(item["user_id"]) == scoped_user]
+    for user_id in user_ids:
+        telegram_access.require_user_access(user_id)
     snapshots = []
 
     def mutate(registry):
@@ -212,10 +218,16 @@ def recent_events(limit: int = 10) -> list[dict]:
     limit = max(0, int(limit))
     if limit == 0:
         return []
-    return list(reversed(registry["events"][-limit:]))
+    scoped_user = profile_access.current_scope()[2]
+    events = [event for event in registry["events"]
+              if (not scoped_user or str(event["user_id"]) == scoped_user)
+              and (profile_access.profile_allowed(event["profile_name"]) if event.get("profile_name")
+                   else profile_access.instance_kind() == "prod")]
+    return list(reversed(events[-limit:]))
 
 
 def _update_user(user_id: int, mutator) -> dict:
+    telegram_access.require_user_access(user_id)
     snapshot = None
 
     def mutate(registry):
@@ -230,6 +242,7 @@ def _update_user(user_id: int, mutator) -> dict:
 
 
 def record_resume_analysis(user_id: int, *, profile_name: str, consume_credit: bool = True) -> dict:
+    profile_access.require_profile(profile_name or "default")
     def mutate(registry, entry):
         if consume_credit:
             entry["free_used"] = int(entry.get("free_used", 0)) + 1
@@ -245,6 +258,7 @@ def record_resume_analysis(user_id: int, *, profile_name: str, consume_credit: b
 
 def consume_ai_usage(user_id: int, *, profile_name: str, action: str) -> bool:
     """Reserve one shared AI credit atomically before a user operation starts."""
+    profile_access.require_profile(profile_name or "default")
     consumed = False
 
     def mutate(registry, entry):

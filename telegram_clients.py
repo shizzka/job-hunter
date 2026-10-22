@@ -5,6 +5,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 import config
+import profile_access
 from state_store.registry import RegistryStore
 
 STATUS_NEW = "new"
@@ -111,7 +112,7 @@ def save_registry(registry: dict) -> None:
 
 
 def list_clients() -> list[dict]:
-    clients = list(load_registry()["clients"])
+    clients = [item for item in load_registry()["clients"] if _client_allowed(item)]
     return sorted(clients, key=lambda item: (item.get("updated_at", ""), item["user_id"]), reverse=True)
 
 
@@ -119,8 +120,20 @@ def get_client(user_id: int) -> dict | None:
     target_id = int(user_id)
     for item in load_registry()["clients"]:
         if item["user_id"] == target_id:
+            if not _client_allowed(item):
+                raise PermissionError("Клиент недоступен для этого бота или пользователя.")
             return dict(item)
     return None
+
+
+def _client_allowed(item):
+    scoped_user = profile_access.current_scope()[2]
+    if scoped_user and str(item["user_id"]) != scoped_user:
+        return False
+    name = item.get("profile_name") or ""
+    # Unassigned applications have no proven dev ownership.
+    return (profile_access.profile_allowed(name) if name
+            else not scoped_user and profile_access.instance_kind() == "prod")
 
 
 def _update_client(user_id: int, fields_factory: Callable[[dict], dict], *, require_existing: bool = False) -> dict:
@@ -133,6 +146,8 @@ def _update_client(user_id: int, fields_factory: Callable[[dict], dict], *, requ
         index = -1
         for idx, item in enumerate(registry["clients"]):
             if item["user_id"] == target_id:
+                if not _client_allowed(item):
+                    raise PermissionError("Клиент недоступен для этого бота или пользователя.")
                 current = item
                 index = idx
                 break
@@ -145,6 +160,8 @@ def _update_client(user_id: int, fields_factory: Callable[[dict], dict], *, requ
         normalized = _normalize_entry(base)
         if not normalized:
             raise ValueError("Invalid telegram client id")
+        if not _client_allowed(normalized):
+            raise PermissionError("Клиент недоступен для этого бота или пользователя.")
         if index >= 0:
             registry["clients"][index] = normalized
         else:

@@ -23,6 +23,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+import profile_access
 
 OWN = "own"          # the resume belongs to this profile (direction may be set)
 OTHER = "other"      # the resume belongs to another profile / is not this profile's
@@ -60,6 +61,9 @@ def chat_resume_id(home: str, chat_id: str) -> str:
 def _directions(home: str) -> list[dict]:
     result = []
     for path in sorted(glob.glob(os.path.join(home, "directions", "*.json"))):
+        scoped_direction = profile_access.current_scope()[1]
+        if scoped_direction and os.path.basename(path) != scoped_direction + ".json":
+            continue
         try:
             with open(path, encoding="utf-8") as stream:
                 value = json.load(stream)
@@ -88,6 +92,8 @@ def _legacy_hashes(home: str) -> list[tuple[str, str]]:
 def _hash_to_numeric(profiles_root: str) -> dict[str, tuple[str, str]]:
     mapping = {}
     for home in glob.glob(os.path.join(profiles_root, "*")):
+        if not profile_access.profile_allowed(os.path.basename(home)):
+            continue
         for direction in _directions(home):
             for variant in direction["variants"]:
                 if variant.get("hh_resume_hash") and variant.get("hh_resume_numeric_id"):
@@ -103,6 +109,8 @@ def profile_resumes(home: str) -> dict[str, tuple[str, str]]:
         for variant in direction["variants"]:
             if variant.get("hh_resume_numeric_id"):
                 own[str(variant["hh_resume_numeric_id"])] = (direction["name"], str(variant.get("title") or ""))
+    if profile_access.current_scope()[1]:
+        return own
     numeric = _hash_to_numeric(os.path.dirname(os.path.abspath(home)))
     for resume_hash, title in _legacy_hashes(home):
         if resume_hash in numeric and numeric[resume_hash][0] not in own:
@@ -115,10 +123,14 @@ def resolve(home: str, chat_id: str) -> ChatOwner:
     resume = chat_resume_id(home, chat_id)
     chosen = confirmed_binding(home, chat_id)
     if chosen:
+        if not profile_access.profile_allowed(chosen["profile_name"]):
+            return ChatOwner(OTHER, chosen["resume_id"])
         if resume and resume != chosen["resume_id"]:
             return ChatOwner(CONFLICT)
         source_home = chosen["source_home"]
         if source_home != os.path.abspath(home):
+            if not profile_access.profile_allowed(os.path.basename(source_home)):
+                return ChatOwner(CONFLICT)
             # The picker was opened from another profile on the shared account.
             # That thread's later observations still constrain this selection.
             if confirmed_binding(source_home, chat_id) != chosen:
@@ -139,8 +151,9 @@ def resolve(home: str, chat_id: str) -> ChatOwner:
         direction, title = own[resume]
         return ChatOwner(OWN, resume, direction, title)
     root = os.path.dirname(os.path.abspath(home))
-    # Real profiles first: dev copies (qa-dev, marina-dev) share resumes with them.
-    for other_home in sorted(glob.glob(os.path.join(root, "*")), key=lambda p: (p.endswith("-dev"), p)):
+    for other_home in sorted(glob.glob(os.path.join(root, "*"))):
+        if not profile_access.profile_allowed(os.path.basename(other_home)):
+            continue
         if os.path.abspath(other_home) == os.path.abspath(home):
             continue
         theirs = profile_resumes(other_home)

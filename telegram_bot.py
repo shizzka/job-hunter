@@ -29,6 +29,7 @@ from private_logging import PrivateFileHandler, OperationalFormatter, chat_log_p
 from state_store.private_journal import append_json, read_json_records
 import company_blacklist
 import profile as profile_mod
+import profile_access
 import runtime_control
 import search_query_suggester
 import seen
@@ -569,6 +570,9 @@ class TelegramBot(
         )
 
     def _selected_profile(self, principal: dict) -> str:
+        if principal.get("role") == telegram_access.ROLE_TESTER:
+            profile_access.require_profile(profile_access.TESTER_PROFILE)
+            return profile_access.TESTER_PROFILE
         default_profile = self._default_profile_name()
         if principal.get("role") != ROLE_ADMIN:
             available_profiles = set(self._profile_names())
@@ -576,19 +580,30 @@ class TelegramBot(
             client = self._client_record(user_id) if user_id > 0 else None
             client_profile = (client.get("profile_name") or "").strip() if client else ""
             if client_profile in available_profiles:
+                profile_access.require_profile(client_profile)
                 return client_profile
             selected = (principal.get("profile") or "").strip()
             if selected == "default" and default_profile != "default":
                 return default_profile
+            profile_access.require_profile(selected or default_profile)
             return selected or default_profile
         state = self._load_state()
         selected = (((state.get("user_state") or {}).get(str(principal["user_id"])) or {}).get("selected_profile") or "").strip()
         principal_profile = (principal.get("profile") or "").strip()
         if principal_profile == "default" and default_profile != "default":
             principal_profile = default_profile
-        return selected or principal_profile or default_profile
+        resolved = selected or principal_profile or default_profile
+        if not profile_access.profile_allowed(resolved):
+            # A shared registry or state left by another instance must not
+            # strand the admin before they can open /profiles again.
+            resolved = default_profile
+        profile_access.require_profile(resolved)
+        return resolved
 
     def _set_selected_profile(self, user_id: int, profile_name: str) -> None:
+        profile_access.require_profile(profile_name)
+        if profile_access.current_scope()[2]:
+            raise PermissionError("Tester не может переключать профиль.")
         self._update_user_state("user_state", user_id, fields={"selected_profile": profile_name})
 
     def _selected_menu(self, principal: dict) -> str:
@@ -629,7 +644,8 @@ class TelegramBot(
         )
 
     def _default_client_profile_name(self, user_id: int) -> str:
-        return f"client_{int(user_id)}"
+        suffix = "-dev" if profile_access.instance_kind() == "dev" else ""
+        return f"client_{int(user_id)}{suffix}"
 
     def _client_record(self, user_id: int) -> dict | None:
         return telegram_clients.get_client(user_id)
@@ -651,7 +667,7 @@ class TelegramBot(
         if named:
             ordered_named = sorted(named, key=lambda item: (item != "qa", item))
             return ordered_named
-        return ["default"]
+        return [name for name in visible if profile_access.profile_allowed(name)]
 
     def _default_profile_name(self) -> str:
         names = self._profile_names()
@@ -2345,6 +2361,7 @@ class TelegramBot(
             reply_markup=build_client_review_inline_markup(user_id),
         )
 
+    @telegram_access.scoped_request
     async def _handle_update(self, update: dict) -> None:
         callback = update.get("callback_query") or {}
         if callback:
@@ -2429,6 +2446,7 @@ class TelegramBot(
         await self._dispatch(chat_id, principal, command, arg)
 
     @profile_command
+    @telegram_access.scoped_request
     async def _dispatch(self, chat_id: int, principal: dict, command: str, arg: str) -> None:
         role = principal.get("role", ROLE_USER)
         profile_name = self._selected_profile(principal)

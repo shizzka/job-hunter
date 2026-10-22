@@ -15,6 +15,7 @@ import time
 import uuid
 
 import telegram_access
+import profile_access
 
 log = logging.getLogger(__name__)
 _invocation = contextvars.ContextVar("bot_queue_invocation", default=None)
@@ -127,21 +128,25 @@ def profile_command(fn):
         key = label if label in PERIODIC.values() else ""
 
         async def invoke(revalidate):
-            if revalidate:
-                fresh = telegram_access.resolve_user(int(principal["user_id"]))
-                if (not fresh or profile not in self._profile_names()
-                        or (fresh.get("role") != "admin" and self._selected_profile(fresh) != profile)
-                        or (fn.__name__ == "_dispatch" and self._selected_profile(fresh) != profile)):
-                    await self._send_text(chat_id, "Пропуск: профиль или доступ изменились.")
-                    return
-                if "principal" in values:
-                    values["principal"] = fresh
-            return await fn(*bound.args, **bound.kwargs)
+            # A drainer may have been scheduled by a different user's request.
+            # Rebind to this entry's authenticated principal before any lookup.
+            with profile_access.principal_scope(None):
+                fresh = telegram_access.resolve_user(int(principal["user_id"])) if revalidate else principal
+                with profile_access.principal_scope(fresh):
+                    if revalidate:
+                        if (not fresh or profile not in self._profile_names()
+                                or (fresh.get("role") != "admin" and self._selected_profile(fresh) != profile)
+                                or (fn.__name__ == "_dispatch" and self._selected_profile(fresh) != profile)):
+                            await self._send_text(chat_id, "Пропуск: профиль или доступ изменились.")
+                            return
+                        if "principal" in values:
+                            values["principal"] = fresh
+                    return await fn(*bound.args, **bound.kwargs)
 
         entry = QueueEntry(profile, chat_id, int(principal["user_id"]), label, invoke, key, source=source,
                            recovery=fn.__name__ in {"_start_profile_hh_auth_capture", "_start_hh_auth_capture"})
         return await self._admit_command(entry)
-    return wrapped
+    return wraps(fn)(telegram_access.scoped_request(wrapped))
 
 
 class TelegramCommandQueue:
@@ -185,6 +190,7 @@ class TelegramCommandQueue:
 
     async def _admit_command(self, entry):
         profile = entry.profile
+        profile_access.require_profile(profile)
         active = self._active_command(profile)
         launching = self._queue_launching.get(profile)
         waiting = self._command_queues.setdefault(profile, [])
@@ -369,6 +375,9 @@ class TelegramCommandQueue:
         action, target = parts[1:]
         entry = next((item for items in self._command_queues.values() for item in items if item.id == target), None)
         profile = entry.profile if entry else self._queue_resume_profiles.get(target, target)
+        if not profile_access.profile_allowed(profile):
+            await self._answer_callback_query(callback.get("id", ""), "Профиль недоступен.", show_alert=True)
+            return
         allowed = principal.get("role") == "admin" or (entry and entry.user_id == int(principal["user_id"]))
         if action == "resume":
             allowed = principal.get("role") == "admin" or (self._selected_profile(principal) == profile and profile in self._queue_paused)

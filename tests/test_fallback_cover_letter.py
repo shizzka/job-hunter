@@ -114,7 +114,8 @@ def test_named_profile_activation_selects_own_letter(tmp_path, monkeypatch, styl
         directory.mkdir(parents=True)
         (directory / "profile.env").write_text("# synthetic profile\n", encoding="utf-8")
         (directory / "cover_letter_fallback.md").write_text(f"Вымышленное письмо {name}.", encoding="utf-8")
-    for name in ("qa", "qa-dev", "qa"):
+    for kind, name in (("prod", "qa"), ("dev", "qa-dev"), ("prod", "qa")):
+        monkeypatch.setattr(config, "JOB_HUNTER_INSTANCE_KIND", kind)
         active = profile.activate_no_lock(name)
         assert config.JOB_HUNTER_HOME == active.home_dir == str(tmp_path / "profiles" / name)
         assert matcher._fallback_cover_letter({}, cover_style=style) == f"Вымышленное письмо {name}."

@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import config
+import profile_access
 from state_store.json_store import JsonStore, atomic_write_text, file_lock
 from state_store.private_journal import open_private_append, read_json_records
 
@@ -257,6 +258,7 @@ def find_agent_pids_for_profile(
 
 
 def agent_command_argv(profile_name: str, *flags: str) -> list[str]:
+    profile_access.require_profile(profile_name or "default")
     argv = [sys.executable, str(PROJECT_ROOT / "agent.py")]
     if profile_name:
         argv.extend(["--profile", profile_name])
@@ -265,6 +267,7 @@ def agent_command_argv(profile_name: str, *flags: str) -> list[str]:
 
 
 def bot_command_argv(profile_name: str) -> list[str]:
+    profile_access.require_profile(profile_name or "default")
     argv = [sys.executable, str(PROJECT_ROOT / "telegram_bot.py")]
     if profile_name:
         argv.extend(["--profile", profile_name])
@@ -277,6 +280,7 @@ def client_hh_auth_command_argv(
     timeout_sec: int = 900,
     import_resumes: bool = False,
 ) -> list[str]:
+    profile_access.require_profile(profile_name)
     argv = [sys.executable, str(PROJECT_ROOT / "client_hh_auth.py"), "--profile", profile_name]
     if timeout_sec > 0:
         argv.extend(["--timeout", str(int(timeout_sec))])
@@ -302,7 +306,7 @@ def start_background_process(
 
         _ensure_parent(log_file)
         with os.fdopen(open_private_append(log_file), "ab") as log:
-            child_env = os.environ.copy()
+            child_env = profile_access.worker_environment()
             child_env["JOB_HUNTER_BACKGROUND"] = "1"
             proc = subprocess.Popen(
                 argv,
@@ -399,6 +403,7 @@ async def run_command_capture(
 ) -> dict:
     proc = await asyncio.create_subprocess_exec(
         *argv,
+        env=profile_access.worker_environment(),
         cwd=cwd or str(PROJECT_ROOT),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

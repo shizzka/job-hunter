@@ -61,6 +61,7 @@ class TelegramCallbackRouter:
     """Route stable callback payloads to TelegramBot operations."""
 
     @profile_command
+    @telegram_access.scoped_request
     async def _handle_callback_query(self, callback: dict) -> None:
         sender = callback.get("from") or {}
         callback_id = str(callback.get("id") or "")

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import config
+import profile_access
 from state_store.json_store import atomic_create_text, atomic_write_text, file_lock
 
 log = logging.getLogger("profile")
@@ -229,6 +230,7 @@ def active() -> Profile:
     global _active_profile
     if _active_profile is None:
         _active_profile = load_default_profile()
+    profile_access.require_profile(_active_profile.name)
     return _active_profile
 
 
@@ -477,6 +479,8 @@ def load_default_profile(*, _include_direction: bool = True) -> Profile:
     Полная обратная совместимость: если нет многопрофильности,
     всё работает как раньше.
     """
+    if _include_direction:
+        profile_access.require_profile("default")
     profile = Profile(
         name="default",
         home_dir=config.JOB_HUNTER_HOME,
@@ -590,6 +594,7 @@ def load_profile(name: str = "default") -> Profile:
     В будущем: поддержка YAML, загрузка из базы данных (multi-tenant).
     """
     validate_profile_name(name)
+    profile_access.require_profile(name)
     if name == "default":
         return load_default_profile()
 
@@ -659,6 +664,7 @@ def load_profile(name: str = "default") -> Profile:
 def profile_env_path(name: str) -> str:
     """Абсолютный путь к env-файлу именованного профиля."""
     validate_profile_name(name, allow_default=False)
+    profile_access.require_profile(name)
     return os.path.join(_profiles_root(), "profiles", name, "profile.env")
 
 
@@ -670,6 +676,7 @@ def create_profile(name: str, search_queries: list[str] | None = None) -> Profil
     Возвращает загруженный Profile.
     """
     validate_profile_name(name, allow_default=False)
+    profile_access.require_profile(name)
 
     profiles_dir = os.path.join(_profiles_root(), "profiles", name)
     env_file = os.path.join(profiles_dir, "profile.env")
@@ -726,13 +733,14 @@ def list_profiles() -> list[str]:
                 validate_profile_name(entry, allow_default=False)
             except ValueError:
                 continue
+            if not profile_access.profile_allowed(entry):
+                continue
             env_file = os.path.join(profiles_dir, entry, "profile.env")
             if os.path.isfile(env_file):
                 profiles.append(entry)
-    if not profiles:
-        return ["default"]
     ordered = sorted(profiles, key=lambda item: (item != "qa", item))
-    ordered.append("default")
+    if profile_access.profile_allowed("default"):
+        ordered.append("default")
     return ordered
 
 

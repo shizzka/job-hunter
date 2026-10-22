@@ -36,6 +36,7 @@ def _infer_superjob_client_id(secret_key: str) -> int:
 
 
 JOB_HUNTER_HOME = os.path.expanduser(os.getenv("JOB_HUNTER_HOME", "~/.job-hunter"))
+JOB_HUNTER_INSTANCE_KIND = os.getenv("JOB_HUNTER_INSTANCE_KIND", "")
 LOG_FILE = os.getenv("JOB_HUNTER_LOG_FILE", "/tmp/job-hunter.log").strip() or "/tmp/job-hunter.log"
 ERROR_LOG_FILE = (
     os.getenv("JOB_HUNTER_ERROR_LOG_FILE", os.path.join(JOB_HUNTER_HOME, "job-hunter-errors.log")).strip()

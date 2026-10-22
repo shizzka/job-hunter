@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import analytics
+import profile_access
 from direction_history import ALL, UNSPECIFIED, HistoryScope
 from state_store.private_journal import read_json_records
 
@@ -18,7 +19,8 @@ def token(home):
 
 def markup(home, command):
     return {"inline_keyboard": [[{"text": label, "callback_data": f"hist:{token(home)}:{command.removeprefix('/')}:{scope}"}]
-            for label, scope in (("Это направление", "active"), ("Все направления", "all"), ("Направление не указано", "unspecified"))]}
+            for label, scope in (("Это направление", "active"), ("Все направления", "all"), ("Направление не указано", "unspecified"))
+            if not profile_access.current_scope()[1] or scope == "active"]}
 
 
 def scope_arg(arg):

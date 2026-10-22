@@ -6,6 +6,7 @@ The active direction is a display filter, never migration evidence.
 from pathlib import Path
 
 import directions
+import profile_access
 
 ALL = "*"
 UNSPECIFIED = "?"
@@ -46,6 +47,7 @@ class HistoryScope:
         default = active.get("name") or (self.directions[0]["name"] if len(self.directions) == 1 else
                                          UNSPECIFIED if self.directions else "")
         self.name = default if scope == "active" else scope
+        profile_access.require_direction(self.name)
         self.title = ("все направления" if self.name == ALL else "направление не указано"
                       if self.name in {UNSPECIFIED, "", None} else
                       next((d["title"] for d in self.directions if d["name"] == self.name), self.name))
