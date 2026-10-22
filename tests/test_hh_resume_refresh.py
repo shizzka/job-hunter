@@ -340,8 +340,8 @@ def test_cli_refresh_routes_noninteractively_under_profile_lock(monkeypatch, suc
 
 def test_external_refresh_worker_is_recognized_by_conflict_detector(monkeypatch):
     import runtime_control
-    monkeypatch.setattr(runtime_control, "read_process_cmdline",
-                        lambda pid: f"python agent.py --profile qa --refresh-resume")
+    monkeypatch.setattr(runtime_control, "read_process_argv",
+                        lambda pid: ["python", "agent.py", "--profile", "qa", "--refresh-resume"])
     found = runtime_control.find_agent_pids_for_profile("qa")
     assert found and all(item["flag"] == "--refresh-resume" for item in found)
     assert not runtime_control.find_agent_pids_for_profile("different-profile")

@@ -82,15 +82,19 @@ def is_pid_running(pid: int | None) -> bool:
     return True
 
 
-def read_process_cmdline(pid: int | None) -> str:
+def read_process_argv(pid: int | None) -> list[str]:
     if not pid or pid <= 0:
-        return ""
+        return []
     path = Path(f"/proc/{pid}/cmdline")
     try:
         raw = path.read_bytes()
     except OSError:
-        return ""
-    return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+        return []
+    return [os.fsdecode(arg) for arg in raw.rstrip(b"\0").split(b"\0")] if raw else []
+
+
+def read_process_cmdline(pid: int | None) -> str:
+    return " ".join(read_process_argv(pid))
 
 
 def _cmdline_matches(cmdline: str, expected_tokens: tuple[str, ...] | list[str] | None) -> bool:
@@ -233,6 +237,7 @@ def find_agent_pids_for_profile(
     Возвращает [{"pid": int, "cmdline": str, "flag": str}, ...] для процессов,
     запущенных как через бот, так и снаружи (cron, shell).
     """
+    profile_access.require_profile(profile_name or "default")
     target_flags = tuple(flags) if flags else AGENT_TASK_FLAGS
     found: list[dict] = []
     proc_dir = Path("/proc")
@@ -245,16 +250,28 @@ def find_agent_pids_for_profile(
         pid = int(entry.name)
         if pid <= 0 or pid == self_pid:
             continue
-        cmdline = read_process_cmdline(pid)
-        if "agent.py" not in cmdline:
-            continue
-        if profile_name and f"--profile {profile_name}" not in cmdline:
-            continue
-        matched_flag = next((f for f in target_flags if f in cmdline), "")
+        argv = read_process_argv(pid)
+        matched_flag = _agent_process_flag(argv, profile_name or "default", target_flags)
         if not matched_flag:
             continue
-        found.append({"pid": pid, "cmdline": cmdline, "flag": matched_flag})
+        found.append({"pid": pid, "cmdline": " ".join(argv), "argv": argv, "flag": matched_flag})
     return found
+
+
+def _agent_process_flag(argv, profile_name, flags=AGENT_TASK_FLAGS):
+    script = next((i for i, arg in enumerate(argv) if Path(arg).name == "agent.py"), None)
+    if script is None or script == 0 or any(not arg.startswith("-") for arg in argv[1:script]):
+        return ""
+    args = argv[script + 1:]
+    profiles = []
+    for i, arg in enumerate(args):
+        if arg == "--profile":
+            profiles.append(args[i + 1] if i + 1 < len(args) else "")
+        elif arg.startswith("--profile="):
+            profiles.append(arg.partition("=")[2])
+    if profiles != [profile_name] and not (not profiles and profile_name == "default"):
+        return ""
+    return next((flag for flag in flags if flag in args), "")
 
 
 def agent_command_argv(profile_name: str, *flags: str) -> list[str]:
@@ -439,20 +456,29 @@ async def run_command_capture(
     }
 
 
-def stop_pid(pid: int, *, timeout: float = 15.0, process_group: bool = False) -> dict:
+def stop_pid(pid: int, *, timeout: float = 15.0, process_group: bool = False,
+             expected_profile: str | None = None, expected_argv: list[str] | None = None) -> dict:
     if not pid or pid <= 0:
         return {"ok": True, "already_stopped": True, "pid": 0}
     if not is_pid_running(pid):
         return {"ok": True, "already_stopped": True, "pid": pid}
 
-    def _send(sig: int) -> None:
+    def _send(sig: int) -> bool:
+        if expected_profile is not None:
+            argv = read_process_argv(pid)
+            if (not profile_access.profile_allowed(expected_profile)
+                    or not _agent_process_flag(argv, expected_profile)
+                    or expected_argv is None or argv != expected_argv):
+                return False
         if process_group:
             os.killpg(pid, sig)
         else:
             os.kill(pid, sig)
+        return True
 
     try:
-        _send(signal.SIGTERM)
+        if not _send(signal.SIGTERM):
+            return {"ok": False, "ownership_changed": True, "pid": pid}
     except ProcessLookupError:
         return {"ok": True, "already_stopped": True, "pid": pid}
 
@@ -463,7 +489,8 @@ def stop_pid(pid: int, *, timeout: float = 15.0, process_group: bool = False) ->
         time.sleep(0.2)
 
     try:
-        _send(signal.SIGKILL)
+        if not _send(signal.SIGKILL):
+            return {"ok": False, "ownership_changed": True, "pid": pid}
     except ProcessLookupError:
         pass
     time.sleep(0.2)

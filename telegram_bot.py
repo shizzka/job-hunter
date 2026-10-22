@@ -496,8 +496,10 @@ class TelegramBot(
                     entry["pid"],
                     timeout=10.0,
                     process_group=True,
+                    expected_profile=target_profile,
+                    expected_argv=entry["argv"],
                 )
-                if result.get("already_stopped"):
+                if result.get("already_stopped") or not result.get("ok"):
                     continue
                 flag_label = runtime_control.AGENT_FLAG_LABELS.get(entry["flag"], entry["flag"])
                 killed.append(
