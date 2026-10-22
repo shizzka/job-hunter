@@ -174,7 +174,7 @@ def work_condition_violation(ctx, rule):
             continue
         # The exact B26 policy; never infer format/region from query or job title.
         result = work_conditions.check(row, row.get('details') or '', direction=direction)
-        if result['status'] == 'reject':
+        if result['status'] == 'reject' or is_sent(row) and result['status'] != 'allow':
             yield finding(rule, ctx, row, conditions=row.get('_hh_work_conditions'),
                           policy=direction.get('work_conditions', work_conditions.defaults(direction)), check=result)
 

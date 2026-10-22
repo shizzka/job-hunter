@@ -240,3 +240,19 @@ def test_explicit_conflicting_application_ids_cannot_join_even_with_same_trace_i
     ctx = context([result], traces=[t])
     assert not ctx.trace_for(result)
     assert check('A06', ctx) and check('A07', ctx)
+
+
+@pytest.mark.parametrize('conditions', [
+    {'formats': [], 'fly_in_fly_out': False},
+    {'formats': ['hybrid'], 'fly_in_fly_out': False},
+])
+def test_a02_review_conditions_forbid_actual_send_but_allow_review_card(conditions):
+    direction = {'name': 'qa', 'work_conditions': {'allowed_formats': ['remote', 'hybrid'],
+        'allow_fly_in_fly_out': False, 'allowed_cities': ['Город Пример']}}
+    row = record(event='application_result', outcome='sent', _hh_work_conditions=conditions)
+    ctx = context([row])
+    ctx.directions['qa'].update(direction)
+    findings = check('A02', ctx)
+    assert len(findings) == 1 and findings[0]['evidence']['check']['status'] == 'review'
+    row.update(event='decision', outcome='manual', decision='manual_work_conditions', card_kind='review')
+    assert not check('A02', ctx)
