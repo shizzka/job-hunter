@@ -26,6 +26,17 @@ _session_proxy_url = ""
 _delivery_direction = ContextVar("notification_event_direction", default=None)
 
 
+class _DeliveryTarget(tuple):
+    def __new__(cls, values, *, profile_name, direction):
+        target = super().__new__(cls, values)
+        target.profile_name, target.direction = profile_name, direction
+        return target
+
+
+class _OwnerDeliveryTarget(tuple):
+    """Created only by the explicit global owner routing function."""
+
+
 def _owned_event_notification(fn):
     """Bind one notification to saved event evidence instead of active config."""
     @wraps(fn)
@@ -160,7 +171,9 @@ async def _deliver_multipart(url: str, form: "aiohttp.FormData", use_proxy: bool
 def capture_delivery_target():
     """Capture routing before browser awaits; never persist or log credentials."""
     profile = _active_profile()
-    return (_resolve_bot_token(profile), tuple(_resolve_target_chat_ids(profile)), _resolve_proxy_url(profile))
+    return _DeliveryTarget(
+        (_resolve_bot_token(profile), tuple(_resolve_target_chat_ids(profile)), _resolve_proxy_url(profile)),
+        profile_name=str(getattr(profile, "name", "") or ""), direction=_delivery_direction.get())
 
 
 def capture_audit_owner_target():
@@ -175,20 +188,24 @@ def capture_audit_owner_target():
     except (TypeError, ValueError):
         owner_id = 0
     token = str(getattr(config, "TELEGRAM_CONTROL_BOT_TOKEN", "") or "").strip()
-    return (token, (owner_id,) if owner_id > 0 else (),
-            os.getenv("TELEGRAM_PROXY", "").strip())
+    return _OwnerDeliveryTarget((token, (owner_id,) if owner_id > 0 else (),
+                                 os.getenv("TELEGRAM_PROXY", "").strip()))
 
 
 async def notify_audit_owner(text: str, *, target=None) -> bool:
     """Send pre-escaped HTML only to a captured owner target; never broadcast."""
     pinned = capture_audit_owner_target() if target is None else target
+    if not isinstance(pinned, _OwnerDeliveryTarget):
+        return False
     return await _send_to_chats("sendMessage", _build_text_payload(text, "HTML", None),
-                                target=pinned)
+                                target=pinned, owner_only=True)
 
 
-async def _send_to_chats(method: str, build_request, *, multipart: bool = False, target=None) -> bool:
+async def _send_to_chats(method: str, build_request, *, multipart: bool = False, target=None,
+                         owner_only: bool = False) -> bool:
     """One request per recipient. Lost acknowledgment must never cause replay."""
-    bot_token, chat_ids, proxy_url = capture_delivery_target() if target is None else target
+    target = capture_delivery_target() if target is None else target
+    bot_token, chat_ids, proxy_url = target
     if not bot_token or not chat_ids:
         log.warning("Telegram not configured (no token or targets)")
         return False
@@ -197,7 +214,14 @@ async def _send_to_chats(method: str, build_request, *, multipart: bool = False,
     use_proxy = bool(proxy_url)
     delivered = False
     for chat_id in chat_ids:
-        if not _delivery_allowed(chat_id):
+        if owner_only:
+            allowed = isinstance(target, _OwnerDeliveryTarget) and telegram_access.owner_notification_allowed(chat_id)
+        elif isinstance(target, _DeliveryTarget):
+            allowed = telegram_access.notification_allowed(chat_id, profile_name=target.profile_name,
+                                                           direction=target.direction)
+        else:
+            allowed = _delivery_allowed(chat_id)
+        if not allowed:
             continue
         try:
             payload = build_request(chat_id)

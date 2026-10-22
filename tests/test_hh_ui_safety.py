@@ -279,7 +279,12 @@ def test_alert_multipart_handles_closed_and_original_target_used(tmp_path, monke
         handles.append(handle)
         return True
     monkeypatch.setattr(notifier, '_deliver_multipart', deliver)
-    target = ('synthetic-token', (123,), '')
+    monkeypatch.setattr(config, 'NOTIFY_CHAT_ID', 0)
+    notifier.telegram_access.save_registry({'users': [
+        {'user_id': 123, 'profile': 'synthetic', 'role': 'user'}]})
+    target = notifier._DeliveryTarget(('synthetic-token', (123,), ''),
+                                      profile_name='synthetic', direction=None)
+    monkeypatch.setattr(notifier, '_active_profile', lambda: SimpleNamespace(name='other'))
     assert asyncio.run(notifier.notify_hh_unexpected_ui(str(photo), 'test', 'a' * 64, target=target))
     assert handles and all(handle.closed for handle in handles)
     assert all('synthetic-token' in route for route in routes)

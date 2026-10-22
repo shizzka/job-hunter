@@ -229,25 +229,32 @@ def require_user_access(user_id: int) -> None:
 
 
 def notification_allowed(user_id: int, *, profile_name: str | None, direction: str | None) -> bool:
-    """Authorize tester delivery from event ownership, never current selection.
-
-    Inspect the raw registry so an explicit/cached target or a configured owner
-    fallback cannot hide a tester entry behind a different request scope.
-    """
+    """Authorize every recipient against the event profile and instance."""
+    if profile_name is None:
+        import profile as profile_mod
+        try:
+            profile_name = profile_mod.active().name
+        except (OSError, ValueError, PermissionError):
+            return False
+    if not profile_access.profile_allowed(profile_name):
+        return False
     for item in load_registry()["users"]:
-        if item["user_id"] == int(user_id) and item.get("role") == ROLE_TESTER:
-            if profile_name is None:
-                # Owner-only notices must not activate or inspect a client just
-                # to route a message. Only tester targets need this lookup.
-                import profile as profile_mod
-                try:
-                    profile_name = profile_mod.active().name
-                except (OSError, ValueError):
-                    return False
-            return bool(item.get("enabled", True)
-                        and profile_name == item["profile"] == profile_access.TESTER_PROFILE
+        if item["user_id"] == int(user_id):
+            if not item.get("enabled", True) or item["profile"] != profile_name:
+                return False
+            if item.get("role") != ROLE_TESTER:
+                return True
+            return bool(profile_name == profile_access.TESTER_PROFILE
                         and direction == item["direction"] == profile_access.TESTER_DIRECTION
                         and profile_access.profile_allowed(profile_name))
+    return False
+
+
+def owner_notification_allowed(user_id: int) -> bool:
+    """A captured global owner route cannot be rebound to a client or tester."""
+    for item in load_registry()["users"]:
+        if item["user_id"] == int(user_id):
+            return bool(item.get("enabled", True) and item.get("role") == ROLE_ADMIN)
     return True
 
 

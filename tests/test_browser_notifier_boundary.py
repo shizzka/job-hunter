@@ -1,5 +1,6 @@
 """Notifier transport reaches only a synthetic loopback sink."""
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import pytest
 import notifier
@@ -13,6 +14,13 @@ def _native_notifier_actual_transport_timeout(tmp_path,monkeypatch,proxy,respons
     async def run(context,page):
         await install_chat(context,page)
         paths,client,repo=chat_setup(monkeypatch,page,tmp_path)
+        # Transport uncertainty needs an authorized synthetic recipient; an
+        # unregistered target must now be rejected before any HTTP request.
+        monkeypatch.setattr(notifier.config,'JOB_HUNTER_INSTANCE_KIND','prod')
+        monkeypatch.setattr(notifier.config,'NOTIFY_CHAT_ID',0)
+        monkeypatch.setattr(notifier.config,'TELEGRAM_ACCESS_FILE',str(tmp_path/'telegram-users.json'))
+        notifier.telegram_access.save_registry({'users':[{'user_id':1,'role':'user','profile':'synthetic'}]})
+        monkeypatch.setattr(notifier,'_active_profile',lambda:SimpleNamespace(name='synthetic'))
         monkeypatch.setattr(cr,'generate_answer',AsyncMock(return_value='Short answer'))
         original_fill=cr.fill_and_preview
         async def no_screenshot(*args,**kwargs):
@@ -36,7 +44,9 @@ def _native_notifier_actual_transport_timeout(tmp_path,monkeypatch,proxy,respons
                     return await original_request(method,f'http://127.0.0.1:{port}/telegram',*args,**kwargs)
                 monkeypatch.setattr(session,'_request',local_request)
                 monkeypatch.setattr(notifier,'_get_session',AsyncMock(return_value=session))
-                monkeypatch.setattr(notifier,'capture_delivery_target',lambda:('synthetic-token',(1,),'synthetic-proxy' if proxy else ''))
+                target=notifier._DeliveryTarget(('synthetic-token',(1,),'synthetic-proxy' if proxy else ''),
+                                               profile_name='synthetic',direction=None)
+                monkeypatch.setattr(notifier,'capture_delivery_target',lambda:target)
                 first=await cr.process_one(client,'a',message_id='m1',dry_run=True,notify=True,runtime_paths=paths)
                 first_count=len(received);first_status=next(v['status'] for v in repo.load()['a']['attempts'].values())
                 alternative=await cr.process_one(client,'a',message_id='m1',dry_run=True,notify=True,alternative=True,runtime_paths=paths)
