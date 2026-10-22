@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import agent
 import analytics
 import apply_orchestrator
 import config
@@ -53,6 +54,22 @@ def test_application_attempt_and_result_share_identity(events, monkeypatch, resu
     assert first['event'] == 'application_attempt'
     assert last['outcome'] == outcome
     assert last['apply_mode'] == 'manual'
+
+
+@pytest.mark.parametrize('result, expected', [
+    ({'ok': True}, True),
+    ({'ok': False}, False),
+    ({'ok': True, 'already_applied': True}, False),
+    ({'ok': True, 'uncertain': True}, False),
+    ({'ok': True, 'submission_status': 'acting'}, False),
+])
+def test_questionnaire_success_uses_application_outcome(events, result, expected):
+    result['question_answers'] = [{'question': 'Synthetic question', 'answer': 'Synthetic answer'}]
+    agent._record_hh_questionnaire_analytics(run_id='run', vacancy={'id': '1', 'source': 'hh'},
+                                           apply_result=result)
+    row, = events()
+    assert row['event'] == 'questionnaire'
+    assert row['success'] is expected
 
 
 def test_blacklist_action_remains_after_feedback_for_other_sources():

@@ -62,6 +62,7 @@ from outcome import (
     DECISION_DEFERRED_UNSCORED,
     DECISION_SKIPPED_LOW_SCORE,
     DECISION_SKIPPED_RED_FLAGS,
+    application_outcome,
     apply_result_is_uncertain,
     server_delivery_confirmed,
     server_delivery_note,
@@ -924,7 +925,6 @@ async def do_manual_apply_token(token: str) -> dict:
             run_id=run_id,
             vacancy=vacancy,
             apply_result=apply_result,
-            success=bool(apply_result.get("ok")),
         )
         cover_evaluation["cover_letter_status"] = apply_result.get("cover_letter_status", "unknown")
         apply_notes = apply_result.get("notes") or []
@@ -1316,7 +1316,6 @@ def _record_hh_questionnaire_analytics(
     run_id: str,
     vacancy: dict,
     apply_result: dict,
-    success: bool,
 ) -> None:
     question_answers = apply_result.get("question_answers") or []
     if not question_answers:
@@ -1326,7 +1325,7 @@ def _record_hh_questionnaire_analytics(
             run_id=run_id,
             vacancy=vacancy,
             question_answers=question_answers,
-            success=success,
+            success=application_outcome(apply_result) == "sent",
             reason=str(apply_result.get("message") or ""),
         )
     except Exception as exc:
@@ -2592,7 +2591,6 @@ async def do_search(dry_run: bool = False) -> dict:
                         run_id=run_id,
                         vacancy=v,
                         apply_result=apply_result,
-                        success=bool(apply_result.get("ok")),
                     )
                 apply_notes = apply_result.get("notes") or []
                 apply_note_text = "; ".join(str(item) for item in apply_notes if item)

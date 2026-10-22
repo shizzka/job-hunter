@@ -67,6 +67,14 @@ def test_owner_projection_analytics_notification_and_safety(tmp_path, monkeypatc
         returned = asyncio.run(analytics.tracked_call('apply', observed.run_id, vacancy, AsyncMock(return_value=result)))
         assert returned is result
         assert observed.counters['hh']['applied'] == int(kind=='confirmed')
+    monkeypatch.setattr(config, 'ANALYTICS_ENABLED', True)
+    monkeypatch.setattr(config, 'ANALYTICS_EVENTS_FILE', str(tmp_path / 'events.jsonl'))
+    result['question_answers'] = [{'question': 'Synthetic question', 'answer': 'Synthetic answer'}]
+    agent._record_hh_questionnaire_analytics(run_id='delivery-projection', vacancy=vacancy,
+                                           apply_result=result)
+    event, = [row for row in read_json_records(config.ANALYTICS_EVENTS_FILE)
+              if row.get('event') == 'questionnaire']
+    assert event['success'] is (kind == 'confirmed')
 
 
 @pytest.mark.parametrize('phase', ['before_get', 'after_get'])
