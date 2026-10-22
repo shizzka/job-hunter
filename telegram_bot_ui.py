@@ -1845,7 +1845,7 @@ def build_run_summary_text(summary, *, profile_name):
     if summary.get('artifacts'):
         lines += ["", "Debug artifacts:"]
         lines.extend(f"• {safe(ref['artifact_type'])}: {safe(ref['artifact_ref'])}" for ref in summary['artifacts'][:2])
-    lines += ["", "🧾 /raw_log · другой запуск: /log &lt;run_id&gt;"]
+    lines += ["", "🧾 /raw_log · другой запуск: /log <run_id>"]
     return "\n".join(lines)
 
 
