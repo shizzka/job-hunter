@@ -8,6 +8,7 @@ import hashlib
 import json
 
 import work_conditions
+from apply_audit import INVALIDATES_VERIFICATION
 
 
 def timestamp(value):
@@ -257,17 +258,22 @@ def after_stop(ctx, rule):
 def submit_unverified(ctx, rule):
     sent = ctx.applications()
     for trace in ctx.traces:
-        gates = []
+        check = {}
+        submitted = False
         for row in trace['events']:
             if row.get('stage') == 'PRE_SUBMIT_VERIFY':
-                gates.append(row)
-            if row.get('stage') == 'SUBMIT_CLICK' and row.get('ok') is True:
-                check = gates[-1] if gates else {}
-                if check.get('ok') is not True or check.get('resume_match') is False or check.get('letter_match') is False:
+                check = row
+            elif row.get('stage') in INVALIDATES_VERIFICATION:
+                check = {}
+            elif row.get('stage') == 'SUBMIT_CLICK':
+                if row.get('ok') is True and (check.get('ok') is not True or check.get('resume_match') is False
+                                              or check.get('letter_match') is False):
                     yield finding(rule, ctx, trace, trace_id=trace.get('trace_id'), verification=check, submit=row)
+                submitted |= row.get('ok') is True
+                # Every dispatch needs fresh verification, including retries.
+                check = {}
         relevant = [e for e in sent if trace in ctx.trace_for(e)]
-        if relevant and not any(e.get('stage') == 'SUBMIT_CLICK' and e.get('ok') is True for e in trace['events']):
-            check = gates[-1] if gates else {}
+        if relevant and not submitted:
             if check.get('ok') is not True or check.get('resume_match') is False or check.get('letter_match') is False:
                 yield finding(rule, ctx, relevant[-1], trace_id=trace.get('trace_id'), verification=check)
     for row in sent:

@@ -256,3 +256,32 @@ def test_a02_review_conditions_forbid_actual_send_but_allow_review_card(conditio
     assert len(findings) == 1 and findings[0]['evidence']['check']['status'] == 'review'
     row.update(event='decision', outcome='manual', decision='manual_work_conditions', card_kind='review')
     assert not check('A02', ctx)
+
+
+@pytest.mark.parametrize('change', ['WORK_CONDITIONS', 'COVER_LETTER', 'RESUME_SELECTED',
+                                   'RESUME_PREFLIGHT_STARTED', 'VACANCY_NAVIGATION', 'FORM_DETECTED'])
+@pytest.mark.parametrize('gate_ok', [False, True])
+def test_a06_intervening_gate_or_payload_change_requires_fresh_verification(change, gate_ok):
+    verify = {'stage': 'PRE_SUBMIT_VERIFY', 'ok': True, 'resume_match': True, 'letter_match': True}
+    submit = {'stage': 'SUBMIT_CLICK', 'ok': True}
+    t = trace(verify, {'stage': change, 'ok': gate_ok}, submit)
+    assert check('A06', context(traces=[t]))
+    t['events'].insert(-1, verify)
+    assert not check('A06', context(traces=[t]))
+
+
+def test_a06_each_submit_consumes_verification_but_inert_observation_does_not():
+    verify = {'stage': 'PRE_SUBMIT_VERIFY', 'ok': True, 'resume_match': True, 'letter_match': True}
+    submit = {'stage': 'SUBMIT_CLICK', 'ok': True}
+    t = trace(verify, {'stage': 'ARTIFACT_CAPTURED', 'ok': True}, submit)
+    assert not check('A06', context(traces=[t]))
+    t['events'].append(submit)
+    assert len(check('A06', context(traces=[t]))) == 1
+    t['events'].insert(-1, verify)
+    assert not check('A06', context(traces=[t]))
+
+
+def test_a06_sent_without_submit_stage_still_rejects_stale_final_gate():
+    result = record(event='application_result', outcome='sent', application_id='one')
+    t = trace({'stage': 'PRE_SUBMIT_VERIFY', 'ok': True}, {'stage': 'WORK_CONDITIONS', 'ok': False})
+    assert check('A06', context([result], traces=[t]))
