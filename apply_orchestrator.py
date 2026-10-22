@@ -12,6 +12,7 @@ import direction_runtime
 import work_conditions
 
 import config
+import seen
 import company_blacklist
 import profile as profile_mod
 from debug_trace import ApplyTrace
@@ -202,7 +203,16 @@ def _apply_result_with_current_uncertainty(vacancy: dict, hh_client, result: dic
     return result
 
 
+def _duplicate_application(vacancy):
+    if vacancy.get("id") and seen.is_applied(vacancy["id"]):
+        return {"ok": False, "reason": "already_applied", "message": "Отклик уже был отправлен; повтор запрещён"}
+    return None
+
+
 async def dispatch_apply(vacancy: dict, cover_letter: str, *args, **kwargs) -> dict:
+    duplicate = _duplicate_application(vacancy)
+    if duplicate:
+        return duplicate
     # Do not navigate to the resume catalog for a blocked company; still recheck
     # in _dispatch_apply after any preflight awaits.
     if company_blacklist.is_blocked(vacancy.get("company", "")):
@@ -370,6 +380,9 @@ async def _dispatch_apply(
     """Отправить отклик через соответствующий клиент источника."""
     source = vacancy.get("source", "hh")
     # Recheck after awaited catalog/trace work, immediately before the client.
+    duplicate = _duplicate_application(vacancy)
+    if duplicate:
+        return duplicate
     direction_runtime.check_cover(vacancy, cover_letter)
     if company_blacklist.is_blocked(vacancy.get("company", "")):
         return {"ok": False, "message": "Компания в чёрном списке", "reason": "company_blacklisted"}

@@ -96,15 +96,15 @@ def test_seen_verdicts_are_direction_local_but_delivery_guards_are_shared(accoun
     assert seen.stats_from_file(str(home / "seen_vacancies.json"), scope=ALL)["total"] == 3
 
 
-def test_legacy_seen_query_recovers_owner_and_unknown_does_not_suppress(account):
+def test_legacy_seen_stays_seen_even_when_query_recovers_history_owner(account):
     home, select = account
     (home / "seen_vacancies.json").write_text(json.dumps({
         "1": {"action": "skipped_low_score", "search_query": "QA Engineer"},
         "2": {"action": "skipped_low_score", "title": "QA Engineer"},
         "3": {"action": "applied"}}))
-    assert seen.is_seen("1") and not seen.is_seen("2") and seen.is_seen("3")
+    assert seen.is_seen("1") and seen.is_seen("2") and seen.is_seen("3")
     select("electric")
-    assert not seen.is_seen("1") and not seen.is_seen("2") and seen.is_seen("3")
+    assert seen.is_seen("1") and seen.is_seen("2") and seen.is_seen("3")
     assert seen.stats_from_file(str(home / "seen_vacancies.json"), scope=UNSPECIFIED)["total"] == 2
 
 

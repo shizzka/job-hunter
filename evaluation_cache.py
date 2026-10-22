@@ -47,7 +47,12 @@ def lookup(vacancy: dict) -> dict | None:
     bound = vacancy.get("_direction_selection") or {}
     if bound and bound.get("direction") != (getattr(config, "ACTIVE_DIRECTION", None) or {}).get("name"):
         return None
-    entry = _read().get(_key(vacancy))
+    data = _read()
+    entry = data.get(_key(vacancy))
+    if entry is None:
+        # Before F15 the key ended at direction; preserve its original scope.
+        direction = direction_history.runtime_metadata(vacancy).get("direction") or ""
+        entry = data.get(f"{vacancy.get('source') or 'hh'}:{vacancy['id']}:{direction}")
     if not isinstance(entry, dict) or time.time() - float(entry.get("at") or 0) > TTL_SECONDS:
         return None
     evaluation = entry.get("evaluation")

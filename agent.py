@@ -1601,10 +1601,9 @@ async def do_search(dry_run: bool = False) -> dict:
         safety_entries = seen.all_entries()
         unblocked_vacancies = []
         for vacancy in all_vacancies:
-            if safety_entries.get(str(vacancy.get("id", "")), {}).get("action") in {
-                    "apply_uncertain", "manual_hh_guard_stop"}:
+            if str(vacancy.get("id", "")) in safety_entries:
                 analytics.record_decision(run_id=run_id, vacancy=vacancy, decision="not_processed",
-                                          note="manual_verification_required")
+                                          note="already_seen")
             else:
                 unblocked_vacancies.append(vacancy)
         all_vacancies = unblocked_vacancies

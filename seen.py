@@ -64,7 +64,38 @@ def is_seen(vacancy_id: str) -> bool:
     return (marks is not None and _key(vacancy_id) in marks) or str(vacancy_id) in entries
 
 
-ACCOUNT_SAFETY_ACTIONS = {"applied", "already_applied", "apply_uncertain", "manual_hh_guard_stop"}
+ACCOUNT_SAFETY_ACTIONS = {
+    "applied", "already_applied", "apply_uncertain", "dismissed", "мимо",
+    "skipped_feedback_bad", "apply_unconfirmed_no_manual",
+}
+
+
+def is_terminal_action(action):
+    """Account-wide handled outcomes, including failed/uncertain submissions."""
+    return action in ACCOUNT_SAFETY_ACTIONS or str(action or "").startswith(("manual_", "apply_failed"))
+
+
+def _legacy_entry(entry):
+    # A search query may explain history ownership, but must not reopen old work.
+    return not any(entry.get(field) for field in (
+        "direction", "hh_resume_hash", "hh_resume_numeric_id", "resume_id", "resumeId",
+        "requested_resume_id", "variant_text_sha256", "text_sha256", "matcher_resume_sha256",
+        "cover_letter_resume_sha256", "_resume_input_versions",
+    )) and not entry.get("_direction_selection")
+
+
+def _identity(key, entry):
+    return str(entry.get("vacancy_id") or (key.split(":", 2)[-1] if key.startswith("direction:") else key))
+
+
+def is_applied(vacancy_id):
+    """Check every direction, without letting a later skip mask an application."""
+    identity = str(vacancy_id).removeprefix("hh:")
+    return any(
+        _identity(key, entry).removeprefix("hh:") == identity
+        and entry.get("action") in {"applied", "already_applied", "manual_ai_applied"}
+        for key, entry in _load().items()
+    )
 
 
 def _key(vacancy_id, metadata=None):
@@ -77,9 +108,10 @@ def _visible_entries(data, *, include_safety=False, scope=None):
     result = {}
     priority = {"applied": 1, "already_applied": 1, "manual_hh_guard_stop": 2, "apply_uncertain": 3}
     for key, entry in data.items():
-        if not scope.matches(entry) and not (include_safety and entry.get("action") in ACCOUNT_SAFETY_ACTIONS):
+        shared = include_safety and (_legacy_entry(entry) or is_terminal_action(entry.get("action")))
+        if not shared and not scope.matches(entry):
             continue
-        identity = str(entry.get("vacancy_id") or key)
+        identity = _identity(key, entry)
         if include_safety and priority.get(result.get(identity, {}).get("action"), 0) > priority.get(entry.get("action"), 0):
             continue
         result[identity] = entry

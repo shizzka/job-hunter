@@ -16,7 +16,9 @@ _RESETTABLE_PREFIXES = ("skipped_", "dry_run")
 
 
 def _resettable(entry: dict) -> bool:
-    return str(entry.get("action") or "").startswith(_RESETTABLE_PREFIXES)
+    from seen import is_terminal_action
+    action = str(entry.get("action") or "")
+    return not is_terminal_action(action) and action.startswith(_RESETTABLE_PREFIXES)
 
 
 def _since(home_dir: str, scope: str, direction_scope="active") -> str:
