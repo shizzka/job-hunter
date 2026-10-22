@@ -124,7 +124,9 @@ def test_new_run_does_not_inherit_breaker_state(synthetic,monkeypatch):
     assert second['hh_recovery']['incidents']==0
     assert second['hh_recovery']['distinct']==0
     assert second['hh_recovery']['stopped'] is False
-    assert visited==[('hh','11'),('habr','habr:other')]
+    # The fresh HH vacancy proves the breaker reset; Habr was already handled.
+    assert visited==[('hh','11')]
+    assert seen.all_entries()['habr:other']['action']=='applied'
 
 @pytest.mark.parametrize('reason',['apply_uncertain','guard_stop','manual_hh_guard_stop'])
 @pytest.mark.parametrize('status',['Приглашение','Отказ','Просмотрен'])

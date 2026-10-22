@@ -42,7 +42,9 @@ def test_real_uncertainty_notifies_continues_and_never_retries_across_runs(tmp_p
     assert attempt.repository.claim(VACANCY_URL, '', '') is None
     assert gate.entries['2']['action'] == 'apply_uncertain'
     assert gate.entries['3']['action'] == 'skipped_low_score'
-    assert gate.evidence['matched'] == ['2', '3', '3'], gate.evidence
+    # Both legacy seen records are excluded before scoring on the second run.
+    assert gate.evidence['matched'] == ['2', '3'], gate.evidence
+    assert gate.second_result['found'] == 0
     assert not gate.result['hh_recovery']['stopped'] and gate.evidence['hard_stops'] == 0
     assert gate.result['applied'] == 0 and gate.result['source_stats']['hh']['uncertain'] == 1
     assert gate.second_result['applied'] == 0
