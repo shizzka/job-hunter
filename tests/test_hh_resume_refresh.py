@@ -305,7 +305,7 @@ def test_refresh_is_queued_while_current_profile_has_active_command(tmp_path, mo
         if calls:
             assert calls == [telegram_bot.runtime_control.agent_command_argv("qa", "--refresh-resume")]
         else:
-            expected = "доступ изменились" if recheck == "access_changed" else "Демон уже работает"
+            expected = "доступ изменились" if recheck == "access_changed" else "Поиск уже работает"
             assert any(expected in call.args[1] for call in bot._send_text.call_args_list)
         bot._send_busy_status.assert_not_awaited()
         await bot._shutdown_command_queue()

@@ -953,12 +953,12 @@ def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default") ->
         "• «Мой поиск»: запросы, условия, компании, режим откликов и расписание",
         "• «Направления»: выбор резюме, черновики запросов и варианты single/A/B — /directions",
         "• «Мониторинг»: статус, статистика, прогоны, инвайты",
-        "• Сводка запуска: /log или /log run_id; текстовый лог: /raw_log",
+        "• Сводка запуска: /log или /log run_id; подробный журнал: /raw_log",
         "• Счётчик HH: кнопка «Отклики HH» или команда /hh_responses",
         "• Поиск и тестовый прогон — в главном меню",
         "• «Мой hh»: вход, резюме и ИИ-анализ",
         "• «Отклики»: рассмотрение, отклики HH, анкеты и ответ ИИ в чат",
-        "• Ответ ИИ в HH-чат: кнопка открывает список последних входящих; /chat_ai ссылка_на_чат или chat_id — ручной аварийный ввод",
+        "• Ответ ИИ в HH-чат: кнопка открывает список последних входящих; /chat_ai ссылка_на_чат или chat_id — ручной ввод",
         "• «Мой поиск» → «Расписание»: периодические запуски",
     ]
     if role == ROLE_ADMIN:
@@ -1707,7 +1707,7 @@ def format_run_summary(run: dict) -> str:
         lines.append(diagnosis)
     elif run.get("reason_breakdown"):
         reasons = run["reason_breakdown"]
-        lines.append(f"Причины: keyword filter {reasons.get('keyword_filter', 0)} / matcher {reasons.get('low_score', 0) + reasons.get('red_flags', 0)} / guard {reasons.get('guard_stop', 0)}")
+        lines.append(f"Причины: фильтр по ключевым словам {reasons.get('keyword_filter', 0)} / низкий балл или красные флаги {reasons.get('low_score', 0) + reasons.get('red_flags', 0)} / защита от ошибок {reasons.get('guard_stop', 0)}")
     for source, bucket in (run.get("source_stats") or {}).items():
         observed = bucket.get("funnel") or bucket
         keyword = observed.get("keyword_pass", bucket.get("relevant", "—"))
@@ -1792,7 +1792,7 @@ def build_log_text(profile_name: str, *, kind: str, path: str, content: str, lin
 
 def build_run_summary_text(summary, *, profile_name):
     if summary is None:
-        return "📊 Запуск не найден. История пока отсутствует или run_id неизвестен.\n🧾 /raw_log"
+        return "📊 Запуск не найден. История пока отсутствует.\n🧾 /raw_log"
     def safe(value):
         return html.escape(str(value if value is not None else "неизвестно")[:180])
     states = {"success": "✅ успешно", "partial": "⚠ частично", "failed": "❌ ошибка",

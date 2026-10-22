@@ -299,7 +299,7 @@ class TelegramCommandQueue:
             state = hh_guard._store(path).load()
             blocked = hh_guard._parse_datetime(state.get("blocked_until", ""))
             if blocked and blocked > datetime.now(timezone.utc):
-                return state.get("last_reason") or state.get("last_kind") or "HH-guard заблокирован"
+                return state.get("last_reason") or state.get("last_kind") or "Защита HH заблокирована"
             return ""
         except Exception:
             return "Состояние HH-guard недоступно"

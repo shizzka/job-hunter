@@ -4405,7 +4405,7 @@ class TelegramBot(
         if daemon_state["running"]:
             await self._send_text(
                 chat_id,
-                f"🟢 Демон уже работает для профиля {profile_name} (pid={daemon_state['pid']}). Сначала остановите его через /daemon_off.",
+                f"🟢 Поиск уже работает для профиля {profile_name}. Сначала остановите его через /daemon_off.",
                 reply_markup=reply_markup,
             )
             return

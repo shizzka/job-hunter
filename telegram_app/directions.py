@@ -705,7 +705,7 @@ class TelegramDirections:
         elif command in {"/direction_edit", "/search_edit"}:
             if not state or not state.get("draft") or state.get("activate"):
                 if not active:
-                    await self._send_text(chat_id, "Сначала создайте направление: /direction_new.")
+                    await self._send_text(chat_id, "Сначала создайте новое направление: /direction_new.")
                     return
                 state = self._direction_bind(principal, draft=copy.deepcopy(active), texts={})
             if not arg.strip() and command == "/direction_edit":
@@ -764,7 +764,7 @@ class TelegramDirections:
                                   reply_markup=self._direction_inline(state, [[("Назад", "back"), ("Отмена", "cancel")]]))
         elif command in {"/direction_suggest", "/search_suggest", "/direction_refresh"}:
             if not active:
-                await self._send_text(chat_id, "Сначала создайте направление: /direction_new.")
+                await self._send_text(chat_id, "Сначала создайте новое направление: /direction_new.")
                 return
             state = self._direction_bind(principal, mode="working", draft=copy.deepcopy(active), texts={})
             await self._direction_job(chat_id, principal, state, "refresh" if command == "/direction_refresh" else "suggest", active["variants"])
@@ -833,7 +833,7 @@ class TelegramDirections:
                 lines.append("")
                 lines.append("Приглашение = работодатель позвал дальше (собеседование, тест, оффер).")
                 if principal.get("role") == "admin":
-                    lines.append("/direction_csv — выгрузить этот список; /direction_csv all — все направления")
+                    lines.append("Скачайте полный список: /direction_csv; /direction_csv all — все направления")
                 if not summary.get("total_topics"):
                     lines = [f"📊 {summary['direction_title']} · Данных об откликах пока нет — их нужно один раз собрать с hh.",
                              "Нажмите «🔄 Обновить данные» (только чтение, пара минут). Дальше бот обновляет их сам после поиска."]

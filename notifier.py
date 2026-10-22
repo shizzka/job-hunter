@@ -279,7 +279,7 @@ async def send_photo(photo_path: str, caption: str = "", parse_mode: str = "HTML
 async def notify_hh_unexpected_ui(photo_path, stage, fingerprint, *, target):
     """One guarded delivery; do not include raw modal text or page URL."""
     caption = ("⚠️ <b>Нестандартное поведение HH</b>\n"
-               "Текущий browser flow остановлен; нужна ручная проверка.\n"
+               "Текущий процесс в браузере остановлен; нужна ручная проверка.\n"
                f"Этап: <code>{_html(stage, 100)}</code>\n"
                f"Fingerprint: <code>{_html(fingerprint[:12], 12)}</code>")
     if photo_path:

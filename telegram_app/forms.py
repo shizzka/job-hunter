@@ -119,7 +119,7 @@ class TelegramFormEditor:
             text += " (можно несколько через запятую)." if question.get("type") == "checkbox" else "."
         else:
             text += "Пришлите новый ответ текстом."
-        text += "\nОтветьте именно на это сообщение. /cancel_form — выйти."
+        text += "\nОтветьте на это сообщение. Чтобы выйти, напишите: /cancel_form"
         if not question.get("required"):
             text += "\n/skip — оставить поле пустым."
         if len(text) > 3900:
