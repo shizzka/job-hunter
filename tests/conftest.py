@@ -43,6 +43,10 @@ def pytest_sessionstart(session):
         roots=roots, snapshots=snapshots, temporary=temporary, patch=patch, home=home,
     )
     _redirect_config(patch, roots, home)
+    # Tests deliberately select PROD within their synthetic homes. Production
+    # code must never infer this permission from absent instance configuration.
+    patch.setenv("JOB_HUNTER_INSTANCE_KIND", "prod")
+    patch.setattr(config, "JOB_HUNTER_INSTANCE_KIND", "prod")
 
 
 def pytest_sessionfinish(session, exitstatus):

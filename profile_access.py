@@ -2,7 +2,6 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
-import logging
 import os
 import re
 
@@ -17,9 +16,7 @@ _scope = ContextVar("profile_access_scope", default=None)
 def _instance_kind(value):
     if value in {"dev", "prod"}:
         return value
-    logging.getLogger(__name__).warning(
-        "JOB_HUNTER_INSTANCE_KIND is missing or unknown; using prod profile isolation")
-    return "prod"
+    raise PermissionError("Укажите JOB_HUNTER_INSTANCE_KIND: dev или prod. Доступ к профилям запрещён.")
 
 
 def instance_kind():
@@ -58,7 +55,11 @@ def profile_allowed(name):
     if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_-]+", name) is None:
         return False
     scoped_profile, _, _ = current_scope()
-    return (name.endswith("-dev") == (instance_kind() == "dev")
+    try:
+        kind = instance_kind()
+    except PermissionError:
+        return False
+    return (name.endswith("-dev") == (kind == "dev")
             and (not scoped_profile or name == scoped_profile))
 
 

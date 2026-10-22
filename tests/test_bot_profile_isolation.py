@@ -39,8 +39,8 @@ def synthetic_profiles(tmp_path, monkeypatch):
 @pytest.mark.parametrize('kind,expected,forbidden', [
     ('dev', ['qa-dev', 'synthetic-dev'], 'client'),
     ('prod', ['qa', 'client', 'default'], 'qa-dev'),
-    ('unrecognized', ['qa', 'client', 'default'], 'qa-dev'),
-    ('', ['qa', 'client', 'default'], 'qa-dev'),
+    ('unrecognized', [], 'qa'),
+    ('', [], 'qa'),
 ])
 def test_profile_data_access_boundary(synthetic_profiles, monkeypatch, caplog, kind, expected, forbidden):
     monkeypatch.setattr(config, 'JOB_HUNTER_INSTANCE_KIND', kind)
@@ -55,7 +55,14 @@ def test_profile_data_access_boundary(synthetic_profiles, monkeypatch, caplog, k
         profiles.update_profile_env(forbidden, {'HH_ENABLED': '1'})
     assert (synthetic_profiles / 'profiles' / forbidden / 'profile.env').read_text() == 'HH_ENABLED=0\n'
     if kind not in {'dev', 'prod'}:
-        assert 'using prod profile isolation' in caplog.text
+        for name in ('qa', 'default', 'qa-dev', 'client'):
+            with pytest.raises(PermissionError):
+                profiles.load_profile(name)
+            with pytest.raises(PermissionError):
+                runtime_control.agent_command_argv(name)
+        with pytest.raises(PermissionError):
+            access.worker_environment()
+        assert not caplog.text
 
 
 def test_dev_never_falls_back_to_default(synthetic_profiles, monkeypatch):
@@ -86,7 +93,8 @@ def test_admin_crafted_command_and_callback_refused(dev_bot, monkeypatch, kind, 
     monkeypatch.setattr(telegram_access, 'resolve_user', lambda uid: principal)
     dev_bot._start_chat_ai_reply = AsyncMock()
     asyncio.run(dev_bot._dispatch(101, principal, '/profile', forbidden))
-    assert 'Неизвестный профиль' in dev_bot._send_text.call_args.args[1]
+    expected = 'Профиль недоступен' if kind == 'unknown' else 'Неизвестный профиль'
+    assert expected in dev_bot._send_text.call_args.args[1]
     asyncio.run(dev_bot._handle_callback_query({
         'id': 'synthetic', 'from': {'id': 101}, 'data': f'chat_ai:{forbidden}:123:456',
         'message': {'chat': {'id': 101, 'type': 'private'}, 'message_id': 1},

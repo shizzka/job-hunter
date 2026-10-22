@@ -41,6 +41,7 @@ def _isolated_env(home: Path) -> dict[str, str]:
         "LANG": "C.UTF-8",
         "HOME": str(home),
         "JOB_HUNTER_HOME": str(home),
+        "JOB_HUNTER_INSTANCE_KIND": "prod",
         "JOB_HUNTER_ENV_FILE": str(home / "nonexistent.env"),
         "JOB_HUNTER_LOG_FILE": str(home / "agent.log"),
         "JOB_HUNTER_BOT_LOG_FILE": str(home / "bot.log"),
@@ -155,7 +156,7 @@ def test_smoke_children_ignore_parent_secrets_and_source_flags(isolated_home, mo
         "HUNTER_CONTROL_BOT_TOKEN", "HUNTER_NOTIFY_BOT_TOKEN", "HUNTER_BOT_TOKEN",
         "NOTIFY_CHAT_ID", "GROQ_API_KEY", "OPENAI_API_KEY", "OFFICE_URL", "OFFICE_DB",
         "HH_ENABLED", "SUPERJOB_ENABLED", "HABR_ENABLED", "GEEKJOB_ENABLED",
-        "JOB_HUNTER_LOG_FILE", "JOB_HUNTER_ENV_FILE", "HTTP_PROXY",
+        "JOB_HUNTER_LOG_FILE", "JOB_HUNTER_ENV_FILE", "JOB_HUNTER_INSTANCE_KIND", "HTTP_PROXY",
     ):
         monkeypatch.setenv(key, "synthetic-parent-value")
     captured = []
@@ -172,8 +173,22 @@ def test_smoke_children_ignore_parent_secrets_and_source_flags(isolated_home, mo
     env = captured[0]
     assert "synthetic-parent-value" not in env.values()
     assert env["HOME"] == env["JOB_HUNTER_HOME"] == str(isolated_home)
+    assert env["JOB_HUNTER_INSTANCE_KIND"] == "prod"
     assert all(env[source + "_ENABLED"] == "0" for source in ("HH", "SUPERJOB", "HABR", "GEEKJOB"))
     assert not any("TOKEN" in key or "API_KEY" in key for key in env)
+
+
+@pytest.mark.parametrize("kind", [None, "invalid"])
+def test_cli_denies_missing_or_invalid_instance_kind(isolated_home, kind):
+    env = _isolated_env(isolated_home)
+    if kind is None:
+        env.pop("JOB_HUNTER_INSTANCE_KIND")
+    else:
+        env["JOB_HUNTER_INSTANCE_KIND"] = kind
+    result = subprocess.run([sys.executable, "agent.py", "--stats"], env=env,
+                            cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0
+    assert "PermissionError" in result.stderr
 
 
 def test_smoke_setup_does_not_read_candidate_home(tmp_path, monkeypatch):
