@@ -2,6 +2,8 @@ import asyncio
 import json
 from datetime import datetime, timedelta
 
+import pytest
+
 import matcher
 
 
@@ -519,8 +521,9 @@ def test_generate_cover_letter_cleans_provider_prefix(monkeypatch):
     assert cover == "Проверяю REST API и web-сценарии."
 
 
-def test_generate_cover_letter_falls_back_on_empty_response(monkeypatch):
-    client = _FakeClient("")
+@pytest.mark.parametrize("content", [None, ""])
+def test_generate_cover_letter_falls_back_on_empty_response(monkeypatch, content):
+    client = _FakeClient(content)
     monkeypatch.setattr(matcher, "_get_client", lambda: client)
     monkeypatch.setattr(matcher, "_load_resume", lambda: "Junior Manual QA, около 1 года практического тестирования.")
 
@@ -533,6 +536,7 @@ def test_generate_cover_letter_falls_back_on_empty_response(monkeypatch):
 
     assert "Направляю резюме" in cover
     assert "бэкграунд" not in cover
+    assert "None" not in cover
     meta = matcher.analyze_cover_letter(cover)
     assert meta["fallback_cover_letter"] is True
     assert meta["cover_letter_hash"]

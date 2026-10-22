@@ -323,6 +323,27 @@ def configure_synthetic_search(monkeypatch, home):
     return trace
 
 
+def test_search_does_not_submit_or_format_none_cover(search_home, monkeypatch):
+    trace = configure_synthetic_search(monkeypatch, search_home)
+    monkeypatch.setattr(agent, "generate_cover_letter", AsyncMock(return_value=None))
+    decisions = []
+    monkeypatch.setattr(analytics, "record_decision", lambda **fields: decisions.append(fields))
+    tasks = []
+    monkeypatch.setattr(agent, "create_task", lambda *args: tasks.append(args))
+
+    result = asyncio.run(agent.do_search())
+
+    assert not [entry for entry in trace if entry[0] == "apply"]
+    assert result["applied"] == 0
+    no_cover = [row for row in decisions if "no_cover_letter" in row.get("evaluation", {}).get("guard_flags", [])]
+    assert len(no_cover) == 3
+    assert all(row["evaluation"]["cover_letter_length"] == 0 for row in no_cover)
+    agent.notify_application.assert_not_awaited()
+    notices = [call.kwargs["note"] for call in agent.notify_needs_manual.await_args_list]
+    assert len(notices) == 3
+    assert "None" not in str(tasks) + "".join(notices)
+
+
 @pytest.mark.parametrize("analytics_enabled,writer_fails", [(True, False), (False, False), (True, True)])
 def test_actual_search_decisions_unchanged_with_failed_analytics(search_home, monkeypatch, analytics_enabled, writer_fails):
     trace = configure_synthetic_search(monkeypatch, search_home)

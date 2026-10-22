@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 import agent
 import manual_apply_queue
 import notifier
@@ -16,7 +18,8 @@ class FakeHHClient:
         return None
 
 
-def test_manual_ai_apply_does_not_submit_empty_cover(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cover", [None, "", "   "])
+def test_manual_ai_apply_does_not_submit_empty_cover(tmp_path, monkeypatch, cover):
     queue_file = tmp_path / "manual_apply_queue.json"
     monkeypatch.setattr(manual_apply_queue, "_queue_path", lambda profile_name=None: queue_file)
     monkeypatch.setattr(manual_apply_queue.config, "MANUAL_APPLY_QUEUE_FILE", str(queue_file), raising=False)
@@ -49,7 +52,7 @@ def test_manual_ai_apply_does_not_submit_empty_cover(tmp_path, monkeypatch):
     monkeypatch.setattr(agent.analytics, "record_decision", fake_record_decision)
 
     async def fake_generate_cover_letter(vacancy, details):
-        return "   "
+        return cover
 
     monkeypatch.setattr(agent, "generate_cover_letter", fake_generate_cover_letter)
 
@@ -74,6 +77,8 @@ def test_manual_ai_apply_does_not_submit_empty_cover(tmp_path, monkeypatch):
     assert "без текста" in notifications[0]
     assert decisions[0]["decision"] == agent.DECISION_APPLY_FAILED
     assert "no_cover_letter" in decisions[0]["evaluation"]["guard_flags"]
+    assert decisions[0]["evaluation"]["cover_letter_length"] == 0
+    assert "None" not in str(notifications) + result["message"]
 
 
 def test_format_hh_question_answers_for_note_limits_output():
