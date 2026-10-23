@@ -268,12 +268,31 @@ def active_direction(home_dir):
 def set_active_direction(home_dir, name):
     if profile_access.current_scope()[1]:
         raise PermissionError("Tester не может переключать направление.")
-    if name is not None:
-        load_direction(home_dir, name)
     path = _state_path(home_dir)
     _inside(path.with_name("." + path.name + ".lock"), path.parent)
     with file_lock(path):
+        # Deletion uses this same state lock; revalidate after waiting for it.
+        if name is not None:
+            load_direction(home_dir, name)
         atomic_write_json(path, {"active_direction": name})
+
+
+def delete_direction(home_dir, name, *, expected):
+    """Delete only the confirmed configuration; immutable resume texts stay intact."""
+    if profile_access.current_scope()[1]:
+        raise PermissionError("Tester не может удалять направление.")
+    path, state_path = _path(home_dir, name), _state_path(home_dir)
+    for target in (state_path, path):
+        _inside(target.with_name("." + target.name + ".lock"), target.parent)
+    with file_lock(state_path), file_lock(path):
+        current = load_direction(home_dir, name)
+        if current != expected:
+            raise DirectionError("Направление изменилось; откройте список заново.")
+        active = active_direction(home_dir)
+        if active and active["name"] == name:
+            # Clearing the pointer first remains safe if the unlink fails.
+            atomic_write_json(state_path, {"active_direction": None})
+        path.unlink()
 
 
 def _closest_index(variants, vacancy_text):

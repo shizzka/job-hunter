@@ -138,7 +138,8 @@ class TelegramDirections:
         except (ValueError, OSError) as exc:
             await self._send_text(chat_id, f"❌ Не удалось сохранить режим: {exc}",
                 reply_markup=self._menu_reply_markup(principal, menu=menu))
-            return
+            # A storage error may follow a committed write; retain its claim.
+            return False if isinstance(exc, ValueError) else None
         result = f"✅ {message}"
         try:
             self._reload_profile_daemon(profile_name)
@@ -168,6 +169,9 @@ class TelegramDirections:
                               reply_markup=self._direction_inline(state, rows))
 
     def _direction_inline(self, state, rows):
+        # Each rendered keyboard is a new revision of this draft. A repeat of
+        # an old revision stays spent; the freshly rendered checkbox is usable.
+        state["token"] = uuid.uuid4().hex[:12]
         return {"inline_keyboard": [[{"text": label, "callback_data": f"dir:{state['token']}:{action}"}
                                       for label, action in row] for row in rows]}
 
@@ -244,47 +248,57 @@ class TelegramDirections:
         state = self._direction_sessions().get(principal["user_id"])
         if len(parts) < 3 or not state or parts[1] != state.get("token") or not self._direction_current(principal, state):
             await self._send_text(chat_id, "Эта кнопка устарела. Откройте «Направления» заново.")
-            return
+            return False
         action = parts[2]
+        started = False
         try:
             if action in {"autoyes", "autono"} and state.get("mode") == "application_auto":
-                # Consume before any await: duplicate/stale Yes callbacks cannot save again.
-                self._direction_sessions().pop(principal["user_id"], None)
                 if action == "autono":
+                    self._direction_sessions().pop(principal["user_id"], None)
                     await self._send_text(chat_id, "Автоматические отклики не включены. Настройки не менялись.",
                         reply_markup=self._menu_reply_markup(principal, menu=state["menu"]))
                     return
                 profile_name, profile, _ = self._direction_context(principal)
                 if state.get("base_mode") != getattr(profile.hh, "application_mode", None):
                     await self._send_text(chat_id, "Режим изменился. Выберите его заново.")
-                    return
+                    return False
                 if self._has_active_command(profile_name):
                     await self._send_busy_status(chat_id, principal, profile_name=profile_name)
-                    return
-                await self._save_application_mode(chat_id, principal, "auto", menu=state["menu"])
+                    return False
+                started = True
+                result = await self._save_application_mode(chat_id, principal, "auto", menu=state["menu"])
+                if result is not False and self._direction_sessions().get(principal["user_id"]) is state:
+                    self._direction_sessions().pop(principal["user_id"], None)
+                return result
             elif action == "toggle" and state.get("mode") == "catalog":
                 i = int(parts[3])
                 if not 0 <= i < len(state["catalog"]):
                     raise ValueError("Резюме не найдено.")
                 selected = state.setdefault("selected", [])
+                started = True
                 selected.remove(i) if i in selected else selected.append(i)
                 await self._direction_show_catalog(chat_id, state)
             elif action == "next" and state.get("mode") == "catalog":
                 selected = state.get("selected", [])
                 if not selected:
                     raise ValueError("Выберите хотя бы одно резюме.")
+                started = True
                 state["mode"] = "working"
-                await self._direction_job(chat_id, principal, state, "add" if state.get("add") else "new",
-                                          [state["catalog"][i] for i in sorted(selected)])
+                result = await self._direction_job(chat_id, principal, state, "add" if state.get("add") else "new",
+                                                   [state["catalog"][i] for i in sorted(selected)])
+                if result is False:
+                    state["mode"] = "catalog"
+                return result
             elif action == "choose" and state.get("mode") == "switch":
                 item = state["choices"][int(parts[3])]
                 profile_access.require_direction(item["name"])
                 _, _, active = self._direction_context(principal)
+                started = True
                 state.update(mode="draft", draft=copy.deepcopy(item), activate=not active or item["name"] != active["name"],
                              summary=bool(active and item["name"] == active["name"]))
                 await self._direction_show_draft(chat_id, principal, state)
             elif action == "statsrefresh":
-                await self._dispatch_direction(chat_id, principal, "/direction_stats_refresh", "")
+                return await self._dispatch_direction(chat_id, principal, "/direction_stats_refresh", "")
             elif action == "editmenu":
                 await self._direction_edit_menu(chat_id, state)
             elif action == "edit":
@@ -302,22 +316,29 @@ class TelegramDirections:
                     reply_markup=self._direction_inline(state, [[("Да, добавить к изменениям", "letteruse")], [("Назад", "back")]]))
             elif action == "letteruse" and state.get("letter_offer") and state.get("mode") == "edit" and state.get("field") == "cover_letter_fallback":
                 from fallback_letter import validate
+                started = True
                 state["draft"]["cover_letter_fallback"] = validate(state.pop("letter_offer"))
                 state.update(mode="draft", summary=False)
                 await self._direction_show_draft(chat_id, principal, state)
             elif action == "letterclear" and state.get("mode") == "edit" and state.get("field") == "cover_letter_fallback":
+                started = True
                 state["draft"]["cover_letter_fallback"] = ""
                 state.update(mode="draft", summary=False)
                 await self._direction_show_draft(chat_id, principal, state)
             elif action == "preset" and state.get("mode") == "edit":
                 values = {"moscow": "1", "spb": "2", "russia": "113", "remote": "remote", "office": "fullDay", "fly": "flyInFlyOut", "any": "любой"}
-                await self._accept_direction_input(chat_id, principal, values[parts[3]])
+                value = values[parts[3]]
+                started = True
+                await self._accept_direction_input(chat_id, principal, value)
             elif action == "conditionpreset" and state.get("mode") == "edit":
                 values = {"yes": "да", "no": "нет", "remote": "удалённо, гибрид", "any": "любой"}
-                await self._accept_direction_input(chat_id, principal, values[parts[3]])
+                value = values[parts[3]]
+                started = True
+                await self._accept_direction_input(chat_id, principal, value)
             elif action == "pair" and state.get("draft"):
                 pairs = {"spb": {"area": "2", "schedule": ""}, "fly": {"area": "113", "schedule": "flyInFlyOut"}}
                 pair = pairs[parts[3]]
+                started = True
                 rows = state["draft"].setdefault("search_profiles", [])
                 if pair not in rows:
                     rows.append(pair)
@@ -337,12 +358,16 @@ class TelegramDirections:
                 await self._send_text(chat_id, text, reply_markup=self._direction_inline(state, rows))
             elif action == "strategyset" and len(parts) > 3 and parts[3] in STRATEGY_LABELS:
                 saved_direction = bool(state.get("summary"))
+                if saved_direction and self._has_active_command(state["profile_name"]):
+                    await self._send_busy_status(chat_id, principal, profile_name=state["profile_name"])
+                    return False
+                started = True
                 state["draft"]["selection_strategy"] = parts[3]
                 state.update(mode="draft", summary=False)
                 if saved_direction:
                     # One explicit choice on an existing direction: save it right away.
                     await self._send_text(chat_id, "Выбор резюме: " + STRATEGY_LABELS[parts[3]] + ". Сохраняю…")
-                    await self._dispatch_direction(chat_id, principal, "/direction_save", "")
+                    return await self._dispatch_direction(chat_id, principal, "/direction_save", "")
                 else:
                     await self._direction_show_draft(chat_id, principal, state)
             elif action == "delete":
@@ -353,10 +378,11 @@ class TelegramDirections:
                 import directions
                 if self._has_active_command(state["profile_name"]):
                     await self._send_busy_status(chat_id, principal, profile_name=state["profile_name"])
-                    return
+                    return False
                 target = state["delete_target"]
                 if directions.load_direction(state["home_dir"], target["name"]) != target:
                     raise ValueError("Направление изменилось; откройте список заново.")
+                started = True
                 directions.delete_direction(state["home_dir"], target["name"], expected=target)
                 self._reload_profile_daemon(state["profile_name"])
                 await self._dispatch_direction(chat_id, principal, "/directions", "")
@@ -364,11 +390,15 @@ class TelegramDirections:
                 command = {"list": "/directions", "new": "/direction_new", "save": "/direction_save", "cancel": "/direction_cancel",
                            "variants": "/direction_variants", "stats": "/direction_stats"}.get(action, "/direction_" + action)
                 handler = self._read_direction if action in {"list", "stats"} else self._dispatch_direction
-                await handler(chat_id, principal, command, "")
+                return await handler(chat_id, principal, command, "")
             elif action == "variant" and state.get("mode") == "variant":
+                started = True
                 await self._accept_direction_input(chat_id, principal, str(int(parts[3]) + 1))
+            else:
+                return False
         except (ValueError, IndexError, KeyError, OSError) as exc:
             await self._send_text(chat_id, str(str(exc)))
+            return None if started else False
 
     async def _direction_prompt_variants(self, chat_id, principal, operation):
         _, _, active = self._direction_context(principal)
@@ -410,7 +440,7 @@ class TelegramDirections:
             return
         if self._has_active_command(profile_name):
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
-            return
+            return False
         state = self._direction_bind(principal, mode="working", add=add,
                                      draft=copy.deepcopy(active) if add else None, texts=texts)
         command = self._mark_active_command(principal=principal, label="direction catalog", profile_name=profile_name)
@@ -487,11 +517,11 @@ class TelegramDirections:
         profile_name = state["profile_name"]
         if self._has_active_command(profile_name):
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
-            return
+            return False
         ai = operation in {"new", "suggest"}
         if ai and not await self._authorize_ai_usage(chat_id, principal, profile_name=profile_name,
                                                     action="direction_suggest_ai_used", check_only=True):
-            return
+            return False
         active_command = self._mark_active_command(principal=principal, label="direction draft", profile_name=profile_name)
         await self._send_text(chat_id, "Готовлю направление для проверки. Дождитесь результата; изменения потребуют сохранения.")
 
@@ -543,6 +573,7 @@ class TelegramDirections:
             finally:
                 self._clear_active_command(profile_name)
         active_command.task = self._create_active_task(active_command, runner)
+        return True
 
     async def _accept_direction_input(self, chat_id, principal, text):
         state = self._direction_sessions().get(principal["user_id"])
@@ -753,10 +784,11 @@ class TelegramDirections:
         elif command in {"/direction_save", "/search_use_draft"}:
             if self._has_active_command(profile_name):
                 await self._send_busy_status(chat_id, principal, profile_name=profile_name)
-                return
+                return False
             if not state or state.get("mode") != "draft":
                 await self._send_text(chat_id, "Нет несохранённых изменений. Откройте «Направления».")
-                return
+                return False
+            committed = False
             try:
                 if state.get("activate"):
                     # Reject a target edited since the switch prompt as well.
@@ -767,6 +799,7 @@ class TelegramDirections:
                     saved = directions.save_direction(profile.home_dir, state["draft"], texts=state.get("texts") or {})
                     if not active:
                         directions.set_active_direction(profile.home_dir, saved["name"])
+                committed = True
                 self._direction_sessions().pop(principal["user_id"], None)
                 note = ""
                 try:
@@ -777,8 +810,9 @@ class TelegramDirections:
                 await self._send_text(chat_id, "Направление сохранено." + note, reply_markup=self._direction_markup())
             except (ValueError, OSError) as exc:
                 await self._send_text(chat_id, str(str(exc)), reply_markup=self._direction_markup(draft=True))
+                return False if isinstance(exc, ValueError) and not committed else None
         elif command in {"/direction_new", "/direction_add"}:
-            await self._direction_catalog(chat_id, principal, add=command == "/direction_add")
+            return await self._direction_catalog(chat_id, principal, add=command == "/direction_add")
         elif command in {"/direction_variants", "/search_resume", "/direction_pause", "/direction_resume", "/direction_remove"}:
             operation = {"/direction_pause": "pause", "/direction_resume": "resume", "/direction_remove": "remove"}.get(command, "select")
             await self._direction_prompt_variants(chat_id, principal, operation)
@@ -860,7 +894,7 @@ class TelegramDirections:
         elif command == "/direction_stats_refresh":
             if self._has_active_command(profile_name):
                 await self._send_busy_status(chat_id, principal, profile_name=profile_name)
-                return
+                return False
             job = self._mark_active_command(principal=principal, label="negotiation snapshot", profile_name=profile_name)
             await self._send_text(chat_id, "🔄 Загружаю отклики с hh.ru. Это займёт пару минут, работодателям ничего не отправится…")
 

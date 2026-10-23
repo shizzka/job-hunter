@@ -91,8 +91,19 @@ class TelegramUpdateSupervisor:
         await self._run_foreground(self._handle_update, update, update_id=update.get("update_id"),
                                    handler_name=handler)
 
+    def _schedule_daily_summary(self):
+        for name in ("_daily_summary_task", "_daily_summary_report_task"):
+            task = getattr(self, name, None)
+            if task is not None and not task.done():
+                return
+        self._daily_summary_task = asyncio.create_task(self._run_foreground(
+            self._maybe_send_daily_summary, foreground=False))
+
     async def _shutdown_read_updates(self):
         tasks = list(getattr(self, "_read_update_tasks", ()))
+        daily = getattr(self, "_daily_summary_task", None)
+        if daily is not None:
+            tasks.append(daily)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

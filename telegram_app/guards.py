@@ -94,7 +94,7 @@ def read_callback(data):
     return (parts[0] == "hist"
             or parts[0] == "gs" and len(parts) > 1 and parts[1] in {"auto", "dirs", "resumes", "check"}
             or parts[0] == "dir" and len(parts) > 2 and parts[2] in {
-                "stats", "list"}
+                "stats", "list", "back", "editmenu", "edit", "delete", "strategy", "letteroffer", "variants"}
             or parts[0] == "rq" and len(parts) > 1 and parts[1] in {"p", "u", "o", "d"}
             or parts[0] in {"manual_why", "chat_ai", "chat_ai_any", "chat_ai_alt", "chat_ai_any_alt",
                             "gform_preview"}

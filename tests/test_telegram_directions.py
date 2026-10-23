@@ -526,11 +526,10 @@ async def test_inline_creation_toggles_next_summary_edit_and_cancel_without_writ
     monkeypatch.setattr(search_query_suggester, 'suggest_direction', suggest)
     await bot._dispatch_direction(1, USER, '/direction_new', '')
     await bot.command.task
-    actions = inline_actions(bot)
-    await bot._direction_callback(1, USER, actions[0])
-    await bot._direction_callback(1, USER, actions[1])
-    await bot._direction_callback(1, USER, actions[0])  # toggle off
-    await bot._direction_callback(1, USER, next(a for a in actions if a.endswith(':next')))
+    await bot._direction_callback(1, USER, inline_actions(bot)[0])
+    await bot._direction_callback(1, USER, inline_actions(bot)[1])
+    await bot._direction_callback(1, USER, inline_actions(bot)[0])  # newly rendered toggle off
+    await bot._direction_callback(1, USER, next(a for a in inline_actions(bot) if a.endswith(':next')))
     await bot.command.task
     state = bot._direction_sessions()[1]
     assert [v['hh_resume_hash'] for v in state['draft']['variants']] == ['two']
@@ -571,15 +570,14 @@ async def test_independent_city_format_rows_and_salary_are_drafts(bot):
     directions.set_active_direction(home, 'qa')
     await bot._dispatch_direction(1, USER, '/direction_summary', '')
     state = bot._direction_sessions()[1]
-    token = state['token']
-    await bot._direction_callback(1, USER, f'dir:{token}:edit:search_profiles')
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:edit:search_profiles")
     await bot._accept_direction_input(1, USER, '2\n113 flyInFlyOut')
     assert state['draft']['search_profiles'] == [{'area': '2', 'schedule': ''}, {'area': '113', 'schedule': 'flyInFlyOut'}]
-    await bot._direction_callback(1, USER, f'dir:{token}:edit:salary')
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:edit:salary")
     await bot._accept_direction_input(1, USER, '150000')
     assert state['draft']['salary_baseline'] == 150000
     assert directions.active_direction(home) == original
-    await bot._direction_callback(1, USER, f'dir:{token}:cancel')
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:cancel")
     assert directions.active_direction(home) == original
 
 

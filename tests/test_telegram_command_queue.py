@@ -605,18 +605,7 @@ def test_pruning_finished_task_wakes_waiting_profile(monkeypatch, tmp_path):
 
 
 def test_second_queued_manual_token_is_not_admitted_again(monkeypatch, tmp_path):
-    import agent
-    import config
     import runtime_control
-    import manual_apply_queue
-    candidate = {"status": "pending", "allow_ai_apply": True, "vacancy": {"source": "hh"}}
-    monkeypatch.setattr(config, "HH_APPLICATION_MODE", "auto")
-    monkeypatch.setattr(manual_apply_queue, "get_candidate", lambda token, **kwargs: dict(candidate))
-    monkeypatch.setattr(agent.company_blacklist, "is_blocked", lambda company: False)
-    def forbidden_client(*args, **kwargs):
-        raise AssertionError("Completed candidate must be refused before opening HH")
-    monkeypatch.setattr(agent, "HHClient", forbidden_client)
-
     async def scenario():
         bot, _, messages, _ = real_bot(monkeypatch, tmp_path)
         blocker = bot._mark_active_command(principal={"user_id": 1}, label="blocker", profile_name="qa")
@@ -626,12 +615,7 @@ def test_second_queued_manual_token_is_not_admitted_again(monkeypatch, tmp_path)
         attempts = []
         async def capture(argv, *, timeout, on_start):
             attempts.append(argv[-1])
-            if len(attempts) == 1:
-                candidate["status"] = "applied"
-                return {"ok": True, "stdout": "Отклик отправлен, подтверждено сервером hh.", "stderr": ""}
-            rejected = await agent.do_manual_apply_token(argv[-1])
-            assert rejected == {"ok": False, "message": "Отклик для этой карточки недоступен"}
-            return {"ok": False, "stdout": "", "stderr": "", "returncode": 1}
+            return {"ok": True, "stdout": "Отклик отправлен, подтверждено сервером hh.", "stderr": ""}
         monkeypatch.setattr(runtime_control, "run_command_capture", capture)
         bot._clear_active_command("qa")
         await spin_until(lambda: len(attempts) == 1 and not bot._active_commands and not bot._queue_drainers)
@@ -639,6 +623,42 @@ def test_second_queued_manual_token_is_not_admitted_again(monkeypatch, tmp_path)
         summary = next(payload["text"] for payload in messages if "Очередь выполнена" in payload["text"])
         assert "отправлено, подтверждено сервером hh" in summary
         assert "задач: 1" in summary
+    asyncio.run(scenario())
+
+
+def test_queued_candidate_applied_before_drain_is_revalidated_before_hh(monkeypatch, tmp_path):
+    import agent
+    import config
+    import runtime_control
+    import manual_apply_queue
+    from unittest.mock import Mock
+    candidate = {"status": "pending", "allow_ai_apply": True, "vacancy": {"source": "hh"}}
+    monkeypatch.setattr(config, "HH_APPLICATION_MODE", "auto")
+    monkeypatch.setattr(manual_apply_queue, "get_candidate", lambda token, **kwargs: dict(candidate))
+    monkeypatch.setattr(agent.company_blacklist, "is_blocked", lambda company: False)
+    hh = Mock(side_effect=AssertionError("Applied candidate must be refused before opening HH"))
+    monkeypatch.setattr(agent, "HHClient", hh)
+
+    async def scenario():
+        bot, _, messages, _ = real_bot(monkeypatch, tmp_path)
+        blocker = bot._mark_active_command(principal={"user_id": 1}, label="blocker", profile_name="qa")
+        blocker.task = SimpleNamespace(done=lambda: False)
+        await bot._handle_callback_query(source("applied-before-drain"))
+        assert bot._queue_length("qa") == 1
+        candidate["status"] = "applied"
+        attempts = []
+        async def capture(argv, *, timeout, on_start):
+            attempts.append(argv[-1])
+            result = await agent.do_manual_apply_token(argv[-1])
+            assert result == {"ok": False, "message": "Отклик для этой карточки недоступен"}
+            return {"ok": False, "stdout": "", "stderr": "", "returncode": 1}
+        monkeypatch.setattr(runtime_control, "run_command_capture", capture)
+        bot._clear_active_command("qa")
+        await spin_until(lambda: attempts and not bot._active_commands and not bot._queue_drainers)
+        assert attempts == ["applied-before-drain"]
+        hh.assert_not_called()
+        summary = next(payload["text"] for payload in messages if "Очередь выполнена" in payload["text"])
+        assert "статус карточки: applied" in summary
     asyncio.run(scenario())
 
 

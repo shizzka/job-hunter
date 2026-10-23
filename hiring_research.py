@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import re
 
 import analytics
+import analytics_read_cache as read_cache
 
 MOSCOW = ZoneInfo('Europe/Moscow')
 
@@ -38,14 +39,14 @@ def _bucket(seconds):
     return '≥24 ч'
 
 
-def summarize(events_file, *, now=None, days=30, scope="active"):
+def _summarize(events_file, *, now=None, days=30, scope="active", _events=None, _view=None):
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=MOSCOW)
     start = (now.astimezone(MOSCOW).replace(hour=0, minute=0, second=0, microsecond=0)
              - timedelta(days=days - 1))
     rows = []
-    for event in analytics.history_events(events_file, scope=scope):
+    for event in (_events if _events is not None else analytics.history_events(events_file, scope=scope)):
         if not isinstance(event, dict):
             continue
         dt = _time(event.get('observed_at_utc') or event.get('created_at') or event.get('recorded_at_utc'))
@@ -105,7 +106,7 @@ def summarize(events_file, *, now=None, days=30, scope="active"):
             app['last_poll'] = dt
     cohort = [app for key, app in applications.items() if app['at'] >= start and key not in repeats]
     report = {'verifications': verifications, 'days': days, 'total': len(cohort), 'excluded_repeats': len(repeats & recent_application_keys),
-              'direction_title': analytics.direction_history.for_events(events_file, scope).title,
+              'direction_title': (_view or analytics.direction_history.for_events(events_file, scope)).title,
               'outcomes': Counter(), 'rejection_delays': Counter(), 'rejection_views': Counter(),
               'groups': {name: defaultdict(Counter) for name in ('mode', 'cover', 'resume', 'screening')},
               'recent': 0, 'start': start.isoformat()}
@@ -140,6 +141,49 @@ def summarize(events_file, *, now=None, days=30, scope="active"):
             group['positive'] += app['positive']
             group[app['status']] += 1 if app['status'] != 'positive' else 0
     return report
+
+
+_RESEARCH_FIELDS = {"observed_at_utc", "recorded_at_utc", "url", "historical", "screening_type",
+                    "submission_mode", "cover_letter_status", "verdict"}
+
+
+def _research_projection(row):
+    return {**read_cache.project(row), **{k: row[k] for k in _RESEARCH_FIELDS if k in row}}
+
+
+def summarize(events_file, *, now=None, days=30, scope="active"):
+    explicit_now = now
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=MOSCOW)
+    path = events_file or analytics._destination()[0]
+    view = analytics.direction_history.for_events(events_file, scope)
+    key = ("research", read_cache.stamp(path), read_cache.ownership_key(view), days, explicit_now)
+    def compute():
+        try:
+            rows, _ = read_cache.journal(path, tag="research", projection=_research_projection).read(path)
+        except Exception as exc:
+            # Match the diagnostic reader's unavailable-journal behavior.
+            analytics.log.warning("Failed to read analytics events: %s", type(exc).__name__)
+            rows = []
+        events = view.records(view.events(rows))
+        expiry = None
+        if explicit_now is None:
+            # Cohorts change at Moscow midnight; future observations become
+            # visible and applications cease being recent at exact timestamps.
+            tomorrow = now.astimezone(MOSCOW).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            boundaries = [tomorrow.timestamp()]
+            for event in events:
+                date = _time(event.get("observed_at_utc") or event.get("created_at") or event.get("recorded_at_utc"))
+                if date is not None:
+                    if date > now:
+                        boundaries.append(date.timestamp())
+                    if event.get("event") == "decision" and date + timedelta(days=7) > now:
+                        boundaries.append((date + timedelta(days=7)).timestamp())
+            expiry = min(boundaries)
+        return (_summarize(events_file, now=now, days=days, scope=scope,
+                           _events=events, _view=view), expiry)
+    return read_cache.memo(key, compute, now=now.timestamp())
 
 
 def render(report):

@@ -344,10 +344,9 @@ class TelegramBot(
                     if self._stop_event.is_set():
                         break
                     await self._run_update(update)
-                for handler in (self._maybe_send_daily_summary, self._maybe_send_health_alert):
-                    if self._stop_event.is_set():
-                        break
-                    await self._run_foreground(handler)
+                if not self._stop_event.is_set():
+                    self._schedule_daily_summary()
+                    await self._run_foreground(self._maybe_send_health_alert)
         finally:
             if shutdown_task is not None:
                 await shutdown_task
@@ -1907,6 +1906,12 @@ class TelegramBot(
         daily_state = state.get("daily_summary") if isinstance(state.get("daily_summary"), dict) else {}
         return daily_state.get("last_sent_date") != today, today
 
+    def _daily_summary_report(self, profile_name, *, now):
+        snapshot = self._daily_summary_snapshot(profile_name, now=now)
+        return build_daily_summary_text(
+            profile_name=profile_name, analytics_summary=snapshot["analytics_summary"],
+            recent_runs=snapshot["recent_runs"], period_label=snapshot["period_label"])
+
     async def _maybe_send_daily_summary(self) -> None:
         due, today = self._daily_summary_due()
         if not due:
@@ -1953,13 +1958,13 @@ class TelegramBot(
             self._update_state(lambda state: checkpoint(state, user_id))
             try:
                 with profile_access.principal_scope(principal):
-                    snapshot = self._daily_summary_snapshot(profile_name, now=datetime.now())
-                    text = build_daily_summary_text(
-                        profile_name=profile_name,
-                        analytics_summary=snapshot["analytics_summary"],
-                        recent_runs=snapshot["recent_runs"],
-                        period_label=snapshot["period_label"],
-                    )
+                    # A timed-out supervisor must not reopen admission while its
+                    # report thread still waits for the shared journal index.
+                    report = asyncio.create_task(asyncio.to_thread(
+                        self._daily_summary_report, profile_name, now=datetime.now()))
+                    self._daily_summary_report_task = report
+                    report.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+                    text = await asyncio.shield(report)
                     result = await self._send_text_safely(
                         user_id,
                         text,
