@@ -22,7 +22,8 @@ def vacancy(**fields):
             "_hh_work_conditions": wc.from_hh_fields(fields)}
 
 
-@pytest.mark.parametrize("code,expected", [("REMOTE", "allow"), ("HYBRID", "allow"),
+# «only remote» excludes hybrid unless the direction opts in (owner 24.10)
+@pytest.mark.parametrize("code,expected", [("REMOTE", "allow"), ("HYBRID", "reject"),
                                            ("ON_SITE", "reject"), ("FIELD_WORK", "reject")])
 def test_remote_direction_uses_vacancy_format_not_search_schedule(code, expected):
     direction = {"search_profiles": [{"area": 113, "schedule": "remote"}]}
@@ -111,6 +112,13 @@ def test_city_restriction_uses_workplace_city_not_publication_region():
     assert wc.check(vacancy(workFormats=["REMOTE"]), direction=direction)["status"] == "allow"
 
 
+def test_remote_only_direction_takes_hybrid_only_as_an_explicit_choice():
+    direction = {"search_profiles": [{"area": 113, "schedule": "remote"}]}
+    assert wc.check(vacancy(workFormats=["HYBRID"]), direction=direction)["status"] == "reject"
+    direction["work_conditions"] = {**wc.defaults(direction), "allowed_formats": ["remote", "hybrid"]}
+    assert wc.check(vacancy(workFormats=["HYBRID"]), direction=direction)["status"] == "allow"
+
+
 def test_allowed_vacancy_and_other_source_policy(monkeypatch):
     direction = policy()
     for code in ("REMOTE", "HYBRID", "ON_SITE", "FIELD_WORK"):
@@ -131,7 +139,7 @@ def test_new_and_existing_direction_defaults_are_read_only_until_saved(tmp_path)
     before = path.read_bytes()
     loaded = directions.load_direction(tmp_path, "qa")
     assert path.read_bytes() == before
-    assert loaded["work_conditions"] == {"allowed_formats": ["remote", "hybrid"], "allow_fly_in_fly_out": False, "allowed_cities": []}
+    assert loaded["work_conditions"] == {"allowed_formats": ["remote"], "allow_fly_in_fly_out": False, "allowed_cities": []}
     loaded["search_profiles"].append({"area": 2, "schedule": ""})
     del loaded["work_conditions"]
     assert directions.validate_direction(loaded)["work_conditions"] == wc.defaults({})

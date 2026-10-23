@@ -13,7 +13,8 @@ _CODES = {"REMOTE": "remote", "HYBRID": "hybrid", "ON_SITE": "on_site", "FIELD_W
 def defaults(direction: dict) -> dict:
     profiles = direction.get("search_profiles") or []
     remote = bool(profiles) and all(p.get("schedule") == "remote" for p in profiles)
-    return {"allowed_formats": ["remote", "hybrid"] if remote else list(FORMAT_LABELS),
+    # «Only remote» means no office days: hybrid is an explicit opt-in (owner 24.10, B27/F23).
+    return {"allowed_formats": ["remote"] if remote else list(FORMAT_LABELS),
             "allow_fly_in_fly_out": False, "allowed_cities": []}
 
 
