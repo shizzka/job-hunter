@@ -1,11 +1,13 @@
 """Scoped lock deadlines for synchronous stores used by asynchronous callers."""
 import contextlib
+import asyncio
 from contextvars import ContextVar
 from functools import wraps
 import fcntl
 import time
 
 _wait_seconds = ContextVar("state_lock_wait_seconds", default=None)
+BOT_WORKER_LOCK_WAIT = 0.5
 
 
 class StateLockBusy(RuntimeError):
@@ -29,7 +31,9 @@ def nonblocking_state_locks(fn):
     """
     @wraps(fn)
     async def wrapped(*args, **kwargs):
-        with lock_wait_timeout(0):
+        # to_thread and child tasks copy this budget. acquire_flock clamps it
+        # to zero on the event loop, while workers tolerate brief contention.
+        with lock_wait_timeout(BOT_WORKER_LOCK_WAIT):
             return await fn(*args, **kwargs)
     return wrapped
 
@@ -39,6 +43,12 @@ def acquire_flock(fd, operation):
     if wait is None:
         fcntl.flock(fd, operation)
         return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        wait = 0  # Scoped bot tasks, including children, never sleep on flock.
     deadline = time.monotonic() + wait
     while True:
         try:
@@ -48,6 +58,5 @@ def acquire_flock(fd, operation):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise StateLockBusy("State lock is busy") from None
-            # A positive budget is for the logging worker only. Bot tasks use
-            # zero and never sleep while acquiring a synchronous state lock.
+            # Only worker threads can reach this sleep.
             time.sleep(min(remaining, 0.01))

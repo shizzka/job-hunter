@@ -1,7 +1,22 @@
 """Bot control state: transactions without resetting corrupt offsets/settings."""
 import math
+import time
 
 from .json_store import JsonStore
+
+CALLBACK_CLAIM_TTL = 30 * 24 * 60 * 60
+
+
+def prune_callback_claims(state, *, now=None):
+    """Migrate legacy booleans once, preserving spent buttons for 30 days."""
+    now = time.time() if now is None else now
+    claims = state.get("callback_claims", {})
+    for claim, created in list(claims.items()):
+        if (isinstance(created, bool) or not isinstance(created, (int, float))
+                or not math.isfinite(created)):
+            claims[claim] = now
+        elif created < now - CALLBACK_CLAIM_TTL:
+            del claims[claim]
 
 
 def _valid_state(state: dict) -> bool:
@@ -36,3 +51,7 @@ class BotStateStore(JsonStore):
 
     def _recover_corrupt_unlocked(self) -> dict:
         raise RuntimeError(f"Corrupt bot state {self.path}; restore it from a verified backup.")
+
+    def _save_unlocked(self, value):
+        prune_callback_claims(value)
+        super()._save_unlocked(value)

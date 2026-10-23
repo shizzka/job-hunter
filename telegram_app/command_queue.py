@@ -16,6 +16,8 @@ import uuid
 
 import telegram_access
 import profile_access
+from state_store.locking import StateLockBusy, nonblocking_state_locks
+from telegram_app.updates import STATE_BUSY
 from telegram_app.guards import AI_LABELS, BUSY, reserve, release_entry, release_callback
 
 log = logging.getLogger(__name__)
@@ -295,7 +297,10 @@ class TelegramCommandQueue:
             if active and active.task is None:
                 self._active_commands.pop(entry.profile, None)
             await self._queue_markup(entry, restore=True)
-            await self._queue_notice(entry.chat_id, entry.outcome + ". Нажмите снова.")
+            await self._queue_notice(entry.chat_id, STATE_BUSY if isinstance(exc, StateLockBusy)
+                                     else entry.outcome + ". Нажмите снова.")
+            if isinstance(exc, StateLockBusy) and entry.source:
+                await self._answer_callback_query(str(entry.source.get("id") or ""), STATE_BUSY)
             log.exception("Queue launch failed")
             return False
         finally:
@@ -352,6 +357,7 @@ class TelegramCommandQueue:
             await self._queue_notice(chat, f"⏸ Очередь профиля {profile} на паузе: {reason}",
                                      reply_markup={"inline_keyboard": [[{"text": "Продолжить очередь", "callback_data": f"queue:resume:{resume_token}"}]]})
 
+    @nonblocking_state_locks
     async def _drain_queue(self, profile):
         try:
             while not self._queue_stopping and not (getattr(self, "_stop_event", None) and self._stop_event.is_set()):
@@ -379,7 +385,13 @@ class TelegramCommandQueue:
                     await self._queue_notice(entry.chat_id, f"{entry.label}: срок ожидания истёк (TTL), нажмите снова.")
                     await self._queue_markup(entry, restore=True)
                     continue
-                reason = self._queue_guard_reason(profile)
+                reason = await asyncio.to_thread(self._queue_guard_reason, profile)
+                # Admission/removal/shutdown can run while the read worker
+                # waits for its lock. Revalidate the head before consuming it.
+                if self._commands_stopping() or self._active_commands.get(profile) or profile in self._queue_launching:
+                    return
+                if not waiting or waiting[0] is not entry or profile in self._queue_paused or profile in self._queue_stop_reasons:
+                    continue
                 if reason:
                     await self._pause_queue(profile, reason)
                     return

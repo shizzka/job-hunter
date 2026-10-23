@@ -1,10 +1,12 @@
 """Report parity, incremental I/O and reproducible large-file timings."""
 from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 import json
 import os
 import time
 from unittest.mock import Mock
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +24,71 @@ def write(path, rows, mode='w'):
 def decision(**extra):
     return {'event': 'decision', 'created_at': '2026-10-23T08:00:00+00:00',
             'run_id': 'r', 'vacancy_id': '1', 'source': 'hh', 'decision': 'applied_auto', **extra}
+
+
+@pytest.fixture
+def small_cache(monkeypatch):
+    monkeypatch.setattr(cache, '_journals', OrderedDict())
+    monkeypatch.setattr(cache, '_reports', OrderedDict())
+    monkeypatch.setattr(cache, 'MAX_CACHED_ROWS', 4)
+
+
+def test_row_budget_evicts_lru_and_preserves_report_output(tmp_path, small_cache):
+    paths = [tmp_path / str(n) / 'analytics_events.jsonl' for n in range(3)]
+    expected = []
+    for n, path in enumerate(paths):
+        path.parent.mkdir()
+        write(path, [decision(vacancy_id=str(n), resume_variant='test'),
+                     decision(vacancy_id=str(n), decision='apply_uncertain' if n else 'manual_questions')])
+        expected.append(analytics._summarize(events_file=str(path), all_time=True))
+    for path, report in zip(paths[:2], expected):
+        assert analytics.summarize(events_file=str(path), all_time=True) == report
+    first = cache.journal(paths[0])
+    first.read(paths[0])  # Refresh LRU even if the file has not changed.
+    assert analytics.summarize(events_file=str(paths[2]), all_time=True) == expected[2]
+    assert (str(paths[0]), 'summary') in cache._journals
+    assert (str(paths[1]), 'summary') not in cache._journals
+    assert sum(len(j.rows) + len(j.tail) for j in cache._journals.values()) == 4
+    cache._reports.clear()  # Require recomputation from the reloaded projection.
+    for path, report in zip(paths, expected):
+        assert analytics.summarize(events_file=str(path), all_time=True) == report
+        assert sum(len(j.rows) + len(j.tail) for j in cache._journals.values()) <= 4
+
+
+def test_append_and_partial_tail_obey_budget_without_changing_snapshots(tmp_path, small_cache):
+    path = tmp_path / 'analytics_events.jsonl'
+    write(path, [decision(vacancy_id=str(n)) for n in range(4)])
+    index = cache.journal(path)
+    snapshot, _ = index.read(path)
+    with path.open('a') as stream:
+        stream.write(json.dumps(decision(vacancy_id='tail')))  # Valid incomplete line counts too.
+    rows, _ = index.read(path)
+    assert len(snapshot) == 4 and len(rows) == 5
+    assert not cache._journals  # One oversized journal is never retained.
+    assert analytics.summarize(events_file=str(path), all_time=True) == analytics._summarize(events_file=str(path), all_time=True)
+    assert not cache._journals
+
+
+def test_idle_summary_ownership_and_reports_expire_while_active_cache_survives(tmp_path, monkeypatch, small_cache):
+    now = [100.0]
+    monkeypatch.setattr(cache, 'time', SimpleNamespace(monotonic=lambda: now[0], time=time.time))
+    path = tmp_path / 'idle.jsonl'
+    write(path, [decision()])
+    for tag in ('summary', ('ownership', True)):
+        cache.journal(path, tag=tag).read(path)
+    cache.memo('idle', lambda: ('old', None))
+    now[0] += cache.IDLE_SECONDS - 1
+    active = tmp_path / 'active.jsonl'
+    write(active, [decision()])
+    current = cache.journal(active)
+    current.read(active)
+    cache.memo('active', lambda: ('active', None))
+    assert len(cache._journals) == 3
+    now[0] += 1
+    assert cache.memo('active', lambda: pytest.fail('Active report recomputed')) == 'active'
+    assert list(cache._journals.values()) == [current]
+    assert list(cache._reports) == ['active']
+    assert analytics.summarize(events_file=str(path), all_time=True) == analytics._summarize(events_file=str(path), all_time=True)
 
 
 def test_summary_cache_is_instant_copied_and_scoped(tmp_path, monkeypatch):

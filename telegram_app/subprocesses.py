@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 
 import runtime_control
+from state_store.locking import nonblocking_state_locks
 
 
 @dataclass
@@ -138,6 +139,7 @@ class TelegramSubprocessManager:
             self._clear_active_command(command.profile_name)
             return None
 
+        @nonblocking_state_locks
         async def run_if_open():
             if hasattr(self, "_commands_stopping") and self._commands_stopping():
                 self._clear_active_command(command.profile_name)

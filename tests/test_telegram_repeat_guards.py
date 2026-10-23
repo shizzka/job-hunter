@@ -13,6 +13,58 @@ from tests.test_telegram_menu_routing import menu_bot
 from tests.test_telegram_command_queue import real_bot, source, spin_until
 
 
+def test_claim_timestamps_expire_and_legacy_claims_get_full_grace(menu_bot, monkeypatch):
+    from state_store import bot_state
+    bot, _ = menu_bot
+    now = [10_000_000.0]
+    clock = SimpleNamespace(time=lambda: now[0])
+    monkeypatch.setattr(bot_state, 'time', clock)
+    monkeypatch.setattr(guards, 'time', clock)
+    monkeypatch.setattr(telegram_bot.telegram_access, 'resolve_user',
+                        lambda uid: {'user_id': uid, 'role': 'user', 'profile': 'qa'})
+    bot._save_state({'callback_claims': {'legacy': True, 'old': now[0] - bot_state.CALLBACK_CLAIM_TTL - 1,
+                                        'recent': now[0] - 10}})
+    assert bot._load_state()['callback_claims'] == {'legacy': now[0], 'recent': now[0] - 10}
+    actions = []
+    @guards.callback_guard
+    async def act(self, callback):
+        actions.append(callback['_guard_claim'])
+    callback = {'id': 'a', 'data': 'gs:confirm', 'from': {'id': 42},
+                'message': {'message_id': 7, 'chat': {'id': 42, 'type': 'private'}}}
+    monkeypatch.setattr(bot, '_answer_callback_query', AsyncMock())
+    asyncio.run(act(bot, callback))
+    claim = actions[0]
+    created = now[0]
+    assert bot._load_state()['callback_claims'][claim] == created
+    now[0] += bot_state.CALLBACK_CLAIM_TTL - 1
+    asyncio.run(act(bot, callback))
+    assert len(actions) == 1
+    assert bot._load_state()['callback_claims']['legacy'] == created
+    now[0] += 2
+    asyncio.run(act(bot, callback))
+    assert actions == [claim, claim]
+    assert bot._load_state()['callback_claims'] == {claim: now[0]}
+
+
+def test_every_bot_state_write_prunes_claims_and_persists_legacy_migration(tmp_path, monkeypatch):
+    from state_store import bot_state
+    from state_store.json_store import atomic_write_json
+    path = tmp_path / 'state.json'
+    atomic_write_json(path, {'callback_claims': {'legacy': True}, 'last_update_id': 7})
+    now = [10_000_000.0]
+    monkeypatch.setattr(bot_state, 'time', SimpleNamespace(time=lambda: now[0]))
+    store = bot_state.BotStateStore(path)
+    store.update(lambda state: state.update(last_update_id=8))
+    assert store.load()['callback_claims'] == {'legacy': now[0]}
+    now[0] += bot_state.CALLBACK_CLAIM_TTL - 1
+    store = bot_state.BotStateStore(path)  # Restart must not renew the grace period.
+    store.update(lambda state: state.update(last_update_id=9))
+    assert store.load()['callback_claims'] == {'legacy': now[0] - bot_state.CALLBACK_CLAIM_TTL + 1}
+    now[0] += 2
+    store.update(lambda state: state.update(last_update_id=10))
+    assert store.load() == {'callback_claims': {}, 'last_update_id': 10}
+
+
 @pytest.mark.parametrize('command', sorted(guards.READS))
 def test_reads_are_single_flight_cool_down_and_are_per_user_command(monkeypatch, command):
     clock = [100.0]

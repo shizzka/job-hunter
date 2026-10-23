@@ -27,6 +27,23 @@ _resume_input_versions _direction_selection search_query _search_query query'''.
 _lock = threading.RLock()
 _journals = OrderedDict()
 _reports = OrderedDict()
+# About two 110k-row journals. Set to zero to disable journal retention.
+MAX_CACHED_ROWS = max(0, int(os.environ.get("ANALYTICS_CACHE_MAX_ROWS", "250000")))
+IDLE_SECONDS = 30 * 60
+
+
+def _prune(now):
+    """Called under _lock; eviction drops cache ownership, never reader snapshots."""
+    for key, item in list(_journals.items()):
+        if now - item.last_used >= IDLE_SECONDS:
+            del _journals[key]
+    rows = sum(len(item.rows) + len(item.tail) for item in _journals.values())
+    while _journals and (rows > MAX_CACHED_ROWS or len(_journals) > 8):
+        _, item = _journals.popitem(last=False)
+        rows -= len(item.rows) + len(item.tail)
+    for key, entry in list(_reports.items()):
+        if now - entry[4] >= IDLE_SECONDS:
+            del _reports[key]
 
 
 def stamp(path):
@@ -64,8 +81,22 @@ class Journal:
         self.offset = 0
         self.rows = []
         self.bytes_read = 0
+        self.last_used = time.monotonic()
+        self.cache_key = None
 
     def read(self, path):
+        result = self._read(path)
+        with _lock:
+            now = time.monotonic()
+            # A concurrent read may already have evicted this item. Do not
+            # resurrect it or replace a newer journal for the same path.
+            if _journals.get(self.cache_key) is self:
+                self.last_used = now
+                _journals.move_to_end(self.cache_key)
+            _prune(now)
+        return result
+
+    def _read(self, path):
         with self.lock:
             current = stamp(path)
             if current == self.version:
@@ -116,19 +147,25 @@ class Journal:
 def journal(path, *, tag="summary", projection=project, line_filter=None):
     key = (os.fspath(Path(path).absolute()), tag)
     with _lock:
+        now = time.monotonic()
+        _prune(now)
         item = _journals.pop(key, None) or Journal(projection, line_filter)
+        item.cache_key = key
+        item.last_used = now
         _journals[key] = item
-        while len(_journals) > 8:
-            _journals.popitem(last=False)
+        _prune(now)
     return item
 
 
 def memo(key, compute, *, now=None):
     """Coalesce one report key, without serializing unrelated files/users."""
     with _lock:
+        touched = time.monotonic()
+        _prune(touched)
         entry = _reports.pop(key, None)
         if entry is None:
-            entry = [threading.RLock(), None, None, False]
+            entry = [threading.RLock(), None, None, False, touched]
+        entry[4] = touched
         _reports[key] = entry
         while len(_reports) > 32:
             _reports.popitem(last=False)
@@ -136,5 +173,5 @@ def memo(key, compute, *, now=None):
         current = time.time() if now is None else now
         if not entry[3] or entry[2] is not None and current >= entry[2]:
             value, expiry = compute()
-            entry[1:] = [value, expiry, True]
+            entry[1:4] = [value, expiry, True]
         return copy.deepcopy(entry[1])

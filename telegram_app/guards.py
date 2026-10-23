@@ -8,10 +8,13 @@ import time
 from contextvars import ContextVar
 
 import telegram_access
+from state_store.bot_state import prune_callback_claims
+from state_store.locking import nonblocking_state_locks
 
 _read_workers = ContextVar("read_workers", default=None)
 
 
+@nonblocking_state_locks
 async def read_thread(fn, *args, **kwargs):
     task = asyncio.create_task(asyncio.to_thread(fn, *args, **kwargs))
     workers = _read_workers.get()
@@ -135,9 +138,10 @@ def callback_guard(fn):
         accepted = False
         def mutate(state):
             nonlocal accepted
+            prune_callback_claims(state)
             claims = state.setdefault("callback_claims", {})
             if claim not in claims:
-                claims[claim] = True
+                claims[claim] = time.time()
                 accepted = True
         self._update_state(mutate)
         if not accepted:

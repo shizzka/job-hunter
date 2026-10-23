@@ -1,5 +1,6 @@
 """Queue admission and replay contracts, without Telegram or HH network calls."""
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -80,6 +81,30 @@ async def settle(bot):
             return
         await asyncio.gather(*tasks)
     raise AssertionError("Queue drainer did not settle")
+
+
+def test_head_removed_while_guard_worker_waits_does_not_consume_next_entry(monkeypatch):
+    async def scenario():
+        bot = Bot()
+        first, second = entry(bot, label='first'), entry(bot, label='second')
+        first.ready = second.ready = True
+        bot._command_queues['qa'] = [first, second]
+        entered, finish = threading.Event(), threading.Event()
+        def guard(profile):
+            entered.set()
+            assert finish.wait(2)
+            return ''
+        monkeypatch.setattr(bot, '_queue_guard_reason', guard)
+        bot._schedule_queue('qa')
+        try:
+            await spin_until(entered.is_set)
+            bot._command_queues['qa'].remove(first)
+        finally:
+            finish.set()
+        await settle(bot)
+        assert bot.started == [('qa', 'second', True)]
+        assert not bot._command_queues['qa']
+    asyncio.run(scenario())
 
 
 def test_fifo_and_profile_independence_preserve_manual_duplicates():
