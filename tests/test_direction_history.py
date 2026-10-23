@@ -336,11 +336,11 @@ def test_history_screens_name_active_direction_and_offer_totals(account, monkeyp
     text = "\n".join(c.args[1] for c in bot._send_text.await_args_list)
     buttons = str([c.kwargs for c in bot._send_text.await_args_list])
     assert "QA Engineer" in text and "Электромонтажник" not in text
-    assert "Все направления" in buttons and "Направление не указано" in buttons
+    assert "Все направления" in buttons and ("Направление не указано" if command == "/seen_reset" else "Отклики без направления") in buttons
     if command != "/seen_reset":
         bot._send_text.reset_mock()
         asyncio.run(bot._dispatch(1, principal, command, "all"))
-        assert "все направления" in "\n".join(c.args[1] for c in bot._send_text.await_args_list)
+        assert "все направления" in "\n".join(c.args[1] for c in bot._send_text.await_args_list).lower()
 
 
 def test_single_direction_with_identified_history_keeps_counts(tmp_path):

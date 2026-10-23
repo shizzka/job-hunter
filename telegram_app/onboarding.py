@@ -16,7 +16,7 @@ ACTIONS = {
     "check": "/getting_started",
 }
 MODE_LABELS = {
-    "confirm": "на подтверждение — бот присылает вакансию, отклик после вашей кнопки",
+    "confirm": "спрашивать меня — бот присылает вакансию и откликается только после вашего «да»",
     "preview": "только показ — бот присылает вакансии без кнопки отклика",
     "auto": "автоматически — бот откликается сам по подходящим вакансиям",
 }
@@ -40,8 +40,8 @@ def build(*, hh_ok: bool, resumes: list[dict], directions: list[dict], active: d
         rows.append([("🔐 Войти в hh.ru", "auth")])
 
     if resumes:
-        shown = ", ".join(resume_titles[:4]) + ("…" if len(resume_titles) > 4 else "")
-        lines.append(f"✅ 2. Резюме на hh.ru: {len(resumes)} ({shown})")
+        shown = ", ".join(f"«{title}»" for title in resume_titles)
+        lines.append(f"✅ 2. Резюме на hh.ru: {len(resumes)} — {shown}")
     else:
         lines.append("⬜️ 2. Резюме на hh.ru — создайте их на сайте hh.ru (по одному на каждую профессию, "
                      "которую ищете), затем нажмите «Проверить резюме».")
@@ -50,25 +50,28 @@ def build(*, hh_ok: bool, resumes: list[dict], directions: list[dict], active: d
 
     if active:
         others = len(directions) - 1
-        lines.append(f"✅ 3. Что ищу: {active.get('title', '')}" + (f" (и ещё {others})" if others > 0 else ""))
-        rows.append([("🧭 Мои направления", "dirs")])
+        lines.append(f"✅ 3. Направления: {active.get('title', '')}" + (f" (и ещё {others})" if others > 0 else ""))
+        rows.append([("🧭 Направления", "dirs")])
     else:
-        lines.append("⬜️ 3. Что ищу — выберите резюме, бот сам предложит запросы и как вас представить; "
+        lines.append("⬜️ 3. Направления — выберите резюме, бот сам предложит запросы и как вас представить; "
                      "вы проверите и сохраните.")
         if resumes:
             rows.append([("➕ Создать направление", "new")])
 
-    lines.append(f"{mark(bool(mode))} 4. Как откликаться: " + MODE_LABELS.get(mode, "не выбрано"))
-    rows.append([(("✅ " if mode == value else "") + label, value)
-                 for label, value in [("✋ На подтверждение", "confirm"), ("🤖 Автоматически", "auto")]])
+    scope = f" по направлению «{active.get('title', '')}»" if active else ""
+    lines.append(f"{mark(bool(mode))} 4. Отклики{scope}: " + MODE_LABELS.get(mode, "не выбрано"))
+    rows.append([(("✓ " if mode == value else "") + label, value)
+                 for label, value in [("✋ Спрашивать меня перед откликом", "confirm"), ("🤖 Откликаться автоматически", "auto")]])
 
     ready = all(steps_ok[:4])
     lines.append(f"{mark(has_search)} 5. Первый поиск" + ("" if has_search else " — когда шаги 1–4 готовы."))
     if ready:
-        rows.append([("🔎 Найти вакансии", "search")])
+        if mode == "auto":
+            lines.append("При поиске бот сразу откликнется на подходящие вакансии.")
+        rows.append([("🔎 Найти вакансии сейчас", "search")])
 
     complete = all(steps_ok)
-    lines += ["", "Всё готово! Дальше бот присылает вакансии сам; эта кнопка — всегда в главном меню."
+    lines += ["", "Всё готово! Дальше бот присылает вакансии сам. Этот экран открывается кнопкой «С чего начать»."
               if complete else "Нажмите кнопку под нужным шагом. Вернуться к списку — «🚀 С чего начать»."]
-    rows.append([("🔄 Обновить", "check")])
+    rows.append([("🔄 Проверить шаги заново", "check")])
     return str("\n".join(lines)), rows, complete

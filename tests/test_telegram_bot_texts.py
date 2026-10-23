@@ -31,13 +31,13 @@ def test_button_labels_are_russian():
     assert BUTTON_DIAGNOSTICS == "🩺 Диагностика"
     assert BUTTON_BACKFILL == "🗃 Пересчёт аналитики"
     assert BUTTON_AI_LIMITS == "🎁 Лимиты ИИ"
-    assert BUTTON_HH_AUTH == "🔐 Вход HH"
-    assert BUTTON_HH_RESPONSES == "📨 Отклики HH"
+    assert BUTTON_HH_AUTH == "🔐 Вход в hh.ru"
+    assert BUTTON_HH_RESPONSES == "📨 Отклики на hh.ru"
     assert BUTTON_CHAT_AI == "🤖 Ответ ИИ в чат"
     assert BUTTON_DAEMON_ON == "🟢 Фоновый режим: вкл"
     assert BUTTON_DAEMON_OFF == "⛔ Фоновый режим: выкл"
     assert BUTTON_REPEAT_OFF == "🛑 Повтор: выкл"
-    assert BUTTON_SEARCH_SETTINGS == "🎯 Мой поиск"
+    assert BUTTON_SEARCH_SETTINGS == "🎯 Направления"
     assert BUTTON_SEARCH_USE_DRAFT == "✅ Сохранить предложенное"
 
 
@@ -82,7 +82,7 @@ def test_search_conditions_and_application_modes_are_available_to_regular_user()
         for row in build_reply_markup(ROLE_USER, menu=MENU_APPLICATION_MODE)["keyboard"]
         for button in row
     ]
-    assert {"👀 Только показать", "✋ Подтверждать", "⚡ Автоотклик"} <= set(mode_labels)
+    assert {"👀 Только показать", "✋ Спрашивать меня", "⚡ Автоматически"} <= set(mode_labels)
 
     experience_labels = [
         button["text"]
@@ -274,7 +274,7 @@ def test_chat_ai_command_is_available_to_admin_menu():
     assert ADMIN_BUTTON_MAP[BUTTON_DIAGNOSTICS] == "/diagnostics"
     assert "/chat_ai" not in ADMIN_ONLY_COMMANDS
     assert "/chat_ai" in ACTIVE_CONFLICT_COMMANDS
-    assert "/chat_ai" in build_help_text(ROLE_ADMIN, profile_name="qa")
+    assert "/chat_ai" in build_help_text(ROLE_ADMIN, profile_name="qa", help_section=True)
 
 
 def test_chat_ai_button_is_visible_in_admin_responses_menu():
@@ -455,3 +455,32 @@ def test_chat_ai_candidate_list_explains_counts_and_skips():
         "candidates": [{"chat_id": "1", "message_id": "2", "title": "QA", "company": "A", "question": "Опыт?"}]})
     assert text.startswith("Нашёл чатов для ответа: 1 (просмотрено 14 из 60 последних чатов)")
     assert "отказы и «свяжемся» — 4" in text and "отклики другого профиля — 2" in text
+
+
+def test_renamed_buttons_keep_their_commands_and_old_keyboard_shortcuts():
+    import telegram_bot_ui as ui
+
+    shortcuts = [
+        ("🔎 Поиск", ui.BUTTON_SEARCH, "/search"),
+        ("🎯 Мой поиск", ui.BUTTON_SEARCH_SETTINGS, "/search_settings"),
+        ("🧭 Что ищу", ui.BUTTON_DIRECTIONS, "/directions"),
+        ("🔐 Мой hh", ui.BUTTON_HH, "/menu_hh"),
+        ("📊 Мониторинг", ui.BUTTON_MENU_MONITOR, "/menu_monitor"),
+        ("📨 Отклики HH", ui.BUTTON_HH_RESPONSES, "/hh_responses"),
+        ("✋ Подтверждать", ui.BUTTON_APPLICATION_CONFIRM, "/search_application_confirm"),
+        ("⚡ Автоотклик", ui.BUTTON_APPLICATION_AUTO, "/search_application_auto"),
+    ]
+    for role in (ui.ROLE_USER, ui.ROLE_ADMIN):
+        for old, new, command in shortcuts:
+            assert ui._resolve_message_command(new, role) == (command, "")
+            assert ui._resolve_message_command(old, role) == (command, "")
+
+
+def test_help_has_troubleshooting_and_start_uses_buttons():
+    start = build_help_text(ROLE_USER, profile_name="qa")
+    help_text = build_help_text(ROLE_USER, profile_name="qa", help_section=True)
+    assert "Если что-то не работает" not in start
+    assert "Если что-то не работает" in help_text
+    assert "Роль:" not in start and "Роль:" not in help_text
+    assert "/" not in start.replace("hh.ru", "")
+    assert "Состояние → Журналы → Подробный" in help_text

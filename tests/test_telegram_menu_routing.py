@@ -254,8 +254,8 @@ def test_hh_response_command_uses_saved_direction_counts_even_if_counter_fails(m
     asyncio.run(bot._dispatch(42, principal, '/hh_responses', ''))
     text = bot._send_text.call_args.args[1]
     assert 'QA Engineer' in text and '• Активные: 1' in text and '• Архив: 2' in text
-    assert ('Весь аккаунт HH: всего 33' in text) != fail_counter
-    assert ('Общий счётчик HH сейчас недоступен' in text) == fail_counter
+    assert ('Весь аккаунт hh.ru: всего 33' in text) != fail_counter
+    assert ('Общее число откликов с hh.ru сейчас не загрузилось' in text) == fail_counter
 
 
 def test_chat_list_rechecks_direction_after_browser_finishes(menu_bot, tmp_path, monkeypatch):

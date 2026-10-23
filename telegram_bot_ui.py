@@ -26,17 +26,17 @@ BUTTON_MARKET_RESEARCH = "📈 Рынок вакансий"
 BUTTON_SEEN_RESET = "🧹 Сброс просмотренных"
 BUTTON_RESEARCH = "🔬 Отказы и конверсии"
 BUTTON_STATS = "📈 Статистика"
-BUTTON_RUNS = "🕓 Прогоны"
+BUTTON_RUNS = "🕓 Поиски"
 BUTTON_LOG = "📊 Последний запуск"
 BUTTON_RAW_LOG = "🧾 Подробный"
 BUTTON_CHAT_LOG = "💬 Лог чатов"
-BUTTON_SEARCH = "🔎 Поиск"
+BUTTON_SEARCH = "🔎 Найти вакансии"
 BUTTON_BLACKLIST = "🚫 Компании"
 BUTTON_BLACKLIST_ADD = "➕ В чёрный список"
 BUTTON_BLACKLIST_REMOVE = "➖ Разрешить компанию"
-BUTTON_SEARCH_SETTINGS = "🎯 Мой поиск"
-BUTTON_DIRECTIONS = "🧭 Что ищу"
-BUTTON_REVIEW = "📋 На рассмотрении"
+BUTTON_SEARCH_SETTINGS = "🎯 Направления"
+BUTTON_DIRECTIONS = "🧭 Направления"
+BUTTON_REVIEW = "📋 Вакансии на проверку"
 BUTTON_SEARCH_EDIT = "✏️ Изменить запросы"
 BUTTON_SEARCH_SUGGEST = "✨ Предложить ИИ"
 BUTTON_SEARCH_USE_DRAFT = "✅ Сохранить предложенное"
@@ -54,11 +54,11 @@ BUTTON_EXPERIENCE_1_3 = "1–3 года"
 BUTTON_EXPERIENCE_3_6 = "3–6 лет"
 BUTTON_EXPERIENCE_6_PLUS = "6+ лет"
 BUTTON_APPLICATION_PREVIEW = "👀 Только показать"
-BUTTON_APPLICATION_CONFIRM = "✋ Подтверждать"
-BUTTON_APPLICATION_AUTO = "⚡ Автоотклик"
+BUTTON_APPLICATION_CONFIRM = "✋ Спрашивать меня"
+BUTTON_APPLICATION_AUTO = "⚡ Автоматически"
 BUTTON_DRYRUN = "🧪 Тестовый прогон"
-BUTTON_CHECK = "📬 Инвайты"
-BUTTON_HH_RESPONSES = "📨 Отклики HH"
+BUTTON_CHECK = "📬 Приглашения"
+BUTTON_HH_RESPONSES = "📨 Отклики на hh.ru"
 BUTTON_DIGEST = "📰 Дайджест"
 BUTTON_ANALYZE = "🧠 Анализ резюме"
 BUTTON_BACKFILL = "🗃 Пересчёт аналитики"
@@ -69,8 +69,8 @@ BUTTON_AI_LIMITS = "🎁 Лимиты ИИ"
 BUTTON_CLIENTS = "🧑‍💼 Клиенты"
 BUTTON_CLIENT_START = "🆕 Стать клиентом"
 BUTTON_CLIENT_STATUS = "📄 Моя заявка"
-BUTTON_HH_AUTH = "🔐 Вход HH"
-BUTTON_HH_RESUMES = "🧾 HH резюме"
+BUTTON_HH_AUTH = "🔐 Вход в hh.ru"
+BUTTON_HH_RESUMES = "🧾 Резюме на hh.ru"
 BUTTON_DAEMON_ON = "🟢 Фоновый режим: вкл"
 BUTTON_DAEMON_OFF = "⛔ Фоновый режим: выкл"
 BUTTON_SCHEDULE = "⏰ Расписание"
@@ -86,9 +86,9 @@ BUTTON_MENU = "🏠 Главное"
 BUTTON_BACK = "◀ Назад"
 BUTTON_BUSY = "⏳ Выполняется..."
 BUTTON_CANCEL_ACTIVE = "⏹ Остановить"
-BUTTON_MENU_MONITOR = "📊 Мониторинг"
+BUTTON_MENU_MONITOR = "📊 Состояние"
 BUTTON_RESPONSES = "📋 Отклики"
-BUTTON_HH = "🔐 Мой hh"
+BUTTON_HH = "🔐 hh.ru и резюме"
 BUTTON_LOGS = "📜 Журналы"
 BUTTON_ZERO_APPLY = "❓ Почему не было откликов"
 BUTTON_MENU_RUN = "🚀 Запуск"
@@ -311,6 +311,20 @@ GUEST_BUTTON_MAP = {
     BUTTON_HELP: "/start",
 }
 LEGACY_BUTTON_MAP = {
+    '🔎 Поиск': '/search',
+    '🎯 Мой поиск': '/search_settings',
+    '🧭 Что ищу': '/directions',
+    '📊 Мониторинг': '/menu_monitor',
+    '🔐 Мой hh': '/menu_hh',
+    '📨 Отклики HH': '/hh_responses',
+    '🔐 Вход HH': '/hh_auth',
+    '🧾 HH резюме': '/hh_resumes',
+    '✋ Подтверждать': '/search_application_confirm',
+    '⚡ Автоотклик': '/search_application_auto',
+    '📬 Инвайты': '/check',
+    '📋 На рассмотрении': '/review',
+    '🕓 Прогоны': '/runs',
+
     "🧪 Тест": "/llm_test",
     "🧾 Raw log": "/raw_log",
     "🟢 Демон: вкл": "/daemon_on",
@@ -477,7 +491,7 @@ def _pretty_pid(state: dict) -> str:
 def _pretty_profile_name(name: str) -> str:
     pretty = {"qa": "QA", "electrician": "Электрик", "default": "Основной"}.get(name, name)
     title = _active_direction_title(name)
-    return f"{pretty} · что ищу: {title}" if title else pretty
+    return f"{pretty}, ищу «{title}»" if title else pretty
 
 
 def _active_direction_title(name: str) -> str:
@@ -509,7 +523,7 @@ def _pretty_runtime_action(action: object) -> str:
         "bot_poll_error": "Ошибка опроса Telegram",
         "daemon_stop": "Остановка демона",
         "search_done": "Поиск завершён",
-        "no_invitations": "Инвайтов нет",
+        "no_invitations": "Приглашений нет",
     }
     text = str(action or "").strip()
     return mapping.get(text, _pretty_value(text))
@@ -880,7 +894,7 @@ def build_clients_inline_markup(clients: list[dict]) -> dict | None:
             continue
         if status == telegram_clients.STATUS_APPROVED:
             rows.append([
-                {"text": f"🔐 Вход HH {user_id}", "callback_data": _callback_data(CALLBACK_CLIENT_HH_AUTH, user_id)},
+                {"text": f"🔐 Вход в hh.ru {user_id}", "callback_data": _callback_data(CALLBACK_CLIENT_HH_AUTH, user_id)},
             ])
     return {"inline_keyboard": rows} if rows else None
 
@@ -955,34 +969,31 @@ def build_busy_status_text(
     return "\n".join(lines)
 
 
-def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default") -> str:
+def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default", help_section: bool = False) -> str:
     lines = [
-        "🤖 Job Hunter",
+        "Job Hunter ищет работу на hh.ru и откликается за вас.",
+        f"Сейчас: профиль {_pretty_profile_name(profile_name)}.",
         "",
-        f"👤 Роль: {_role_title(role)}",
-        f"📁 Профиль: {_pretty_profile_name(profile_name)}",
-        "",
-        "⚡ Основные действия доступны через кнопки меню.",
-        "• «Мой поиск»: запросы, условия, компании, режим откликов и расписание",
-        "• «Направления»: выбор резюме, черновики запросов и варианты single/A/B — /directions",
-        "• «Мониторинг»: статус, статистика, прогоны, инвайты",
-        "• Сводка запуска: /log или /log run_id; подробный журнал: /raw_log",
-        "• Счётчик HH: кнопка «Отклики HH» или команда /hh_responses",
-        "• Поиск и тестовый прогон — в главном меню",
-        "• «Мой hh»: вход, резюме и ИИ-анализ",
-        "• «Отклики»: рассмотрение, отклики HH, анкеты и ответ ИИ в чат",
-        "• Ответ ИИ в HH-чат: кнопка открывает список последних входящих; /chat_ai ссылка_на_чат или chat_id — ручной ввод",
-        "• «Мой поиск» → «Расписание»: периодические запуски",
+        "Кнопки внизу:",
+        "• Найти вакансии — поиск прямо сейчас",
+        "• Тестовый прогон — в главном меню",
+        "• Отклики — вакансии на проверку, ваши отклики, анкеты, ответы работодателям",
+        "• Направления — что ищу, резюме, город, зарплата, расписание",
+        "• hh.ru и резюме — вход на hh.ru и ваши резюме",
+        "• Обо мне — что бот знает о вас",
+        "• Состояние — работает ли бот, отклики, приглашения",
+        "• С чего начать — настройка по шагам",
     ]
+    if help_section:
+        lines += ["", "Если что-то не работает:",
+                  "• Состояние → Последний запуск — что произошло при поиске (/log)",
+                  "• Состояние → Журналы → Подробный — история откликов (/raw_log)",
+                  "• Отклики → Ответ ИИ в чат — ответы работодателям (/chat_ai)"]
+        if role == ROLE_ADMIN:
+            lines += ["• Подробный журнал: /raw_log; сводка поиска: /log или /log run_id",
+                      "• Ответ в конкретный чат: /chat_ai ссылка_на_чат или chat_id"]
     if role == ROLE_ADMIN:
-        lines.extend([
-            "",
-            "🔧 Раздел «Админ»: профили, пользователи, клиенты и лимиты ИИ.",
-        ])
-    lines.extend([
-        "",
-        "💡 Слеш-команды можно не помнить: достаточно кнопок меню.",
-    ])
+        lines += ["", f"Роль: {_role_title(role)}", "Раздел «Админ»: профили, пользователи, клиенты и лимиты ИИ."]
     return "\n".join(lines)
 
 
@@ -991,17 +1002,17 @@ def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
     profile_title = _pretty_profile_name(profile_name)
     if section == MENU_MONITOR:
         return "\n".join([
-            f"📊 Мониторинг профиля {profile_title}",
+            f"Состояние · профиль {profile_title}",
             "",
-            "• Статус процесса и расписания",
-            "• Статистика откликов и прогоны",
-            "• Проверка инвайтов",
-            "• Причина отсутствия откликов и журналы",
+            "• Работает ли бот и когда следующий поиск",
+            "• Сколько откликов и поисков",
+            "• Приглашения от работодателей",
+            "• Почему нет откликов и подробный журнал",
         ])
     if section == MENU_HH:
-        return f"🔐 Мой hh · {profile_title}\nВход HH, выбор, обновление, анализ и сохранение резюме."
+        return f"hh.ru и резюме · профиль {profile_title}\nЗдесь можно войти в hh.ru, выбрать и обновить резюме, попросить ИИ проверить резюме и сохранить его."
     if section == MENU_RESPONSES:
-        return f"📋 Отклики · {profile_title}\nНа рассмотрении, отклики HH, анкеты и ответ ИИ в чат."
+        return f"📋 Отклики · {profile_title}\nВакансии на проверку, отклики на hh.ru, анкеты и ответы работодателям."
     if section == MENU_LOGS:
         return f"📜 Журналы · {profile_title}\nСводка последнего запуска, подробный журнал и лог чатов."
     if section == MENU_COMPANIES:
@@ -1010,21 +1021,21 @@ def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
         return f"⏰ Расписание · {profile_title}\nПовторные запуски: 3 раза в день, раз в день или раз в неделю."
     if section == MENU_SEARCH:
         return "\n".join([
-            f"🎯 Мой поиск · профиль {profile_title}",
+            f"🎯 Направления · профиль {profile_title}",
             "",
             "• Посмотрите и измените ключевые слова",
-            "• Попросите ИИ предложить черновик по резюме",
+            "• Попросите ИИ предложить направление по резюме",
             "• Настройте опыт, зарплату, удалёнку и режим откликов",
             "• Поиск и тестовый прогон доступны в главном меню",
             "• Расписание управляет только этим профилем",
         ])
     if section == MENU_CANDIDATE:
         return "\n".join([
-            f"🧠 Профиль кандидата · {profile_title}",
+            f"Что бот знает о вас · профиль {profile_title}",
             "",
-            "• Подтверждённые факты имеют приоритет над догадками ИИ",
-            "• Интервью строится по этому резюме и направлению поиска",
-            "• Каждый новый факт сохраняется только после вашего подтверждения",
+            "• То, что вы подтвердили, важнее догадок ИИ",
+            "Бот задаёт вопросы по вашему резюме и запоминает ответы.",
+            "• Новый факт сохраняется, только если вы подтвердите",
         ])
     if section == MENU_ADMIN:
         return "\n".join([
@@ -1056,18 +1067,16 @@ def build_hh_resumes_text(profile_name: str, resumes: list[dict]) -> str:
     title = _pretty_profile_name(profile_name)
     if not resumes:
         return "\n".join([
-            f"🧾 HH резюме профиля {title}",
+            f"🧾 Резюме на hh.ru профиля {title}",
             "",
-            "Пока ничего не захвачено.",
-            "Сначала запустите вход в HH.",
+            "Пока нет резюме.",
+            "Сначала нажмите «Вход в hh.ru».",
         ])
-    lines = [f"🧾 HH резюме профиля {title}"]
+    lines = [f"🧾 Резюме на hh.ru профиля {title}"]
     for idx, item in enumerate(resumes, start=1):
         lines.extend([
             "",
-            f"{idx}. {item.get('title') or item.get('id') or 'резюме'}",
-            f"• ID: {item.get('id') or '—'}",
-            f"• Файл: {item.get('path') or '—'}",
+            f"{idx}. {item.get('title') or 'Резюме без названия'}",
         ])
     return "\n".join(lines)
 
@@ -1113,7 +1122,7 @@ def build_hh_auth_result_text(result: dict) -> str:
     if result.get("imported_resumes"):
         lines.append(f"Захвачено резюме: {result.get('count', 0)}")
     if primary:
-        lines.append(f"Основное резюме: {primary.get('title') or primary.get('id') or '—'}")
+        lines.append(f"Основное резюме: {primary.get('title') or 'Резюме без названия'}")
     return "\n".join(lines)
 
 def _client_status_label(status: str) -> str:
@@ -1198,7 +1207,7 @@ def _error_excerpt(text: str, *, max_lines: int = 8, max_chars: int = 900) -> st
 
 def build_hh_auth_admin_text(result: dict, *, client: dict, debug_log_path: str = "") -> str:
     lines = [
-        f"🔐 Вход HH клиента {_client_display_name(client)}",
+        f"🔐 Вход в hh.ru клиента {_client_display_name(client)}",
         "",
         f"• Telegram-пользователь: {client.get('user_id') or '—'}",
         f"• Профиль: {result.get('profile_name') or client.get('profile_name') or '—'}",
@@ -1226,7 +1235,7 @@ def build_hh_auth_admin_text(result: dict, *, client: dict, debug_log_path: str 
         if result.get("imported_resumes"):
             lines.append(f"• Захвачено резюме: {result.get('count', 0)}")
             if primary:
-                lines.append(f"• Основное резюме: {primary.get('title') or primary.get('id') or '—'}")
+                lines.append(f"• Основное резюме: {primary.get('title') or 'Резюме без названия'}")
             if result.get("resume_file"):
                 lines.append(f"• Файл резюме: {result.get('resume_file')}")
             if result.get("catalog_path"):
@@ -1387,7 +1396,7 @@ def build_schedule_text(
         f"⏰ Расписание профиля {_pretty_profile_name(profile_name)}",
         "",
         f"• Повтор поиска: {_schedule_preset_label(search_interval_min)}",
-        f"• Проверка инвайтов: {_format_interval_label(invite_check_interval_min)}",
+        f"• Приглашения от работодателей: {_format_interval_label(invite_check_interval_min)}",
         f"• Демон: {_status_icon(daemon_state)} {_status_label(daemon_state)}",
         "",
         "💡 Разовый запуск: кнопка «Поиск».",
@@ -1454,7 +1463,7 @@ def build_status_text(
         "",
         "⏰ Расписание:",
         f"• Поиск: {_schedule_preset_label(search_interval_min)}",
-        f"• Инвайты: {_format_interval_label(invite_check_interval_min)}",
+        f"• Приглашения: {_format_interval_label(invite_check_interval_min)}",
     ]
     if active_command:
         lines.append(f"• ⏳ Активная задача: {_pretty_command_label(active_command)}")
@@ -1589,7 +1598,7 @@ def build_stats_text(
         "📬 Отклики и исходы:",
         f"• Отправлено: {sent_total}",
         f"• Отказы: {rejected_total} | Собесы: {interview_total} | Офферы: {offer_total}",
-        f"• Тестовые: {test_task_total} | Инвайты: {invitation_total} | В ожидании: {pending_total}",
+        f"• Тестовые: {test_task_total} | Приглашения: {invitation_total} | В ожидании: {pending_total}",
         (
             f"• Анкеты: {analytics_summary.get('questionnaires', 0)} | "
             f"успешно {analytics_summary.get('questionnaire_successes', 0)} | "
@@ -1880,12 +1889,12 @@ def build_hh_response_count_text(snapshot: dict, *, home_dir: str | None = None)
         if view.directions:
             counts = response_counts(home_dir)
             title = view.title or "направление не выбрано"
-            lines = [f"📨 Отклики HH — {title}", ""]
+            lines = [f"📨 Отклики на hh.ru — {title}", ""]
             for section, label in (("active", "Активные"), ("archived", "Архив")):
                 value = counts[section]
                 if value is None:
-                    lines.append(f"• {label}: ещё не собран" if section == "archived" else
-                                 "• Активные: ещё не собраны")
+                    lines.append(f"• {label}: ещё не загружены" if section == "archived" else
+                                 "• Активные: ещё не загружены")
                     continue
                 number = _format_counter_number(value['selected'])
                 lines.append(f"• {label}: {number}" if value['complete'] else
@@ -1901,15 +1910,15 @@ def build_hh_response_count_text(snapshot: dict, *, home_dir: str | None = None)
                 if value and not value['complete']:
                     number = "не меньше " + number
                 unknown.append(f"{label} — {number}")
-            lines.extend(["", "Направление не указано: " + ", ".join(unknown) + "."])
+            lines.extend(["", "Отклики без направления: " + ", ".join(unknown) + "."])
             if snapshot.get('total') is not None:
-                lines.extend(["", f"Весь аккаунт HH: всего {_format_counter_number(snapshot['total'])}, "
+                lines.extend(["", f"Весь аккаунт hh.ru: всего {_format_counter_number(snapshot['total'])}, "
                               f"удалённые — {_format_counter_number(snapshot.get('deleted'))}.",
                               "Удалённые по направлениям не разделены."])
             return "\n".join(lines)
     profile_name = str(snapshot.get("profile") or "default")
     lines = [
-        f"📨 Отклики HH — {_pretty_profile_name(profile_name)}",
+        f"📨 Отклики на hh.ru — {_pretty_profile_name(profile_name)}",
         "",
         f"Всего за всё время: {_format_counter_number(snapshot.get('total'))}",
         f"• Активные: {_format_counter_number(snapshot.get('active'))}",

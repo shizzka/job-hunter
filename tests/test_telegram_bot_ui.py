@@ -79,17 +79,17 @@ def test_notification_keeps_uncertain_separate_from_unsent(monkeypatch):
 
 # Exact screen membership is the owner-approved tree; overview/list text appears on entry.
 COMMON_SCREENS = {
-    ui.MENU_MAIN: ["🔎 Поиск", "🧪 Тестовый прогон", "📋 Отклики", "🎯 Мой поиск", "🔐 Мой hh", "🧠 Обо мне", "📊 Мониторинг", "🚀 С чего начать", "❓ Помощь"],
-    ui.MENU_RESPONSES: ["📋 На рассмотрении", "📨 Отклики HH", "📝 Анкеты", "🤖 Ответ ИИ в чат"],
-    ui.MENU_SEARCH: ["🧭 Что ищу", "✏️ Изменить запросы", "✨ Предложить ИИ", "✅ Сохранить предложенное", "⚙️ Условия поиска", "🚫 Компании", "🛡 Режим откликов", "⏰ Расписание"],
+    ui.MENU_MAIN: ["🔎 Найти вакансии", "🧪 Тестовый прогон", "📋 Отклики", "🎯 Направления", "🔐 hh.ru и резюме", "🧠 Обо мне", "📊 Состояние", "🚀 С чего начать", "❓ Помощь"],
+    ui.MENU_RESPONSES: ["📋 Вакансии на проверку", "📨 Отклики на hh.ru", "📝 Анкеты", "🤖 Ответ ИИ в чат"],
+    ui.MENU_SEARCH: ["🧭 Направления", "✏️ Изменить запросы", "✨ Предложить ИИ", "✅ Сохранить предложенное", "⚙️ Условия поиска", "🚫 Компании", "🛡 Режим откликов", "⏰ Расписание"],
     ui.MENU_SEARCH_CONDITIONS: ["👤 Опыт", "💰 Зарплата от", "💵 Только с зарплатой", "🏠 Только удалёнка"],
     ui.MENU_EXPERIENCE: ["👤 Любой опыт", "🌱 Без опыта", "1–3 года", "3–6 лет", "6+ лет"],
     ui.MENU_COMPANIES: ["➕ В чёрный список", "➖ Разрешить компанию"],
-    ui.MENU_APPLICATION_MODE: ["👀 Только показать", "✋ Подтверждать", "⚡ Автоотклик"],
+    ui.MENU_APPLICATION_MODE: ["👀 Только показать", "✋ Спрашивать меня", "⚡ Автоматически"],
     ui.MENU_REPEAT: ["🔁 3 раза/день", "📅 1 раз/день", "🗓 1 раз/нед", "🛑 Повтор: выкл"],
-    ui.MENU_HH: ["🔐 Вход HH", "🧾 HH резюме", "🧾 Выбрать резюме", "🔄 Обновить резюме", "🧠 Анализ резюме", "📄 Забрать резюме"],
+    ui.MENU_HH: ["🔐 Вход в hh.ru", "🧾 Резюме на hh.ru", "🧾 Выбрать резюме", "🔄 Обновить резюме", "🧠 Анализ резюме", "📄 Забрать резюме"],
     ui.MENU_CANDIDATE: ["📋 Мои факты", "✨ Уточнить профиль", "➕ Добавить факт", "📥 Загрузить базу фактов"],
-    ui.MENU_MONITOR: ["📊 Статус", "❓ Почему не было откликов", "🕓 Прогоны", "📈 Статистика", "🔬 Отказы и конверсии", "📬 Инвайты", "📜 Журналы"],
+    ui.MENU_MONITOR: ["📊 Статус", "❓ Почему не было откликов", "🕓 Поиски", "📈 Статистика", "🔬 Отказы и конверсии", "📬 Приглашения", "📜 Журналы"],
     ui.MENU_LOGS: ["📊 Последний запуск", "🧾 Подробный", "💬 Лог чатов"],
 }
 ADMIN_SCREENS = {
@@ -209,14 +209,14 @@ def test_response_counts_use_latest_complete_per_filter_and_switch(tmp_path):
     assert counts['active']['complete'] and counts['active']['newer_partial']
     account = {"profile": "synthetic", "active": 20, "archived": 30, "deleted": 7, "total": 57}
     text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
-    assert "Отклики HH — QA Engineer" in text
+    assert "Отклики на hh.ru — QA Engineer" in text
     assert "• Активные: 1" in text and "• Архив: 1" in text
-    assert "Направление не указано: активные — 1, архив — 1" in text
-    assert "Весь аккаунт HH: всего 57, удалённые — 7" in text
+    assert "Отклики без направления: активные — 1, архив — 1" in text
+    assert "Весь аккаунт hh.ru: всего 57, удалённые — 7" in text
     assert "последнее обновление неполное" in text
     directions.set_active_direction(str(tmp_path), "electric")
     text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
-    assert "Отклики HH — Электромонтажник" in text and "• Архив: 2" in text
+    assert "Отклики на hh.ru — Электромонтажник" in text and "• Архив: 2" in text
 
 
 def test_response_counts_missing_partial_archive_and_archive_only(tmp_path):
@@ -225,10 +225,10 @@ def test_response_counts_missing_partial_archive_and_archive_only(tmp_path):
     account = {"total": 12, "deleted": 2}
     write_rows(tmp_path, snapshot("active", "active", []))
     text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
-    assert "Активные: 0" in text and "Архив: ещё не собран" in text
+    assert "Активные: 0" in text and "Архив: ещё не загружены" in text
     write_rows(tmp_path, snapshot("archive", "archived", [111, 111, 222, 999], complete=False))
     text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
-    assert "Активные: ещё не собраны" in text
+    assert "Активные: ещё не загружены" in text
     assert "Архив: не меньше 2 — собрана только часть" in text
     assert "архив — не меньше 1" in text
     write_rows(tmp_path, snapshot("archive", "archived", [111, 111]))
@@ -246,4 +246,4 @@ def test_response_counts_single_direction_and_legacy_profile(tmp_path):
     write_rows(tmp_path, snapshot("a", "active", [111, 111]) + snapshot("b", "archived", [111]))
     text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
     assert "QA Engineer" in text and "• Активные: 2" in text and "• Архив: 1" in text
-    assert "Направление не указано: активные — 0, архив — 0" in text
+    assert "Отклики без направления: активные — 0, архив — 0" in text

@@ -121,7 +121,7 @@ async def test_safe_mode_is_immediate_and_visible(mode_bot, with_direction, role
     await choose(bot, principal, entry, "confirm")
     assert bot._profile("qa").hh.application_mode == "confirm"
     call = bot._send_text.call_args
-    assert "Режим: спрашивать вас перед каждым откликом" in call.args[1]
+    assert "бот сначала присылает вакансию вам и откликается только после вашего «да»" in call.args[1]
     labels = [b["text"] for row in call.kwargs["reply_markup"]["keyboard"] for b in row]
     assert "✅ " + ui.BUTTON_APPLICATION_CONFIRM in labels
     assert "✅ " + ui.BUTTON_APPLICATION_AUTO not in labels
@@ -189,7 +189,7 @@ def test_current_mode_is_marked_on_each_mode_picker(mode_bot, mode, role):
     assert ui._resolve_message_command(marked[0], principal["role"]) == ("/search_application_" + mode, "")
     _, rows, _ = onboarding.build(hh_ok=True, resumes=[], directions=[], active=None, mode=mode, has_search=False)
     for label, action in (b for row in rows for b in row if b[1] in {"auto", "confirm"}):
-        assert label.startswith("✅ ") == (action == mode)
+        assert label.startswith("✓ ") == (action == mode)
 
 
 @pytest.mark.parametrize("mode", ["confirm", "preview", "auto"])

@@ -21,10 +21,14 @@ def token(home):
     return hashlib.sha256((str(Path(home).resolve()) + "|" + view.name).encode()).hexdigest()[:12]
 
 
-def markup(home, command):
-    return {"inline_keyboard": [[{"text": label, "callback_data": f"hist:{token(home)}:{command.removeprefix('/')}:{scope}"}]
-            for label, scope in (("Это направление", "active"), ("Все направления", "all"), ("Направление не указано", "unspecified"))
-            if not profile_access.current_scope()[1] or scope == "active"]}
+def markup(home, command, *, scope="active"):
+    view = HistoryScope(home)
+    selected = {"*": "all", "?": "unspecified"}.get(scope, "active")
+    labels = ((f"Только «{view.title}»", "active"), ("Все направления", "all"), ("Отклики без направления", "unspecified"))
+    return {"inline_keyboard": [[{"text": ("✓ " if key == selected else "") + label,
+            "callback_data": f"hist:{token(home)}:{command.removeprefix('/')}:{key}"}]
+            for label, key in labels
+            if not profile_access.current_scope()[1] or key == "active"]}
 
 
 def scope_arg(arg):

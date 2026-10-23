@@ -2142,13 +2142,13 @@ class TelegramBot(
                 reply_markup=reply_markup,
             )
 
-    async def _send_menu(self, chat_id: int, principal: dict, *, profile_name: str, menu: str = MENU_MAIN) -> None:
+    async def _send_menu(self, chat_id: int, principal: dict, *, profile_name: str, menu: str = MENU_MAIN, help_section: bool = False) -> None:
         role = principal.get("role", ROLE_USER)
         selected_menu = _normalize_menu(role, menu)
         self._set_selected_menu(principal["user_id"], selected_menu)
         await self._send_text(
             chat_id,
-            build_help_text(role, profile_name=profile_name) if selected_menu == MENU_MAIN else build_menu_section_text(selected_menu, role=role, profile_name=profile_name),
+            build_help_text(role, profile_name=profile_name, help_section=help_section) if selected_menu == MENU_MAIN else build_menu_section_text(selected_menu, role=role, profile_name=profile_name),
             reply_markup=self._menu_reply_markup(principal, menu=selected_menu),
         )
 
@@ -2535,7 +2535,7 @@ class TelegramBot(
         if command in {"/start", "/menu", "/help"}:
             if principal.get("impersonating"):
                 await self._send_text(chat_id, f"👤 Режим «смотреть как клиент»: профиль {profile_name}. Вернуться: /act_as_self")
-            await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_MAIN)
+            await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_MAIN, help_section=command == "/help")
             if command == "/start":
                 await self._send_getting_started(chat_id, principal, only_if_incomplete=True)
             return
@@ -2728,7 +2728,7 @@ class TelegramBot(
             if directions.active_direction(self._profile(profile_name).home_dir):
                 # Keep the «Мой поиск» submenu on the keyboard, then show the active direction card.
                 self._set_selected_menu(principal["user_id"], MENU_SEARCH)
-                await self._send_text(chat_id, "🎯 Мой поиск — настройки активного направления ниже.",
+                await self._send_text(chat_id, "🎯 Направления — условия текущего поиска ниже.",
                                       reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH))
                 await self._dispatch_direction(chat_id, principal, "/direction_summary", "")
                 return

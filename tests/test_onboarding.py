@@ -22,7 +22,7 @@ def test_ready_profile_offers_search_and_completes_after_first_run():
     active = {"title": "Электромонтажник"}
     text, rows, complete = onboarding.build(hh_ok=True, resumes=[{"title": "A"}], directions=[active], active=active,
                                             mode="confirm", has_search=False)
-    assert "search" in actions(rows) and not complete and "Что ищу: Электромонтажник" in text
+    assert "search" in actions(rows) and not complete and "Направления: Электромонтажник" in text
     _, _, complete = onboarding.build(hh_ok=True, resumes=[{"title": "A"}], directions=[active], active=active,
                                       mode="confirm", has_search=True)
     assert complete

@@ -26,22 +26,34 @@ def _fingerprint(value):
 
 
 STRATEGY_BUTTONS = {
-    "single": "1️⃣ Всегда первое резюме",
-    "closest": "🎯 Самое подходящее под вакансию",
-    "ab": "🅰️🅱️ По очереди (A/B-сравнение)",
+    "single": "Всегда первое",
+    "closest": "Самое подходящее",
+    "ab": "По очереди",
 }
 STRATEGY_HELP = (
-    "Каким резюме откликаться в этом направлении?\n\n"
-    "1️⃣ Всегда первое — все отклики одним резюме (первым в списке).\n"
-    "🎯 Самое подходящее — бот сравнивает название и текст вакансии с каждым резюме и берёт ближайшее.\n"
-    "🅰️🅱️ По очереди — резюме чередуются, чтобы через пару недель сравнить, какое работает лучше.\n\n"
-    "Текущий выбор отмечен ✅."
+    "• Всегда первое — все отклики одним резюме, первым в списке.\n"
+    "• Самое подходящее — бот сравнивает вакансию с каждым резюме и берёт самое похожее.\n"
+    "• По очереди — резюме чередуются, через пару недель видно, какое работает лучше."
 )
 STRATEGY_LABELS = {
-    "single": "одно резюме (первое в списке)",
-    "closest": "самое подходящее под вакансию",
-    "ab": "A/B — по очереди, чтобы сравнить",
+    "single": "Всегда первое",
+    "closest": "Самое подходящее",
+    "ab": "По очереди",
 }
+
+
+def counted(value, forms):
+    number = int(value or 0)
+    word = forms[2] if 11 <= number % 100 <= 14 else forms[0] if number % 10 == 1 else forms[1] if 2 <= number % 10 <= 4 else forms[2]
+    return f"{number} {word}"
+
+
+def resume_title(variant):
+    return str(variant.get("title") or "Резюме без названия")
+
+
+def resume_state(variant):
+    return "включено" if variant.get("status", "active") == "active" else "выключено"
 
 
 def parse_selection(text: str, count: int) -> list[int]:
@@ -110,9 +122,10 @@ class TelegramDirections:
     async def _save_application_mode(self, chat_id, principal, mode, *, menu):
         import directions
         profile_name, profile, active = self._direction_context(principal)
-        message = {"confirm": "Режим: спрашивать вас перед каждым откликом",
-                   "preview": "Режим откликов: только показать — сохранено",
-                   "auto": "Режим: автоматически откликаться на подходящие вакансии"}[mode]
+        scope = f"по направлению «{active['title']}»" if active else f"в профиле «{profile_name}»"
+        message = {"confirm": f"Сохранено: {scope} бот сначала присылает вакансию вам и откликается только после вашего «да».",
+                   "preview": f"Сохранено: {scope} бот только показывает вакансии без откликов.",
+                   "auto": f"Сохранено: {scope} бот теперь откликается сам."}[mode]
         if not active:
             await self._save_search_setting(chat_id, principal, {"HH_APPLICATION_MODE": mode},
                                             message, menu=menu)
@@ -125,12 +138,12 @@ class TelegramDirections:
             await self._send_text(chat_id, f"❌ Не удалось сохранить режим: {exc}",
                 reply_markup=self._menu_reply_markup(principal, menu=menu))
             return
-        result = f"✅ {message} (направление «{active['title']}»)."
+        result = f"✅ {message}"
         try:
             self._reload_profile_daemon(profile_name)
         except RuntimeError as exc:
             result = (f"⚠️ Настройки сохранены, но повтор не перезапустился: {exc}\n"
-                      f"{message} (направление «{active['title']}»).\n"
+                      f"{message}\n"
                       "Новый режим может ещё не действовать. Проверьте статус.")
         await self._send_text(chat_id, result,
             reply_markup=self._menu_reply_markup(principal, menu=menu))
@@ -139,7 +152,7 @@ class TelegramDirections:
         rows = ([["✅ Сохранить направление", "✏️ Править направление"], ["❌ Отменить направление"]] if draft else
                 # Actions live on inline buttons of the cards; the reply keyboard stays minimal.
                 [])
-        rows.append(["🧭 Что ищу", "🏠 Главное"])
+        rows.append(["🧭 Направления", "🏠 Главное"])
         return {"keyboard": [[{"text": label} for label in row] for row in rows], "resize_keyboard": True}
 
     async def _ask_choose_direction(self, chat_id, principal, text):
@@ -159,53 +172,67 @@ class TelegramDirections:
 
     async def _direction_show_catalog(self, chat_id, state):
         selected = state.setdefault("selected", [])
-        rows = [[(("✅ " if i in selected else "☐ ") + str(item.get("title") or item.get("id")))[:90], f"toggle:{i}"]
+        rows = [[(("✅ " if i in selected else "☐ ") + resume_title(item))[:90], f"toggle:{i}"]
                 for i, item in enumerate(state["catalog"])]
         markup = self._direction_inline(state, [[tuple(row)] for row in rows] +
                                         [[("Далее →", "next")], [("Отмена", "cancel")]])
-        await self._send_text(chat_id, "Выберите резюме кнопками, затем нажмите «Далее». Тексты будут скачаны из вашей HH-сессии.", reply_markup=markup)
+        await self._send_text(chat_id, "Выберите резюме кнопками, затем нажмите «Далее». Тексты будут загружены с hh.ru.", reply_markup=markup)
 
     async def _direction_show_draft(self, chat_id, principal, state):
         draft = state.get("draft") or {}
         if state.get("activate"):
-            text = f"Переключить активное направление на «{draft.get('title', '')}»?"
-            rows = [[("Да, переключить", "save")], [("Назад", "list"), ("Отмена", "cancel")]]
+            _, _, active = self._direction_context(principal)
+            current = (active or {}).get("title", "")
+            text = (f"Искать по направлению «{draft.get('title', '')}» вместо «{current}»?" if current else
+                    f"Искать по направлению «{draft.get('title', '')}»?")
+            rows = [[("Да, переключить", "save")], [("Назад", "list"), (f"Нет, оставить «{current}»" if current else "Не переключать", "cancel")]]
         else:
-            variants = "\n".join(f"• {v.get('title') or v['hh_resume_hash']} · " +
-                                     ("включено" if v.get('status', 'active') == 'active' else "пауза")
-                                     for v in draft.get("variants", []))
+            variants = "\n".join(f"• {resume_title(v)} · {resume_state(v)}" for v in draft.get("variants", []))
             profiles = draft.get("search_profiles", [])
             cities = {"1": "Москва", "2": "Санкт-Петербург", "113": "Россия"}
-            formats = {"": "любой формат", "remote": "удалённо", "fullDay": "офис", "flyInFlyOut": "вахта", "shift": "сменный", "flexible": "гибкий"}
+            formats = {"": "любой формат", "remote": "удалённо", "fullDay": "в офисе", "flyInFlyOut": "вахта", "shift": "сменный", "flexible": "гибкий"}
             profile_labels = [f"{cities.get(str(x['area']), str(x['area']))} / {formats.get(x['schedule'], x['schedule'])}" for x in profiles]
             conditions = draft.get("work_conditions", work_conditions.defaults(draft))
             allowed = ", ".join(work_conditions.FORMAT_LABELS[f] for f in conditions["allowed_formats"])
-            text = (f"{'Черновик' if not state.get('summary') else 'Мой поиск'}: {draft.get('title', '')}\n"
-                    f"Позиционирование: {draft.get('positioning') or 'не задано'}\n"
-                    f"Цель: {', '.join(draft.get('goal', [])) or 'не задана'}\n"
-                    "Запросы:\n" + "\n".join(draft.get("search_queries", [])) +
-                    "\nГород / формат: " + (", ".join(profile_labels) or "из профиля") +
-                    f"\nДопустимая работа: {allowed}. Вахта: {'разрешена' if conditions['allow_fly_in_fly_out'] else 'не разрешена'}." +
-                    f"\nГорода места работы: {', '.join(conditions.get('allowed_cities', [])) or 'без ограничений'}." +
-                    f"\nЗарплата от: {draft.get('salary_baseline') or 'не задана'} ₽\n"
-                    f"Выбор резюме: {STRATEGY_LABELS.get(draft.get('selection_strategy'), 'одно резюме')}\n" + variants)
-            text += "\n\nЗапасное письмо:\n" + (draft.get("cover_letter_fallback") or "Не задано — используется общее короткое письмо.")
-            rows = [[("✏️ Изменить", "editmenu"), ("🧾 Резюме", "variants")],
-                    [("🔀 Как выбирать резюме", "strategy"), ("📊 Статистика", "stats")]]
+            strategy = STRATEGY_LABELS.get(draft.get('selection_strategy', 'single'), STRATEGY_LABELS['single'])
+            text = (f"Направление «{draft.get('title', '')}»\n"
+                    f"Каким резюме откликаться: {strategy}.\n\n"
+                    f"Ищу по словам: {', '.join(draft.get('search_queries', [])) or 'не указаны'}\n"
+                    f"Должности: {', '.join(draft.get('goal', [])) or 'не указаны'}\n"
+                    f"Формат: {allowed}. Вахта — {'да' if conditions['allow_fly_in_fly_out'] else 'нет'}.\n"
+                    "Город и формат — " + (", ".join(profile_labels) or "из профиля") + ".\n"
+                    f"Города работы — {', '.join(conditions.get('allowed_cities', [])) or 'любые'}.\n"
+                    f"Зарплата: {str(draft['salary_baseline']) + ' ₽' if draft.get('salary_baseline') else 'не указана'}\n\n"
+                    "Резюме:\n" + variants)
+            text += "\n\nЗапасное сопроводительное письмо: " + (draft.get("cover_letter_fallback") or "не задано, отправляется общее короткое письмо.")
+            text += "\n\nОписание: " + (draft.get('positioning') or 'не задано')
             if not state.get("summary"):
-                rows += [[("✅ Сохранить", "save"), ("Отмена", "cancel")]]
-                text += "\n\nИзменения вступят в силу только после сохранения."
-            rows += [[("Назад к направлениям", "list")]]
+                _, _, current = self._direction_context(principal)
+                # Describe the existing selection draft without changing its save semantics.
+                selected = draft.get("variants", [])
+                if current and draft.get("selection_strategy") == "single" and selected:
+                    text = (f"Не сохранено: откликаться только резюме «{resume_title(selected[0])}»\n"
+                            f"Направление «{draft.get('title', '')}». Сейчас: {STRATEGY_LABELS.get(current.get('selection_strategy', 'single'))}.\n"
+                            f"После сохранения все отклики пойдут резюме «{resume_title(selected[0])}». "
+                            "Другие резюме останутся в списке, но использоваться не будут.\n\n" + text)
+                else:
+                    text = "Не сохранено\n" + text
+            rows = [[("✏️ Изменить условия", "editmenu"), (f"🧾 Резюме ({len(draft.get('variants', []))})", "variants")],
+                    [("🔀 Каким резюме откликаться", "strategy"), ("📊 Статистика резюме", "stats")]]
+            if not state.get("summary"):
+                rows += [[("✅ Сохранить", "save"), ("Не сохранять", "cancel")]]
+                text += "\n\nИзменение вступит в силу после кнопки «Сохранить»."
+            rows += [[("Все направления", "list")]]
             if state.get("summary"):
-                rows += [[("Удалить направление", "delete")]]
+                rows += [[("Удалить направление…", "delete")]]
         await self._send_text(chat_id, str(text), reply_markup=self._direction_inline(state, rows))
 
     async def _direction_edit_menu(self, chat_id, state):
-        labels = [("Название", "title"), ("Позиционирование", "positioning"), ("Цель", "goal"),
-                  ("Запросы", "queries"), ("Город", "city"), ("Формат поиска", "format"), ("Города и форматы", "search_profiles"),
+        labels = [("Название", "title"), ("Описание", "positioning"), ("Должности", "goal"),
+                  ("Ищу по словам", "queries"), ("Город", "city"), ("Формат поиска", "format"), ("Города и форматы", "search_profiles"),
                   ("Допустимые форматы работы", "work_formats"), ("Разрешена ли вахта", "fly_allowed"),
                   ("Города места работы", "work_cities"),
-                  ("Запасное письмо", "cover_letter_fallback"),
+                  ("Запасное сопроводительное письмо", "cover_letter_fallback"),
                   ("Зарплата", "salary"), ("Подходящие слова", "relevant"), ("Исключения", "exclude")]
         await self._send_text(chat_id, "Что изменить?", reply_markup=self._direction_inline(state,
             [[(label, f"edit:{field}")] for label, field in labels] + [[("Назад", "back"), ("Отмена", "cancel")]]))
@@ -215,7 +242,7 @@ class TelegramDirections:
         parts = str(data).split(":")
         state = self._direction_sessions().get(principal["user_id"])
         if len(parts) < 3 or not state or parts[1] != state.get("token") or not self._direction_current(principal, state):
-            await self._send_text(chat_id, "Эта кнопка устарела. Откройте «Что ищу» заново.")
+            await self._send_text(chat_id, "Эта кнопка устарела. Откройте «Направления» заново.")
             return
         action = parts[2]
         try:
@@ -223,7 +250,7 @@ class TelegramDirections:
                 # Consume before any await: duplicate/stale Yes callbacks cannot save again.
                 self._direction_sessions().pop(principal["user_id"], None)
                 if action == "autono":
-                    await self._send_text(chat_id, "Автоотклик не включён. Настройки не менялись.",
+                    await self._send_text(chat_id, "Автоматические отклики не включены. Настройки не менялись.",
                         reply_markup=self._menu_reply_markup(principal, menu=state["menu"]))
                     return
                 profile_name, profile, _ = self._direction_context(principal)
@@ -271,7 +298,7 @@ class TelegramDirections:
                     f"Ранее сохранённое письмо:\n\n{letter}\n\n"
                     f"Использовать это письмо для направления «{state['draft']['title']}»? "
                     "Выберите его, только если опыт и профессия совпадают.",
-                    reply_markup=self._direction_inline(state, [[("Да, добавить в черновик", "letteruse")], [("Назад", "back")]]))
+                    reply_markup=self._direction_inline(state, [[("Да, добавить к изменениям", "letteruse")], [("Назад", "back")]]))
             elif action == "letteruse" and state.get("letter_offer") and state.get("mode") == "edit" and state.get("field") == "cover_letter_fallback":
                 from fallback_letter import validate
                 state["draft"]["cover_letter_fallback"] = validate(state.pop("letter_offer"))
@@ -300,10 +327,13 @@ class TelegramDirections:
                 await self._direction_show_draft(chat_id, principal, state)
             elif action == "strategy":
                 current = state["draft"].get("selection_strategy", "single")
-                rows = [[(("✅ " if key == current else "") + STRATEGY_BUTTONS[key], f"strategyset:{key}")]
+                rows = [[(("✓ " if key == current else "") + STRATEGY_BUTTONS[key], f"strategyset:{key}")]
                         for key in ("single", "closest", "ab")]
                 rows.append([("Назад", "back")])
-                await self._send_text(chat_id, STRATEGY_HELP, reply_markup=self._direction_inline(state, rows))
+                text = (f"Каким резюме откликаться в направлении «{state['draft'].get('title', '')}»?\n"
+                        f"Сейчас: {STRATEGY_LABELS[current].lower()}.\n\n" + STRATEGY_HELP + "\n\n" +
+                        ("Выбор сохраняется сразу после нажатия." if state.get("summary") else "Изменение вступит в силу после кнопки «Сохранить»."))
+                await self._send_text(chat_id, text, reply_markup=self._direction_inline(state, rows))
             elif action == "strategyset" and len(parts) > 3 and parts[3] in STRATEGY_LABELS:
                 saved_direction = bool(state.get("summary"))
                 state["draft"]["selection_strategy"] = parts[3]
@@ -350,14 +380,21 @@ class TelegramDirections:
         else:
             await self._ask_choose_direction(chat_id, principal, "Сначала выберите направление:")
             return
-        lines = ["Варианты активного направления. Отправьте номер" + ("а через пробел:" if operation != "select" else ":")]
-        for index, variant in enumerate(active["variants"], 1):
-            number = variant.get("hh_resume_numeric_id")
-            lines.append(f"{index}. {variant.get('title') or variant['hh_resume_hash']} · {variant.get('status', 'active')} · ID: {number if number is not None else 'неизвестен'}")
-        if operation == "select":
-            lines.append("Выбранный вариант станет единственным для откликов (режим single). Подтвердите черновик.")
-        lines.append("Отмена: /direction_cancel")
-        await self._send_text(chat_id, str("\n".join(lines)), reply_markup=self._direction_inline(state, [[(str(v.get("title") or v["hh_resume_hash"]), f"variant:{i}")] for i, v in enumerate(active["variants"])] + [[("Добавить резюме", "add"), ("Пауза", "pause"), ("Включить", "resume")], [("Убрать вариант", "remove"), ("Обновить тексты", "refresh")], [("Назад", "back"), ("Отмена", "cancel")]]))
+        variants = active["variants"]
+        enabled = sum(v.get("status", "active") == "active" for v in variants)
+        status = "все включены" if enabled == len(variants) else f"включено {enabled}, выключено {len(variants) - enabled}"
+        lines = [f"Резюме направления «{active['title']}»: {len(variants)}, {status}"]
+        for index, variant in enumerate(variants, 1):
+            lines.append(f"{index}. {resume_title(variant)} · {resume_state(variant)}")
+        prompts = {"select": "Нажмите на резюме, чтобы откликаться только им.",
+                   "pause": "Какое резюме выключить? Нажмите на него.",
+                   "resume": "Какое резюме включить? Нажмите на него.",
+                   "remove": "Какое резюме убрать из направления? Нажмите на него."}
+        lines += ["", prompts[operation], "Изменение вступит в силу после кнопки «Сохранить»."]
+        rows = [[((f"Только «{resume_title(v)}»" if operation == "select" else resume_title(v)), f"variant:{i}")] for i, v in enumerate(variants)]
+        rows += [[("Добавить резюме", "add"), ("Выключить резюме…", "pause"), ("Включить резюме…", "resume")],
+                 [("Убрать резюме из направления…", "remove"), ("Обновить тексты", "refresh")], [("Назад", "back"), ("Не сохранять", "cancel")]]
+        await self._send_text(chat_id, "\n".join(lines), reply_markup=self._direction_inline(state, rows))
 
     async def _direction_catalog(self, chat_id, principal, *, add=False):
         profile_name, profile, active = self._direction_context(principal)
@@ -375,21 +412,21 @@ class TelegramDirections:
         state = self._direction_bind(principal, mode="working", add=add,
                                      draft=copy.deepcopy(active) if add else None, texts=texts)
         command = self._mark_active_command(principal=principal, label="direction catalog", profile_name=profile_name)
-        await self._send_text(chat_id, "Читаю полный каталог резюме из вашей HH-сессии…")
+        await self._send_text(chat_id, "Загружаю список ваших резюме с hh.ru…")
 
         async def runner():
             try:
                 # The legacy QA catalog can omit other professions. Read the
                 # authenticated catalog without title filters or changing HH.
                 if not self._direction_current(principal, state):
-                    raise ValueError("Профиль, направление или черновик изменились; каталог отменён.")
+                    raise ValueError("Профиль, направление или ваши изменения уже другие; загрузка отменена.")
                 from hh.session_probe import probe, OK
                 checked = await asyncio.to_thread(probe, profile.hh.cookies_file)
                 if checked["status"] != OK:
-                    raise ValueError(checked["message"] + " Откройте «🔐 Мой hh» → «Вход в hh», затем повторите.")
+                    raise ValueError(checked["message"] + " Откройте «🔐 hh.ru и резюме» → «Вход в hh.ru», затем повторите.")
                 catalog = await self._direction_load_catalog(profile, chat_id=chat_id)
                 if not self._direction_current(principal, state):
-                    raise ValueError("Профиль, направление или черновик изменились; каталог отменён.")
+                    raise ValueError("Профиль, направление или ваши изменения уже другие; загрузка отменена.")
                 if not catalog:
                     raise ValueError("На hh.ru в вашем аккаунте нет резюме. Создайте резюме на сайте hh.ru и повторите.")
                 state.update(mode="catalog", catalog=copy.deepcopy(catalog))
@@ -454,7 +491,7 @@ class TelegramDirections:
                                                     action="direction_suggest_ai_used", check_only=True):
             return
         active_command = self._mark_active_command(principal=principal, label="direction draft", profile_name=profile_name)
-        await self._send_text(chat_id, "Готовлю черновик направления. Дождитесь результата; изменения потребуют сохранения.")
+        await self._send_text(chat_id, "Готовлю направление для проверки. Дождитесь результата; изменения потребуют сохранения.")
 
         async def runner():
             try:
@@ -483,18 +520,18 @@ class TelegramDirections:
                             draft["variants"].append(variant)
                 if ai:
                     if not self._direction_current(principal, state):
-                        raise ValueError("Профиль или активное направление изменились; черновик отменён.")
+                        raise ValueError("Профиль или направление изменились; изменения не сохранены.")
                     if not await self._authorize_ai_usage(chat_id, principal, profile_name=profile_name,
                                                          action="direction_suggest_ai_used"):
                         return
                     if not self._direction_current(principal, state):
-                        raise ValueError("Профиль, направление или черновик изменились; анализ отменён.")
+                        raise ValueError("Профиль, направление или ваши изменения уже другие; проверка отменена.")
                     resumes = [{"title": v["title"], "raw": texts.get(v["hh_resume_hash"]) or Path(v["text_file"]).read_text(encoding="utf-8")}
                                for v in draft["variants"] if v.get("status", "active") == "active"]
                     suggestion = await search_query_suggester.suggest_direction(resumes=resumes, current_direction=state.get("draft"), profile_dir=str(profile.home_dir))
                     draft.update(suggestion)
                 if not self._direction_current(principal, state):
-                    raise ValueError("Профиль, направление или черновик изменились; результат отменён.")
+                    raise ValueError("Профиль, направление или ваши изменения уже другие; результат отменён.")
                 state.update(mode="draft", draft=draft, texts=texts)
                 await self._direction_show_draft(chat_id, principal, state)
                 active_command.result = {"ok": True}
@@ -521,11 +558,11 @@ class TelegramDirections:
             return False
         if text.casefold() == "отмена":
             self._direction_sessions().pop(principal["user_id"], None)
-            await self._send_text(chat_id, "Черновик отменён.")
+            await self._send_text(chat_id, "Изменения не сохранены.")
             return True
         if not self._direction_valid(principal, state):
             self._direction_sessions().pop(principal["user_id"], None)
-            await self._send_text(chat_id, "Профиль или направление изменились. Черновик отменён; откройте /directions заново.")
+            await self._send_text(chat_id, "Профиль или направление изменились. Изменения не сохранены; откройте /directions заново.")
             return True
         try:
             mode = state.get("mode")
@@ -547,7 +584,7 @@ class TelegramDirections:
                 operation = state["operation"]
                 if operation == "select":
                     if len(indexes) != 1 or variants[indexes[0]].get("status", "active") != "active":
-                        raise ValueError("Выберите один активный вариант.")
+                        raise ValueError("Выберите одно включённое резюме.")
                     first = variants[indexes[0]]
                     state["draft"]["variants"] = [first] + [v for v in variants if v is not first]
                     state["draft"]["selection_strategy"] = "single"
@@ -559,7 +596,7 @@ class TelegramDirections:
                 if not any(v.get("status", "active") == "active" for v in state["draft"]["variants"]):
                     # Keep an invalid operation from mutating even the pending base.
                     state["draft"] = before
-                    raise ValueError("Оставьте хотя бы один активный вариант.")
+                    raise ValueError("Оставьте хотя бы одно включённое резюме.")
                 state.update(mode="draft", summary=False)
             elif mode == "edit":
                 field = state.get("field", "search_queries")
@@ -594,7 +631,7 @@ class TelegramDirections:
                     state["draft"][field] = [v.strip() for v in text.splitlines() if v.strip()]
                 elif field == "positioning":
                     if len(text.strip()) > 1500:
-                        raise ValueError("Позиционирование: до 1500 символов.")
+                        raise ValueError("Описание: до 1500 символов.")
                     state["draft"][field] = text.strip()
                 elif field == "cover_letter_fallback":
                     from fallback_letter import validate
@@ -659,7 +696,7 @@ class TelegramDirections:
     @staticmethod
     def _direction_button_commands():
         return {
-            "🧭 Что ищу": "/directions", "🎯 Направления": "/directions", "➕ Новое направление": "/direction_new",
+            "🧭 Направления": "/directions", "➕ Новое направление": "/direction_new",
             "🔀 Переключить направление": "/direction_switch", "🧾 Варианты направления": "/direction_variants",
             "➕ Добавить варианты": "/direction_add", "⏸ Пауза варианта": "/direction_pause",
             "▶️ Включить вариант": "/direction_resume", "➖ Удалить вариант": "/direction_remove",
@@ -681,19 +718,21 @@ class TelegramDirections:
             self._direction_sessions().pop(principal["user_id"], None)
             state = None
             if command in {"/direction_save", "/search_use_draft"}:
-                await self._send_text(chat_id, "Профиль или направление изменились. Устаревший черновик отменён.")
+                await self._send_text(chat_id, "Профиль или направление изменились. Устаревшие изменения не сохранены.")
                 return
         if command in {"/directions", "/direction_switch"}:
             choices = directions.list_directions(profile.home_dir)
             state = self._direction_bind(principal, mode="switch", choices=choices)
-            rows = [[(("✅ " if active and item["name"] == active["name"] else "") + item["title"], f"choose:{i}")]
+            rows = [[(("✓ " if active and item["name"] == active["name"] else "") + item["title"] + (" (сейчас)" if active and item["name"] == active["name"] else ""), f"choose:{i}")]
                     for i, item in enumerate(choices)]
             if not profile_access.current_scope()[1]:
                 rows += [[("➕ Новое направление", "new")]]
-            rows += [[("📊 Статистика", "stats")]]
-            await self._send_text(chat_id, "🧭 Что ищу — ваши направления поиска. Выберите кнопкой ниже.",
+            rows += [[("📊 Статистика резюме", "stats")]]
+            await self._send_text(chat_id, "🧭 Направления — выберите кнопкой ниже.",
                                   reply_markup=self._direction_markup())
-            await self._send_text(chat_id, str(f"Направления · {profile_name}\nАктивное: " + (active["title"] if active else "нет")),
+            await self._send_text(chat_id, (f"Ваши направления · профиль {profile_name}\n" +
+                                  (f"Сейчас бот ищет по направлению «{active['title']}»." if active else "Направление для поиска пока не выбрано.") +
+                                  "\nНажмите на него, чтобы открыть настройки, или на другое, чтобы переключиться."),
                                   reply_markup=self._direction_inline(state, rows))
         elif command == "/direction_summary":
             if not active:
@@ -703,13 +742,13 @@ class TelegramDirections:
             await self._direction_show_draft(chat_id, principal, state)
         elif command == "/direction_cancel":
             self._direction_sessions().pop(principal["user_id"], None)
-            await self._send_text(chat_id, "Черновик отменён. Настройки направления не менялись.", reply_markup=self._direction_markup())
+            await self._send_text(chat_id, "Изменения не сохранены. Настройки направления не менялись.", reply_markup=self._direction_markup())
         elif command in {"/direction_save", "/search_use_draft"}:
             if self._has_active_command(profile_name):
                 await self._send_busy_status(chat_id, principal, profile_name=profile_name)
                 return
             if not state or state.get("mode") != "draft":
-                await self._send_text(chat_id, "Нет готового черновика. Откройте /directions.")
+                await self._send_text(chat_id, "Нет несохранённых изменений. Откройте «Направления».")
                 return
             try:
                 if state.get("activate"):
@@ -771,7 +810,7 @@ class TelegramDirections:
                     rows.append([("Посмотреть прежнее письмо", "letteroffer")])
                 rows.append([("Назад", "back"), ("Отмена", "cancel")])
                 await self._send_text(chat_id,
-                    f"Запасное письмо · {state['draft']['title']}\n\n" +
+                    f"Запасное сопроводительное письмо · {state['draft']['title']}\n\n" +
                     (state["draft"].get(field) or "Пока не задано.") +
                     "\n\nОтправьте новый текст — до 1500 символов. Он используется, если не удалось подготовить письмо для вакансии. "
                     "Изменения вступят в силу после сохранения направления.",
@@ -800,10 +839,10 @@ class TelegramDirections:
                 await self._send_text(chat_id, "Выберите значение или отправьте текст. Город: ID HH через запятую. Формат: remote, fullDay, flyInFlyOut.\n"
                     "Для независимых сочетаний выберите «Города и форматы»: каждая строка содержит ID города и формат, например:\n2\n113 flyInFlyOut", reply_markup=self._direction_inline(state, rows))
                 return
-            label = {"title": "названия", "search_queries": "запросов", "positioning": "позиционирования", "goal": "цели",
+            label = {"title": "названия", "search_queries": "запросов", "positioning": "описания", "goal": "должностей",
                      "salary_baseline": "зарплаты от", "relevant_keywords": "подходящих слов", "exclude_keywords": "исключений", "filter_policy": "фильтра"}[field]
-            await self._send_text(chat_id, f"Отправьте новое значение {label}. Запросы и цели — по одному в строке; ключевые слова — через запятую.\n"
-                                  "Зарплата — сумма в рублях, 0 убирает ориентир. Назад — вернуться к черновику.",
+            await self._send_text(chat_id, f"Отправьте новое значение {label}. Поисковые слова и должности — по одному в строке; ключевые слова — через запятую.\n"
+                                  "Зарплата — сумма в рублях, 0 убирает ориентир. Назад — вернуться к несохранённым изменениям.",
                                   reply_markup=self._direction_inline(state, [[("Назад", "back"), ("Отмена", "cancel")]]))
         elif command in {"/direction_suggest", "/search_suggest", "/direction_refresh"}:
             if not active:
@@ -816,7 +855,7 @@ class TelegramDirections:
                 await self._send_busy_status(chat_id, principal, profile_name=profile_name)
                 return
             job = self._mark_active_command(principal=principal, label="negotiation snapshot", profile_name=profile_name)
-            await self._send_text(chat_id, "🔄 Собираю данные об откликах с hh (только чтение). Это займёт пару минут…")
+            await self._send_text(chat_id, "🔄 Загружаю отклики с hh.ru. Это займёт пару минут, работодателям ничего не отправится…")
 
             async def runner():
                 from hh import negotiation_snapshot
@@ -849,38 +888,47 @@ class TelegramDirections:
             else:
                 rows = summary.get("rows", [])
                 owner = f" · профиль {profile_name}" if principal.get("role") == "admin" else ""
-                lines = [f"📊 Как работают ваши резюме · {summary['direction_title']}{owner} (по данным hh, откликов всего: {summary.get('total_topics', 0)})", ""]
+                invited_total = sum(int(row.get("next_stage", 0) or 0) for row in rows) + sum(int(summary.get(bucket, {}).get("next_stage", 0) or 0) for bucket in ("unmatched", "ambiguous"))
+                heading = ("Все направления" if scope == "*" else "Отклики без направления" if scope == "?" else f"«{summary['direction_title']}»")
+                lines = [f"📊 {heading}: {counted(summary.get('total_topics'), ('отклик', 'отклика', 'откликов'))}, {counted(invited_total, ('приглашение', 'приглашения', 'приглашений'))}{owner}", ""]
+                previous_direction = None
                 for row in rows[:12]:
-                    title = str(row.get("direction_title") or row.get("direction") or "Направление")[:100]
-                    variant = str(row.get("variant_title") or "Резюме")[:80]
+                    title = str(row.get("direction_title") or "Направление без названия")
+                    if scope == "*" and title != previous_direction:
+                        lines += [title]
+                        previous_direction = title
+                    variant = str(row.get("variant_title") or "Резюме без названия")
                     applied = int(row.get("applied", 0) or 0)
                     invited = int(row.get("next_stage", 0) or 0)
                     share = f" ({invited / applied * 100:.1f}%)".replace(".", ",") if applied else ""
-                    lines.append(f"{title} · «{variant}»: откликов {applied}, просмотрели {row.get('viewed', 0)}, "
-                                 f"отказов {row.get('rejected', 0)}, приглашений {invited}{share}, "
-                                 f"ждут ответа {row.get('no_response', 0)}")
+                    lines += [f"«{variant}»",
+                              f"{counted(applied, ('отклик', 'отклика', 'откликов'))} · просмотрели {row.get('viewed', 0)} · "
+                              f"отказов {row.get('rejected', 0)} · приглашений {invited}{share} · "
+                              f"ждут {row.get('no_response', 0)}", ""]
                 other = summary.get('unmatched', {}).get('topics', 0)
                 if other:
-                    lines.append(f"Направление не указано: откликов {other}")
+                    lines.append(f"Отклики без направления: {other}")
                 ambiguous = summary.get("ambiguous", {}).get("topics", 0)
                 if ambiguous:
-                    lines.append(f"Направление не указано (резюме относится к нескольким): {ambiguous}")
+                    lines.append(f"Отклики без направления (резюме относится к нескольким): {ambiguous}")
                 mismatches = direction_stats.resume_mismatches(profile.home_dir)
                 view = history.HistoryScope(profile.home_dir, scope)
                 mismatches = [m for m in mismatches if view.matches({"requested_resume_id": m.get("requested_resume_hash")})]
                 if mismatches:
                     lines += ["", f"⚠️ Ушли НЕ тем резюме: {len(mismatches)}"]
                     for item in mismatches[:5]:
-                        lines.append(f"• {item['title'][:60]} ({item['company'][:40]}): ушло «{item['actual_title'] or item['actual_resume_numeric_id']}» "
-                                     f"вместо «{item['requested_title'] or item['requested_resume_numeric_id']}»")
+                        lines.append(f"• {item['title'][:60]} ({item['company'][:40]}): ушло «{item['actual_title'] or 'резюме без названия'}» "
+                                     f"вместо «{item['requested_title'] or 'резюме без названия'}»")
                 lines.append("")
-                lines.append("Приглашение = работодатель позвал дальше (собеседование, тест, оффер).")
+                lines.append("Приглашение — работодатель позвал дальше: на собеседование, тестовое или предложил работу.")
+                lines.append("Данные с hh.ru.")
                 if principal.get("role") == "admin":
                     lines.append("Скачайте полный список: /direction_csv; /direction_csv all — все направления")
                 if not summary.get("total_topics"):
-                    lines = [f"📊 {summary['direction_title']} · Данных об откликах пока нет — их нужно один раз собрать с hh.",
-                             "Нажмите «🔄 Обновить данные» (только чтение, пара минут). Дальше бот обновляет их сам после поиска."]
+                    lines = [f"📊 {heading}: данных пока нет.",
+                             "Нажмите «Обновить с hh.ru»: бот загрузит ваши отклики. Это займёт пару минут, работодателям ничего не отправится.",
+                             "Дальше данные обновляются сами после каждого поиска."]
                 state = state or self._direction_bind(principal, mode="switch", choices=[])
-                buttons = self._direction_inline(state, [[("🔄 Обновить данные", "statsrefresh")], [("К направлениям", "list")]])
-                buttons["inline_keyboard"] += history.markup(profile.home_dir, "/direction_stats")["inline_keyboard"]
+                buttons = self._direction_inline(state, [[("🔄 Обновить с hh.ru", "statsrefresh")], [("Назад к направлениям", "list")]])
+                buttons["inline_keyboard"] += history.markup(profile.home_dir, "/direction_stats", scope=scope)["inline_keyboard"]
                 await self._send_text(chat_id, str("\n".join(lines)), reply_markup=buttons)

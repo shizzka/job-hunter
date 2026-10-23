@@ -107,7 +107,7 @@ async def test_work_conditions_edit_is_a_confirmed_direction_draft(bot):
     assert await bot._accept_direction_input(1, USER, "удалённо, гибрид")
     assert directions.active_direction(home) == original
     assert state["draft"]["work_conditions"]["allowed_formats"] == ["remote", "hybrid"]
-    assert "Вахта: не разрешена" in bot.sent[-1][1]
+    assert "Вахта — нет" in bot.sent[-1][1]
     await bot._dispatch_direction(1, USER, "/direction_edit", "fly_allowed")
     await bot._direction_callback(1, USER, f"dir:{state['token']}:conditionpreset:yes")
     await bot._dispatch_direction(1, USER, "/direction_edit", "work_cities")
@@ -210,7 +210,7 @@ async def test_stale_admin_profile_and_direction_change_reject_save(bot):
     directions.save_direction(home, changed)
     await bot._dispatch_direction(99, ADMIN, "/direction_save", "")
     assert directions.active_direction(home)["selection_strategy"] == "ab"
-    assert "Устаревший" in bot.sent[-1][1]
+    assert "Устаревшие изменения" in bot.sent[-1][1]
 
 
 @run_async
@@ -274,7 +274,7 @@ async def test_refresh_texts_and_application_mode_are_drafts(bot):
     # The application mode is one explicit choice: saved immediately, short confirmation (owner feedback 17–18.10).
     await bot._dispatch_direction(1, USER, "/search_application_preview", "")
     assert directions.active_direction(home)["application_mode"] == "preview"
-    assert "Режим откликов: только показать — сохранено" in bot.sent[-1][1]
+    assert "бот только показывает вакансии без откликов" in bot.sent[-1][1]
 
 
 def test_selection_rejects_zero_negative_out_of_bounds_and_accepts_unique_multi():
@@ -429,7 +429,7 @@ async def test_registered_client_real_bot_dispatch_uses_own_client_profile_and_r
 
     # Real public dispatcher wrapper selects the registered client, ignoring an arbitrary profile argument.
     await actual_bot._dispatch(42, principal, "/directions", "foreign")
-    assert "Направления · client42" in sent[-1]
+    assert "Ваши направления · профиль client42" in sent[-1]
     assert "FOREIGN" not in sent[-1] and "QA" not in sent[-1]
     for command in ("/profile", "/direction_csv"):
         await actual_bot._dispatch(42, principal, command, "foreign")
@@ -502,7 +502,7 @@ async def test_admin_snapshot_summary_and_csv_use_selected_profile_without_ai(bo
         documents.append(kwargs)
     monkeypatch.setattr(bot, "_send_document", document, raising=False)
     await bot._dispatch_direction(99, ADMIN, "/direction_stats", "client_2")
-    assert "откликов 1, просмотрели 1, отказов 0, приглашений 1 (100,0%), ждут ответа 0" in bot.sent[-1][1]
+    assert "1 отклик · просмотрели 1 · отказов 0 · приглашений 1 (100,0%) · ждут 0" in bot.sent[-1][1]
     await bot._dispatch_direction(99, ADMIN, "/direction_csv", "client_2")
     rows = list(csv.DictReader(io.StringIO(documents[0]["content"].decode("utf-8-sig"))))
     assert documents[0]["filename"] == "client_1_directions.csv"
@@ -533,7 +533,7 @@ async def test_inline_creation_toggles_next_summary_edit_and_cancel_without_writ
     await bot.command.task
     state = bot._direction_sessions()[1]
     assert [v['hh_resume_hash'] for v in state['draft']['variants']] == ['two']
-    assert 'Manual QA' in bot.sent[-1][1] and 'Цель: QA Engineer' in bot.sent[-1][1]
+    assert 'Manual QA' in bot.sent[-1][1] and 'Должности: QA Engineer' in bot.sent[-1][1]
     await bot._direction_callback(1, USER, f"dir:{state['token']}:edit:positioning")
     await bot._accept_direction_input(1, USER, 'QA lead')
     assert state['draft']['positioning'] == 'QA lead'
@@ -549,13 +549,13 @@ async def test_inline_switch_is_confirmed_and_stale_or_foreign_buttons_rejected(
     directions.set_active_direction(home, 'qa')
     await bot._dispatch_direction(1, USER, '/directions', '')
     actions = inline_actions(bot)
-    assert '✅ QA' in str(bot.sent[-1][2])
+    assert '✓ QA (сейчас)' in str(bot.sent[-1][2])
     switch = next(a for a in actions if a.endswith('choose:0'))
     await bot._direction_callback(2, {'user_id': 2, 'role': 'user', 'profile': 'client_2'}, switch)
     assert 'устарела' in bot.sent[-1][1]
     await bot._direction_callback(1, USER, switch)
     assert directions.active_direction(home)['name'] == 'qa'
-    assert 'Переключить' in bot.sent[-1][1]
+    assert 'Искать по направлению' in bot.sent[-1][1]
     save = next(a for a in inline_actions(bot) if a.endswith(':save'))
     await bot._direction_callback(1, USER, save)
     assert directions.active_direction(home)['name'] == 'other'
@@ -587,7 +587,7 @@ async def test_client_stats_use_own_profile_without_ai(bot):
     home = bot.profiles['client_1'].home_dir
     make_direction(home)
     await bot._dispatch_direction(1, USER, '/direction_stats', 'client_2')
-    assert 'Данных об откликах пока нет' in bot.sent[-1][1]  # own (empty) profile data, argument ignored
+    assert 'данных пока нет' in bot.sent[-1][1]  # own (empty) profile data, argument ignored
     assert 'client_' not in bot.sent[-1][1]  # internal profile names are not shown to clients
     assert 'Нужны права' not in bot.sent[-1][1]
     assert not bot.auth_calls
@@ -643,7 +643,7 @@ async def test_strategy_chooser_saves_existing_direction_in_one_tap(bot):
     await bot._direction_callback(1, USER, next(a for a in inline_actions(bot) if a.endswith('choose:0')))
     await bot._direction_callback(1, USER, next(a for a in inline_actions(bot) if a.endswith(':strategy')))
     assert 'Каким резюме откликаться' in bot.sent[-1][1]
-    assert '✅ 1️⃣' in str(bot.sent[-1][2])
+    assert '✓ Всегда первое' in str(bot.sent[-1][2])
     await bot._direction_callback(1, USER, next(a for a in inline_actions(bot) if a.endswith(':strategyset:closest')))
     assert directions.active_direction(home)['selection_strategy'] == 'closest'
     assert 'Направление сохранено' in bot.sent[-1][1]
@@ -657,7 +657,7 @@ async def test_empty_stats_offer_refresh_and_refresh_collects_both_filters(bot, 
     make_direction(home)
     directions.set_active_direction(home, "qa")
     await bot._dispatch_direction(1, USER, "/direction_stats", "")
-    assert "Данных об откликах пока нет" in bot.sent[-1][1]
+    assert "данных пока нет" in bot.sent[-1][1]
     assert any(a.endswith(":statsrefresh") for a in inline_actions(bot))
     calls = []
     monkeypatch.setattr(negotiation_snapshot, "collect", lambda **kw: calls.append(kw["archived"]) or {"complete": True})
@@ -678,3 +678,83 @@ async def test_select_direction_prompt_offers_direction_buttons(bot):
     assert "Сначала выберите направление" in text
     assert any(a.endswith(":choose:0") for a in actions) and any(a.endswith(":choose:1") for a in actions)
     assert any(a.endswith(":new") for a in actions)
+
+
+@run_async
+async def test_crawled_screens_hide_internal_data_and_keep_dynamic_values(bot, monkeypatch):
+    """Visible text/labels must not leak storage identities, including on drafts."""
+    import json
+    import re
+    import telegram_bot_ui as ui
+    from telegram_app import onboarding
+
+    home = bot.profiles["client_1"].home_dir
+    direction = make_direction(home, name="direction_aabbcc112233")
+    direction.update(title="Электромонтажник", goal=["Мастер"], positioning="Опыт работы",
+                     salary_baseline=123456, cover_letter_fallback="Моё письмо")
+    direction["variants"][0].update(title="Мастер, электрик", hh_resume_numeric_id=910000001)
+    direction["variants"][1].update(title="Электрик / техник", hh_resume_numeric_id=910000002, status="paused")
+    direction = directions.save_direction(home, direction, texts={})
+    directions.set_active_direction(home, direction["name"])
+    other = make_direction(home, name="direction_ddeeff445566")
+    other["title"] = "Другое направление"
+    directions.save_direction(home, other, texts={})
+    monkeypatch.setattr(ui, "_active_direction_title", lambda name: direction["title"])
+
+    # Exercise the catalog, detail, strategy, resume states, selection drafts,
+    # switch confirmation and all three statistics filters without HH calls.
+    await bot._dispatch_direction(1, USER, "/directions", "")
+    await bot._dispatch_direction(1, USER, "/direction_summary", "")
+    card = bot.sent[-1][1]
+    assert all(value in card for value in ["123456 ₽", "Мастер, электрик", "Электрик / техник",
+                                           "выключено", "Мастер", "Опыт работы", "Моё письмо"])
+    state = bot._direction_sessions()[1]
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:strategy")
+    for operation in ("select", "pause", "resume", "remove"):
+        await bot._direction_prompt_variants(1, USER, operation)
+    # Only the enabled resume is selectable; the existing Save boundary remains.
+    await bot._direction_prompt_variants(1, USER, "select")
+    state = bot._direction_sessions()[1]
+    assert [b["callback_data"].rsplit(":", 1)[-1] for row in bot.sent[-1][2]["reply_markup"]["inline_keyboard"][:2] for b in row] == ["0", "1"]
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:variant:0")
+    assert directions.active_direction(home) == direction
+    assert "Не сохранено: откликаться только резюме «Мастер, электрик»" in bot.sent[-1][1]
+    await bot._dispatch_direction(1, USER, "/directions", "")
+    state = bot._direction_sessions()[1]
+    index = next(i for i, d in enumerate(state["choices"]) if d["name"] == other["name"])
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:choose:{index}")
+    assert "вместо «Электромонтажник»" in bot.sent[-1][1]
+
+    (Path(home) / "negotiation_snapshots.jsonl").write_text(json.dumps({
+        "id": 100, "resumeId": 910000001, "initialTopicType": "RESPONSE_BY_APPLICANT",
+        "lastState": "INVITATION", "viewedByOpponent": True,
+        "fetched_at": "2026-10-22T21:34:56.523609+03:00",
+    }) + "\n")
+    for scope in ("", "all", "unspecified"):
+        await bot._dispatch_direction(1, USER, "/direction_stats", scope)
+
+    texts = []
+    for _, text, kwargs in bot.sent:
+        texts.append(text)
+        markup = kwargs.get("reply_markup", {})
+        for key in ("keyboard", "inline_keyboard"):
+            texts += [button["text"] for row in markup.get(key, []) for button in row]
+    for role in (ui.ROLE_USER, ui.ROLE_ADMIN):
+        texts += [ui.build_help_text(role, profile_name="client_1", help_section=help_section)
+                  for help_section in (False, True)]
+        for menu in (ui.MENU_HH, ui.MENU_CANDIDATE, ui.MENU_MONITOR, ui.MENU_SEARCH, ui.MENU_RESPONSES):
+            texts.append(ui.build_menu_section_text(menu, role=role, profile_name="client_1"))
+            markup = ui.build_reply_markup(role, menu=menu)
+            texts += [b["text"] for row in markup["keyboard"] for b in row]
+    texts += [ui.build_hh_resumes_text("client_1", [{"id": "910000001", "path": str(Path(home) / "resume.md"), "title": "Мастер, электрик"}]),
+              ui.build_hh_resumes_text("client_1", [{"id": "910000002"}]),
+              ui.build_hh_response_count_text({"profile": "client_1", "total": 100, "fetched_at": "2026-10-22T21:34:56.523609+03:00"}, home_dir=home),
+              ui.build_hh_response_count_text({"profile": "client_1", "total": 100, "fetched_at": "2026-10-22T21:34:56.523609+03:00"})]
+    for mode in ("confirm", "auto", "preview"):
+        text, rows, _ = onboarding.build(hh_ok=True, resumes=[{"title": v["title"]} for v in direction["variants"]],
+                                         directions=[direction, other], active=direction, mode=mode, has_search=True)
+        texts += [text] + [label for row in rows for label, _ in row]
+    visible = "\n".join(texts)
+    assert not re.search(r"direction_[0-9a-f]+|\b(?:single|active)\b|\b91000000[12]\b|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|(?:/home/|/mnt/|[A-Z]:\\\\)", visible)
+    assert "21:34" in visible and "22 октября" in visible
+    assert "Мастер, электрик" in visible and "Электрик / техник" in visible
