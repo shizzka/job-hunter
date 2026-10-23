@@ -485,13 +485,14 @@ def format_run_count(run, field="applied", *, incomplete=None):
     return str(value) if value is not None else "неизвестно"
 
 
-def reconcile_run_records(records, *, events_file=None):
+def reconcile_run_records(records, *, events_file=None, events=None):
     """Read-only reconciliation of missing finals using the existing run journal."""
     records = latest_run_records(records)
     pending = {record.get("run_id") for record in records if record.get("status") == "incomplete" and record.get("run_id")}
     if not pending:
         return records
-    events = [event for event in _iter_events(events_file) if event.get("run_id") in pending]
+    events = [event for event in (_iter_events(events_file) if events is None else events)
+              if event.get("run_id") in pending]
     receipts = [event for event in events if event.get("mode") != "dry-run" and not event.get("dry_run") and (
         (event.get("event") == "application_result" and event.get("outcome") == "sent") or
         (event.get("event") == "decision" and event.get("decision") == "applied_auto"))]
@@ -1287,32 +1288,57 @@ def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile
         records = latest_run_records(read_json_records(path))
     except FileNotFoundError:
         records = []
-    try:
-        events = read_json_records(events_file or _destination()[0], strip_nuls=True)
-    except FileNotFoundError:
-        events = []
+    event_path = events_file or _destination()[0]
     view = direction_history.for_events(events_file, scope)
-    events = view.events(events)
-    owners = {e.get("run_id"): view.owner(e) for e in events if view.owner(e) is not None
-              and e.get("event") in {"search_started", "search_finished"}}
-    records = [dict(r, direction=r.get("direction") or owners.get(r.get("run_id"))) for r in records]
-    records = view.records(records)
-    events = view.records(events)
+    # Find candidate starts without decoding/attributing the entire journal.
+    # Read all matching run events, including late receipts; never truncate a run.
+    lifecycle = read_json_records(event_path, strip_nuls=True,
+        line_filter=lambda line: b"search_started" in line or b"search_finished" in line)
+    lifecycle = [e for e in lifecycle if e.get("event") in {"search_started", "search_finished"}]
+    cache = {}
+
+    def run_events(identity):
+        if identity not in cache:
+            spellings = {json.dumps(identity, ensure_ascii=ascii_only).encode("utf-8") for ascii_only in (True, False)}
+            rows = read_json_records(event_path, strip_nuls=True,
+                line_filter=lambda line: any(value in line for value in spellings))
+            cache[identity] = view.events([e for e in rows if e.get("run_id") == identity])
+        return cache[identity]
+
+    def owned(record, *, is_event=False):
+        if record.get("direction") or not view.directions:
+            return record
+        markers = [e for e in run_events(record.get("run_id"))
+                   if e.get("event") in {"search_started", "search_finished"}]
+        if is_event:
+            # Use this marker's normalized evidence. Other markers in the same
+            # run may have conflicting owners and cannot lend it their owner.
+            return next((e for e in markers if all(e.get(k) == value
+                         for k, value in record.items() if k != "direction")), record)
+        markers = [e for e in markers if view.owner(e) is not None]
+        return dict(record, direction=view.owner(markers[-1])) if markers else record
+
     searches = [r for r in records if r.get("kind") == "search" or r.get("mode") in {"search", "dry-run"}]
-    if run_id:
-        run = next((r for r in reversed(searches) if r.get("run_id") == run_id), None)
-    else:
-        run = searches[-1] if searches else None
-        latest_start = next((e for e in reversed(events) if e.get("event") == "search_started"), None)
+    run = next((row for r in reversed(searches) if (not run_id or r.get("run_id") == run_id)
+                and view.matches(row := owned(r))), None)
+    if not run_id:
+        latest_start = next((row for e in reversed(lifecycle) if e.get("event") == "search_started"
+                             and view.matches(row := owned(e, is_event=True))), None)
         if run and latest_start and latest_start.get("run_id") != run.get("run_id"):
             event_time = _parse_dt(latest_start.get("created_at"))
             history_time = _parse_dt(run.get("started_at") or run.get("created_at"))
             if event_time and history_time and event_time.timestamp() > history_time.timestamp():
-                # A surviving journal start can outlive a failed history append.
                 run = None
                 run_id = latest_start.get("run_id")
         if run:
             run_id = run.get("run_id")
+    if run_id:
+        events = view.records(run_events(run_id))
+    else:
+        # No checkpoint: choose the latest lifecycle in this direction, resolving
+        # legacy ownership from that run's evidence rather than the active view.
+        checkpoint = next((row for e in reversed(lifecycle) if view.matches(row := owned(e, is_event=True))), None)
+        events = view.records(run_events(checkpoint.get("run_id"))) if checkpoint else []
     if run is None:
         lifecycle = [e for e in events if e.get("event") in {"search_started", "search_finished"}
                      and (not run_id or e.get("run_id") == run_id)]
@@ -1324,7 +1350,7 @@ def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile
                "status": "incomplete" if checkpoint['event'] == 'search_started' else 'finished'}
         run_id = run.get("run_id")
     if run.get("status") == "incomplete":
-        run = reconcile_run_records([run], events_file=events_file)[0]
+        run = reconcile_run_records([run], events_file=events_file, events=events)[0]
     summary = build_run_summary(run, events, profile=profile)
     owner = view.owner(run)
     summary["direction_title"] = next((d["title"] for d in view.directions if d["name"] == owner), "направление не указано")

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import httpx
 
-from state_store.hh_response_counter import HHCounterRepository, observation_time, valid_snapshot
+from state_store.hh_response_counter import HHCounterProfileMismatch, HHCounterRepository, observation_time, valid_snapshot
 from state_store.hh_cookies import HHCookieRepository
 from state_store.json_store import file_lock
 
@@ -31,6 +31,19 @@ _COUNTERS_RE = re.compile(
 
 class HHResponseCounterError(RuntimeError):
     """Raised when HH counters cannot be fetched or parsed."""
+
+
+class HHResponseCounterProfileError(HHResponseCounterError):
+    """A copied/renamed profile needs an explicit owner repair."""
+
+
+def unavailable_text(error=None):
+    text = "Общий счётчик HH сейчас недоступен. "
+    if isinstance(error, HHResponseCounterProfileError):
+        return text + ("Сохранённые данные счётчика относятся к другому профилю. "
+                       "Попросите администратора проверить перенос профиля, затем повторите /hh_responses.")
+    return text + ("Повторите /hh_responses чуть позже. Если не поможет, выполните «Вход HH» "
+                   "и повторите проверку; если ошибка останется, сообщите администратору.")
 
 
 def parse_negotiations_page(page_html: str, *, expected_filter: str) -> dict:
@@ -170,7 +183,10 @@ def refresh(
     if not cookies:
         raise HHResponseCounterError("Сессия HH пуста или не найдена. Сначала выполните «Вход HH».")
     # Ticket before requests: later completion cannot roll back a newer refresh.
-    sequence = repository.begin(profile_name)
+    try:
+        sequence = repository.begin(profile_name)
+    except HHCounterProfileMismatch as exc:
+        raise HHResponseCounterProfileError("Сохранённый счётчик другого профиля; администратору нужно проверить перенос профиля.") from exc
     fetched_at = datetime.now().astimezone().isoformat(timespec="microseconds")
     negotiations_url = f"{base_url.rstrip('/')}/applicant/negotiations"
     with _authenticated_client(cookies_file, cookies=cookies) as client:
@@ -188,5 +204,8 @@ def refresh(
     with file_lock(cookie_repository.path):
         if cookie_repository._snapshot_unlocked()[1] != cookie_revision:
             raise HHResponseCounterError("Сессия HH изменилась во время обновления; повторите проверку.")
-        return save_snapshot(profile_name=profile_name, home_dir=home_dir,
-            active=active, archived=archived, fetched_at=fetched_at, refresh_sequence=sequence)
+        try:
+            return save_snapshot(profile_name=profile_name, home_dir=home_dir,
+                active=active, archived=archived, fetched_at=fetched_at, refresh_sequence=sequence)
+        except HHCounterProfileMismatch as exc:
+            raise HHResponseCounterProfileError("Сохранённый счётчик другого профиля; администратору нужно проверить перенос профиля.") from exc

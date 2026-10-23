@@ -9,7 +9,7 @@ import json
 import os
 import re
 import html
-from collections import deque
+from datetime import datetime
 
 import config
 import runtime_control
@@ -1757,44 +1757,37 @@ def _redact_log_text(text: str) -> str:
 
 
 def _tail_text_file(path: str, *, lines: int = 80, max_chars: int = 3600) -> str:
+    # Read a bounded suffix even when the process journal is hundreds of MB.
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            tail = deque(f, maxlen=max(1, int(lines)))
+        with open(path, "rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - max_chars * 4))
+            raw = stream.read(max_chars * 4)
     except OSError:
         return ""
-    text = "".join(tail).strip()
-    if len(text) > max_chars:
-        text = text[-max_chars:].lstrip()
-    return _redact_log_text(text)
+    if size > len(raw):
+        # The first line may begin in the middle of a UTF-8 character/record.
+        raw = raw.partition(b"\n")[2] if b"\n" in raw else raw
+    text = "\n".join(raw.decode("utf-8", errors="replace").splitlines()[-max(1, int(lines)):]).strip()
+    return _redact_log_text(text[-max_chars:].lstrip())
 
 
 def build_log_text(profile_name: str, *, kind: str, path: str, content: str, lines: int) -> str:
+    if not content.strip():
+        return "Журнал пока пуст."
     title = "💬 Лог чатов" if kind == "chat_log" else "📜 Лог поиска"
-    if not content:
-        return "\n".join([
-            title,
-            "",
-            f"📁 Профиль: {_pretty_profile_name(profile_name)}",
-            f"Файл: {path or 'не найден'}",
-            "",
-            "Лог пустой или файл ещё не создан.",
-        ])
-    return "\n".join([
-        title,
-        "",
-        f"📁 Профиль: {_pretty_profile_name(profile_name)}",
-        f"Файл: {path}",
-        f"Последние {lines} строк:",
-        "",
-        content,
-    ])
+    content = _redact_log_text(content)
+    # Admin diagnostics may contain useful technical lines, but never paths.
+    content = re.sub(r"(?<![\w:])(?:[A-Za-z]:[\\/]|/|\.\.?/|[\w.-]+/)[^\s<>\"']+", "[путь скрыт]", content)
+    return "\n".join([title, f"Последние {lines} строк:", "", content])
 
 
 def build_run_summary_text(summary, *, profile_name):
     if summary is None:
-        return "📊 Запуск не найден. История пока отсутствует.\n🧾 /raw_log"
+        return "Запусков пока не было."
     def safe(value):
-        return html.escape(str(value if value is not None else "неизвестно")[:180])
+        return str(value if value is not None else "неизвестно")[:180]
     states = {"success": "✅ успешно", "partial": "⚠ частично", "failed": "❌ ошибка",
               "incomplete": "⏳ не завершён / прерван", "unknown": "❔ неизвестно"}
     if summary.get("application_outcome") in {"no_applications", "dry_run"}:
@@ -1805,8 +1798,8 @@ def build_run_summary_text(summary, *, profile_name):
              f"Профиль: {safe(_pretty_profile_name(profile_name))}",
              f"Источники: {safe(', '.join(summary['sources']) or None)}",
              f"Итог: {states.get(summary['status'], '❔ неизвестно')}"]
-    lines.append(html.escape(format_run_observation(summary)))
-    lines.extend(html.escape(line) for line in format_run_losses(summary))
+    lines.append(format_run_observation(summary))
+    lines.extend(line for line in format_run_losses(summary))
     lines.append(f"Начало: {safe(summary['started_at'])}")
     if summary.get("stop_reason") == "RUN_LIMIT":
         lines.append("Остановлен по лимиту прогона.")
@@ -1825,7 +1818,7 @@ def build_run_summary_text(summary, *, profile_name):
         lines.append(f"{label}: {prefix}{safe(value)}")
     failure = summary.get("primary_failure")
     if summary.get("zero_apply_diagnosis"):
-        lines += ["", html.escape(summary["zero_apply_diagnosis"])]
+        lines += ["", summary["zero_apply_diagnosis"]]
     if failure:
         problem = "❔ Требуется ручная сверка" if failure.get("reason_code") == "apply_uncertain" else "❌ Основная проблема"
         lines += ["", problem, safe(failure['reason_code']),
@@ -1845,7 +1838,7 @@ def build_run_summary_text(summary, *, profile_name):
     if summary.get('artifacts'):
         lines += ["", "Debug artifacts:"]
         lines.extend(f"• {safe(ref['artifact_type'])}: {safe(ref['artifact_ref'])}" for ref in summary['artifacts'][:2])
-    lines += ["", "🧾 /raw_log · другой запуск: /log <run_id>"]
+    lines += ["", "🧾 /raw_log · другой запуск: /log run_id"]
     return "\n".join(lines)
 
 
@@ -1855,6 +1848,16 @@ def _format_counter_number(value: object) -> str:
     except (TypeError, ValueError):
         number = 0
     return f"{number:,}".replace(",", " ")
+
+
+def _counter_updated_at(value):
+    try:
+        stamp = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return "время неизвестно"
+    months = ("января", "февраля", "марта", "апреля", "мая", "июня",
+              "июля", "августа", "сентября", "октября", "ноября", "декабря")
+    return f"{stamp.day} {months[stamp.month - 1]} в {stamp:%H:%M}"
 
 
 def build_hh_response_count_text(snapshot: dict, *, home_dir: str | None = None) -> str:
@@ -1877,7 +1880,7 @@ def build_hh_response_count_text(snapshot: dict, *, home_dir: str | None = None)
                 if value['newer_partial']:
                     lines.append(f"{label}: последнее обновление неполное, показаны последние полные данные.")
                 if value['fetched_at']:
-                    lines.append(f"  Обновлено: {value['fetched_at'].replace('T', ' ', 1)}")
+                    lines.append(f"  Обновлено: {_counter_updated_at(value['fetched_at'])}")
             unknown = []
             for section, label in (("active", "активные"), ("archived", "архив")):
                 value = counts[section]
@@ -1911,7 +1914,7 @@ def build_hh_response_count_text(snapshot: dict, *, home_dir: str | None = None)
 
     fetched_at = str(snapshot.get("fetched_at") or "").strip()
     if fetched_at:
-        lines.append(f"Обновлено: {fetched_at.replace('T', ' ', 1)}")
+        lines.append(f"Обновлено: {_counter_updated_at(fetched_at)}")
     return "\n".join(lines)
 
 

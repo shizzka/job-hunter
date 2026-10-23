@@ -1,5 +1,7 @@
 """Direction-filtered read-only history screens and their bound navigation."""
+import asyncio
 import hashlib
+import logging
 import html
 import re
 from pathlib import Path
@@ -100,11 +102,31 @@ async def show(bot, chat_id, principal, profile_name, command, arg):
         runs = bot._recent_runs(profile_name, limit=5, scope=scope)
         texts = [f"🕓 Прогоны · {title}\n" + build_runs_text(runs)]
     elif command in {"/log", "/hunter_log"}:
-        summary = analytics.get_run_summary(None if scope != "active" or arg == "active" else arg or None,
-            events_file=profile.analytics_events_file, history_file=profile.run_history_file, profile=profile_name, scope=scope)
-        texts = [f"📊 Последний запуск · {title}\n" + build_run_summary_text(summary, profile_name=profile_name)]
-        if summary and scope == ALL:
-            texts[0] = f"Направление: {html.escape(summary['direction_title'])}\n" + texts[0]
+        selected_id = None if scope != "active" or arg == "active" else arg or None
+        summary = None
+        try:
+            summary = await asyncio.to_thread(analytics.get_run_summary, selected_id,
+                events_file=profile.analytics_events_file, history_file=profile.run_history_file,
+                profile=profile_name, scope=scope)
+            if summary is None:
+                text = ("Запуск не найден. Посмотрите последний запуск: /log." if selected_id
+                        else "Запусков пока не было.")
+            else:
+                visible = summary if principal.get("role") == "admin" else {**summary, "artifacts": []}
+                text = f"📊 Последний запуск · {view.title}\n" + build_run_summary_text(visible, profile_name=profile_name)
+                if scope == ALL:
+                    text = f"Направление: {summary['direction_title']}\n" + text
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Run summary unavailable: %s", type(exc).__name__)
+            summary = None
+            text = "Не удалось прочитать сводку запуска. Повторите /log чуть позже; если не поможет, сообщите администратору."
+        # One reply also gives an unambiguous empty/error state.
+        if summary is not None:
+            await bot._send_text(chat_id, f"История запусков · {view.title}", reply_markup=bot._menu_reply_markup(principal))
+            await bot._send_text(chat_id, text, reply_markup=markup(profile.home_dir, command))
+        else:
+            await bot._send_text(chat_id, text, reply_markup=bot._menu_reply_markup(principal))
+        return
     elif command in {"/chat_log", "/hunter_chat_log"}:
         _, legacy = bot._log_tail(profile_name, kind="chat_log")
         texts = [chat_text(profile.home_dir, view, legacy)]

@@ -320,6 +320,8 @@ def test_chat_journal_uses_b22_owner_even_when_another_direction_is_active(accou
 @pytest.mark.parametrize("command", ["/stats", "/digest", "/research", "/runs", "/log", "/chat_log", "/direction_stats", "/seen_reset"])
 def test_history_screens_name_active_direction_and_offer_totals(account, monkeypatch, command):
     home, select = account
+    if command == "/log":
+        write(home / "run_history.jsonl", [{"kind": "search", "run_id": "qa-run", "direction": "qa", "ok": True}])
     profile = SimpleNamespace(home_dir=str(home), analytics_events_file=config.ANALYTICS_EVENTS_FILE,
         run_history_file=config.RUN_HISTORY_FILE, seen_file=config.SEEN_VACANCIES_FILE, log_file=str(home / "job-hunter.log"))
     bot = telegram_bot.TelegramBot("synthetic")

@@ -80,7 +80,7 @@ def append_text(path, text, *, durable=False):
     append_bytes(path, text.encode("utf-8", errors="replace"), durable=durable, rollback=False)
 
 
-def read_json_records(path, *, strip_nuls=False):
+def read_json_records(path, *, strip_nuls=False, line_filter=None):
     """Read one locked inode; retain, but skip malformed diagnostic records."""
     try:
         stream = open(path, "rb")
@@ -92,6 +92,8 @@ def read_json_records(path, *, strip_nuls=False):
         for line in stream:
             if strip_nuls:
                 line = line.replace(b"\x00", b"")
+            if line_filter is not None and not line_filter(line):
+                continue
             try:
                 value = json.loads(line)
             except (ValueError, UnicodeError):

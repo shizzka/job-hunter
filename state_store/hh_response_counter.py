@@ -5,6 +5,10 @@ from pathlib import Path
 from .protected import ProtectedJsonStore
 
 
+class HHCounterProfileMismatch(ValueError):
+    """Saved counter identity cannot be reused by another profile."""
+
+
 def observation_time(value):
     if not isinstance(value, str) or not value:
         raise ValueError("Invalid HH counter observation time")
@@ -58,7 +62,7 @@ class HHCounterRepository:
             nonlocal sequence
             previous = self.snapshot._load_unlocked()  # Same stable sidecar already held.
             if (previous and previous["profile"] != profile_name) or order.get("profile", profile_name) != profile_name:
-                raise ValueError("HH counter profile does not match its destination")
+                raise HHCounterProfileMismatch("HH counter profile does not match its destination")
             sequence = max(order["issued"], previous.get("refresh_sequence", 0)) + 1
             order["issued"] = sequence
             order["profile"] = profile_name
@@ -73,10 +77,10 @@ class HHCounterRepository:
             if sequence > order["issued"]:
                 raise ValueError("HH counter refresh sequence was not issued")
             if order.get("profile") != current["profile"]:
-                raise ValueError("HH counter refresh profile changed")
+                raise HHCounterProfileMismatch("HH counter refresh profile changed")
             if previous:
                 if previous["profile"] != current["profile"]:
-                    raise ValueError("HH counter profile does not match its destination")
+                    raise HHCounterProfileMismatch("HH counter profile does not match its destination")
                 if sequence <= previous.get("refresh_sequence", 0) or (enforce_timestamp and
                         observation_time(current["fetched_at"]) < observation_time(previous["fetched_at"])):
                     return previous

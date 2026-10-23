@@ -305,3 +305,14 @@ def test_refresh_captures_absolute_destination_before_requests(refresh_fixture, 
     assert counter.refresh(profile_name="synthetic", home_dir="original", cookies_file=str(path))["active"] == 10
     assert (original / counter.SNAPSHOT_FILENAME).exists()
     assert not (other / "original").exists()
+
+
+def test_b32_copied_profile_counter_is_explained_without_rebinding_or_requests(refresh_fixture):
+    home, path, calls, _ = refresh_fixture
+    save(home)  # A copied profile retains the source profile's identity.
+    repo = HHCounterRepository(home / counter.SNAPSHOT_FILENAME)
+    before = {p: p.read_bytes() for p in (repo.path, repo.order.path)}
+    with pytest.raises(counter.HHResponseCounterError, match="другого профиля"):
+        counter.refresh(profile_name="copied", home_dir=str(home), cookies_file=str(path))
+    assert calls == []
+    assert {p: p.read_bytes() for p in before} == before

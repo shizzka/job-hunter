@@ -739,7 +739,7 @@ class TelegramBot(
         kind: str = "log",
         lines: int = 80,
     ) -> None:
-        if profile_access.current_scope()[1] or principal.get("role") == telegram_access.ROLE_TESTER:
+        if profile_access.current_scope()[1] or principal.get("role") != telegram_access.ROLE_ADMIN:
             raise PermissionError("Сырой лог недоступен. /log — записи направления QA.")
         path, content = self._log_tail(profile_name, kind=kind, lines=lines)
         await self._send_text(
@@ -749,14 +749,8 @@ class TelegramBot(
         )
 
     async def _send_run_summary(self, chat_id, principal, *, profile_name, run_id=None):
-        profile = self._profile(profile_name)
-        try:
-            summary = analytics.get_run_summary(run_id, events_file=profile.analytics_events_file,
-                history_file=profile.run_history_file, profile=profile_name)
-            text = build_run_summary_text(summary, profile_name=profile_name)
-        except OSError:
-            text = "📊 Запуск: данные недоступны. Попробуйте /raw_log."
-        await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal))
+        from telegram_app import history
+        await history.show(self, chat_id, principal, profile_name, "/log", run_id or "")
 
     def _update_profile_schedule(self, profile_name: str, *, search_interval_min: int, invite_check_interval_min: int | None = None) -> str:
         invite_minutes = search_interval_min if invite_check_interval_min is None else invite_check_interval_min
@@ -3308,17 +3302,17 @@ class TelegramBot(
                 )
             except hh_response_counter.HHResponseCounterError as exc:
                 log.warning("HH response counter failed for profile %s: %s", profile_name, exc)
-                counter_error = f"❌ Не удалось обновить счётчик HH:\n{exc}"
+                counter_error = hh_response_counter.unavailable_text(exc)
                 snapshot = None
             except Exception:
                 log.exception("Unexpected HH response counter failure for %s", profile_name)
-                counter_error = "❌ Не удалось обновить счётчик HH. Подробности записаны в лог бота."
+                counter_error = hh_response_counter.unavailable_text()
                 snapshot = None
             if snapshot is None:
                 text = counter_error
                 if DirectionView(target_profile.home_dir).directions:
                     text = (build_hh_response_count_text({}, home_dir=target_profile.home_dir) +
-                            "\n\nОбщий счётчик HH сейчас недоступен.")
+                            "\n\n" + counter_error)
                 await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal))
                 return
 
@@ -3373,8 +3367,8 @@ class TelegramBot(
             return
 
         if command == "/raw_log":
-            if role == telegram_access.ROLE_TESTER:
-                await self._send_text(chat_id, "🔒 Сырой лог недоступен. /log — записи направления QA.")
+            if role != telegram_access.ROLE_ADMIN:
+                await self._send_run_summary(chat_id, principal, profile_name=profile_name)
                 return
             await self._send_log_tail(chat_id, principal, profile_name=profile_name, kind="log")
             return

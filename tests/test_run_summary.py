@@ -233,7 +233,7 @@ def test_foreign_run_failure_cannot_mutate_active_search(runtime):
     assert 'failure_id' not in rows[-1]
 
 
-def test_artifacts_are_references_and_html_escaped():
+def test_artifacts_are_references_and_rendered_as_plain_text():
     event = {"event": "debug_artifact", "run_id": "run-a", "artifact_type": "screenshot",
              "artifact_ref": "trace/<synthetic>.png", "source": "hh", "vacancy_id": "1",
              "raw_html": "private page content", "cookie": "secret-cookie"}
@@ -241,7 +241,9 @@ def test_artifacts_are_references_and_html_escaped():
     assert len(summary["artifacts"]) == 1
     assert "raw_html" not in summary["artifacts"][0]
     text = build_run_summary_text(summary, profile_name="<qa>")
-    assert "trace/&lt;synthetic&gt;.png" in text
+    assert "trace/<synthetic>.png" in text
+    assert "Профиль: <qa>" in text
+    assert "&lt;" not in text
     assert "private page content" not in text and "secret-cookie" not in text
 
 
