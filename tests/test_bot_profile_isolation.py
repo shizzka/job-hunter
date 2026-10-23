@@ -394,3 +394,59 @@ def test_queue_replay_rebinds_owner_and_refuses_revoked_tester(tester, monkeypat
         bot._start_cli_command.assert_not_awaited()
         assert 'доступ изменились' in bot._send_text.call_args.args[1]
     asyncio.run(scenario())
+
+
+def test_supervised_polling_recovers_slow_tester_menu_and_keeps_access_checks(tester, monkeypatch):
+    """Offline integration: poll -> real routing/scopes -> stalled send -> next menu."""
+    bot, principal = tester
+    polls, sent = [], []
+    monkeypatch.setattr(config, 'TELEGRAM_CONTROL_BOT_TOKEN', 'synthetic')
+    monkeypatch.setattr(runtime_control, 'register_current_process', lambda *a, **k: None)
+    monkeypatch.setattr(runtime_control, 'unregister_current_process', lambda *a, **k: None)
+    monkeypatch.setattr(bot, 'UPDATE_TIMEOUT_SECONDS', 0.04)
+    monkeypatch.setattr(bot, 'SLOW_UPDATE_SECONDS', 0.01)
+    bot.drop_pending = False
+
+    def message(number, text):
+        return {'update_id': number, 'message': {'chat': {'id': 202, 'type': 'private'},
+                                                'from': {'id': 202}, 'text': text}}
+
+    async def poll():
+        polls.append(True)
+        if len(polls) == 1:
+            return [message(1, '/menu'), message(2, '/profile synthetic-dev')]
+        if len(polls) == 2:
+            return [message(3, '/help'), {'update_id': 4, 'callback_query': {
+                'id': 'synthetic', 'from': {'id': 202}, 'data': 'chat_ai:synthetic-dev:123:456',
+                'message': {'chat': {'id': 202, 'type': 'private'}, 'message_id': 1}}}]
+        bot._stop_event.set()
+        return []
+
+    async def send(chat_id, text, **kwargs):
+        assert access.current_scope() == ('qa-dev', 'qa', '202')
+        assert bot._profile_names() == ['qa-dev']
+        sent.append(text)
+        if len(sent) == 1:
+            await asyncio.Event().wait()
+        return {}
+
+    async def maintenance():
+        assert not access.current_scope()[0]
+
+    async def scenario():
+        monkeypatch.setattr(asyncio.get_running_loop(), 'add_signal_handler', lambda *a: None)
+        monkeypatch.setattr(bot, '_get_updates', poll)
+        monkeypatch.setattr(bot, '_send_text', send)
+        monkeypatch.setattr(bot, '_maybe_send_daily_summary', maintenance)
+        monkeypatch.setattr(bot, '_maybe_send_health_alert', maintenance)
+        bot._start_chat_ai_reply = AsyncMock()
+        await asyncio.wait_for(bot.run(), timeout=2)
+        assert not access.current_scope()[0]
+        bot._start_chat_ai_reply.assert_not_awaited()
+
+    asyncio.run(scenario())
+    assert len(polls) == 3
+    assert len(sent) == 3
+    assert '🔒' in sent[1]
+    assert 'qa-dev' in sent[2]
+    assert 'недоступен' in bot._answer_callback_query.call_args.args[1]

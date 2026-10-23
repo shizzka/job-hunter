@@ -52,6 +52,7 @@ from telegram_app.forms import TelegramFormEditor
 from telegram_app.directions import TelegramDirections
 from telegram_app.chat_ownership import TelegramChatOwnership
 from telegram_app.command_queue import TelegramCommandQueue, profile_command, current_entry
+from telegram_app.updates import TelegramUpdateSupervisor
 from telegram_app.subprocesses import (
     ActiveCommandState,
     TelegramSubprocessManager,
@@ -242,6 +243,7 @@ def _build_chat_ai_candidates_markup(profile_name: str, summary: dict, *, home_d
 
 
 class TelegramBot(
+    TelegramUpdateSupervisor,
     TelegramAPIClient,
     TelegramSubprocessManager,
     TelegramCommandQueue,
@@ -275,6 +277,7 @@ class TelegramBot(
         self._last_poll_runtime_at: float | None = None
         self._llm_test_next_at = 0.0
         self._llm_test_lock = asyncio.Lock()
+        self._foreground_task: asyncio.Task | None = None
 
     async def run(self) -> None:
         if not config.TELEGRAM_CONTROL_BOT_TOKEN:
@@ -286,6 +289,8 @@ class TelegramBot(
             expected_tokens=runtime_control.BOT_TOKENS,
         )
         self._write_runtime("bot_start", "Бот Telegram запущен", "idle")
+        log.info("Telegram consumer started profile=%s log_file=%s update_timeout=%ss",
+                 self.profile_name, self.runtime_paths.bot_log_file, self.UPDATE_TIMEOUT_SECONDS)
 
         loop = asyncio.get_running_loop()
         shutdown_task: asyncio.Task | None = None
@@ -309,6 +314,8 @@ class TelegramBot(
             # Cancel only the request: shared sessions must remain open for notices.
             if polling_task is not None:
                 polling_task.cancel()
+            if self._foreground_task is not None and not self._foreground_task.cancelling():
+                self._foreground_task.cancel()
             if shutdown_task is None:
                 shutdown_task = loop.create_task(self._shutdown_command_queue())
 
@@ -331,12 +338,13 @@ class TelegramBot(
                     break
                 self._record_poll_result()
                 for update in updates:
-                    await self._handle_update(update)
-                await self._maybe_send_daily_summary()
-                try:
-                    await self._maybe_send_health_alert()
-                except Exception as exc:
-                    log.warning("health check failed: %s", telegram_error_summary(exc))
+                    if self._stop_event.is_set():
+                        break
+                    await self._run_update(update)
+                for handler in (self._maybe_send_daily_summary, self._maybe_send_health_alert):
+                    if self._stop_event.is_set():
+                        break
+                    await self._run_foreground(handler)
         finally:
             if shutdown_task is not None:
                 await shutdown_task

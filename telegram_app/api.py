@@ -149,7 +149,9 @@ class TelegramAPIClient:
             f"https://api.telegram.org/"
             f"bot{config.TELEGRAM_CONTROL_BOT_TOKEN}/{method}"
         )
-        async with session.post(url, json=payload) as response:
+        # Sessions are cached by route, not timeout. Bootstrap commonly creates
+        # one with a 20s default; every operation must supply its own deadline.
+        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
             data = await response.json(content_type=None)
             if response.status != 200 or not data.get("ok", False):
                 raise TelegramAPIError(method, response.status, data)
@@ -178,7 +180,7 @@ class TelegramAPIClient:
     async def _download_file_once(self, file_path: str, *, use_proxy: bool) -> bytes:
         session = await self._get_session(use_proxy, timeout=120)
         url = f"https://api.telegram.org/file/bot{config.TELEGRAM_CONTROL_BOT_TOKEN}/{file_path}"
-        async with session.get(url) as response:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as response:
             if response.status != 200:
                 raise TelegramAPIError("downloadFile", response.status)
             return await response.read()
@@ -253,7 +255,7 @@ class TelegramAPIClient:
             filename=filename,
             content_type="text/markdown; charset=utf-8",
         )
-        async with session.post(url, data=form) as response:
+        async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=120)) as response:
             data = await response.json(content_type=None)
             if response.status != 200 or not data.get("ok", False):
                 raise TelegramAPIError("sendDocument", response.status, data)

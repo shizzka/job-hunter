@@ -195,7 +195,7 @@ def test_api_request_once_uses_bot_endpoint(monkeypatch):
     assert session.calls == [
         (
             "https://api.telegram.org/bottest-token/getUpdates",
-            {"json": {"timeout": 4}},
+            {"json": {"timeout": 4}, "timeout": telegram_api.aiohttp.ClientTimeout(total=24)},
         )
     ]
 
@@ -375,3 +375,30 @@ def test_close_sessions_closes_open_sessions_and_clears_cache():
     assert open_session.close_calls == 1
     assert closed_session.close_calls == 0
     assert client._sessions == {}
+
+
+@pytest.mark.parametrize("operation,total", [("api", 0.015), ("download", 120), ("document", 120)])
+def test_reused_session_honors_each_request_timeout(monkeypatch, operation, total):
+    """The bootstrap/poll session timeout must not override later requests."""
+    client = TelegramAPIClient()
+
+    class Session(_FakeSession):
+        def get(self, url, **kwargs):
+            return self.post(url, **kwargs)
+
+    session = Session(_FakeResponse(200, {"ok": True, "result": {}}))
+    client._sessions[False] = session
+
+    async def scenario():
+        if operation == "api":
+            await client._api_request_once("getMe", {}, use_proxy=False, timeout=total)
+        elif operation == "download":
+            async def read():
+                return b"file"
+            session.response.read = read
+            await client._download_file_once("synthetic", use_proxy=False)
+        else:
+            await client._send_document_once(1, filename="x", content=b"x", caption="", reply_markup=None, use_proxy=False)
+
+    asyncio.run(scenario())
+    assert session.calls[0][1]["timeout"].total == total

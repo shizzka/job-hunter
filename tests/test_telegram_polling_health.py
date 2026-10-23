@@ -234,7 +234,7 @@ def test_signal_interrupts_pending_poll_before_closing_notification_session(bot,
         class Session:
             closed = False
 
-            def post(self, url, *, json):
+            def post(self, url, *, json, timeout):
                 return Response(url.rsplit("/", 1)[-1], json)
 
             async def close(self):
