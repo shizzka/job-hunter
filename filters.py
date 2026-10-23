@@ -127,12 +127,22 @@ def _soft_match(title: str, combined: str, keywords) -> bool:
 
 
 def _excluded(keyword: str, combined: str) -> bool:
+    """Match adjacent whole words, allowing Russian suffixes on long words.
+
+    Hyphens delimit words but stay literal when included in an exclusion.
+    Existing stems (e.g. «уборщ») and phrases need no list migration.
+    """
     keyword = str(keyword or "").casefold().strip()
     if not keyword:
         return False
-    if len(keyword) <= 3:  # «HR», «QA»: a whole word, not a part of «through»/«chrome»
-        return re.search(r"(?<![a-zа-я0-9])" + re.escape(keyword) + r"(?![a-zа-я0-9])", combined) is not None
-    return keyword in combined
+    parts = []
+    for token in re.findall(r"\w+|\s+|[^\w\s]+", keyword):
+        if token.isspace():
+            parts.append(r"\s+")
+        else:
+            suffix = r"[а-яё]*" if re.fullmatch(r"[а-яё]{4,}", token) else ""
+            parts.append(re.escape(token) + suffix)
+    return re.search(r"(?<!\w)" + "".join(parts) + r"(?!\w)", combined) is not None
 
 
 def check_vacancy(vacancy: dict) -> str | None:
