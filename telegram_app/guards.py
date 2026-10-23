@@ -7,6 +7,8 @@ import hashlib
 import time
 from contextvars import ContextVar
 
+import telegram_access
+
 _read_workers = ContextVar("read_workers", default=None)
 
 
@@ -16,8 +18,6 @@ async def read_thread(fn, *args, **kwargs):
     if workers is not None:
         workers.append(task)
     return await asyncio.shield(task)
-
-import telegram_access
 
 BUSY = "Уже считаю, подождите пару секунд"
 DONE = "Уже сделано"
@@ -49,6 +49,12 @@ def release(bot, key, cooldown=0):
         slots[key] = time.monotonic() + cooldown
     else:
         slots.pop(key, None)
+
+
+def release_entry(bot, entry):
+    # An old launch's finally must not release a newer request with the same key.
+    key, entry.request_key = entry.request_key, None
+    release(bot, key)
 
 
 def read_command(fn):
@@ -85,7 +91,8 @@ def read_command(fn):
 
 def read_callback(data):
     parts = str(data).split(":")
-    return (parts[0] in {"hist", "gs"}
+    return (parts[0] == "hist"
+            or parts[0] == "gs" and len(parts) > 1 and parts[1] in {"auto", "dirs", "resumes", "check"}
             or parts[0] == "dir" and len(parts) > 2 and parts[2] in {
                 "stats", "list"}
             or parts[0] == "rq" and len(parts) > 1 and parts[1] in {"p", "u", "o", "d"}

@@ -16,7 +16,7 @@ from state_store.locking import acquire_flock
 
 _FIELDS = set('''event created_at run_id vacancy_id application_id source decision outcome
 status status_bucket status_detail_bucket direction direction_title hh_resume_hash
-hh_resume_numeric_id requested_resume_id resume_id resumeId variant_text_sha256 text_sha256
+hh_resume_numeric_id requested_resume_id resume_id resumeId resume_variant variant_text_sha256 text_sha256
 matcher_resume_sha256 cover_letter_resume_sha256 _resume_input_versions _direction_selection
 search_query _search_query query reason_code reason_group note score cluster cover_style
 retry_reason retry_outcome funnel applied mode dry_run title company fetched_at kind vacancyId
@@ -46,6 +46,8 @@ def ownership_key(view):
 
 
 def project(row):
+    if row.get("event") in {"search_started", "search_finished"}:
+        return dict(row)
     result = {k: v for k, v in row.items() if k in _FIELDS}
     if isinstance(row.get('vacancy'), dict):
         result['vacancy'] = {k: v for k, v in row['vacancy'].items() if k in _IDENTITY}

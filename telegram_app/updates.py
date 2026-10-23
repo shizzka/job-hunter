@@ -1,4 +1,4 @@
-"""Bound foreground Telegram work without changing update order or access scope."""
+"""Supervise Telegram work while independent reads leave the polling FIFO."""
 from __future__ import annotations
 
 import asyncio

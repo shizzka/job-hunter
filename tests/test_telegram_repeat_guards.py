@@ -141,7 +141,7 @@ def test_llm_calls_not_duplicated_running_or_queued(monkeypatch, tmp_path, comma
 
 @pytest.mark.parametrize('data', ['dir:token:deleteyes', 'dir:token:autoyes', 'manual_apply:qa:token',
                                    'chat_send:qa:123:456', 'gf:send:qa:token:proof',
-                                   'manual_feedback:qa:token:reject', 'sr:do:all:all:proof'])
+                                   'manual_feedback:qa:token:reject', 'sr:do:all:all:proof', 'gs:confirm', 'gs:search'])
 def test_action_claim_is_atomic_and_survives_stale_message_restart(menu_bot, monkeypatch, data):
     bot, _ = menu_bot
     principal = {'user_id': 42, 'role': 'user', 'profile': 'qa'}
@@ -304,4 +304,48 @@ def test_other_read_command_during_stats_has_own_slot(menu_bot, monkeypatch):
         finally:
             finish.set()
             await stats
+    asyncio.run(scenario())
+
+
+def test_finishing_old_launch_cannot_release_new_preview_admission(monkeypatch, tmp_path):
+    """A fast runner can finish while its original markup request still awaits."""
+    import chat_context
+    import runtime_control
+    monkeypatch.setattr(chat_context, 'safe_resolve', lambda *args: SimpleNamespace(
+        status=chat_context.OWN, resume_id='1', direction='', owner_profile=''))
+    async def scenario():
+        bot, _, _, _ = real_bot(monkeypatch, tmp_path)
+        monkeypatch.setattr(bot, '_authorize_ai_usage', AsyncMock(return_value=True))
+        monkeypatch.setattr(bot, '_answer_callback_query', AsyncMock())
+        outer_wait, release_outer, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        edits, captures = [], []
+        async def edit(*args, **kwargs):
+            edits.append(True)
+            if len(edits) == 2:
+                outer_wait.set()
+                await release_outer.wait()
+        async def capture(argv, **kwargs):
+            captures.append(argv)
+            if len(captures) > 1:
+                await finish.wait()
+            return {'ok': False, 'stdout': '', 'stderr': ''}
+        monkeypatch.setattr(bot, '_edit_reply_markup', edit)
+        monkeypatch.setattr(runtime_control, 'run_command_capture', capture)
+        callback = source('token')
+        callback['data'] = 'chat_ai_any:qa:123:456'
+        first = asyncio.create_task(bot._handle_callback_query(callback))
+        await asyncio.wait_for(outer_wait.wait(), 2)
+        await spin_until(lambda: not bot._active_commands)
+        await bot._handle_callback_query({**callback, 'id': 'second'})
+        assert bot._queue_length('qa') == 1
+        release_outer.set()
+        await first
+        await bot._handle_callback_query({**callback, 'id': 'third'})
+        assert bot._answer_callback_query.call_args.args[1] == guards.BUSY
+        assert bot._queue_length('qa') <= 1
+        await spin_until(lambda: len(captures) == 2)
+        assert bot._queue_length('qa') == 0
+        finish.set()
+        await spin_until(lambda: not bot._active_commands and not bot._queue_drainers)
+        await bot._shutdown_command_queue()
     asyncio.run(scenario())

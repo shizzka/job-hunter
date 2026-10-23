@@ -155,3 +155,24 @@ def test_large_synthetic_summary_before_after(tmp_path, capsys):
         print(f'BENCH summary {read_before / 1_000_000:.1f} MB / {count} events: '
               f'before={old_seconds:.4f}s cold={cold_seconds:.4f}s cached={hit_seconds:.6f}s '
               f'append={append_seconds:.4f}s; append_read={appended_bytes} bytes; cached_read=0 bytes')
+
+
+def test_projection_preserves_conversion_dimensions_and_lifecycle_report(tmp_path):
+    from run_summary import build_run_summary
+    from tests.test_run_summary import finished_run
+    path = tmp_path / 'analytics_events.jsonl'
+    write(path, [decision(resume_variant='control', search_query='query', cover_style='short',
+                          retry_reason='manual', cluster='qa'),
+                 decision(vacancy_id='2', decision='manual_questions', resume_variant='test'),
+                 dict(event='negotiation_status', vacancy_id='1', source='hh',
+                      created_at='2026-10-23T09:00:00+00:00', status_bucket='positive',
+                      status_detail_bucket='interview')])
+    assert analytics.summarize(events_file=str(path), all_time=True) == analytics._summarize(events_file=str(path), all_time=True)
+    lifecycle = {**finished_run(), 'event': 'search_finished', 'created_at': '2026-10-23T09:00:00+00:00'}
+    write(path, [lifecycle])
+    result = analytics.get_run_summary(events_file=str(path), history_file=str(tmp_path / 'missing'))
+    expected = build_run_summary({**lifecycle, 'status': 'finished', 'started_at': lifecycle.get('started_at')}, [lifecycle])
+    assert result['counters'] == expected['counters']
+    assert result['duration_seconds'] == expected['duration_seconds']
+    assert result['started_at'] == expected['started_at']
+    assert result['finished_at'] == expected['finished_at']
