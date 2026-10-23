@@ -80,15 +80,14 @@ def append_text(path, text, *, durable=False):
     append_bytes(path, text.encode("utf-8", errors="replace"), durable=durable, rollback=False)
 
 
-def read_json_records(path, *, strip_nuls=False, line_filter=None):
-    """Read one locked inode; retain, but skip malformed diagnostic records."""
+def iter_json_records(path, *, strip_nuls=False, line_filter=None):
+    """Stream one locked inode; retain, but skip malformed diagnostic records."""
     try:
         stream = open(path, "rb")
     except FileNotFoundError:
-        return []
+        return
     with stream:
         acquire_flock(stream.fileno(), fcntl.LOCK_SH)
-        records = []
         for line in stream:
             if strip_nuls:
                 line = line.replace(b"\x00", b"")
@@ -99,5 +98,9 @@ def read_json_records(path, *, strip_nuls=False, line_filter=None):
             except (ValueError, UnicodeError):
                 continue
             if isinstance(value, dict):
-                records.append(value)
-        return records
+                yield value
+
+
+def read_json_records(path, *, strip_nuls=False, line_filter=None):
+    """Read one locked inode; retain, but skip malformed diagnostic records."""
+    return list(iter_json_records(path, strip_nuls=strip_nuls, line_filter=line_filter))

@@ -19,7 +19,7 @@ import resume_versions
 import direction_history
 from state_store.json_store import JsonStore
 from state_store.locking import acquire_flock
-from state_store.private_journal import append_json, read_json_records
+from state_store.private_journal import append_json, iter_json_records, read_json_records
 from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket, application_outcome
 
 log = logging.getLogger("analytics")
@@ -1290,40 +1290,39 @@ def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile
         records = []
     event_path = events_file or _destination()[0]
     view = direction_history.for_events(events_file, scope)
-    # Find candidate starts without decoding/attributing the entire journal.
-    # Read all matching run events, including late receipts; never truncate a run.
-    lifecycle = read_json_records(event_path, strip_nuls=True,
-        line_filter=lambda line: b"search_started" in line or b"search_finished" in line)
-    lifecycle = [e for e in lifecycle if e.get("event") in {"search_started", "search_finished"}]
-    cache = {}
+    # Resolve every candidate from compact evidence in one journal pass. The
+    # second pass loads the selected run in full, including its late receipts.
+    lifecycle = []
+    def ownership_events():
+        for event in iter_json_records(event_path, strip_nuls=True, line_filter=lambda line:
+                b"search_started" in line or b"search_finished" in line
+                or bool(view.directions) and b'"decision"' in line):
+            if run_id and event.get("run_id") != run_id:
+                continue
+            if event.get("event") in {"search_started", "search_finished"}:
+                lifecycle.append(event)
+            yield event
+    owners = view.run_owners(ownership_events())
+    lifecycle = [view.bind_run_owner(e, owners) for e in lifecycle]
+    marker_owners = {e.get("run_id"): view.owner(e) for e in lifecycle if view.owner(e) is not None}
 
     def run_events(identity):
-        if identity not in cache:
-            spellings = {json.dumps(identity, ensure_ascii=ascii_only).encode("utf-8") for ascii_only in (True, False)}
-            rows = read_json_records(event_path, strip_nuls=True,
-                line_filter=lambda line: any(value in line for value in spellings))
-            cache[identity] = view.events([e for e in rows if e.get("run_id") == identity])
-        return cache[identity]
+        spellings = {json.dumps(identity, ensure_ascii=ascii_only).encode("utf-8") for ascii_only in (True, False)}
+        rows = read_json_records(event_path, strip_nuls=True,
+            line_filter=lambda line: any(value in line for value in spellings))
+        return view.events([e for e in rows if e.get("run_id") == identity])
 
-    def owned(record, *, is_event=False):
+    def owned(record):
         if record.get("direction") or not view.directions:
             return record
-        markers = [e for e in run_events(record.get("run_id"))
-                   if e.get("event") in {"search_started", "search_finished"}]
-        if is_event:
-            # Use this marker's normalized evidence. Other markers in the same
-            # run may have conflicting owners and cannot lend it their owner.
-            return next((e for e in markers if all(e.get(k) == value
-                         for k, value in record.items() if k != "direction")), record)
-        markers = [e for e in markers if view.owner(e) is not None]
-        return dict(record, direction=view.owner(markers[-1])) if markers else record
+        return dict(record, direction=marker_owners.get(record.get("run_id")))
 
     searches = [r for r in records if r.get("kind") == "search" or r.get("mode") in {"search", "dry-run"}]
     run = next((row for r in reversed(searches) if (not run_id or r.get("run_id") == run_id)
                 and view.matches(row := owned(r))), None)
     if not run_id:
-        latest_start = next((row for e in reversed(lifecycle) if e.get("event") == "search_started"
-                             and view.matches(row := owned(e, is_event=True))), None)
+        latest_start = next((e for e in reversed(lifecycle) if e.get("event") == "search_started"
+                             and view.matches(e)), None)
         if run and latest_start and latest_start.get("run_id") != run.get("run_id"):
             event_time = _parse_dt(latest_start.get("created_at"))
             history_time = _parse_dt(run.get("started_at") or run.get("created_at"))
@@ -1337,7 +1336,7 @@ def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile
     else:
         # No checkpoint: choose the latest lifecycle in this direction, resolving
         # legacy ownership from that run's evidence rather than the active view.
-        checkpoint = next((row for e in reversed(lifecycle) if view.matches(row := owned(e, is_event=True))), None)
+        checkpoint = next((e for e in reversed(lifecycle) if view.matches(e)), None)
         events = view.records(run_events(checkpoint.get("run_id"))) if checkpoint else []
     if run is None:
         lifecycle = [e for e in events if e.get("event") in {"search_started", "search_finished"}

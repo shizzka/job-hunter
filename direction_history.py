@@ -118,26 +118,44 @@ class HistoryScope:
     def records(self, records):
         return [r for r in records if self.matches(r)]
 
-    def events(self, records):
-        """Recover lifecycle/status ownership only from an unambiguous join."""
-        records = [dict(r) for r in records]
-        run_owners, lifecycle_owners, vacancy_owners, application_resumes = {}, {}, {}, {}
+    def run_owners(self, records):
+        """Collect compact ownership evidence in one pass, including ambiguity."""
+        run_owners, lifecycle_owners = {}, {}
         for r in records:
+            if not r.get("run_id") or r.get("event") not in {"decision", "search_started", "search_finished"}:
+                continue
             owner = self.owner(r)
-            if r.get("run_id") and (r.get("event") == "decision" or
-                    r.get("event") in {"search_started", "search_finished"} and owner is not None):
+            if r["event"] == "decision" or owner is not None:
                 run_owners.setdefault(r["run_id"], set()).add(owner)
-            if r.get("run_id") and r.get("event") in {"search_started", "search_finished"} and owner is not None:
+            if r["event"] != "decision" and owner is not None:
                 lifecycle_owners.setdefault(r["run_id"], set()).add(owner)
-            if r.get("event") == "decision" and r.get("decision") == "applied_auto":
-                key = vacancy_key(r)
-                vacancy_owners.setdefault(key, set()).add(owner)
-                metadata = self.metadata(r)
-                if metadata["hh_resume_hash"] or metadata["hh_resume_numeric_id"]:
-                    application_resumes.setdefault(key, set()).add((metadata["hh_resume_hash"], metadata["hh_resume_numeric_id"]))
         for run, owners in lifecycle_owners.items():
             if len(owners) == 1 and (run_owners.get(run, set()) - {None}) <= owners:
                 run_owners[run] = owners
+        return run_owners
+
+    def bind_run_owner(self, record, run_owners):
+        """Join only an unambiguous run; keep contradictory identities intact."""
+        if self.owner(record) is not None or record.get("direction") or any(record.get(k) for k in (
+                "resume_id", "resumeId", "requested_resume_id", "hh_resume_hash", "hh_resume_numeric_id")):
+            return record
+        candidates = run_owners.get(record.get("run_id"), set())
+        if len(candidates) == 1 and None not in candidates:
+            return dict(record, direction=next(iter(candidates)))
+        return record
+
+    def events(self, records):
+        """Recover lifecycle/status ownership only from an unambiguous join."""
+        records = [dict(r) for r in records]
+        run_owners = self.run_owners(records)
+        vacancy_owners, application_resumes = {}, {}
+        for r in records:
+            if r.get("event") == "decision" and r.get("decision") == "applied_auto":
+                key = vacancy_key(r)
+                vacancy_owners.setdefault(key, set()).add(self.owner(r))
+                metadata = self.metadata(r)
+                if metadata["hh_resume_hash"] or metadata["hh_resume_numeric_id"]:
+                    application_resumes.setdefault(key, set()).add((metadata["hh_resume_hash"], metadata["hh_resume_numeric_id"]))
         # A saved application resume is stronger evidence than the active search.
         from state_store.private_journal import read_json_records
         try:
@@ -165,7 +183,8 @@ class HistoryScope:
                 elif key not in snapshot_owners and len(application_resumes.get(key, set())) == 1:
                     r["hh_resume_hash"], r["hh_resume_numeric_id"] = next(iter(application_resumes[key]))
             else:
-                candidates = run_owners.get(r.get("run_id"), set())
+                r.update(self.bind_run_owner(r, run_owners))
+                continue
             if len(candidates) == 1 and None not in candidates:
                 r["direction"] = next(iter(candidates))
                 if r.get("hh_resume_numeric_id"):
