@@ -298,6 +298,11 @@ USER_BUTTON_MAP = {
     BUTTON_BUSY: "/busy",
     BUTTON_CANCEL_ACTIVE: "/cancel_active",
 }
+# Selected mode buttons remain commands, including on cached reply keyboards.
+for _mode_button in (BUTTON_APPLICATION_PREVIEW, BUTTON_APPLICATION_CONFIRM, BUTTON_APPLICATION_AUTO):
+    for _button_map in (ADMIN_BUTTON_MAP, USER_BUTTON_MAP):
+        _button_map["✅ " + _mode_button] = _button_map[_mode_button]
+
 GUEST_BUTTON_MAP = {
     BUTTON_CLIENT_START: "/client_start",
     BUTTON_CLIENT_STATUS: "/client_status",
@@ -667,6 +672,7 @@ def build_reply_markup(
     profile_buttons: list[str] | None = None,
     active: bool = False,
     can_stop: bool = False,
+    application_mode: str = "",
 ) -> dict:
     if profile_buttons is not None:
         rows = [[{"text": f"{BUTTON_PROFILE_PREFIX}{name}"}] for name in profile_buttons]
@@ -682,6 +688,13 @@ def build_reply_markup(
     menu = _normalize_menu(role, menu)
     labels = reply_menu_layouts(role)[menu]
     rows = [[{"text": label} for label in row] for row in labels]
+    if menu == MENU_APPLICATION_MODE:
+        selected = {"preview": BUTTON_APPLICATION_PREVIEW, "confirm": BUTTON_APPLICATION_CONFIRM,
+                    "auto": BUTTON_APPLICATION_AUTO}.get(application_mode)
+        for row in rows:
+            for button in row:
+                if button["text"] == selected:
+                    button["text"] = "✅ " + button["text"]
     if menu != MENU_MAIN:
         rows.extend(_navigation_rows())
     rows = _append_active_controls(rows, active=active, can_stop=can_stop)

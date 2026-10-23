@@ -83,6 +83,55 @@ class TelegramDirections:
         return (self._direction_sessions().get(principal["user_id"]) is state
                 and self._direction_valid(principal, state))
 
+    async def _request_application_mode(self, chat_id, principal, mode):
+        """All mode entry points request auto; only its bound Yes callback saves it."""
+        from telegram_bot_ui import MENU_APPLICATION_MODE, reply_menu_for_command
+        if mode not in {"preview", "confirm", "auto"}:
+            raise ValueError("Неизвестный режим откликов.")
+        profile_name, profile, active = self._direction_context(principal)
+        menu = reply_menu_for_command(principal.get("role", "user"), "/search_application_" + mode) or MENU_APPLICATION_MODE
+        if self._has_active_command(profile_name):
+            await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+            return
+        if mode == "auto":
+            state = self._direction_bind(principal, mode="application_auto",
+                base_mode=getattr(profile.hh, "application_mode", None), menu=menu)
+            await self._send_text(chat_id, "🛡 Режим откликов",
+                reply_markup=self._menu_reply_markup(principal, menu=menu))
+            scope = (f"направления «{active['title']}»" if active else f"профиля «{profile_name}»")
+            await self._send_text(chat_id,
+                f"Бот будет сам откликаться на подходящие вакансии {scope}. Включить?",
+                reply_markup=self._direction_inline(state,
+                    [[("Да, включить", "autoyes"), ("Нет", "autono")]]))
+            return
+        self._direction_sessions().pop(principal["user_id"], None)
+        await self._save_application_mode(chat_id, principal, mode, menu=menu)
+
+    async def _save_application_mode(self, chat_id, principal, mode, *, menu):
+        import directions
+        profile_name, profile, active = self._direction_context(principal)
+        message = {"confirm": "Режим: спрашивать вас перед каждым откликом",
+                   "preview": "Режим откликов: только показать — сохранено",
+                   "auto": "Режим: автоматически откликаться на подходящие вакансии"}[mode]
+        if not active:
+            await self._save_search_setting(chat_id, principal, {"HH_APPLICATION_MODE": mode},
+                                            message, menu=menu)
+            return
+        draft = copy.deepcopy(active)
+        draft["application_mode"] = mode
+        try:
+            directions.save_direction(profile.home_dir, draft, texts={})
+        except (ValueError, OSError) as exc:
+            await self._send_text(chat_id, f"❌ Не удалось сохранить режим: {exc}",
+                reply_markup=self._menu_reply_markup(principal, menu=menu))
+            return
+        try:
+            self._reload_profile_daemon(profile_name)
+        except RuntimeError:
+            pass
+        await self._send_text(chat_id, f"✅ {message} (направление «{active['title']}»).",
+            reply_markup=self._menu_reply_markup(principal, menu=menu))
+
     def _direction_markup(self, *, draft=False):
         rows = ([["✅ Сохранить направление", "✏️ Править направление"], ["❌ Отменить направление"]] if draft else
                 # Actions live on inline buttons of the cards; the reply keyboard stays minimal.
@@ -167,7 +216,22 @@ class TelegramDirections:
             return
         action = parts[2]
         try:
-            if action == "toggle" and state.get("mode") == "catalog":
+            if action in {"autoyes", "autono"} and state.get("mode") == "application_auto":
+                # Consume before any await: duplicate/stale Yes callbacks cannot save again.
+                self._direction_sessions().pop(principal["user_id"], None)
+                if action == "autono":
+                    await self._send_text(chat_id, "Автоотклик не включён. Настройки не менялись.",
+                        reply_markup=self._menu_reply_markup(principal, menu=state["menu"]))
+                    return
+                profile_name, profile, _ = self._direction_context(principal)
+                if state.get("base_mode") != getattr(profile.hh, "application_mode", None):
+                    await self._send_text(chat_id, "Режим изменился. Выберите его заново.")
+                    return
+                if self._has_active_command(profile_name):
+                    await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+                    return
+                await self._save_application_mode(chat_id, principal, "auto", menu=state["menu"])
+            elif action == "toggle" and state.get("mode") == "catalog":
                 i = int(parts[3])
                 if not 0 <= i < len(state["catalog"]):
                     raise ValueError("Резюме не найдено.")
@@ -670,31 +734,7 @@ class TelegramDirections:
             operation = {"/direction_pause": "pause", "/direction_resume": "resume", "/direction_remove": "remove"}.get(command, "select")
             await self._direction_prompt_variants(chat_id, principal, operation)
         elif command.startswith("/search_application_"):
-            if not active:
-                return
-            mode = command.removeprefix("/search_application_")
-            labels = {"preview": "только показать", "confirm": "подтверждение", "auto": "автоотклик"}
-            from telegram_bot_ui import MENU_APPLICATION_MODE
-            back = self._menu_reply_markup(principal, menu=MENU_APPLICATION_MODE)
-            if self._has_active_command(profile_name):
-                await self._send_busy_status(chat_id, principal, profile_name=profile_name)
-                return
-            # One explicit choice: saved right away, then back to the «Режим откликов» menu.
-            draft = copy.deepcopy(active)
-            draft["application_mode"] = mode
-            try:
-                directions.save_direction(profile.home_dir, draft, texts={})
-            except (ValueError, OSError) as exc:
-                await self._send_text(chat_id, str(f"❌ Не удалось сохранить режим: {exc}"), reply_markup=back)
-                return
-            self._direction_sessions().pop(principal["user_id"], None)
-            try:
-                self._reload_profile_daemon(profile_name)
-            except RuntimeError:
-                pass
-            await self._send_text(chat_id, str(
-                f"✅ Режим откликов: {labels.get(mode, mode)} — сохранено (направление «{active['title']}»)."),
-                reply_markup=back)
+            await self._request_application_mode(chat_id, principal, command.removeprefix("/search_application_"))
         elif command in {"/direction_single", "/direction_ab"}:
             if not active:
                 await self._ask_choose_direction(chat_id, principal, "Сначала выберите направление:")

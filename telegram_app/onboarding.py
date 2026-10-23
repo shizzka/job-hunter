@@ -59,7 +59,8 @@ def build(*, hh_ok: bool, resumes: list[dict], directions: list[dict], active: d
             rows.append([("➕ Создать направление", "new")])
 
     lines.append(f"{mark(bool(mode))} 4. Как откликаться: " + MODE_LABELS.get(mode, "не выбрано"))
-    rows.append([("✋ На подтверждение", "confirm"), ("🤖 Автоматически", "auto")])
+    rows.append([(("✅ " if mode == value else "") + label, value)
+                 for label, value in [("✋ На подтверждение", "confirm"), ("🤖 Автоматически", "auto")]])
 
     ready = all(steps_ok[:4])
     lines.append(f"{mark(has_search)} 5. Первый поиск" + ("" if has_search else " — когда шаги 1–4 готовы."))

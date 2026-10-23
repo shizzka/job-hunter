@@ -647,12 +647,17 @@ class TelegramBot(
         active_command = self._active_command(profile_name)
         active = active_command is not None
         can_stop = self._can_cancel_active(principal, active_command) if active else False
+        mode = ""
+        if selected_menu == MENU_APPLICATION_MODE:
+            _, profile, direction = self._direction_context(principal)
+            mode = (direction or {}).get("application_mode") or profile.hh.application_mode
         return build_reply_markup(
             role,
             menu=selected_menu,
             profile_buttons=profile_buttons,
             active=active,
             can_stop=can_stop,
+            application_mode=mode,
         )
 
     def _default_client_profile_name(self, user_id: int) -> str:
@@ -1131,7 +1136,7 @@ class TelegramBot(
             "🛡 Режим откликов",
             "",
             f"Сейчас: {self._application_mode_label(mode)}{scope}.",
-            "Нажмите режим — он сохранится сразу.",
+            "Для включения автоотклика бот попросит подтверждение. Остальные режимы сохраняются сразу.",
             "👀 Только показать — пришлёт подходящие вакансии, без отправки.",
             "✋ Подтверждать — отправит только после нажатия «Откликнуться с ИИ».",
             "⚡ Автоотклик — отправит подходящие вакансии сам в рамках лимитов.",
@@ -2813,19 +2818,12 @@ class TelegramBot(
             return
 
         application_modes = {
-            "/search_application_preview": ("preview", "Режим «только показать» включён."),
-            "/search_application_confirm": ("confirm", "Режим подтверждения включён."),
-            "/search_application_auto": ("auto", "Автоотклик включён."),
+            "/search_application_preview": "preview",
+            "/search_application_confirm": "confirm",
+            "/search_application_auto": "auto",
         }
         if command in application_modes:
-            value, message = application_modes[command]
-            await self._save_search_setting(
-                chat_id,
-                principal,
-                {"HH_APPLICATION_MODE": value},
-                message,
-                menu=reply_menu,
-            )
+            await self._request_application_mode(chat_id, principal, application_modes[command])
             return
 
         if command == "/search_edit":

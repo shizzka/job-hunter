@@ -98,9 +98,12 @@ def test_every_button_returns_its_owner_or_target_submenu(menu_bot, role, menu, 
         # The existing one-time profile picker is this button's target screen.
         assert keyboards[-1] == ui.build_reply_markup(role, profile_buttons=["qa"])
     elif command in MENU_COMMANDS:
-        assert all(markup == ui.build_reply_markup(role, menu=expected) for markup in keyboards)
+        mode = bot._profile("qa").hh.application_mode if expected == ui.MENU_APPLICATION_MODE else ""
+        assert all(markup == ui.build_reply_markup(role, menu=expected, application_mode=mode) for markup in keyboards)
     else:
-        assert all(label in [b["text"] for row in markup["keyboard"] for b in row] for markup in keyboards)
+        # Mode pickers mark the current value; the selected button still routes to its owner.
+        assert all(any(b["text"] in {label, "✅ " + label} for row in markup["keyboard"] for b in row)
+                   for markup in keyboards)
 
 
 @pytest.mark.parametrize("role,menu,label", list(button_cases()))
