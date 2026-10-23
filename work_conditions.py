@@ -142,7 +142,8 @@ def check(vacancy: dict, details: str = "", *, direction=None) -> dict:
     if formats and "unknown" not in formats and not formats.intersection(policy["allowed_formats"]):
         labels = ", ".join(FORMAT_LABELS.get(f, f) for f in sorted(formats))
         return {"status": "reject", "reason": f"Формат работы не подходит: {labels}."}
-    if not formats or "unknown" in formats:
+    # An unknown format matters only when the direction restricts formats (e.g. remote-only).
+    if (not formats or "unknown" in formats) and not set(FORMAT_LABELS) <= set(policy["allowed_formats"]):
         return {"status": "review", "reason": "формат не указан"}
     if policy["allowed_cities"] and "remote" not in formats.intersection(policy["allowed_formats"]):
         city = fields.get("city")

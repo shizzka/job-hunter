@@ -31,9 +31,20 @@ def test_remote_direction_uses_vacancy_format_not_search_schedule(code, expected
 
 
 @pytest.mark.parametrize("schedule", ["", "fullDay", "shift", "flexible"])
-def test_unknown_format_never_authorizes_apply(schedule):
-    result = wc.check(vacancy(schedule={"id": schedule}), direction=policy())
+def test_unknown_format_never_authorizes_apply_when_formats_are_restricted(schedule):
+    result = wc.check(vacancy(schedule={"id": schedule}), direction=policy(allowed_formats=["remote", "hybrid"]))
     assert result == {"status": "review", "reason": "формат не указан"}
+
+
+@pytest.mark.parametrize("schedule", ["", "fullDay", "shift", "flexible"])
+def test_unknown_format_is_irrelevant_when_every_format_is_allowed(schedule):
+    assert wc.check(vacancy(schedule={"id": schedule}), direction=policy())["status"] == "allow"
+    # the other gates still apply: shift work and a restricted city
+    assert wc.check(vacancy(schedule={"id": "flyInFlyOut"}), direction=policy())["status"] == "reject"
+    assert wc.check({**vacancy(schedule={"id": schedule}), "snippet": "Вахта 30/30"},
+                    direction=policy())["status"] == "review"
+    assert wc.check(vacancy(schedule={"id": schedule}),
+                    direction=policy(allowed_cities=["Москва"]))["status"] == "review"
 
 
 def test_search_state_enriches_ssr_and_additional_cards_without_using_query():
@@ -141,7 +152,8 @@ def test_invalid_conditions_fail_closed(tmp_path, conditions):
 @pytest.mark.parametrize("variant,expected", [("allowed", "allow"), ("fly", "reject"),
     ("unknown", "review"), ("redirect", "review"), ("cookies", "review")])
 def test_fresh_pre_submit_reads_actual_vacancy_without_navigation(monkeypatch, variant, expected):
-    monkeypatch.setattr(config, "ACTIVE_DIRECTION", policy(), raising=False)
+    # remote-only: an unknown format must go to review (with every format allowed it would not matter)
+    monkeypatch.setattr(config, "ACTIVE_DIRECTION", policy(allowed_formats=["remote", "hybrid"]), raising=False)
     html = '<p data-qa="work-formats-text">Формат работы: удалённо</p>'
     if variant == "fly":
         html += '<div data-qa="common-employment-text">Вахта на 30 смен</div>'
