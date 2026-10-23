@@ -3367,6 +3367,9 @@ class TelegramBot(
             return
 
         if command == "/raw_log":
+            if role == telegram_access.ROLE_TESTER:
+                await self._send_text(chat_id, "🔒 Сырой лог недоступен. /log — сводка доступного направления.")
+                return
             if role != telegram_access.ROLE_ADMIN:
                 await self._send_run_summary(chat_id, principal, profile_name=profile_name)
                 return
