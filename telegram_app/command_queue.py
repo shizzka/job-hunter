@@ -18,7 +18,7 @@ import telegram_access
 import profile_access
 from state_store.locking import StateLockBusy, nonblocking_state_locks
 from telegram_app.updates import STATE_BUSY
-from telegram_app.guards import AI_LABELS, BUSY, reserve, release_entry, release_callback
+from telegram_app.guards import AI_LABELS, BUSY, reserve, release_entry, release_callback_soon
 
 log = logging.getLogger(__name__)
 _invocation = contextvars.ContextVar("bot_queue_invocation", default=None)
@@ -380,7 +380,7 @@ class TelegramCommandQueue:
                 if time.monotonic() - entry.created_at >= ttl:
                     waiting.pop(0)
                     release_entry(self, entry)
-                    release_callback(self, entry.source)
+                    release_callback_soon(self, entry.source)
                     entry.outcome = "снята по TTL"
                     await self._queue_notice(entry.chat_id, f"{entry.label}: срок ожидания истёк (TTL), нажмите снова.")
                     await self._queue_markup(entry, restore=True)
@@ -433,7 +433,7 @@ class TelegramCommandQueue:
         if action == "remove" and entry:
             self._command_queues[profile].remove(entry)
             release_entry(self, entry)
-            release_callback(self, entry.source)
+            release_callback_soon(self, entry.source)
             entry.outcome = "удалена пользователем"
             await self._queue_markup(entry, restore=True)
             await self._answer_callback_query(callback.get("id", ""), "Удалена из очереди.")
@@ -470,7 +470,7 @@ class TelegramCommandQueue:
         self._queue_resume_profiles.clear()
         for entry in waiting:
             release_entry(self, entry)
-            release_callback(self, entry.source)
+            release_callback_soon(self, entry.source)
             await self._queue_notice(entry.chat_id, f"{entry.label}: очередь сброшена при перезапуске, нажмите снова.")
             await self._queue_markup(entry, restore=True)
 

@@ -27,6 +27,7 @@ from direction_views import DirectionView
 import config
 from private_logging import PrivateFileHandler, NonblockingLogHandler, OperationalFormatter, chat_log_path
 from state_store.private_journal import append_json, read_json_records
+from state_store.locking import StateLockBusy
 import company_blacklist
 import profile as profile_mod
 import profile_access
@@ -2036,23 +2037,45 @@ class TelegramBot(
         self._update_state(bootstrap)
 
     async def _get_updates(self, timeout: int | None = None, save_state: bool = True) -> list[dict]:
-        state = self._load_state()
+        # A busy bot-state lock must not stop polling (T31 critic): the offset of a fetched batch is kept in
+        # memory, so the batch is handled once and answered now; the durable checkpoint is retried every poll.
+        try:
+            saved = self._load_state().get("last_update_id")
+        except StateLockBusy:
+            saved = None
+            log.warning("Telegram offset read deferred: bot state lock is busy")
+        polled = getattr(self, "_polled_update_id", None)
+        known = [int(x) for x in (saved, polled) if x is not None]
         payload = {
             "timeout": config.TELEGRAM_BOT_POLL_TIMEOUT if timeout is None else timeout,
             "allowed_updates": ["message", "callback_query"],
         }
-        if state.get("last_update_id") is not None:
-            payload["offset"] = int(state["last_update_id"]) + 1
+        if known:
+            payload["offset"] = max(known) + 1
         result = await self._api_request("getUpdates", payload, timeout=payload["timeout"] + 20)
         updates = result if isinstance(result, list) else []
-        if updates and save_state:
-            def advance_offset(latest):
-                current = latest.get("last_update_id")
-                latest["last_update_id"] = max(int(current) if current is not None else 0, int(updates[-1]["update_id"]))
-                latest["updated_at"] = datetime.now().isoformat(timespec="seconds")
-
-            self._update_state(advance_offset)
+        if not save_state:
+            return updates
+        if updates:
+            self._polled_update_id = max(known + [int(updates[-1]["update_id"])])
+        if getattr(self, "_polled_update_id", None) is not None and (updates or getattr(self, "_offset_unsaved", False)):
+            self._checkpoint_offset()
         return updates
+
+    def _checkpoint_offset(self) -> None:
+        polled = self._polled_update_id
+
+        def advance_offset(latest):
+            current = latest.get("last_update_id")
+            latest["last_update_id"] = max(int(current) if current is not None else 0, polled)
+            latest["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+        try:
+            self._update_state(advance_offset)
+            self._offset_unsaved = False
+        except StateLockBusy:
+            self._offset_unsaved = True
+            log.warning("Telegram offset checkpoint deferred: bot state lock is busy")
 
     async def _send_text(self, chat_id: int, text: str, *, reply_markup: dict | None = None) -> dict | None:
         entry = current_entry()

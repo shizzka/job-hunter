@@ -7,7 +7,11 @@ import hashlib
 import time
 from contextvars import ContextVar
 
+import logging
+
 import telegram_access
+
+log = logging.getLogger(__name__)
 from state_store.bot_state import prune_callback_claims
 from state_store.locking import nonblocking_state_locks
 
@@ -110,6 +114,19 @@ def release_callback(bot, callback):
         def mutate(state):
             state.get("callback_claims", {}).pop(claim, None)
         bot._update_state(mutate)
+
+
+def release_callback_soon(bot, callback, attempts=20):
+    """release_callback that never raises on a busy bot-state lock (T31 critic): the queue drainer keeps going,
+    the release is retried on the event loop (zero-wait each time) for about 10 s, then left held (fail closed)."""
+    from state_store.locking import StateLockBusy
+    try:
+        release_callback(bot, callback)
+    except StateLockBusy:
+        if attempts > 1:
+            asyncio.get_running_loop().call_later(0.5, release_callback_soon, bot, callback, attempts - 1)
+        else:
+            log.warning("Callback claim release gave up: bot state lock stayed busy")
 
 
 def callback_guard(fn):
