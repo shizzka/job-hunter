@@ -1,8 +1,6 @@
 """First-run checklist «🚀 С чего начать»: where the user is and the next step, as buttons."""
 from __future__ import annotations
 
-import html
-
 CALLBACK_PREFIX = "gs:"
 # Inline action → existing bot command (no new behaviour behind the buttons).
 ACTIONS = {
@@ -28,8 +26,9 @@ def build(*, hh_ok: bool, resumes: list[dict], directions: list[dict], active: d
     def mark(ok):
         return "✅" if ok else "⬜️"
 
-    resume_titles = [str(r.get("title") or "").strip() for r in resumes if str(r.get("title") or "").strip()]
-    steps_ok = [hh_ok, bool(resumes), bool(active), bool(mode), has_search]
+    resume_titles = [str(r.get("title") or "").strip() or "Резюме без названия" for r in resumes[:3]]
+    mode_ok = mode in MODE_LABELS
+    steps_ok = [hh_ok, bool(resumes), bool(active), mode_ok, has_search]
     lines = ["🚀 С чего начать", "",
              "Бот ищет вакансии на hh.ru и откликается вашими резюме. Пройдите шаги по порядку:", ""]
     rows: list[list[tuple[str, str]]] = []
@@ -41,6 +40,9 @@ def build(*, hh_ok: bool, resumes: list[dict], directions: list[dict], active: d
 
     if resumes:
         shown = ", ".join(f"«{title}»" for title in resume_titles)
+        remaining = len(resumes) - len(resume_titles)
+        if remaining:
+            shown += f" и ещё {remaining}"
         lines.append(f"✅ 2. Резюме на hh.ru: {len(resumes)} — {shown}")
     else:
         lines.append("⬜️ 2. Резюме на hh.ru — создайте их на сайте hh.ru (по одному на каждую профессию, "
@@ -59,7 +61,7 @@ def build(*, hh_ok: bool, resumes: list[dict], directions: list[dict], active: d
             rows.append([("➕ Создать направление", "new")])
 
     scope = f" по направлению «{active.get('title', '')}»" if active else ""
-    lines.append(f"{mark(bool(mode))} 4. Отклики{scope}: " + MODE_LABELS.get(mode, "не выбрано"))
+    lines.append(f"{mark(mode_ok)} 4. Отклики{scope}: " + MODE_LABELS.get(mode, "не выбрано"))
     rows.append([(("✓ " if mode == value else "") + label, value)
                  for label, value in [("✋ Спрашивать меня перед откликом", "confirm"), ("🤖 Откликаться автоматически", "auto")]])
 

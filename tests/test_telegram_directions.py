@@ -760,6 +760,20 @@ async def test_crawled_screens_hide_internal_data_and_keep_dynamic_values(bot, m
     assert "Мастер, электрик" in visible and "Электрик / техник" in visible
 
 
+@pytest.mark.parametrize("operation", ["select", "pause", "resume", "remove"])
+@run_async
+async def test_direction_refresh_label_keeps_callback(bot, operation):
+    home = bot.profiles["client_1"].home_dir
+    direction = make_direction(home)
+    directions.set_active_direction(home, direction["name"])
+    await bot._direction_prompt_variants(1, USER, operation)
+    buttons = [b for row in bot.sent[-1][2]["reply_markup"]["inline_keyboard"] for b in row]
+    refresh = next(b for b in buttons if b["text"] == "Обновить резюме с hh.ru")
+    token = bot._direction_sessions()[1]["token"]
+    assert refresh["callback_data"] == f"dir:{token}:refresh"
+    assert all(b["text"] != "Обновить тексты" for b in buttons)
+
+
 @run_async
 async def test_unsaved_single_description_names_first_enabled_resume(bot):
     home = bot.profiles["client_1"].home_dir

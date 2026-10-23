@@ -56,7 +56,7 @@ BUTTON_EXPERIENCE_6_PLUS = "6+ лет"
 BUTTON_APPLICATION_PREVIEW = "👀 Только показать"
 BUTTON_APPLICATION_CONFIRM = "✋ Спрашивать меня"
 BUTTON_APPLICATION_AUTO = "⚡ Автоматически"
-BUTTON_DRYRUN = "🧪 Тестовый прогон"
+BUTTON_DRYRUN = "🧪 Пробный поиск (без откликов)"
 BUTTON_CHECK = "📬 Приглашения"
 BUTTON_HH_RESPONSES = "📨 Отклики на hh.ru"
 BUTTON_DIGEST = "📰 Дайджест"
@@ -311,6 +311,7 @@ GUEST_BUTTON_MAP = {
     BUTTON_HELP: "/start",
 }
 LEGACY_BUTTON_MAP = {
+    "🧪 Тестовый прогон": "/dryrun",
     '🔎 Поиск': '/search',
     '🎯 Мой поиск': '/search_settings',
     '🧭 Что ищу': '/directions',
@@ -977,7 +978,7 @@ def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default", he
         "",
         "Кнопки внизу:",
         "• Найти вакансии — поиск прямо сейчас",
-        "• Тестовый прогон — в главном меню",
+        "• Пробный поиск (без откликов) — в главном меню",
         "• Отклики — вакансии на проверку, ваши отклики, анкеты, ответы работодателям",
         "• Направления — что ищу, резюме, город, зарплата, расписание",
         "• hh.ru и резюме — вход на hh.ru и ваши резюме",
@@ -1027,7 +1028,7 @@ def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
             "• Посмотрите и измените ключевые слова",
             "• Попросите ИИ предложить направление по резюме",
             "• Настройте опыт, зарплату, удалёнку и режим откликов",
-            "• Поиск и тестовый прогон доступны в главном меню",
+            "• Найти вакансии и Пробный поиск (без откликов) — в главном меню",
             "• Расписание управляет только этим профилем",
         ])
     if section == MENU_CANDIDATE:
@@ -1944,7 +1945,7 @@ def build_hh_response_count_text(snapshot: dict, *, home_dir: str | None = None)
 def _pretty_command_label(label: str) -> str:
     mapping = {
         "search": "Поиск вакансий",
-        "dry-run": "Тестовый прогон",
+        "dry-run": "Пробный поиск (без откликов)",
         "check invitations": "Проверка инвайтов",
         "digest": "Дайджест",
         "analyze resume": "ИИ-анализ резюме",

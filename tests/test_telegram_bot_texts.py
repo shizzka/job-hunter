@@ -27,7 +27,7 @@ from telegram_bot import (
 def test_button_labels_are_russian():
     from telegram_bot import BUTTON_SEARCH_SETTINGS, BUTTON_SEARCH_USE_DRAFT
 
-    assert BUTTON_DRYRUN == "🧪 Тестовый прогон"
+    assert BUTTON_DRYRUN == "🧪 Пробный поиск (без откликов)"
     assert BUTTON_DIAGNOSTICS == "🩺 Диагностика"
     assert BUTTON_BACKFILL == "🗃 Пересчёт аналитики"
     assert BUTTON_AI_LIMITS == "🎁 Лимиты ИИ"
@@ -462,6 +462,8 @@ def test_renamed_buttons_keep_their_commands_and_old_keyboard_shortcuts():
 
     shortcuts = [
         ("🔎 Поиск", ui.BUTTON_SEARCH, "/search"),
+        ("🧪 Тестовый прогон", ui.BUTTON_DRYRUN, "/dryrun"),
+        ("Тестовый прогон", ui.BUTTON_DRYRUN, "/dryrun"),
         ("🎯 Мой поиск", ui.BUTTON_SEARCH_SETTINGS, "/search_settings"),
         ("🧭 Что ищу", ui.BUTTON_DIRECTIONS, "/directions"),
         ("🔐 Мой hh", ui.BUTTON_HH, "/menu_hh"),
@@ -484,3 +486,19 @@ def test_help_has_troubleshooting_and_start_uses_buttons():
     assert "Роль:" not in start and "Роль:" not in help_text
     assert "/" not in start.replace("hh.ru", "")
     assert "Состояние → Журналы → Подробный" in help_text
+
+
+def test_trial_search_label_in_help_menu_and_command_messages():
+    import telegram_bot_ui as ui
+
+    label = "Пробный поиск (без откликов)"
+    for role in (ui.ROLE_USER, ui.ROLE_ADMIN):
+        texts = [ui.build_help_text(role, help_section=help_section) for help_section in (False, True)]
+        texts += [ui.build_menu_section_text(ui.MENU_SEARCH, role=role, profile_name="synthetic"),
+                  ui.build_progress_text("dry-run", profile_name="synthetic"),
+                  ui.build_busy_status_text(active_command="dry-run", profile_name="synthetic", elapsed_sec=1)]
+        texts += [ui.format_command_result("dry-run", result, role=role) for result in
+                  ({"ok": True}, {"ok": False}, {"cancelled": True}, {"timeout": True})]
+        for text in texts:
+            assert label in text
+            assert "Тестовый прогон" not in text

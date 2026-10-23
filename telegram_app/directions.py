@@ -430,7 +430,7 @@ class TelegramDirections:
         lines += ["", prompts[operation], "Изменение вступит в силу после кнопки «Сохранить»."]
         rows = [[((f"Только «{resume_title(v)}»" if operation == "select" else resume_title(v)), f"variant:{i}")] for i, v in enumerate(variants)]
         rows += [[("Добавить резюме", "add"), ("Выключить резюме…", "pause"), ("Включить резюме…", "resume")],
-                 [("Убрать резюме из направления…", "remove"), ("Обновить тексты", "refresh")], [("Назад", "back"), ("Не сохранять", "cancel")]]
+                 [("Убрать резюме из направления…", "remove"), ("Обновить резюме с hh.ru", "refresh")], [("Назад", "back"), ("Не сохранять", "cancel")]]
         await self._send_text(chat_id, "\n".join(lines), reply_markup=self._direction_inline(state, rows))
 
     async def _direction_catalog(self, chat_id, principal, *, add=False):
