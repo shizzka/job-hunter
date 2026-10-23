@@ -254,6 +254,7 @@ class TelegramDirections:
         try:
             if action in {"autoyes", "autono"} and state.get("mode") == "application_auto":
                 if action == "autono":
+                    started = True
                     self._direction_sessions().pop(principal["user_id"], None)
                     await self._send_text(chat_id, "Автоматические отклики не включены. Настройки не менялись.",
                         reply_markup=self._menu_reply_markup(principal, menu=state["menu"]))
@@ -298,6 +299,7 @@ class TelegramDirections:
                              summary=bool(active and item["name"] == active["name"]))
                 await self._direction_show_draft(chat_id, principal, state)
             elif action == "statsrefresh":
+                started = True
                 return await self._dispatch_direction(chat_id, principal, "/direction_stats_refresh", "")
             elif action == "editmenu":
                 await self._direction_edit_menu(chat_id, state)
@@ -390,6 +392,9 @@ class TelegramDirections:
                 command = {"list": "/directions", "new": "/direction_new", "save": "/direction_save", "cancel": "/direction_cancel",
                            "variants": "/direction_variants", "stats": "/direction_stats"}.get(action, "/direction_" + action)
                 handler = self._read_direction if action in {"list", "stats"} else self._dispatch_direction
+                # A delegated action may mutate storage before its delivery fails.
+                # Only an explicit False from it proves that nothing started.
+                started = True
                 return await handler(chat_id, principal, command, "")
             elif action == "variant" and state.get("mode") == "variant":
                 started = True

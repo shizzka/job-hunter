@@ -279,3 +279,23 @@ def test_auto_write_validation_retry_and_uncertain_write_claim(mode_bot, monkeyp
             await click(bot, confirmation)
             assert bot._profile('qa').hh.application_mode == 'auto'
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('action', ['autono', 'cancel'])
+def test_completed_cancellation_keeps_claim_when_delivery_fails(mode_bot, action):
+    bot, principal = mode_bot
+    add_direction(bot)
+    async def scenario():
+        if action == 'autono':
+            await bot._request_application_mode(42, principal, 'auto')
+        else:
+            state = bot._direction_bind(principal, mode='draft', draft=directions.active_direction(bot._profile('qa').home_dir))
+            await bot._direction_show_draft(42, principal, state)
+        data = button(bot, action)
+        # The action completes, its acknowledgement fails, then the error reply succeeds.
+        bot._send_text.side_effect = [OSError('synthetic delivery failure'), {}]
+        assert await click(bot, data) is None
+        assert 42 not in bot._direction_sessions()
+        await click(bot, data)
+        assert bot._answer_callback_query.call_args.args[1] == guards.DONE
+    asyncio.run(scenario())
