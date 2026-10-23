@@ -22,4 +22,4 @@ def test_ordinary_manual_notice_keeps_original_wording(monkeypatch):
     monkeypatch.setattr(notifier, "send_message", send)
     asyncio.run(notifier.notify_needs_manual({"title": "Synthetic"}, 80, "review"))
     text = send.call_args.args[0]
-    assert "нужен ручной отклик" in text and "Открыть и откликнуться" in text
+    assert "Вакансия ждёт вашего решения" in text and "Открыть и откликнуться" in text  # F23 wording

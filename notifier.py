@@ -561,8 +561,9 @@ async def notify_application(
         f"<b>{title}</b>\n"
         f"🌐 {source}\n"
         f"🏢 {company}\n"
+        f"{_work_format_line(vacancy)}"
         f"💰 {salary}\n"
-        f"📊 Совпадение: {score}/100\n\n"
+        f"{_fit_label(score)}\n\n"
         f"<a href=\"{url}\">Открыть вакансию</a>"
     )
     if cover_letter:
@@ -593,6 +594,32 @@ async def notify_invitation(invitation: dict):
     await send_message(text)
 
 
+def _fit_label(score: int) -> str:
+    """Plain words instead of «35/100»: a low number reads as a verdict on the person (F23)."""
+    threshold = config.HH_MATCHER_AUTO_APPLY_MIN_SCORE
+    if score >= threshold:
+        return "✅ Подходит под ваше резюме"
+    if score >= threshold - 15:
+        return "👍 Скорее подходит"
+    return "🤔 Подходит частично — решать вам"
+
+
+def _work_format_line(vacancy: dict) -> str:
+    """Work format from HH fields, first thing a remote-only candidate checks (F23)."""
+    if vacancy.get("source", "hh") != "hh":
+        return ""
+    from work_conditions import FORMAT_LABELS
+    conditions = vacancy.get("_hh_work_conditions") or {}
+    if conditions.get("fly_in_fly_out"):
+        return "🧳 Вахта\n"
+    formats = [f for f in ("remote", "hybrid", "on_site", "field") if f in (conditions.get("formats") or [])]
+    if not formats:
+        return "❔ Формат работы не указан\n"
+    if formats == ["remote"]:
+        return "🏠 Удалённо\n"
+    return "📍 Формат работы: " + ", ".join(FORMAT_LABELS[f] for f in formats) + "\n"
+
+
 @_owned_event_notification
 async def notify_needs_manual(
     vacancy: dict,
@@ -610,9 +637,9 @@ async def notify_needs_manual(
     company = _html(vacancy.get("company", "—"), 300)
     salary = _html(vacancy.get("salary", "не указана"), 200)
     url = _html(vacancy.get("url", ""), 2000)
-    heading = "❔ Исход отклика не подтверждён — нужна ручная сверка" if uncertain else "📝 Подходящая вакансия (нужен ручной отклик)"
+    heading = "❔ Исход отклика не подтверждён — нужна ручная сверка" if uncertain else "📝 Вакансия ждёт вашего решения"
     link_label = "Открыть и проверить" if uncertain else "Открыть и откликнуться"
-    match_text = f"📊 Совпадение: {score}/100" if score is not None else "Оценка не проводилась: " + _html(reason or extra_note, 600)
+    match_text = _fit_label(score) if score is not None else "Оценка не проводилась: " + _html(reason or extra_note, 600)
     if score is None and not uncertain:
         heading = "📝 Вакансия на разбор"
         link_label = "Открыть и проверить"
@@ -621,6 +648,7 @@ async def notify_needs_manual(
         f"<b>{title}</b>\n"
         f"🌐 {source}\n"
         f"🏢 {company}\n"
+        f"{_work_format_line(vacancy)}"
         f"💰 {salary}\n"
         f"{match_text}\n\n"
         f"⚠️ {_html(extra_note, 600)}\n"
