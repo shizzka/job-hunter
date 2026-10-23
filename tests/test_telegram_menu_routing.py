@@ -101,9 +101,15 @@ def test_every_button_returns_its_owner_or_target_submenu(menu_bot, role, menu, 
         mode = bot._profile("qa").hh.application_mode if expected == ui.MENU_APPLICATION_MODE else ""
         assert all(markup == ui.build_reply_markup(role, menu=expected, application_mode=mode) for markup in keyboards)
     else:
-        # Mode pickers mark the current value; the selected button still routes to its owner.
-        assert all(any(b["text"] in {label, "✅ " + label} for row in markup["keyboard"] for b in row)
-                   for markup in keyboards)
+        mode = bot._effective_application_mode(principal) if expected == ui.MENU_APPLICATION_MODE else ""
+        selected_label = {"preview": ui.BUTTON_APPLICATION_PREVIEW, "confirm": ui.BUTTON_APPLICATION_CONFIRM,
+                          "auto": ui.BUTTON_APPLICATION_AUTO}.get(mode)
+        expected_label = "✅ " + label if label == selected_label else label
+        wrong_label = label if label == selected_label else "✅ " + label
+        for markup in keyboards:
+            actual_labels = [b["text"] for row in markup["keyboard"] for b in row]
+            assert expected_label in actual_labels
+            assert wrong_label not in actual_labels
 
 
 @pytest.mark.parametrize("role,menu,label", list(button_cases()))

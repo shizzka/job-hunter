@@ -125,11 +125,14 @@ class TelegramDirections:
             await self._send_text(chat_id, f"❌ Не удалось сохранить режим: {exc}",
                 reply_markup=self._menu_reply_markup(principal, menu=menu))
             return
+        result = f"✅ {message} (направление «{active['title']}»)."
         try:
             self._reload_profile_daemon(profile_name)
-        except RuntimeError:
-            pass
-        await self._send_text(chat_id, f"✅ {message} (направление «{active['title']}»).",
+        except RuntimeError as exc:
+            result = (f"⚠️ Настройки сохранены, но повтор не перезапустился: {exc}\n"
+                      f"{message} (направление «{active['title']}»).\n"
+                      "Новый режим может ещё не действовать. Проверьте статус.")
+        await self._send_text(chat_id, result,
             reply_markup=self._menu_reply_markup(principal, menu=menu))
 
     def _direction_markup(self, *, draft=False):

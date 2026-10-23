@@ -528,6 +528,8 @@ class TelegramBot(
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
+        menu = self._selected_menu(principal)
+        mode = self._effective_application_mode(principal) if menu == MENU_APPLICATION_MODE else ""
         if not self._can_cancel_active(principal, command):
             await self._send_text(
                 chat_id,
@@ -541,9 +543,10 @@ class TelegramBot(
                 ),
                 reply_markup=build_reply_markup(
                     principal.get("role", ROLE_USER),
-                    menu=self._selected_menu(principal),
+                    menu=menu,
                     active=True,
                     can_stop=False,
+                    application_mode=mode,
                 ),
             )
             return
@@ -560,9 +563,10 @@ class TelegramBot(
                 ),
                 reply_markup=build_reply_markup(
                     principal.get("role", ROLE_USER),
-                    menu=self._selected_menu(principal),
+                    menu=menu,
                     active=True,
                     can_stop=False,
+                    application_mode=mode,
                 ),
             )
             return
@@ -575,9 +579,10 @@ class TelegramBot(
             ),
             reply_markup=build_reply_markup(
                 principal.get("role", ROLE_USER),
-                menu=self._selected_menu(principal),
+                menu=menu,
                 active=True,
                 can_stop=False,
+                application_mode=mode,
             ),
         )
 
@@ -640,6 +645,10 @@ class TelegramBot(
 
         self._update_state(mutate)
 
+    def _effective_application_mode(self, principal: dict) -> str:
+        _, profile, direction = self._direction_context(principal)
+        return (direction or {}).get("application_mode") or profile.hh.application_mode
+
     def _menu_reply_markup(self, principal: dict, *, menu: str | None = None, profile_buttons: list[str] | None = None) -> dict:
         role = principal.get("role", ROLE_USER)
         selected_menu = _normalize_menu(role, menu or self._selected_menu(principal))
@@ -647,10 +656,7 @@ class TelegramBot(
         active_command = self._active_command(profile_name)
         active = active_command is not None
         can_stop = self._can_cancel_active(principal, active_command) if active else False
-        mode = ""
-        if selected_menu == MENU_APPLICATION_MODE:
-            _, profile, direction = self._direction_context(principal)
-            mode = (direction or {}).get("application_mode") or profile.hh.application_mode
+        mode = self._effective_application_mode(principal) if selected_menu == MENU_APPLICATION_MODE else ""
         return build_reply_markup(
             role,
             menu=selected_menu,

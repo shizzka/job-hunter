@@ -190,3 +190,55 @@ def test_current_mode_is_marked_on_each_mode_picker(mode_bot, mode, role):
     _, rows, _ = onboarding.build(hh_ok=True, resumes=[], directions=[], active=None, mode=mode, has_search=False)
     for label, action in (b for row in rows for b in row if b[1] in {"auto", "confirm"}):
         assert label.startswith("✅ ") == (action == mode)
+
+
+@pytest.mark.parametrize("mode", ["confirm", "preview", "auto"])
+@run_async
+async def test_mode_saved_but_restart_failure_is_explicit(mode_bot, mode):
+    bot, principal = mode_bot
+    add_direction(bot, mode="preview" if mode == "auto" else "auto")
+    bot._reload_profile_daemon.side_effect = RuntimeError("synthetic restart failure")
+    await choose(bot, principal, "command", mode)
+    if mode == "auto":
+        yes, _ = confirmation_buttons(bot)
+        await callback(bot, yes)
+    assert bot._profile("qa").hh.application_mode == mode
+    bot._reload_profile_daemon.assert_called_once_with("qa")
+    call = bot._send_text.call_args
+    assert call.args[1].startswith("⚠️")
+    assert "Настройки сохранены, но повтор не перезапустился" in call.args[1]
+    assert "synthetic restart failure" in call.args[1]
+    assert "Новый режим может ещё не действовать" in call.args[1]
+    assert call.kwargs["reply_markup"] == ui.build_reply_markup(
+        principal["role"], menu=ui.MENU_APPLICATION_MODE, application_mode=mode)
+
+
+@pytest.mark.parametrize("with_direction", [True, False])
+@pytest.mark.parametrize("mode", ["confirm", "preview", "auto"])
+@pytest.mark.parametrize("outcome", ["denied", "process", "task"])
+@run_async
+async def test_stop_from_mode_menu_preserves_selection_and_controls(mode_bot, monkeypatch, with_direction, mode, outcome):
+    bot, principal = mode_bot
+    principal["role"] = ui.ROLE_USER
+    if with_direction:
+        add_direction(bot, mode=mode)
+    else:
+        profile_mod.update_profile_env("qa", {"HH_APPLICATION_MODE": mode})
+    command = telegram_bot.ActiveCommandState(label="search", profile_name="qa",
+        owner_user_id=7 if outcome == "denied" else 42, started_at=0,
+        subprocess_pid=123 if outcome == "process" else 0)
+    monkeypatch.setattr(bot, "_active_command", lambda name: command)
+    cancel = Mock(return_value={"signal": "SIGTERM"} if outcome == "process" else None)
+    monkeypatch.setattr(bot, "_request_active_command_cancel", cancel)
+    await bot._dispatch(42, principal, "/search_application_mode", "")
+    assert bot._send_text.call_args.kwargs["reply_markup"] == ui.build_reply_markup(
+        ui.ROLE_USER, menu=ui.MENU_APPLICATION_MODE, application_mode=mode,
+        active=True, can_stop=outcome != "denied")
+    await bot._dispatch(42, principal, "/cancel_active", "")
+    assert bot._send_text.call_args.kwargs["reply_markup"] == ui.build_reply_markup(
+        ui.ROLE_USER, menu=ui.MENU_APPLICATION_MODE, application_mode=mode,
+        active=True, can_stop=False)
+    if outcome == "denied":
+        cancel.assert_not_called()
+    else:
+        cancel.assert_called_once_with(command)
