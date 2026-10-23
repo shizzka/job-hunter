@@ -188,6 +188,23 @@ def latest_run_entry(path: str | None = None) -> dict | None:
     return records[-1] if records else None
 
 
+def has_completed_search(path: str) -> bool:
+    """A successful search anywhere in this profile's history completes setup."""
+    try:
+        records = read_json_records(path)
+    except OSError:
+        return False
+    for record in reversed(records):
+        kind = record.get("kind")
+        is_search = kind == "search" or (not kind and record.get("mode") in {"search", "dry-run"})
+        # Legacy terminal search records have ok but no status/finished_at.
+        if (is_search and record.get("ok") is True
+                and record.get("status") in {None, "finished"}
+                and ("finished_at" not in record or bool(record["finished_at"]))):
+            return True
+    return False
+
+
 def tail_file(path: str, lines: int = 40, chars: int = 3500) -> str:
     if lines <= 0 or not os.path.exists(path):
         return ""

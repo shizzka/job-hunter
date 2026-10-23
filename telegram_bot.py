@@ -1346,13 +1346,12 @@ class TelegramBot(
             active = directions_mod.active_direction(profile.home_dir)
         except Exception:
             items, active = [], None
-        latest = self._latest_run(profile_name) or {}
         text, rows, complete = onboarding.build(
             hh_ok=checked["status"] == OK, hh_message=checked["message"],
             resumes=[r for r in resumes if isinstance(r, dict)],
             directions=items, active=active,
             mode=str((active or {}).get("application_mode") or profile.hh.application_mode or ""),
-            has_search=bool(latest.get("run_id")),
+            has_search=runtime_control.has_completed_search(profile.run_history_file),
         )
         if only_if_incomplete and complete:
             return

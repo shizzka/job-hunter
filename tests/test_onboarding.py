@@ -1,4 +1,5 @@
 import asyncio
+import json
 from itertools import product
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -98,34 +99,82 @@ def test_untitled_and_duplicate_resumes_count_as_entries():
     assert 'Резюме на hh.ru: 5 — «Резюме А», «Резюме без названия», «Резюме А» и ещё 2' in text
 
 
-@pytest.mark.parametrize("missing", [None, 0, 1, 2, 3, 4])
-def test_getting_started_reads_step_states_from_profile_and_probe(tmp_path, monkeypatch, missing):
+@pytest.fixture
+def getting_started_screen(tmp_path, monkeypatch):
     import directions
     from hh import session_probe
     from telegram_bot import TelegramBot
 
-    resumes = [{"id": "synthetic-resume", "title": "Резюме А"}] if missing != 1 else []
-    active = {"title": "Направление А", "application_mode": "confirm" if missing != 3 else "invalid"}
-    if missing == 2:
-        active = None
-    profile = SimpleNamespace(home_dir=str(tmp_path), hh=SimpleNamespace(cookies_file="synthetic-cookies", application_mode="auto"))
+    history = tmp_path / "run_history.jsonl"
+    profile = SimpleNamespace(home_dir=str(tmp_path), run_history_file=str(history),
+                              hh=SimpleNamespace(cookies_file="synthetic-cookies", application_mode="auto"))
     bot = SimpleNamespace(
         _selected_profile=lambda principal: "synthetic-profile", _profile=lambda name: profile,
-        _latest_run=lambda name: {"run_id": "synthetic-run"} if missing != 4 else {},
         _send_text=AsyncMock(),
     )
-    probe = Mock(return_value={"status": session_probe.OK if missing != 0 else session_probe.LOGIN,
-                               "message": "", "resumes": resumes})
+    probe = Mock()
     monkeypatch.setattr(session_probe, "probe", probe)
     monkeypatch.setattr(session_probe, "save_catalog", Mock())
-    monkeypatch.setattr(directions, "list_directions", lambda home: [active] if active else [])
-    monkeypatch.setattr(directions, "active_direction", lambda home: active)
 
-    asyncio.run(TelegramBot._send_getting_started(bot, 42, {}))
-    text = bot._send_text.call_args.args[1]
+    def render(records, *, missing=None, only_if_incomplete=False):
+        history.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+        resumes = [{"id": "synthetic-resume", "title": "Резюме А"}] if missing != 1 else []
+        active = {"title": "Направление А", "application_mode": "confirm" if missing != 3 else "invalid"}
+        if missing == 2:
+            active = None
+        probe.return_value = {"status": session_probe.OK if missing != 0 else session_probe.LOGIN,
+                              "message": "", "resumes": resumes}
+        monkeypatch.setattr(directions, "list_directions", lambda home: [active] if active else [])
+        monkeypatch.setattr(directions, "active_direction", lambda home: active)
+        bot._send_text.reset_mock()
+        asyncio.run(TelegramBot._send_getting_started(bot, 42, {}, only_if_incomplete=only_if_incomplete))
+        probe.assert_called_with("synthetic-cookies")
+        return bot._send_text.call_args.args[1] if bot._send_text.called else None
+
+    return render
+
+
+def completed_search(**changes):
+    return {"kind": "search", "mode": "search", "run_id": "synthetic-search",
+            "status": "finished", "finished_at": "2026-10-23T12:00:00", "ok": True, **changes}
+
+
+@pytest.mark.parametrize("missing", [None, 0, 1, 2, 3, 4])
+def test_getting_started_reads_step_states_from_profile_and_probe(getting_started_screen, missing):
+    text = getting_started_screen([completed_search()] if missing != 4 else [], missing=missing)
     # Failed login also makes the current HH resume catalog unavailable.
     for index in range(5):
         done = index != missing and not (missing == 0 and index == 1)
         assert f"{'✅' if done else '⬜️'} {index + 1}." in text
     assert ("Всё готово!" in text) == (missing is None)
-    probe.assert_called_once_with("synthetic-cookies")
+
+
+@pytest.mark.parametrize("records,done", [
+    pytest.param([], False, id="empty-history"),
+    pytest.param([completed_search(kind="manual-apply", mode="manual-ai-apply")], False, id="manual-only"),
+    pytest.param([completed_search(status="incomplete", finished_at=None, ok=None)], False, id="interrupted-first-search"),
+    pytest.param([completed_search(ok=False, error_kind="CancelledError")], False, id="cancelled-first-search"),
+    pytest.param([completed_search(ok=False, error_kind="RuntimeError")], False, id="failed-first-search"),
+    pytest.param([completed_search(status="incomplete")], False, id="incomplete-overrides-ok"),
+    pytest.param([completed_search(finished_at=None)], False, id="missing-finish-time"),
+    pytest.param([{"run_id": "synthetic-unknown"}], False, id="run-id-alone"),
+    pytest.param([completed_search(kind="manual-apply")], False, id="manual-kind-overrides-search-mode"),
+    pytest.param([completed_search()], True, id="completed-search"),
+    pytest.param([completed_search(mode="dry-run")], True, id="completed-trial-search"),
+    pytest.param([completed_search(), completed_search(kind="manual-apply", mode="manual-ai-apply",
+                                                      run_id="synthetic-manual")], True, id="search-then-manual"),
+    pytest.param([completed_search(), completed_search(run_id="synthetic-interrupted", status="incomplete",
+                                                      finished_at=None, ok=None)], True, id="search-then-interrupted"),
+    pytest.param([{"kind": "search", "mode": "search", "run_id": "synthetic-legacy", "ok": True}],
+                 True, id="legacy-terminal-search"),
+    pytest.param([{"mode": "dry-run", "ok": True}], True, id="legacy-mode-only-search"),
+])
+@pytest.mark.parametrize("only_if_incomplete", [False, True])
+def test_first_search_requires_completed_search_in_real_history(getting_started_screen, records, done, only_if_incomplete):
+    text = getting_started_screen(records, only_if_incomplete=only_if_incomplete)
+    if only_if_incomplete and done:
+        assert text is None
+    else:
+        assert f"{'✅' if done else '⬜️'} 5. Первый поиск" in text
+        assert ("Всё готово!" in text) == done
+        assert ("Дальше бот присылает вакансии сам." in text) == done
