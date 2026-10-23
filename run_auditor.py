@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 from run_audit_rules import AuditContext, RULES, timestamp, vacancy_key
 from state_store.json_store import file_lock
+from state_store.locking import acquire_flock
 from state_store.private_journal import append_json
 
 log = logging.getLogger('run_auditor')
@@ -52,7 +53,7 @@ def _records(home, path):
         return []
     result = []
     with stream:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+        acquire_flock(stream.fileno(), fcntl.LOCK_SH)
         for number, line in enumerate(stream, 1):
             if not line.strip():
                 continue

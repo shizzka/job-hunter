@@ -68,9 +68,10 @@ fixing the API request deadline.
 The existing endpoint test and shutdown fake now accept the explicit timeout;
 this intentionally changes request construction, not their behavioral checks.
 
-The deadlines use cooperative asyncio cancellation. They cannot preempt a
-synchronous event-loop block or forcibly stop a thread already running through
-`asyncio.to_thread`. No such historical block was established by this evidence.
+The deadlines use cooperative asyncio cancellation. The review follow-up below
+also removes file-lock waits from bot tasks. Other synchronous CPU/disk work
+cannot be preempted by asyncio, nor can a running `asyncio.to_thread` worker be
+forcibly stopped. No such historical block was established by this evidence.
 
 ## Validation
 
@@ -87,3 +88,43 @@ synchronous event-loop block or forcibly stop a thread already running through
 - No bot restart, profile-data write, Telegram/HH request, or external submit
   was performed. Full suite is run on the committed branch with the owner's
   suite helper; its final summary is reported with the task result.
+
+## Independent review follow-up
+
+All three findings were accepted and addressed:
+
+1. Incomplete command admission now rolls back its queue/history entry in a
+   synchronous `finally` and reschedules draining. Cancellation at markup,
+   queue-notice or callback-acknowledgement awaits cannot leave a not-ready
+   entry blocking subsequent commands, even if the active command finishes
+   while admission is still pending. Cleanup adds no network await.
+2. Telegram logging uses one nonblocking queue capped at 1,024 records. A daemon
+   worker owns all configured file/stream sinks. Queue overload increments a
+   counter and emits a loss report from the worker; channel and observation
+   context are captured in the producer and existing redaction remains.
+   Worker file-lock attempts have a 0.1-second budget and close waits at most
+   0.2 seconds. Bot run/foreground tasks use a scoped zero-wait lock policy:
+   sidecar and journal-inode acquisition raises `StateLockBusy` on contention,
+   without accessing protected state. The supervisor logs the error and moves
+   on. This also covers analytics/audit/collection journal locks; other
+   processes retain the original blocking transaction policy. Synchronous
+   state operations are deliberately not replayed or left running in detached
+   writer threads after cancellation.
+3. Daily summaries persist confirmed delivery per date, user and profile before
+   awaiting the next recipient. A persisted cursor resumes after the last
+   attempted recipient, so a permanently slow recipient cannot starve later
+   ones. Completion is recorded once all current recipients have succeeded.
+   Tests reconstruct the bot from persisted state and cover date rollover.
+   A send without a confirmed result still has the API's usual uncertain
+   delivery semantics; the checkpoint does not promise remote exactly-once
+   delivery across a lost acknowledgement or a process crash.
+
+Regression evidence: three queue-cancellation cases and one partial-delivery
+case failed before their fixes. Five real-flock regressions also failed on an
+isolated checkout of `49bd580`: a held logging sidecar and contended state,
+journal append/read and analytics inode locks. A finite independent release
+keeps the baseline tests from hanging their own runner. The fixed code processes
+the next update while those locks are still held, without bypassing the lock
+or changing the protected state. Focused follow-up verification: 12 passed;
+broader storage/logging/profile checks: 243 passed, 1 xpassed. No live bot,
+profile, Telegram or HH operation was used.

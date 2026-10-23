@@ -14,6 +14,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .locking import acquire_flock
+
 
 def _atomic_write(path: str | os.PathLike[str], write, *, overwrite: bool = True) -> None:
     target = Path(path)
@@ -88,7 +90,7 @@ def file_lock(path: str | os.PathLike[str], *, lock_path: str | os.PathLike[str]
     fd = os.open(lock_target, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         os.fchmod(fd, 0o600)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        acquire_flock(fd, fcntl.LOCK_EX)
         yield
     finally:
         with contextlib.suppress(OSError):

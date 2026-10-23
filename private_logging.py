@@ -4,8 +4,11 @@ import copy
 import os
 import re
 import sys
+import queue
+import threading
 
 from state_store.private_journal import append_text
+from state_store.locking import lock_wait_timeout
 
 
 
@@ -20,6 +23,8 @@ def _context():
 
 
 def log_channel(record):
+    if hasattr(record, "_private_log_channel"):
+        return record._private_log_channel
     if record.name == "chat_responder" or record.name.startswith("chat_responder."):
         return "chat"
     if record.name == "telegram_bot" or record.name.startswith("telegram_app"):
@@ -89,3 +94,72 @@ class PrivateFileHandler(logging.FileHandler):
                     sys.stderr.write(f"Private log write failed: {type(exc).__name__}\n")
                 except Exception:
                     pass
+
+
+class NonblockingLogHandler(logging.Handler):
+    """One bounded mailbox; only its daemon worker touches logging sinks.
+
+    Full queues drop records and count the loss instead of blocking polling.
+    Task-local channel/context is captured before handing records to a thread.
+    """
+    def __init__(self, handlers, *, capacity=1024):
+        if capacity < 1:
+            raise ValueError("Logging queue capacity must be positive")
+        super().__init__()
+        self.handlers = tuple(handlers)
+        self.records = queue.Queue(maxsize=capacity)
+        self.dropped_records = 0
+        self.failed_records = 0
+        self._stopping = threading.Event()
+        self._worker = threading.Thread(target=self._drain, name="telegram-logging", daemon=True)
+        self._worker.start()
+
+    def emit(self, record):
+        if self._stopping.is_set():
+            return
+        prepared = copy.copy(record)
+        prepared._private_log_channel = log_channel(record)
+        prepared.observation_fields = {**_context(), **getattr(record, "observation_fields", {})}
+        try:
+            self.records.put_nowait(prepared)
+        except queue.Full:
+            self.dropped_records += 1
+
+    def _dispatch(self, record):
+        # Neither a held sidecar nor an inode lock may strand the worker.
+        with lock_wait_timeout(0.1):
+            for handler in self.handlers:
+                if record.levelno >= handler.level:
+                    try:
+                        handler.handle(record)
+                    except Exception:
+                        self.failed_records += 1
+
+    def _drain(self):
+        reported_drops = 0
+        try:
+            while not self._stopping.is_set() or not self.records.empty():
+                try:
+                    record = self.records.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                try:
+                    drops = self.dropped_records
+                    if drops > reported_drops:
+                        self._dispatch(logging.LogRecord(
+                            "telegram_bot", logging.WARNING, __file__, 0,
+                            "Telegram logging queue dropped %s records", (drops - reported_drops,), None,
+                        ))
+                        reported_drops = drops
+                    self._dispatch(record)
+                finally:
+                    self.records.task_done()
+        finally:
+            for handler in self.handlers:
+                handler.close()
+
+    def close(self):
+        self._stopping.set()
+        if threading.current_thread() is not self._worker:
+            self._worker.join(timeout=0.2)
+        super().close()

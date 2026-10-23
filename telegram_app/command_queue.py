@@ -222,21 +222,32 @@ class TelegramCommandQueue:
             self._queue_history.setdefault(profile, []).append(entry)
             position = len(waiting)
             after = active.label if active else launching.label if launching else "пауза" if profile in self._queue_paused else waiting[0].label
-            await self._queue_markup(entry)
-            if self._commands_stopping():
-                await self._queue_markup(entry, restore=True)
-                return False
-            await self._queue_notice(entry.chat_id, f"📥 В очереди №{position} после «{after}»",
-                                     reply_markup={"inline_keyboard": [[{"text": "Убрать из очереди", "callback_data": f"queue:remove:{entry.id}"}]]})
-            if entry.source:
-                with contextlib.suppress(Exception):
-                    await self._answer_callback_query(entry.source.get("id", ""))
-            if self._commands_stopping():
-                await self._queue_markup(entry, restore=True)
-                return False
-            entry.ready = True
-            self._schedule_queue(profile)
-            return True
+            try:
+                await self._queue_markup(entry)
+                if self._commands_stopping():
+                    await self._queue_markup(entry, restore=True)
+                    return False
+                await self._queue_notice(entry.chat_id, f"📥 В очереди №{position} после «{after}»",
+                                         reply_markup={"inline_keyboard": [[{"text": "Убрать из очереди", "callback_data": f"queue:remove:{entry.id}"}]]})
+                if entry.source:
+                    with contextlib.suppress(Exception):
+                        await self._answer_callback_query(entry.source.get("id", ""))
+                if self._commands_stopping():
+                    await self._queue_markup(entry, restore=True)
+                    return False
+                entry.ready = True
+                self._schedule_queue(profile)
+                return True
+            finally:
+                if not entry.ready:
+                    # Cancellation can interrupt any notification above. Roll
+                    # back admission without another network await in cleanup.
+                    if entry in waiting:
+                        waiting.remove(entry)
+                    history = self._queue_history.get(profile, [])
+                    if entry in history:
+                        history.remove(entry)
+                    self._schedule_queue(profile)
         entry.ready = True
         self._queue_launching[profile] = entry
         return await self._invoke_queue_entry(entry, revalidate=False)

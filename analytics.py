@@ -18,6 +18,7 @@ import config
 import resume_versions
 import direction_history
 from state_store.json_store import JsonStore
+from state_store.locking import acquire_flock
 from state_store.private_journal import append_json, read_json_records
 from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket, application_outcome
 
@@ -628,7 +629,7 @@ def _reconcile_event_tail(state: dict) -> dict:
     try:
         events_file = _destination()[0]
         with open(events_file, "rb") as stream:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+            acquire_flock(stream.fileno(), fcntl.LOCK_SH)
             stat = os.fstat(stream.fileno())
             identity = [os.path.realpath(events_file), stat.st_dev, stat.st_ino]
             checkpoint = state.get("_journal_checkpoint") or {}

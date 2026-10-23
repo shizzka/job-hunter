@@ -6,6 +6,7 @@ import stat
 from pathlib import Path
 
 from .json_store import file_lock
+from .locking import acquire_flock
 
 
 def write_all(fd, data):
@@ -51,7 +52,7 @@ def append_bytes(path, data, *, separate_tail=False, durable=True, rollback=True
     with file_lock(target):
         fd = open_private_append(target)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            acquire_flock(fd, fcntl.LOCK_EX)
             size = os.fstat(fd).st_size
             prefix = b"\n" if separate_tail and size and os.pread(fd, 1, size-1) != b"\n" else b""
             try:
@@ -86,7 +87,7 @@ def read_json_records(path, *, strip_nuls=False):
     except FileNotFoundError:
         return []
     with stream:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+        acquire_flock(stream.fileno(), fcntl.LOCK_SH)
         records = []
         for line in stream:
             if strip_nuls:

@@ -6,6 +6,7 @@ import logging
 import time
 
 from telegram_app.api import telegram_error_summary
+from state_store.locking import nonblocking_state_locks
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class TelegramUpdateSupervisor:
     UPDATE_TIMEOUT_SECONDS = 30.0
     SLOW_UPDATE_SECONDS = 10.0
 
+    @nonblocking_state_locks
     async def _run_foreground(self, handler, *args, update_id=None, handler_name=None):
         """Cancel a slow request and contain its failure before advancing FIFO.
 

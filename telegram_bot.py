@@ -25,7 +25,7 @@ import hh_response_counter
 import manual_apply_queue
 from direction_views import DirectionView
 import config
-from private_logging import PrivateFileHandler, OperationalFormatter, chat_log_path
+from private_logging import PrivateFileHandler, NonblockingLogHandler, OperationalFormatter, chat_log_path
 from state_store.private_journal import append_json, read_json_records
 import company_blacklist
 import profile as profile_mod
@@ -39,6 +39,7 @@ import telegram_clients
 import telegram_resume_limits
 from runtime_context import TelegramRuntimePaths
 from state_store.json_store import JsonStore
+from state_store.locking import nonblocking_state_locks
 from state_store.bot_state import BotStateStore
 from telegram_app.auth_bridge import (
     TelegramHHAuthBridge,
@@ -93,14 +94,14 @@ def _configure_logging(
     if not force and logging.getLogger().handlers:
         return
     handlers = _build_logging_handlers(runtime_paths)
+    for handler in handlers:
+        handler.setFormatter(OperationalFormatter())
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        handlers=handlers,
+        handlers=[NonblockingLogHandler(handlers)],
         force=force,
     )
-    for handler in handlers:
-        handler.setFormatter(OperationalFormatter())
     logging.getLogger("chat_responder").propagate = True
 
 
@@ -279,6 +280,7 @@ class TelegramBot(
         self._llm_test_lock = asyncio.Lock()
         self._foreground_task: asyncio.Task | None = None
 
+    @nonblocking_state_locks
     async def run(self) -> None:
         if not config.TELEGRAM_CONTROL_BOT_TOKEN:
             raise RuntimeError("Telegram bot requires HUNTER_CONTROL_BOT_TOKEN")
@@ -1918,9 +1920,30 @@ class TelegramBot(
                 continue
             recipients[user_id] = {**item, "profile": profile_name}
 
-        sent = 0
-        for user_id, principal in sorted(recipients.items()):
+        daily = self._load_state().get("daily_summary") or {}
+        delivered = dict(daily.get("delivered") or {}) if daily.get("delivery_date") == today else {}
+        ordered = sorted(recipients)
+        cursor = daily.get("cursor") if daily.get("delivery_date") == today else None
+        if cursor in ordered:
+            position = ordered.index(cursor) + 1
+            ordered = ordered[position:] + ordered[:position]
+
+        def checkpoint(state, user_id, delivered_profile=None):
+            summary = state.setdefault("daily_summary", {})
+            if summary.get("delivery_date") != today:
+                summary.update(delivery_date=today, delivered={})
+            summary["cursor"] = user_id
+            if delivered_profile is not None:
+                summary["delivered"][str(user_id)] = delivered_profile
+
+        for user_id in ordered:
+            principal = recipients[user_id]
             profile_name = str(principal.get("profile") or self.profile_name or "default")
+            if delivered.get(str(user_id)) == profile_name:
+                continue
+            # Persist the cursor before the cancellable send. On the next poll,
+            # later recipients get a turn before retrying this recipient.
+            self._update_state(lambda state: checkpoint(state, user_id))
             try:
                 with profile_access.principal_scope(principal):
                     snapshot = self._daily_summary_snapshot(profile_name, now=datetime.now())
@@ -1936,21 +1959,22 @@ class TelegramBot(
                         reply_markup=self._menu_reply_markup(principal),
                     )
                 if result is not None:
-                    sent += 1
+                    self._update_state(lambda state: checkpoint(state, user_id, profile_name))
+                    delivered[str(user_id)] = profile_name
             except Exception as exc:
                 log.warning("daily summary failed user=%s profile=%s: %s", user_id, profile_name, exc)
 
-        if sent <= 0:
+        if not recipients or any(delivered.get(str(uid)) != item["profile"] for uid, item in recipients.items()):
             return
         def record_summary(state):
-            state["daily_summary"] = {
+            state["daily_summary"].update({
                 "last_sent_date": today,
                 "last_sent_at": datetime.now().isoformat(timespec="seconds"),
-                "recipients": sent,
-            }
+                "recipients": len(delivered),
+            })
 
         self._update_state(record_summary)
-        self._append_debug_log("daily_summary_sent", date=today, recipients=sent)
+        self._append_debug_log("daily_summary_sent", date=today, recipients=len(delivered))
 
     def _runtime_status(self, profile_name: str) -> dict | None:
         runtime_file = self._profile(profile_name).runtime_status_file

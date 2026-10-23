@@ -784,3 +784,43 @@ def test_failed_hh_run_keeps_the_queue_stopped(monkeypatch, tmp_path):
     bot._queue_capture_finished(command, snapshot)
     bot._queue_command_finished("qa", command)
     assert bot._queue_stop_reasons["qa"] == "HH authentication was not proven"
+
+
+@pytest.mark.parametrize('cancel_stage', ['markup', 'notice', 'callback'])
+def test_timed_out_admission_does_not_block_following_commands(monkeypatch, cancel_stage):
+    from telegram_bot import TelegramBot
+
+    async def scenario():
+        bot = Bot()
+        await bot._admit_command(entry(bot, 'active'))
+        incomplete = entry(bot, 'incomplete', callback=source())
+        survivor = entry(bot, 'survivor')
+        entered = asyncio.Event()
+        original = getattr(bot, {'markup': '_queue_markup', 'notice': '_queue_notice',
+                                 'callback': '_answer_callback_query'}[cancel_stage])
+
+        async def blocked(*args, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+        attribute = {'markup': '_queue_markup', 'notice': '_queue_notice',
+                     'callback': '_answer_callback_query'}[cancel_stage]
+        monkeypatch.setattr(bot, attribute, blocked)
+        supervisor = TelegramBot('qa')
+        supervisor.UPDATE_TIMEOUT_SECONDS = 0.04
+        supervisor.SLOW_UPDATE_SECONDS = 0.01
+        admission = asyncio.create_task(supervisor._run_foreground(bot._admit_command, incomplete))
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        monkeypatch.setattr(bot, attribute, original)
+        await bot._admit_command(survivor)
+        bot.finish()
+        # Completion cannot drain past incomplete.ready=False yet.
+        await settle(bot)
+        await admission
+        await settle(bot)
+        assert incomplete not in bot._command_queues['qa']
+        assert incomplete not in bot._queue_history['qa']
+        assert bot._active_commands['qa'].entry is survivor
+        assert all(label != 'incomplete' for _, label, _ in bot.started)
+
+    asyncio.run(scenario())
