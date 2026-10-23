@@ -150,15 +150,9 @@ def resume_mismatches(home_dir, snapshots=None, events_path=None):
         return []
     path = Path(events_path) if events_path else Path(home_dir) / "analytics_events.jsonl"
     requested = {}
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        lines = []
-    for line in lines:
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
+    import analytics_read_cache
+    events, _ = analytics_read_cache.journal(path).read(path)
+    for event in events:
         if not isinstance(event, dict) or event.get("event") != "decision" or event.get("outcome") != "applied":
             continue
         resume_hash = str(event.get("requested_resume_id") or "")
@@ -214,3 +208,22 @@ def scoped(summary, home, scope="active"):
     return {**summary, "rows": rows, "unmatched": unmatched, "ambiguous": ambiguous,
             "total_topics": sum(row["topics"] for row in rows) + unmatched["topics"] + ambiguous["topics"],
             "direction_title": view.title}
+
+
+# Cache only storage-backed calls; caller-supplied fixtures remain independent.
+def _cached_report(fn):
+    from functools import wraps
+    @wraps(fn)
+    def wrapped(home_dir, snapshots=None, **kwargs):
+        if snapshots is not None or kwargs:
+            return fn(home_dir, snapshots=snapshots, **kwargs)
+        import analytics_read_cache as cache
+        from direction_history import HistoryScope
+        view = HistoryScope(home_dir)
+        key = (fn.__name__, cache.ownership_key(view), cache.stamp(Path(home_dir) / "analytics_events.jsonl"))
+        return cache.memo(key, lambda: (fn(home_dir), None))
+    return wrapped
+
+
+summarize = _cached_report(summarize)
+resume_mismatches = _cached_report(resume_mismatches)

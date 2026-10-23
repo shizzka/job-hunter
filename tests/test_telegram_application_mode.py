@@ -104,7 +104,10 @@ async def test_auto_requires_confirmation_from_every_entry(mode_bot, with_direct
     after = settings_bytes(bot)
     await callback(bot, yes)
     assert settings_bytes(bot) == after
-    assert "устарела" in bot._send_text.call_args.args[1]
+    if answer == "yes":
+        assert bot._answer_callback_query.call_args.args[1] == "Уже сделано"
+    else:
+        assert "устарела" in bot._send_text.call_args.args[1]
 
 
 @pytest.mark.parametrize("with_direction", [True, False])

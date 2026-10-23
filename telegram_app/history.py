@@ -8,6 +8,7 @@ from pathlib import Path
 
 import analytics
 import profile_access
+from telegram_app.guards import read_thread
 from direction_history import ALL, UNSPECIFIED, HistoryScope
 from state_store.private_journal import read_json_records
 
@@ -108,7 +109,7 @@ async def show_run(bot, chat_id, principal, profile_name, command, arg):
         # Leave time to send an answer before the foreground supervisor's deadline.
         # The worker only builds data: a timed-out read can never send a late reply.
         async with asyncio.timeout(RUN_SUMMARY_TIMEOUT_SECONDS):
-            text, title, controls = await asyncio.to_thread(_run_report, bot, principal, profile_name, command, arg)
+            text, title, controls = await read_thread(_run_report, bot, principal, profile_name, command, arg)
             # Bot state and command pruning belong to the event-loop thread.
             menu = bot._menu_reply_markup(principal)
             messages = [(text, menu)] if title is None else [(f"История запусков · {title}", menu), (text, controls)]
@@ -128,10 +129,7 @@ async def show_run(bot, chat_id, principal, profile_name, command, arg):
     await bot._send_text(chat_id, error)
 
 
-async def show(bot, chat_id, principal, profile_name, command, arg):
-    if command in {"/log", "/hunter_log"}:
-        await show_run(bot, chat_id, principal, profile_name, command, arg)
-        return
+def _history_report(bot, principal, profile_name, command, arg):
     from telegram_bot_ui import build_stats_text, build_runs_text
     profile = bot._profile(profile_name)
     scope = scope_arg(arg)
@@ -162,8 +160,16 @@ async def show(bot, chat_id, principal, profile_name, command, arg):
         summary = analytics.summarize(events_file=profile.analytics_events_file, scope=ALL, all_time=command == "/stats")
         texts[0] += "\n\nРешения по направлениям:\n" + "\n".join(
             f"• {html.escape(name)}: {count}" for name, count in summary["by_direction"].items())
+    return title, texts, markup(profile.home_dir, command, scope=scope)
+
+
+async def show(bot, chat_id, principal, profile_name, command, arg):
+    if command in {"/log", "/hunter_log"}:
+        await show_run(bot, chat_id, principal, profile_name, command, arg)
+        return
+    title, texts, controls = await read_thread(_history_report, bot, principal, profile_name, command, arg)
     # Telegram accepts one markup type per message. Keep the persistent section
     # keyboard, then put the scope controls on the actual report.
     await bot._send_text(chat_id, f"История откликов · {title}", reply_markup=bot._menu_reply_markup(principal))
     for text in texts:
-        await bot._send_text(chat_id, text, reply_markup=markup(profile.home_dir, command, scope=scope))
+        await bot._send_text(chat_id, text, reply_markup=controls)

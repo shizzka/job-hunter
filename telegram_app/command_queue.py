@@ -16,6 +16,7 @@ import uuid
 
 import telegram_access
 import profile_access
+from telegram_app.guards import AI_LABELS, BUSY, reserve, release, release_callback
 
 log = logging.getLogger(__name__)
 _invocation = contextvars.ContextVar("bot_queue_invocation", default=None)
@@ -27,7 +28,7 @@ PERIODIC = {
 }
 DISPATCH = {
     "/search": "search", "/dryrun": "dry-run", "/check": "check invitations",
-    "/digest": "digest", "/analyze": "analyze resume", "/backfill": "analytics backfill",
+    "/analyze": "analyze resume", "/backfill": "analytics backfill",
     "/grabresume": "grab resume", "/refresh_resume": "refresh resume",
     "/search_suggest": "suggest search queries", "/chat_ai": "chat AI reply",
     "/ai_chat": "chat AI reply", "/chat_answer": "chat AI reply",
@@ -57,6 +58,7 @@ class QueueEntry:
     outcome: str = ""
     ready: bool = False
     recovery: bool = False
+    request_key: tuple | None = None
 
 
 def current_entry():
@@ -145,7 +147,24 @@ def profile_command(fn):
 
         entry = QueueEntry(profile, chat_id, int(principal["user_id"]), label, invoke, key, source=source,
                            recovery=fn.__name__ in {"_start_profile_hh_auth_capture", "_start_hh_auth_capture"})
-        return await self._admit_command(entry)
+        if label in AI_LABELS:
+            identity = source.get("data") if source else tuple(
+                (name, values[name]) for name in ("arg", "token", "hh_chat_id", "hh_message_id") if name in values)
+            entry.request_key = (entry.user_id, "ai", label, identity)
+            if not reserve(self, entry.request_key):
+                if source:
+                    await self._answer_callback_query(str(source.get("id") or ""), BUSY)
+                else:
+                    await self._send_text(chat_id, BUSY)
+                return False
+        try:
+            accepted = await self._admit_command(entry)
+        except BaseException:
+            release(self, entry.request_key)
+            raise
+        if not accepted:
+            release(self, entry.request_key)
+        return accepted
     return wraps(fn)(telegram_access.scoped_request(wrapped))
 
 
@@ -282,6 +301,8 @@ class TelegramCommandQueue:
         finally:
             _invocation.reset(token)
             self._queue_launching.pop(entry.profile, None)
+            if not self._active_commands.get(entry.profile):
+                release(self, entry.request_key)
             self._schedule_queue(entry.profile)
 
     def _schedule_queue(self, profile):
@@ -352,6 +373,8 @@ class TelegramCommandQueue:
                 ttl = max(0, float(os.environ.get("BOT_COMMAND_QUEUE_TTL_MINUTES", "120"))) * 60
                 if time.monotonic() - entry.created_at >= ttl:
                     waiting.pop(0)
+                    release(self, entry.request_key)
+                    release_callback(self, entry.source)
                     entry.outcome = "снята по TTL"
                     await self._queue_notice(entry.chat_id, f"{entry.label}: срок ожидания истёк (TTL), нажмите снова.")
                     await self._queue_markup(entry, restore=True)
@@ -397,6 +420,8 @@ class TelegramCommandQueue:
             return
         if action == "remove" and entry:
             self._command_queues[profile].remove(entry)
+            release(self, entry.request_key)
+            release_callback(self, entry.source)
             entry.outcome = "удалена пользователем"
             await self._queue_markup(entry, restore=True)
             await self._answer_callback_query(callback.get("id", ""), "Удалена из очереди.")
@@ -432,6 +457,8 @@ class TelegramCommandQueue:
         self._queue_history.clear()
         self._queue_resume_profiles.clear()
         for entry in waiting:
+            release(self, entry.request_key)
+            release_callback(self, entry.source)
             await self._queue_notice(entry.chat_id, f"{entry.label}: очередь сброшена при перезапуске, нажмите снова.")
             await self._queue_markup(entry, restore=True)
 
@@ -514,6 +541,8 @@ class TelegramCommandQueue:
     def _queue_command_finished(self, profile, command):
         if command:
             entry = command.queue_entry
+            if entry:
+                release(self, entry.request_key)
             if entry and entry.queued:
                 from telegram_bot_ui import format_command_result, _pretty_command_label
                 result = command.result

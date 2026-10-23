@@ -9,6 +9,7 @@ import runtime_control
 import telegram_access
 import telegram_clients
 from telegram_app.command_queue import profile_command
+from telegram_app.guards import callback_guard
 from telegram_bot_ui import (
     CALLBACK_CHAT_AI_MANUAL_REPLY,
     CALLBACK_CHAT_AI_MANUAL_SEND,
@@ -60,6 +61,7 @@ def _lists_several_chats(message: dict) -> bool:
 class TelegramCallbackRouter:
     """Route stable callback payloads to TelegramBot operations."""
 
+    @callback_guard
     @profile_command
     @telegram_access.scoped_request
     async def _handle_callback_query(self, callback: dict) -> None:

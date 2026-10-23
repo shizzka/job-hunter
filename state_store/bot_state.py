@@ -5,7 +5,7 @@ from .json_store import JsonStore
 
 
 def _valid_state(state: dict) -> bool:
-    for name in ("user_state", "guest_state", "health_check", "daily_summary", "form_pending"):
+    for name in ("user_state", "guest_state", "health_check", "daily_summary", "form_pending", "callback_claims"):
         if name in state and not isinstance(state[name], dict):
             return False
     for name in ("user_state", "guest_state", "form_pending"):

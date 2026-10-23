@@ -17,9 +17,10 @@ from functools import wraps
 import config
 import resume_versions
 import direction_history
+import analytics_read_cache as read_cache
 from state_store.json_store import JsonStore
 from state_store.locking import acquire_flock
-from state_store.private_journal import append_json, iter_json_records, read_json_records
+from state_store.private_journal import append_json, read_json_records
 from outcome import status_bucket as _status_bucket, status_detail_bucket as _status_detail_bucket, application_outcome
 
 log = logging.getLogger("analytics")
@@ -491,8 +492,10 @@ def reconcile_run_records(records, *, events_file=None, events=None):
     pending = {record.get("run_id") for record in records if record.get("status") == "incomplete" and record.get("run_id")}
     if not pending:
         return records
-    events = [event for event in (_iter_events(events_file) if events is None else events)
-              if event.get("run_id") in pending]
+    if events is None:
+        path = events_file or _destination()[0]
+        events = read_cache.journal(path).read(path)[0]
+    events = [event for event in events if event.get("run_id") in pending]
     receipts = [event for event in events if event.get("mode") != "dry-run" and not event.get("dry_run") and (
         (event.get("event") == "application_result" and event.get("outcome") == "sent") or
         (event.get("event") == "decision" and event.get("decision") == "applied_auto"))]
@@ -1253,7 +1256,7 @@ def history_events(events_file=None, *, scope="active"):
 
 def scoped_runs(records, *, events_file=None, scope="active"):
     view = direction_history.for_events(events_file, scope)
-    events = view.events(_iter_events(events_file))
+    events = view.events(read_cache.journal(events_file or _destination()[0]).read(events_file or _destination()[0])[0])
     owners = {e.get("run_id"): view.owner(e) for e in events if view.owner(e) is not None
               and e.get("event") in {"search_started", "search_finished"}}
     result = []
@@ -1280,7 +1283,7 @@ def observation_metadata(items):
     return [view.metadata(record) for record in view.events(records + applications)[:len(records)]]
 
 
-def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile="", scope="active"):
+def _get_run_summary(run_id=None, *, events_file=None, history_file=None, profile="", scope="active"):
     """Read a selected/latest search run from profile-owned existing storage."""
     from run_summary import build_run_summary
     path = history_file if history_file is not None else config.RUN_HISTORY_FILE
@@ -1294,9 +1297,9 @@ def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile
     # second pass loads the selected run in full, including its late receipts.
     lifecycle = []
     def ownership_events():
-        for event in iter_json_records(event_path, strip_nuls=True, line_filter=lambda line:
-                b"search_started" in line or b"search_finished" in line
-                or bool(view.directions) and b'"decision"' in line):
+        for event in read_cache.journal(event_path, tag=("ownership", bool(view.directions)),
+                line_filter=lambda line: b"search_started" in line or b"search_finished" in line
+                or bool(view.directions) and b'"decision"' in line).read(event_path)[0]:
             if run_id and event.get("run_id") != run_id:
                 continue
             if event.get("event") in {"search_started", "search_finished"}:
@@ -1308,8 +1311,8 @@ def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile
 
     def run_events(identity):
         spellings = {json.dumps(identity, ensure_ascii=ascii_only).encode("utf-8") for ascii_only in (True, False)}
-        rows = read_json_records(event_path, strip_nuls=True,
-            line_filter=lambda line: any(value in line for value in spellings))
+        rows = read_cache.journal(event_path, tag=("run", identity), projection=dict,
+            line_filter=lambda line: any(value in line for value in spellings)).read(event_path)[0]
         return view.events([e for e in rows if e.get("run_id") == identity])
 
     def owned(record):
@@ -1354,6 +1357,16 @@ def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile
     owner = view.owner(run)
     summary["direction_title"] = next((d["title"] for d in view.directions if d["name"] == owner), "направление не указано")
     return summary
+
+
+def get_run_summary(run_id=None, *, events_file=None, history_file=None, profile="", scope="active"):
+    event_path = events_file or _destination()[0]
+    history_path = history_file if history_file is not None else config.RUN_HISTORY_FILE
+    view = direction_history.for_events(events_file, scope)
+    key = ("run", read_cache.stamp(event_path), read_cache.stamp(history_path),
+           read_cache.ownership_key(view), run_id, profile)
+    return read_cache.memo(key, lambda: (_get_run_summary(run_id, events_file=events_file,
+        history_file=history_file, profile=profile, scope=scope), None))
 
 
 FILTER_AUDIT_ALLOWED_DECISIONS = {
@@ -1473,7 +1486,7 @@ def _coerce_int(value, default: int = 0) -> int:
         return default
 
 
-def summarize(
+def _summarize(
     days: int | None = None,
     *,
     events_file: str | None = None,
@@ -1481,14 +1494,16 @@ def summarize(
     start_at: datetime | None = None,
     end_at: datetime | None = None,
     scope="active",
+    _events=None,
+    _view=None,
 ) -> dict:
     days = days if days is not None else config.ANALYTICS_RECENT_DAYS
     cutoff = start_at if start_at is not None else (
         None if all_time else (_now() - timedelta(days=max(0, days)))
     )
     events = []
-    view = direction_history.for_events(events_file, scope)
-    for event in history_events(events_file, scope=scope):
+    view = _view or direction_history.for_events(events_file, scope)
+    for event in (_events if _events is not None else history_events(events_file, scope=scope)):
         created_at = _parse_dt(event.get("created_at"))
         if created_at is None:
             continue
@@ -1875,3 +1890,24 @@ def summarize(
             bucket_values["positive_rate"] = round(positive / apps * 100, 1) if apps else 0
 
     return summary
+
+
+def summarize(days=None, *, events_file=None, all_time=False, start_at=None, end_at=None, scope="active"):
+    days = days if days is not None else config.ANALYTICS_RECENT_DAYS
+    path = events_file or _destination()[0]
+    view = direction_history.for_events(events_file, scope)
+    now = _now()
+    key = ("summary", read_cache.stamp(path), read_cache.ownership_key(view), days,
+           all_time, start_at, end_at)
+    def compute():
+        rows, _ = read_cache.journal(path).read(path)
+        events = view.records(view.events(rows))
+        expiry = None
+        if not all_time and start_at is None:
+            cutoff = now - timedelta(days=max(0, days))
+            deadlines = [date + timedelta(days=max(0, days)) for event in events
+                         if (date := _parse_dt(event.get("created_at"))) is not None and date >= cutoff]
+            expiry = min(deadlines).timestamp() if deadlines else None
+        return (_summarize(days, events_file=events_file, all_time=all_time,
+            start_at=start_at, end_at=end_at, scope=scope, _events=events, _view=view), expiry)
+    return read_cache.memo(key, compute, now=now.timestamp())

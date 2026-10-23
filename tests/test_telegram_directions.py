@@ -391,7 +391,8 @@ async def test_real_dispatch_routes_active_search_commands_before_legacy_env_upd
     monkeypatch.setattr(bot, "_dispatch_direction", dispatch)
     for command in ("/search_resume", "/search_suggest", "/search_edit", "/search_use_draft", "/search_application_confirm",
                     "/refresh_resume", "/grabresume", "/search_settings"):
-        await TelegramBot._dispatch.__wrapped__(bot, 1, USER, command, "")
+        import inspect
+        await inspect.unwrap(TelegramBot._dispatch)(bot, 1, USER, command, "")
     assert observed == ["/search_resume", "/search_suggest", "/search_edit", "/search_use_draft", "/search_application_confirm",
                         "/direction_refresh", "/direction_refresh", "/direction_summary"]
     assert not (Path(home) / "profile.env").exists()

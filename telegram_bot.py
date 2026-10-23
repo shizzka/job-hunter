@@ -54,6 +54,7 @@ from telegram_app.directions import TelegramDirections
 from telegram_app.chat_ownership import TelegramChatOwnership
 from telegram_app.command_queue import TelegramCommandQueue, profile_command, current_entry
 from telegram_app.updates import TelegramUpdateSupervisor
+from telegram_app.guards import read_command
 from telegram_app.subprocesses import (
     ActiveCommandState,
     TelegramSubprocessManager,
@@ -350,6 +351,7 @@ class TelegramBot(
         finally:
             if shutdown_task is not None:
                 await shutdown_task
+            await self._shutdown_read_updates()
             await self._shutdown_command_queue()
             self._poll_health = {**self._poll_health, "status": "stopped"}
             self._write_runtime("bot_stop", "Бот Telegram остановлен", "offline")
@@ -2495,6 +2497,7 @@ class TelegramBot(
             return
         await self._dispatch(chat_id, principal, command, arg)
 
+    @read_command
     @profile_command
     @telegram_access.scoped_request
     async def _dispatch(self, chat_id: int, principal: dict, command: str, arg: str) -> None:
@@ -3296,22 +3299,10 @@ class TelegramBot(
                 self._set_selected_menu(principal["user_id"], reply_menu_for_command(role, "/hh_responses"))
             target_profile = self._profile(profile_name)
             await self._send_chat_action(chat_id)
-            try:
-                snapshot = await asyncio.to_thread(
-                    hh_response_counter.refresh,
-                    profile_name=profile_name,
-                    home_dir=target_profile.home_dir,
-                    cookies_file=target_profile.hh.cookies_file,
-                    base_url=config.HH_BASE_URL,
-                )
-            except hh_response_counter.HHResponseCounterError as exc:
-                log.warning("HH response counter failed for profile %s: %s", profile_name, exc)
-                counter_error = hh_response_counter.unavailable_text(exc)
-                snapshot = None
-            except Exception:
-                log.exception("Unexpected HH response counter failure for %s", profile_name)
-                counter_error = hh_response_counter.unavailable_text()
-                snapshot = None
+            from telegram_app.hh_counter_cache import snapshot as counter_snapshot
+            snapshot, counter_age, counter_error = await counter_snapshot(
+                self, principal["user_id"], profile_name, target_profile,
+                force=arg.strip().lower() in {"refresh", "обновить"})
             if snapshot is None:
                 text = counter_error
                 if DirectionView(target_profile.home_dir).directions:
@@ -3330,7 +3321,10 @@ class TelegramBot(
             )
             await self._send_text(
                 chat_id,
-                build_hh_response_count_text(snapshot, home_dir=target_profile.home_dir),
+                build_hh_response_count_text(snapshot, home_dir=target_profile.home_dir)
+                + f"\n\nобновлено {counter_age} мин назад"
+                + (f"\n{counter_error}" if counter_error else "")
+                + "\nОбновить: /hh_responses refresh",
                 reply_markup=self._menu_reply_markup(principal),
             )
             return

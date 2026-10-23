@@ -256,12 +256,17 @@ def test_summary_includes_success_refusal_and_ttl(monkeypatch):
 
 
 class CallbackBot(Bot):
-    _handle_callback_query = queue.profile_command(TelegramCallbackRouter._handle_callback_query)
+    _handle_callback_query = TelegramCallbackRouter._handle_callback_query
 
     def __init__(self):
         super().__init__()
+        self.state = {}
         self.valid_approval = True
         self.manual_calls = []
+
+    def _update_state(self, mutate):
+        mutate(self.state)
+        return self.state
 
     async def _start_manual_ai_apply(self, chat_id, principal, *, profile_name, token):
         self.manual_calls.append((principal["user_id"], profile_name, token, self.valid_approval))
@@ -599,7 +604,7 @@ def test_pruning_finished_task_wakes_waiting_profile(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
-def test_second_queued_manual_token_reaches_ordinary_agent_status_validation(monkeypatch, tmp_path):
+def test_second_queued_manual_token_is_not_admitted_again(monkeypatch, tmp_path):
     import agent
     import config
     import runtime_control
@@ -629,11 +634,11 @@ def test_second_queued_manual_token_reaches_ordinary_agent_status_validation(mon
             return {"ok": False, "stdout": "", "stderr": "", "returncode": 1}
         monkeypatch.setattr(runtime_control, "run_command_capture", capture)
         bot._clear_active_command("qa")
-        await spin_until(lambda: len(attempts) == 2 and not bot._active_commands and not bot._queue_drainers)
-        assert attempts == ["same-token", "same-token"]
+        await spin_until(lambda: len(attempts) == 1 and not bot._active_commands and not bot._queue_drainers)
+        assert attempts == ["same-token"]
         summary = next(payload["text"] for payload in messages if "Очередь выполнена" in payload["text"])
         assert "отправлено, подтверждено сервером hh" in summary
-        assert "статус карточки: applied" in summary
+        assert "задач: 1" in summary
     asyncio.run(scenario())
 
 

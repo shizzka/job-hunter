@@ -19,6 +19,7 @@ import search_query_suggester
 import work_conditions
 import profile_access
 import telegram_access
+from telegram_app.guards import read_command, read_thread
 
 
 def _fingerprint(value):
@@ -362,7 +363,8 @@ class TelegramDirections:
             elif action in {"list", "new", "save", "cancel", "variants", "stats", "add", "pause", "resume", "remove", "refresh"}:
                 command = {"list": "/directions", "new": "/direction_new", "save": "/direction_save", "cancel": "/direction_cancel",
                            "variants": "/direction_variants", "stats": "/direction_stats"}.get(action, "/direction_" + action)
-                await self._dispatch_direction(chat_id, principal, command, "")
+                handler = self._read_direction if action in {"list", "stats"} else self._dispatch_direction
+                await handler(chat_id, principal, command, "")
             elif action == "variant" and state.get("mode") == "variant":
                 await self._accept_direction_input(chat_id, principal, str(int(parts[3]) + 1))
         except (ValueError, IndexError, KeyError, OSError) as exc:
@@ -707,6 +709,11 @@ class TelegramDirections:
         }
 
     @telegram_access.scoped_request
+    @read_command
+    async def _read_direction(self, chat_id, principal, command, arg):
+        return await self._dispatch_direction(chat_id, principal, command, arg)
+
+    @telegram_access.scoped_request
     async def _dispatch_direction(self, chat_id, principal, command, arg):
         import directions
         if (profile_access.current_scope()[1]
@@ -879,7 +886,7 @@ class TelegramDirections:
                 await self._send_text(chat_id, "Нужны права администратора.")
                 return
             import direction_stats
-            summary = direction_stats.summarize(profile.home_dir)
+            summary = await read_thread(direction_stats.summarize, profile.home_dir)
             from telegram_app import history
             scope = history.scope_arg(arg)
             summary = direction_stats.scoped(summary, profile.home_dir, scope)
@@ -911,7 +918,7 @@ class TelegramDirections:
                 ambiguous = summary.get("ambiguous", {}).get("topics", 0)
                 if ambiguous:
                     lines.append(f"Отклики без направления (резюме относится к нескольким): {ambiguous}")
-                mismatches = direction_stats.resume_mismatches(profile.home_dir)
+                mismatches = await read_thread(direction_stats.resume_mismatches, profile.home_dir)
                 view = history.HistoryScope(profile.home_dir, scope)
                 mismatches = [m for m in mismatches if view.matches({"requested_resume_id": m.get("requested_resume_hash")})]
                 if mismatches:
