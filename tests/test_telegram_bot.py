@@ -227,7 +227,7 @@ class TestFormatting:
         assert "⚙️ Процессы:" in text
         assert "Поиск: 3 раза в день" in text
         assert "⏳ Активная задача: Поиск вакансий" in text
-        assert "🕓 Последний прогон:" in text
+        assert "🕓 Последний поиск:" in text
 
     def test_build_schedule_text(self):
         text = telegram_bot.build_schedule_text(

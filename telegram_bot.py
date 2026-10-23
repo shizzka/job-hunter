@@ -1084,7 +1084,7 @@ class TelegramBot(
         client = self._client_record(user_id) or {}
         queries = profile.hh.search_queries
         lines = [
-            f"🎯 Мой поиск · профиль {_pretty_profile_name(profile_name)}",
+            f"🎯 Направления · профиль {_pretty_profile_name(profile_name)}",
             "",
             "🔑 Ключевые слова:",
         ]
@@ -1105,9 +1105,9 @@ class TelegramBot(
     def _application_mode_label(value: str) -> str:
         return {
             "preview": "только показать",
-            "confirm": "подтверждать",
-            "auto": "автоотклик",
-        }.get(value, "автоотклик")
+            "confirm": "Спрашивать меня",
+            "auto": "Автоматически",
+        }.get(value, "Автоматически")
 
     @staticmethod
     def _experience_label(value: str) -> str:
@@ -1142,10 +1142,10 @@ class TelegramBot(
             "🛡 Режим откликов",
             "",
             f"Сейчас: {self._application_mode_label(mode)}{scope}.",
-            "Для включения автоотклика бот попросит подтверждение. Остальные режимы сохраняются сразу.",
+            "Чтобы включить режим «Автоматически», нужно ваше подтверждение. Остальные режимы сохраняются сразу.",
             "👀 Только показать — пришлёт подходящие вакансии, без отправки.",
-            "✋ Подтверждать — отправит только после нажатия «Откликнуться с ИИ».",
-            "⚡ Автоотклик — отправит подходящие вакансии сам в рамках лимитов.",
+            "✋ Спрашивать меня — бот присылает вакансию и откликается только после нажатия «Откликнуться с ИИ».",
+            "⚡ Автоматически — бот откликается сам на подходящие вакансии в пределах лимитов.",
         ])
 
     @staticmethod
@@ -1771,16 +1771,16 @@ class TelegramBot(
         latest = self._latest_run(profile_name) or {}
         latest_age = self._age_from_iso(str(latest.get("created_at") or latest.get("finished_at") or ""))
         if latest_age is None:
-            checks.append({"name": "Last run", "ok": None, "detail": "нет истории прогонов"})
+            checks.append({"name": "Last run", "ok": None, "detail": "нет истории поисков"})
         else:
             max_age = max(6 * 60 * 60, int(search_interval_min) * 3 * 60)
             checks.append({
-                "name": "Данные прогона",
+                "name": "Данные поиска",
                 "ok": latest_age < max_age,
                 "detail": self._format_age(latest_age),
             })
 
-            checks.append({"name": "Последний прогон", "ok": bool(latest.get("ok")),
+            checks.append({"name": "Последний поиск", "ok": bool(latest.get("ok")),
                 "detail": "не завершён" if latest.get("status") == "incomplete" else
                           ("успешно" if latest.get("ok") else "ошибка")})
 
@@ -2893,7 +2893,7 @@ class TelegramBot(
                 return
             lines = ["🧾 Выберите резюме для поиска. Отправьте его номер:", ""]
             for index, item in enumerate(catalog, start=1):
-                title = str(item.get("title") or item.get("id") or "Без названия")
+                title = str(item.get("title") or "Резюме без названия")
                 lines.append(f"{index}. {title}")
             lines.append("\nДля отмены отправьте «Отмена».")
             self._set_search_settings_state(principal["user_id"], search_input="resume", search_input_profile=profile_name)
@@ -3365,8 +3365,8 @@ class TelegramBot(
             run = runs[0] if runs else None
             diagnosis = analytics.zero_apply_diagnosis(run) if run else ""
             await self._send_text(chat_id, diagnosis or (
-                "В последнем прогоне есть подтверждённые отклики." if run and (run.get("funnel") or run).get("applied")
-                else "Нет завершённого прогона с точным нулём откликов для диагностики."),
+                "В последнем поиске есть подтверждённые отклики." if run and (run.get("funnel") or run).get("applied")
+                else "Нет завершённого поиска с точным нулём откликов для диагностики."),
                 reply_markup=self._menu_reply_markup(principal))
             return
 
@@ -4509,7 +4509,7 @@ class TelegramBot(
                 if flag in {"--search", "--dry-run"}:
                     last_run = self._latest_run(profile_name)
                     if last_run:
-                        message = f"{message}\n\n🕓 Последний прогон:\n{format_run_summary(last_run)}"
+                        message = f"{message}\n\n🕓 Последний поиск:\n{format_run_summary(last_run)}"
                 if progress_task:
                     progress_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):

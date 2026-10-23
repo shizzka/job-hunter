@@ -204,3 +204,90 @@ def test_t13_checkpoint_ownership_keeps_lifecycle_precedence(tmp_path):
     append_json(history, finished_run(search_query="QA Engineer"))
     append_json(events, {"event": "search_finished", "run_id": "run-a", "direction": "electric"})
     assert analytics.get_run_summary("run-a", history_file=str(history), events_file=str(events)) is None
+
+
+@pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN])
+@pytest.mark.parametrize("stamp", ["2026-10-23T13:14:15.123456+03:00", "2026-10-23 13:14:15+03:00", "2026-10-23T13:14:15Z"])
+def test_status_button_hides_raw_dates_through_real_dispatch(menu_bot, monkeypatch, role, stamp):
+    import json
+    import re
+    from pathlib import Path
+
+    bot, _ = menu_bot
+    runtime = {"action": "search_collect", "status": "working", "mode": "search",
+               "message": "Собираю вакансии", "updated_at": stamp}
+    monkeypatch.setattr(bot, "_runtime_status", lambda name: runtime)
+    bot_runtime = Path(bot.runtime_paths.bot_runtime_file)
+    bot_runtime.parent.mkdir(parents=True, exist_ok=True)
+    bot_runtime.write_text(json.dumps({**runtime, "message": "Бот работает", "updated_at": "2026-10-23T13:15:16.654321+03:00"}))
+    monkeypatch.setattr(bot, "_latest_run", lambda name: {
+        "created_at": "2026-10-22T12:11:10+03:00", "mode": "search", "ok": True,
+        "found": 9, "applied": 2, "skipped": 7, "source_stats": {},
+    })
+    command, arg = ui._resolve_message_command(ui.BUTTON_STATUS, role)
+    assert (command, arg) == ("/status", "")
+    text = dispatch(bot, command, arg, role=role)[-1]
+    assert not re.search(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}", text)
+    assert all(value in text for value in ("23 октября в 13:14", "23 октября в 13:15", "22 октября в 12:11",
+                                           "Собираю вакансии", "Бот работает", "Найдено: 9", "Отклики: 2", "Пропущено: 7"))
+
+
+@pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN])
+def test_resume_picker_button_never_uses_internal_id_as_missing_title(menu_bot, monkeypatch, role):
+    import telegram_bot
+
+    bot, _ = menu_bot
+    # Synthetic identities only: the displayed ordinal is separate from the HH identity.
+    catalog = [{"id": "910000011", "title": ""}, {"id": "910000012"},
+               {"id": "910000013", "title": "Электрик, техник"}]
+    monkeypatch.setattr(telegram_bot.client_hh_auth, "load_hh_resume_catalog", lambda name: catalog)
+    command, arg = ui._resolve_message_command(ui.BUTTON_SEARCH_RESUME, role)
+    assert (command, arg) == ("/search_resume", "")
+    text = dispatch(bot, command, arg, role=role)[-1]
+    assert all(row["id"] not in text for row in catalog)
+    assert "1. Резюме без названия" in text and "2. Резюме без названия" in text
+    assert "3. Электрик, техник" in text
+    pending = bot._search_settings_state(42)
+    assert pending["search_input"] == "resume" and pending["search_input_profile"] == "qa"
+    assert catalog[0]["id"] == "910000011"  # Presentation does not replace the stored selection identity.
+
+
+@pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN])
+@pytest.mark.parametrize("mode,expected", [("confirm", "Спрашивать меня"), ("auto", "Автоматически")])
+def test_application_mode_button_and_screen_use_the_same_terms(menu_bot, monkeypatch, role, mode, expected):
+    import profile as profile_mod
+
+    bot, _ = menu_bot
+    profile = bot._profile("qa")
+    profile.hh.application_mode = mode
+    updates = Mock()
+    monkeypatch.setattr(profile_mod, "update_profile_env", updates)
+    command, arg = ui._resolve_message_command(ui.BUTTON_SEARCH_APPLICATION_MODE, role)
+    assert (command, arg) == ("/search_application_mode", "")
+    text = dispatch(bot, command, arg, role=role)[-1]
+    assert f"Сейчас: {expected}" in text
+    assert "✋ Спрашивать меня —" in text and "⚡ Автоматически —" in text
+    assert "подтверждать" not in text.casefold() and "автоотклик" not in text.casefold()
+    labels = [b["text"] for row in bot._send_text.call_args.kwargs["reply_markup"]["keyboard"] for b in row]
+    marked = [label for label in labels if label.startswith("✅ ")]
+    assert len(marked) == 1 and expected in marked[0]
+    assert ui._resolve_message_command(marked[0], role) == ("/search_application_" + mode, "")
+    assert profile.hh.application_mode == mode
+    updates.assert_not_called()
+
+
+@pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN])
+@pytest.mark.parametrize("has_run", [False, True])
+def test_search_history_button_and_screen_use_the_same_terms(menu_bot, monkeypatch, role, has_run):
+    bot, _ = menu_bot
+    runs = [{"created_at": "2026-10-23T13:14:00+03:00", "mode": "search", "ok": True,
+             "found": 9, "applied": 2, "skipped": 7, "source_stats": {}}] if has_run else []
+    monkeypatch.setattr(bot, "_recent_runs", lambda *args, **kwargs: runs)
+    command, arg = ui._resolve_message_command(ui.BUTTON_RUNS, role)
+    assert (command, arg) == ("/runs", "") and ui.BUTTON_RUNS == "🕓 Поиски"
+    text = dispatch(bot, command, arg, role=role)[-1]
+    assert "🕓 Поиски ·" in text
+    assert ("Последние поиски" if has_run else "История поисков пока пустая") in text
+    assert "прогон" not in text.casefold()
+    if has_run:
+        assert "23 октября в 13:14" in text and "2026-10-23" not in text

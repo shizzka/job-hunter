@@ -154,7 +154,7 @@ async def show(bot, chat_id, principal, profile_name, command, arg):
         texts = list(hiring_research.render(hiring_research.summarize(profile.analytics_events_file, scope=scope)))
     elif command == "/runs":
         runs = bot._recent_runs(profile_name, limit=5, scope=scope)
-        texts = [f"🕓 Прогоны · {title}\n" + build_runs_text(runs)]
+        texts = [f"🕓 Поиски · {title}\n" + build_runs_text(runs)]
     elif command in {"/chat_log", "/hunter_chat_log"}:
         _, legacy = bot._log_tail(profile_name, kind="chat_log")
         texts = [chat_text(profile.home_dir, view, legacy)]

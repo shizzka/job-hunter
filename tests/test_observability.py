@@ -263,10 +263,10 @@ def test_telegram_freshness_and_run_result_are_independent(search_home, monkeypa
     checks = asyncio.run(bot._collect_diagnostics("default"))
     by_name = {item["name"]: item for item in checks}
     assert by_name["Daemon"]["ok"] is False
-    assert by_name["Данные прогона"]["ok"] is True
-    assert by_name["Последний прогон"]["ok"] is False
+    assert by_name["Данные поиска"]["ok"] is True
+    assert by_name["Последний поиск"]["ok"] is False
     text = ui.build_diagnostics_text(profile_name="default", generated_at="now", checks=checks)
-    assert "❌ Daemon: остановлен" in text and "❌ Последний прогон: ошибка" in text
+    assert "❌ Daemon: остановлен" in text and "❌ Последний поиск: ошибка" in text
     assert "📝 Последняя запись в логе" in text and "ok=false" not in text
 
 

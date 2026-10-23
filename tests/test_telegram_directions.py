@@ -692,6 +692,7 @@ async def test_crawled_screens_hide_internal_data_and_keep_dynamic_values(bot, m
     direction = make_direction(home, name="direction_aabbcc112233")
     direction.update(title="Электромонтажник", goal=["Мастер"], positioning="Опыт работы",
                      salary_baseline=123456, cover_letter_fallback="Моё письмо")
+    # Synthetic identities only; never copy account IDs from screen captures.
     direction["variants"][0].update(title="Мастер, электрик", hh_resume_numeric_id=910000001)
     direction["variants"][1].update(title="Электрик / техник", hh_resume_numeric_id=910000002, status="paused")
     direction = directions.save_direction(home, direction, texts={})

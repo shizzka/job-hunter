@@ -585,7 +585,7 @@ def _format_runtime_block(title: str, runtime: dict) -> list[str]:
         f"• Статус: {_pretty_runtime_status(runtime.get('status'))}",
         f"• Режим: {_pretty_runtime_mode(runtime.get('mode'))}",
         f"• Сообщение: {_pretty_value(runtime.get('message'))}",
-        f"• Обновлено: {_pretty_value(runtime.get('updated_at'))}",
+        f"• Обновлено: {_counter_updated_at(runtime['updated_at']) if runtime.get('updated_at') else '—'}",
     ]
 
 
@@ -1472,7 +1472,7 @@ def build_status_text(
     if bot_runtime:
         lines.extend(["", *_format_runtime_block("🤖 Состояние бота:", bot_runtime)])
     if last_run:
-        lines.extend(["", "🕓 Последний прогон:", format_run_summary(last_run)])
+        lines.extend(["", "🕓 Последний поиск:", format_run_summary(last_run)])
     return "\n".join(lines)
 
 
@@ -1507,7 +1507,7 @@ def build_daily_summary_text(
         f"{period_label or _format_days_label(max(1, int(days or 1)))}",
         "",
         (
-            f"• Прогонов: {analytics_summary.get('search_runs', 0)} | "
+            f"• Поисков: {analytics_summary.get('search_runs', 0)} | "
             f"решений: {analytics_summary.get('decisions', 0)} | "
             f"событий: {analytics_summary.get('events', 0)}"
         ),
@@ -1543,7 +1543,7 @@ def build_daily_summary_text(
     if last_run:
         summary = format_run_summary(last_run).splitlines()
         if summary:
-            lines.extend(["", "🕓 Последний прогон:", summary[0]])
+            lines.extend(["", "🕓 Последний поиск:", summary[0]])
 
     if analytics_summary.get("events", 0) == 0:
         lines.extend(["", "За период пока нет аналитических событий."])
@@ -1627,7 +1627,7 @@ def build_stats_text(
         "",
         "🧮 Аналитика:",
         (
-            f"• Прогонов {analytics_summary.get('search_runs', 0)} | "
+            f"• Поисков {analytics_summary.get('search_runs', 0)} | "
             f"событий {analytics_summary.get('events', 0)} | "
             f"решений {analytics_summary.get('decisions', 0)}"
         ),
@@ -1683,7 +1683,7 @@ def build_stats_text(
     if last_run:
         lines.extend([
             "",
-            "🕓 Последний прогон:",
+            "🕓 Последний поиск:",
             (
                 f"• {_pretty_value(last_run.get('created_at'))} | {_pretty_runtime_mode(last_run.get('mode', 'search'))} | "
                 f"найдено {last_run.get('found', 0)} | откликов {analytics.format_run_count(last_run)} | "
@@ -1711,7 +1711,7 @@ def format_run_summary(run: dict) -> str:
         "✅" if fields["execution_status"] == "completed" and fields["application_outcome"] == "sent"
         else "❌" if fields["execution_status"] == "failed" else "ℹ️")
     lines = [
-        f"{icon} {run.get('run_id') or _pretty_value(run.get('created_at'))} | {_pretty_runtime_mode(run.get('mode', 'search'))} | {status}",
+        f"{icon} {run.get('run_id') or (_counter_updated_at(run['created_at']) if run.get('created_at') else '—')} | {_pretty_runtime_mode(run.get('mode', 'search'))} | {status}",
     ]
     lines.extend([format_run_observation(run), *losses])
     if funnel:
@@ -1743,8 +1743,8 @@ def format_run_summary(run: dict) -> str:
 
 def build_runs_text(recent_runs: list[dict]) -> str:
     if not recent_runs:
-        return "🕓 История прогонов пока пустая."
-    lines = ["🕓 Последние прогоны"]
+        return "🕓 История поисков пока пустая."
+    lines = ["🕓 Последние поиски"]
     for idx, run in enumerate(recent_runs, start=1):
         summary_lines = format_run_summary(run).splitlines()
         if run.get("direction_title"):
@@ -1824,7 +1824,7 @@ def build_run_summary_text(summary, *, profile_name):
     lines.extend(line for line in format_run_losses(summary))
     lines.append(f"Начало: {safe(summary['started_at'])}")
     if summary.get("stop_reason") == "RUN_LIMIT":
-        lines.append("Остановлен по лимиту прогона.")
+        lines.append("Остановлен по лимиту поиска.")
     if summary.get("finished_at"):
         lines.append(f"Завершён: {safe(summary['finished_at'])}")
     if summary.get("duration_seconds") is not None:
