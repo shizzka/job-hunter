@@ -11,6 +11,8 @@ import profile_access
 from direction_history import ALL, UNSPECIFIED, HistoryScope
 from state_store.private_journal import read_json_records
 
+RUN_SUMMARY_TIMEOUT_SECONDS = 10.0
+
 COMMANDS = {"/stats", "/digest", "/research", "/runs", "/log", "/hunter_log", "/chat_log", "/hunter_chat_log"}
 
 
@@ -77,8 +79,56 @@ def chat_text(home, view, legacy_text=""):
     return html.escape("\n".join(lines))
 
 
+def _run_report(bot, principal, profile_name, command, arg):
+    """Build a read-only report and its controls under the same error guard."""
+    from telegram_bot_ui import build_run_summary_text
+    profile = bot._profile(profile_name)
+    scope = scope_arg(arg)
+    view = HistoryScope(profile.home_dir, scope)
+    selected_id = None if scope != "active" or arg == "active" else arg or None
+    summary = analytics.get_run_summary(selected_id, events_file=profile.analytics_events_file,
+        history_file=profile.run_history_file, profile=profile_name, scope=scope)
+    if summary is None:
+        text = ("Запуск не найден. Посмотрите последний запуск: /log." if selected_id
+                else "Запусков пока не было.")
+        return text, None, None
+    visible = summary if principal.get("role") == "admin" else {**summary, "artifacts": []}
+    text = f"📊 Последний запуск · {view.title}\n" + build_run_summary_text(visible, profile_name=profile_name)
+    if scope == ALL:
+        text = f"Направление: {summary['direction_title']}\n" + text
+    return text, view.title, markup(profile.home_dir, command)
+
+
+async def show_run(bot, chat_id, principal, profile_name, command, arg):
+    try:
+        # Leave time to send an answer before the foreground supervisor's deadline.
+        # The worker only builds data: a timed-out read can never send a late reply.
+        async with asyncio.timeout(RUN_SUMMARY_TIMEOUT_SECONDS):
+            text, title, controls = await asyncio.to_thread(_run_report, bot, principal, profile_name, command, arg)
+            # Bot state and command pruning belong to the event-loop thread.
+            menu = bot._menu_reply_markup(principal)
+            messages = [(text, menu)] if title is None else [(f"История запусков · {title}", menu), (text, controls)]
+    except TimeoutError:
+        error = "Сводка готовится слишком долго. Повторите /log чуть позже; если не поможет, сообщите администратору."
+    except PermissionError:
+        # Preserve a denied read without exposing filesystem exception paths.
+        error = "🔒 Не удалось прочитать сводку запуска: нет доступа к данным. Повторите /log в доступном направлении или сообщите администратору."
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Run summary unavailable: %s", type(exc).__name__)
+        error = "Не удалось прочитать сводку запуска. Повторите /log чуть позже; если не поможет, сообщите администратору."
+    else:
+        for text, reply_markup in messages:
+            await bot._send_text(chat_id, text, reply_markup=reply_markup)
+        return
+    # Storage or access failure may also break the profile-dependent keyboard.
+    await bot._send_text(chat_id, error)
+
+
 async def show(bot, chat_id, principal, profile_name, command, arg):
-    from telegram_bot_ui import build_stats_text, build_runs_text, build_run_summary_text
+    if command in {"/log", "/hunter_log"}:
+        await show_run(bot, chat_id, principal, profile_name, command, arg)
+        return
+    from telegram_bot_ui import build_stats_text, build_runs_text
     profile = bot._profile(profile_name)
     scope = scope_arg(arg)
     view = HistoryScope(profile.home_dir, scope)
@@ -101,32 +151,6 @@ async def show(bot, chat_id, principal, profile_name, command, arg):
     elif command == "/runs":
         runs = bot._recent_runs(profile_name, limit=5, scope=scope)
         texts = [f"🕓 Прогоны · {title}\n" + build_runs_text(runs)]
-    elif command in {"/log", "/hunter_log"}:
-        selected_id = None if scope != "active" or arg == "active" else arg or None
-        summary = None
-        try:
-            summary = await asyncio.to_thread(analytics.get_run_summary, selected_id,
-                events_file=profile.analytics_events_file, history_file=profile.run_history_file,
-                profile=profile_name, scope=scope)
-            if summary is None:
-                text = ("Запуск не найден. Посмотрите последний запуск: /log." if selected_id
-                        else "Запусков пока не было.")
-            else:
-                visible = summary if principal.get("role") == "admin" else {**summary, "artifacts": []}
-                text = f"📊 Последний запуск · {view.title}\n" + build_run_summary_text(visible, profile_name=profile_name)
-                if scope == ALL:
-                    text = f"Направление: {summary['direction_title']}\n" + text
-        except Exception as exc:
-            logging.getLogger(__name__).warning("Run summary unavailable: %s", type(exc).__name__)
-            summary = None
-            text = "Не удалось прочитать сводку запуска. Повторите /log чуть позже; если не поможет, сообщите администратору."
-        # One reply also gives an unambiguous empty/error state.
-        if summary is not None:
-            await bot._send_text(chat_id, f"История запусков · {view.title}", reply_markup=bot._menu_reply_markup(principal))
-            await bot._send_text(chat_id, text, reply_markup=markup(profile.home_dir, command))
-        else:
-            await bot._send_text(chat_id, text, reply_markup=bot._menu_reply_markup(principal))
-        return
     elif command in {"/chat_log", "/hunter_chat_log"}:
         _, legacy = bot._log_tail(profile_name, kind="chat_log")
         texts = [chat_text(profile.home_dir, view, legacy)]
