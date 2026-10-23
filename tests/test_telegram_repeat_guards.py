@@ -349,3 +349,22 @@ def test_finishing_old_launch_cannot_release_new_preview_admission(monkeypatch, 
         await spin_until(lambda: not bot._active_commands and not bot._queue_drainers)
         await bot._shutdown_command_queue()
     asyncio.run(scenario())
+
+
+def test_hh_profile_switch_cannot_bypass_user_refresh_limit(menu_bot, monkeypatch):
+    bot, _ = menu_bot
+    clock = [100.0]
+    monkeypatch.setattr(hh_counter_cache, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    calls = []
+    monkeypatch.setattr(telegram_bot.hh_response_counter, 'refresh', lambda **kw: calls.append(kw['profile_name']) or {'total': 7})
+    async def scenario():
+        await hh_counter_cache.snapshot(bot, 42, 'qa', bot._profile('qa'))
+        await hh_counter_cache.snapshot(bot, 42, 'other', bot._profile('qa'), force=True)
+        assert calls == ['qa']
+        # A different user can refresh immediately, even in the same profile.
+        await hh_counter_cache.snapshot(bot, 43, 'other', bot._profile('qa'), force=True)
+        assert calls == ['qa', 'other']
+        clock[0] += 60
+        await hh_counter_cache.snapshot(bot, 42, 'other', bot._profile('qa'), force=True)
+        assert calls == ['qa', 'other', 'other']
+    asyncio.run(scenario())

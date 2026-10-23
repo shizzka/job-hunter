@@ -11,18 +11,20 @@ async def snapshot(bot, user_id, profile_name, profile, *, force=False):
     key = (int(user_id), profile_name, str(profile.home_dir), str(profile.hh.cookies_file))
     entries = bot.__dict__.setdefault("_hh_counter_cache", {})
     entry = entries.setdefault(key, {})
+    limits = bot.__dict__.setdefault("_hh_counter_admission", {})
+    admission = limits.setdefault(int(user_id), {})
     now = time.monotonic()
-    running = entry.get("task")
+    running = admission.get("task")
     if running is not None and not running.done():
         return entry.get("snapshot"), max(0, int((now - entry.get("updated", now)) // 60)), BUSY
     cached = entry.get("snapshot")
     age = max(0, now - entry.get("updated", now))
     if cached is not None and not force and age < 180:
         return cached, int(age // 60), ""
-    if now - entry.get("attempted", float("-inf")) < 60:
+    if now - admission.get("attempted", float("-inf")) < 60:
         return cached, int(age // 60), ("Обновлять можно раз в минуту." if cached else entry.get("error", BUSY))
     # Include failed attempts: a broken session must not turn taps into HH traffic.
-    entry["attempted"] = now
+    admission["attempted"] = now
 
     async def refresh():
         try:
@@ -39,6 +41,6 @@ async def snapshot(bot, user_id, profile_name, profile, *, force=False):
         return entry.get("snapshot"), age, entry.get("error", "")
 
     task = asyncio.create_task(refresh())
-    entry["task"] = task
+    entry["task"] = admission["task"] = task
     # A foreground timeout cannot cancel the thread and reopen network admission.
     return await asyncio.shield(task)
