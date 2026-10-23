@@ -66,7 +66,10 @@ def test_file_changes_invalidate_reports_and_projection(tmp_path, monkeypatch, c
     monkeypatch.setattr(analytics, '_summarize', compute)
     if change == 'rewrite':
         # Same length replacement must invalidate by mtime/ctime.
+        previous = path.stat()
         path.write_bytes(path.read_bytes().replace(b'applied_auto', b'apply_failed'))
+        # WSL filesystems may coalesce two adjacent write timestamps.
+        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000_000))
     elif change == 'replace':
         other = tmp_path / 'other'
         write(other, [decision(decision='manual_questions')])

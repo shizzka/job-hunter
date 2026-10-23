@@ -122,7 +122,11 @@ def callback_guard(fn):
         user_id = int((callback.get("from") or {}).get("id") or 0)
         chat_id = int((message.get("chat") or {}).get("id") or 0)
         principal = telegram_access.resolve_user(user_id)
-        if not principal or chat_id <= 0 or not data or read_callback(data):
+        private_only = data.startswith(("dir:", "cbo:", "cbs:", "cop:", "qm:", "gf:"))
+        rejected_chat = (message.get("chat") or {}).get("type") not in {None, "", "private"}
+        if (not principal or chat_id <= 0 or not data or read_callback(data)
+                or private_only and rejected_chat):
+            # The router rejects these before any control-state mutation.
             return await fn(self, callback)
         # Action tokens identify apply/send intents across copies of a message.
         semantic = data.startswith(("manual_apply:", "chat_send:", "chat_send_any:", "gform_submit:", "mad:", "stub:", "dir:"))

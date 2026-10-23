@@ -494,7 +494,7 @@ def reconcile_run_records(records, *, events_file=None, events=None):
         return records
     if events is None:
         path = events_file or _destination()[0]
-        events = read_cache.journal(path).read(path)[0]
+        events = _report_events(path)
     events = [event for event in events if event.get("run_id") in pending]
     receipts = [event for event in events if event.get("mode") != "dry-run" and not event.get("dry_run") and (
         (event.get("event") == "application_result" and event.get("outcome") == "sent") or
@@ -1249,6 +1249,16 @@ def _iter_events(events_file: str | None = None) -> list[dict]:
         return []
 
 
+def _report_events(events_file=None):
+    """Unavailable diagnostic evidence keeps action counts unknown, never zero."""
+    path = events_file or _destination()[0]
+    try:
+        return read_cache.journal(path).read(path)[0]
+    except Exception as exc:
+        log.warning("Failed to read analytics events: %s", type(exc).__name__)
+        return []
+
+
 def history_events(events_file=None, *, scope="active"):
     view = direction_history.for_events(events_file, scope)
     return view.records(view.events(_iter_events(events_file)))
@@ -1256,7 +1266,7 @@ def history_events(events_file=None, *, scope="active"):
 
 def scoped_runs(records, *, events_file=None, scope="active"):
     view = direction_history.for_events(events_file, scope)
-    events = view.events(read_cache.journal(events_file or _destination()[0]).read(events_file or _destination()[0])[0])
+    events = view.events(_report_events(events_file))
     owners = {e.get("run_id"): view.owner(e) for e in events if view.owner(e) is not None
               and e.get("event") in {"search_started", "search_finished"}}
     result = []

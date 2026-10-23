@@ -319,6 +319,9 @@ def test_chat_journal_uses_b22_owner_even_when_another_direction_is_active(accou
 
 @pytest.mark.parametrize("command", ["/stats", "/digest", "/research", "/runs", "/log", "/chat_log", "/direction_stats", "/seen_reset"])
 def test_history_screens_name_active_direction_and_offer_totals(account, monkeypatch, command):
+    from telegram_app import guards
+    clock = [100.0]
+    monkeypatch.setattr(guards, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     home, select = account
     if command == "/log":
         write(home / "run_history.jsonl", [{"kind": "search", "run_id": "qa-run", "direction": "qa", "ok": True}])
@@ -339,6 +342,8 @@ def test_history_screens_name_active_direction_and_offer_totals(account, monkeyp
     assert "Все направления" in buttons and ("Направление не указано" if command == "/seen_reset" else "Отклики без направления") in buttons
     if command != "/seen_reset":
         bot._send_text.reset_mock()
+        # Scope navigation is still the same heavy command: respect its cooldown.
+        clock[0] += 5
         asyncio.run(bot._dispatch(1, principal, command, "all"))
         assert "все направления" in "\n".join(c.args[1] for c in bot._send_text.await_args_list).lower()
         keyboards = [(call.kwargs.get("reply_markup") or {}).get("inline_keyboard")
