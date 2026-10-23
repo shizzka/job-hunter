@@ -86,14 +86,14 @@ class TestCommandHelpers:
 class TestFormatting:
     def test_build_help_text(self):
         text = telegram_bot.build_help_text()
-        assert "🤖 Job Hunter" in text
-        assert "⚡ Основные действия доступны через кнопки меню." in text
-        assert "🔧 Раздел «Админ»: профили, пользователи, клиенты и лимиты ИИ." in text
+        assert "Job Hunter ищет работу на hh.ru и откликается за вас." in text
+        assert "Кнопки внизу:" in text
+        assert "Раздел «Админ»: профили, пользователи, клиенты и лимиты ИИ." in text
 
-    def test_build_help_text_user_mentions_repeat_commands(self):
+    def test_build_help_text_user_mentions_schedule_button(self):
         text = telegram_bot.build_help_text(role=telegram_bot.ROLE_USER, profile_name="qa")
-        assert "📁 Профиль: QA" in text
-        assert "• «Мой поиск» → «Расписание»: периодические запуски" in text
+        assert "Сейчас: профиль QA" in text
+        assert "• Направления — что ищу, резюме, город, зарплата, расписание" in text
 
     def test_build_reply_markup_admin(self):
         markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_ADMIN)
@@ -245,8 +245,8 @@ class TestFormatting:
             role=telegram_bot.ROLE_ADMIN,
             profile_name="qa",
         )
-        assert "Мониторинг профиля QA" in text
-        assert "Статистика откликов" in text
+        assert "Состояние · профиль QA" in text
+        assert "Сколько откликов и поисков" in text
 
     def test_build_guest_welcome_text(self):
         text = telegram_bot.build_guest_welcome_text()
@@ -275,8 +275,9 @@ class TestFormatting:
             "qa",
             [{"id": "123", "title": "QA Resume", "path": "/tmp/resume.md"}],
         )
-        assert "HH резюме профиля QA" in text
+        assert "Резюме на hh.ru профиля QA" in text
         assert "QA Resume" in text
+        assert "123" not in text and "/tmp/resume.md" not in text
 
     def test_build_hh_auth_result_text(self):
         text = telegram_bot.build_hh_auth_result_text(

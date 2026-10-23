@@ -758,3 +758,18 @@ async def test_crawled_screens_hide_internal_data_and_keep_dynamic_values(bot, m
     assert not re.search(r"direction_[0-9a-f]+|\b(?:single|active)\b|\b91000000[12]\b|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|(?:/home/|/mnt/|[A-Z]:\\\\)", visible)
     assert "21:34" in visible and "22 октября" in visible
     assert "Мастер, электрик" in visible and "Электрик / техник" in visible
+
+
+@run_async
+async def test_unsaved_single_description_names_first_enabled_resume(bot):
+    home = bot.profiles["client_1"].home_dir
+    direction = make_direction(home, strategy="single")
+    direction["variants"][0]["status"] = "paused"
+    directions.save_direction(home, direction, texts={})
+    directions.set_active_direction(home, direction["name"])
+    await bot._dispatch_direction(1, USER, "/direction_edit", "salary")
+    await bot._accept_direction_input(1, USER, "654321")
+    text = bot.sent[-1][1]
+    assert text.startswith('Не сохранено: откликаться только резюме «Resume 2»')
+    assert "Resume 1 · выключено" in text and "Resume 2 · включено" in text
+    assert directions.active_direction(home) == direction

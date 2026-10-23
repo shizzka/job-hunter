@@ -1197,7 +1197,7 @@ class TelegramBot(
                         [{"text": "К выбранному направлению", "callback_data": f"rq:p:{profile_name}:0:s"}]
                         if unspecified else [])
         if not all_items:
-            text = ("📋 На рассмотрении пока пусто" + scope + ". Подходящие вакансии появятся здесь, "
+            text = ("📋 Вакансий на проверку пока нет" + scope + ". Подходящие вакансии появятся здесь, "
                     "если выбран режим просмотра или подтверждения.")
             markup = ({"inline_keyboard": [group_button]} if group_button else
                       self._menu_reply_markup(principal, menu=reply_menu))
@@ -1217,7 +1217,7 @@ class TelegramBot(
         pages = (len(all_items) + size - 1) // size
         page = max(0, min(int(page), pages - 1))
         chunk = all_items[page * size:(page + 1) * size]
-        lines = [f"📋 На рассмотрении: {len(all_items)}" + scope + (f" · стр. {page + 1}/{pages}" if pages > 1 else ""),
+        lines = [f"📋 Вакансии на проверку: {len(all_items)}" + scope + (f" · стр. {page + 1}/{pages}" if pages > 1 else ""),
                  ("Сверху лучшие по баллу." if sort == "score" else "Сверху новые.")
                  + " Нажмите номер — откроется карточка с кнопками.", ""]
         buttons = []
@@ -1263,7 +1263,7 @@ class TelegramBot(
         """«👎 < N»: every pending card scored below N becomes «Мимо» (kept in the feedback log)."""
         view = DirectionView(self._profile(profile_name).home_dir)
         if expected_scope is not None and expected_scope != view.callback_scope:
-            await self._send_text(chat_id, "Выбрано другое направление. Обновите список «На рассмотрении».")
+            await self._send_text(chat_id, "Выбрано другое направление. Обновите список «Вакансии на проверку».")
             return
         targets = [item for item in view.review_items(manual_apply_queue.list_candidates(profile_name, limit=250))
                    if (score := self._review_score(item)) is not None and score < limit]
@@ -1297,7 +1297,7 @@ class TelegramBot(
         view = DirectionView(self._profile(profile_name).home_dir)
         owner = view.item_direction(item)
         if owner is not None and owner != view.name:
-            await self._send_text(chat_id, "Выбрано другое направление. Обновите список «На рассмотрении».")
+            await self._send_text(chat_id, "Выбрано другое направление. Обновите список «Вакансии на проверку».")
             return
         markup = manual_apply_queue.build_manual_apply_markup(
             item.get("vacancy") or {}, profile_name, token, allow_ai_apply=bool(item.get("allow_ai_apply", True)))

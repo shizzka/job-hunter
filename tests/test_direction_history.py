@@ -341,6 +341,12 @@ def test_history_screens_name_active_direction_and_offer_totals(account, monkeyp
         bot._send_text.reset_mock()
         asyncio.run(bot._dispatch(1, principal, command, "all"))
         assert "все направления" in "\n".join(c.args[1] for c in bot._send_text.await_args_list).lower()
+        keyboards = [(call.kwargs.get("reply_markup") or {}).get("inline_keyboard")
+                     for call in bot._send_text.await_args_list]
+        assert any(keyboards)
+        for keyboard in filter(None, keyboards):
+            marked = [button for row in keyboard for button in row if button["text"].startswith("✓ ")]
+            assert len(marked) == 1 and marked[0]["callback_data"].endswith(":all")
 
 
 def test_single_direction_with_identified_history_keeps_counts(tmp_path):

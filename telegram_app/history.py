@@ -100,7 +100,7 @@ def _run_report(bot, principal, profile_name, command, arg):
     text = f"📊 Последний запуск · {view.title}\n" + build_run_summary_text(visible, profile_name=profile_name)
     if scope == ALL:
         text = f"Направление: {summary['direction_title']}\n" + text
-    return text, view.title, markup(profile.home_dir, command)
+    return text, view.title, markup(profile.home_dir, command, scope=scope)
 
 
 async def show_run(bot, chat_id, principal, profile_name, command, arg):
@@ -166,4 +166,4 @@ async def show(bot, chat_id, principal, profile_name, command, arg):
     # keyboard, then put the scope controls on the actual report.
     await bot._send_text(chat_id, f"История откликов · {title}", reply_markup=bot._menu_reply_markup(principal))
     for text in texts:
-        await bot._send_text(chat_id, text, reply_markup=markup(profile.home_dir, command))
+        await bot._send_text(chat_id, text, reply_markup=markup(profile.home_dir, command, scope=scope))

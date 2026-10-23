@@ -98,9 +98,9 @@ def test_b32_unavailable_counter_gives_action_without_technical_details(menu_bot
     error = counter.HHResponseCounterError if known_error else ValueError
     monkeypatch.setattr(counter, "refresh", Mock(side_effect=error("private /srv/counter.json")))
     text = dispatch(bot, "/hh_responses")[-1]
-    assert "счётчик HH сейчас недоступен" in text
-    assert "Повторите /hh_responses" in text
-    assert "Вход HH" in text
+    assert "Общее число откликов с hh.ru сейчас не загрузилось" in text
+    assert "Попробуйте позже: нажмите «Отклики на hh.ru»" in text
+    assert "Вход в hh.ru" in text
     assert "private" not in text and "/srv" not in text
 
 
@@ -181,8 +181,8 @@ def test_b32_profile_conflict_hint_requires_admin_repair(menu_bot, monkeypatch):
     bot, _ = menu_bot
     monkeypatch.setattr(counter, "refresh", Mock(side_effect=counter.HHResponseCounterProfileError("private /srv/state.json")))
     text = dispatch(bot, "/hh_responses")[-1]
-    assert "другому профилю" in text and "администратора" in text and "/hh_responses" in text
-    assert "Вход HH" not in text and "/srv" not in text
+    assert "другому профилю" in text and "администратора" in text and "Отклики на hh.ru" in text
+    assert "Вход в hh.ru" not in text and "/srv" not in text
 
 
 @pytest.mark.parametrize("stamp", ["2026-10-19 21:34:56.523609+03:00", "2026-10-19T21:34:00+03:00"])

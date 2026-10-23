@@ -31,7 +31,7 @@ STRATEGY_BUTTONS = {
     "ab": "По очереди",
 }
 STRATEGY_HELP = (
-    "• Всегда первое — все отклики одним резюме, первым в списке.\n"
+    "• Всегда первое — все отклики одним резюме, первым включённым в списке.\n"
     "• Самое подходящее — бот сравнивает вакансию с каждым резюме и берёт самое похожее.\n"
     "• По очереди — резюме чередуются, через пару недель видно, какое работает лучше."
 )
@@ -209,7 +209,7 @@ class TelegramDirections:
             if not state.get("summary"):
                 _, _, current = self._direction_context(principal)
                 # Describe the existing selection draft without changing its save semantics.
-                selected = draft.get("variants", [])
+                selected = [v for v in draft.get("variants", []) if v.get("status", "active") == "active"]
                 if current and draft.get("selection_strategy") == "single" and selected:
                     text = (f"Не сохранено: откликаться только резюме «{resume_title(selected[0])}»\n"
                             f"Направление «{draft.get('title', '')}». Сейчас: {STRATEGY_LABELS.get(current.get('selection_strategy', 'single'))}.\n"
