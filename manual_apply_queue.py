@@ -394,7 +394,7 @@ def _reconcile_pending(store, data: dict, profile_name: str) -> dict:
 
 
 def list_candidates(profile_name: str, *, limit: int = 8, include_snoozed: bool = False) -> list[dict]:
-    """Pending decisions and unresolved attempts for one profile, newest first."""
+    """Newest first; limit pending decisions, always include unresolved attempts."""
     now = time.time()
     store = _store(profile_name)
     data = _reconcile_pending(store, store.load(), profile_name)
@@ -415,7 +415,15 @@ def list_candidates(profile_name: str, *, limit: int = 8, include_snoozed: bool 
             continue
         items.append(item)
     items.sort(key=lambda item: float(item.get("created_ts") or 0), reverse=True)
-    return items[:max(1, int(limit or 1))]
+    remaining_pending = max(1, int(limit or 1))
+    listed = []
+    for item in items:
+        if item.get("status") != "uncertain":
+            if remaining_pending <= 0:
+                continue
+            remaining_pending -= 1
+        listed.append(item)
+    return listed
 
 
 def snooze_candidate(token: str, *, profile_name: str, hours: int = 24) -> dict | None:

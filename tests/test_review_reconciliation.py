@@ -194,6 +194,51 @@ def test_repeated_listing_does_not_rewrite_reconciled_queue(homes, monkeypatch):
     assert len(queue.list_candidates("qa")) == 1
 
 
+@pytest.fixture
+def crowded_queue(homes):
+    now = time.time()
+    items = {"old-uncertain": {
+        "token": "old-uncertain", "profile_name": "qa", "status": "uncertain",
+        "created_ts": now - 8 * 24 * 3600,
+        "vacancy": {"id": "old", "title": "Old uncertain vacancy"},
+        "evaluation": {"score": 100},
+    }}
+    items.update({f"pending-{index}": {
+        "token": f"pending-{index}", "profile_name": "qa", "status": "pending",
+        "created_ts": now - index,
+        "vacancy": {"id": str(index), "title": f"Pending vacancy {index}"},
+        "evaluation": {"score": 80},
+    } for index in range(250)})
+    write_json(homes["qa"] / "manual_apply_queue.json", {"items": items})
+
+
+@pytest.mark.parametrize("limit", [8, 250])
+def test_old_uncertain_is_exempt_from_listing_limit(crowded_queue, limit):
+    listed = queue.list_candidates("qa", limit=limit)
+    assert len(listed) == limit + 1
+    assert [item["token"] for item in listed[:-1]] == [f"pending-{index}" for index in range(limit)]
+    assert listed[-1]["token"] == "old-uncertain"
+
+
+@pytest.mark.parametrize("sort", ["new", "score"])
+def test_old_uncertain_remains_accessible_on_last_review_page(crowded_queue, monkeypatch, sort):
+    bot = telegram_bot.TelegramBot("qa")
+    principal = {"user_id": 42, "role": "user", "profile": "qa"}
+    sent = []
+    monkeypatch.setattr(bot, "_set_selected_menu", lambda *args: None)
+
+    async def send(chat_id, text, **kwargs):
+        sent.append((text, kwargs.get("reply_markup")))
+
+    monkeypatch.setattr(bot, "_send_text", send)
+    asyncio.run(bot._show_review_queue(42, principal, profile_name="qa", page=41, sort=sort))
+    text, markup = sent[-1]
+    assert "Вакансии на проверку: 251" in text and "стр. 42/42" in text
+    assert "251. Old uncertain vacancy" in text and "Нужна сверка" in text
+    assert any(button.get("callback_data") == "rq:o:qa:old-uncertain"
+               for row in markup["inline_keyboard"] for button in row)
+
+
 def test_review_renders_uncertain_card_without_apply_or_bulk_dismiss(homes, monkeypatch):
     applied = card("123", title="Applied vacancy")
     uncertain = card("456", title="Uncertain vacancy", url="https://hh.ru/vacancy/456")
