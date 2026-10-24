@@ -902,10 +902,11 @@ async def do_manual_apply_token(token: str) -> dict:
             message = "Не удалось подготовить письмо с подтверждёнными фактами. Сохранённого письма для этого направления нет; шаблон отправлю только с твоего разрешения."
             await stop_manual_result({"ok": False, "message": message}, raise_on_uncertain=True)
             finish("pending", message)
-            await _notify_stub_cover(vacancy, cover, token,
-                                     profile_name=item.get("profile_name") or profile_mod.active().name)
-            print(f"⏸ {message}")
-            return {"ok": False, "message": message, "stub_review": True}
+            delivered = await _notify_stub_cover(vacancy, cover, token,
+                                                profile_name=item.get("profile_name") or profile_mod.active().name)
+            result = _stub_review_result(delivered, message)
+            print(f"⏸ {result['message']}")
+            return result
 
         if not valid():
             await stop_manual_result({"ok": False, "message": "Подтверждение отозвано до отправки"},
@@ -1082,6 +1083,7 @@ class _HHApplyUncertain(Exception):
     """Stop consuming a preliminary HH result after its receipt changes."""
 
 
+@notifier._owned_event_notification
 async def _notify_stub_cover(vacancy: dict, cover: str, token: str, *, profile_name: str) -> bool:
     import html as _html
     text = (
@@ -1098,6 +1100,16 @@ async def _notify_stub_cover(vacancy: dict, cover: str, token: str, *, profile_n
     if vacancy.get("url"):
         rows.append([{"text": "🔗 Открою сам", "url": str(vacancy.get("url"))}])
     return bool(await notifier.send_message_with_markup(text, {"inline_keyboard": rows}))
+
+
+def _stub_review_result(delivered: bool, message: str) -> dict:
+    if delivered:
+        return {"ok": False, "message": message, "stub_review": True}
+    return {
+        "ok": False, "stub_review": False, "notification_failed": True,
+        "message": "Отклик не отправлен. Не удалось доставить кнопки выбора письма. "
+                   "Карточка сохранена: открой «Вакансии на проверку» и повтори попытку.",
+    }
 
 
 async def _notify_employer_question(vacancy: dict, evaluation: dict, details: str, score, reason: str,
@@ -3443,9 +3455,9 @@ async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> d
             candidate = manual_apply_queue.create_candidate(
                 vacancy, {"score": None, "reason": message}, details, profile_name=profile_name,
             )
-            await _notify_stub_cover(vacancy, cover, candidate["token"], profile_name=profile_name)
-            trace.finish(ok=False, message=message, failure_stage="COVER_LETTER_GENERATED")
-            result = {"ok": False, "message": message, "stub_review": True}
+            delivered = await _notify_stub_cover(vacancy, cover, candidate["token"], profile_name=profile_name)
+            result = _stub_review_result(delivered, message)
+            trace.finish(ok=False, message=result["message"], failure_stage="COVER_LETTER_GENERATED")
             return result
 
         result = await apply_orchestrator.dispatch_apply(
