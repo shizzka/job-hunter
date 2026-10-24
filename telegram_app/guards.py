@@ -30,7 +30,8 @@ BUSY = "Уже считаю, подождите пару секунд"
 DONE = "Уже сделано"
 ALIASES = {"/hunter_log": "/log", "/hunter_chat_log": "/chat_log"}
 READS = {"/stats", "/runs", "/log", "/raw_log", "/chat_log", "/digest", "/research",
-         "/directions", "/direction_summary", "/direction_stats", "/direction_csv"}
+         "/directions", "/direction_summary", "/direction_stats", "/direction_csv",
+         "/why_no_apply"}  # 24.10: five quick presses held every other command for ~40 s
 AI_LABELS = {"analyze resume", "chat AI reply", "chat AI alternative", "chat AI list",
              "suggest search queries", "manual AI apply", "google form preview", "Проверка черновика Google Form"}
 

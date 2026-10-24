@@ -10,6 +10,7 @@ from state_store.locking import StateLockBusy, nonblocking_state_locks
 
 log = logging.getLogger(__name__)
 STATE_BUSY = "Бот сейчас занят записью данных, повторите через пару секунд"
+UPDATE_TIMEOUT = "Не успел посчитать за 30 секунд — попробуйте через минуту"
 
 
 def _await_chain(task):
@@ -57,26 +58,14 @@ class TelegramUpdateSupervisor:
             outcome = "timeout"
             log.error("Telegram work timeout update_id=%s handler=%s duration=%.3fs",
                       update_id, name, time.monotonic() - started)
+            # 24.10: a request cut at the deadline used to end in silence; tell the user it was not lost
+            await self._reply_direct(args[0] if args and isinstance(args[0], dict) else {}, UPDATE_TIMEOUT)
         except StateLockBusy:
             outcome = "busy"
             log.error("Telegram work failed update_id=%s handler=%s error=StateLockBusy", update_id, name)
             # Reply directly via Telegram: resolving a user/menu here could
             # hit the same lock again. Never replay an uncertain mutation.
-            update = args[0] if args and isinstance(args[0], dict) else {}
-            callback = update.get("callback_query") or {}
-            try:
-                async with asyncio.timeout(self.UPDATE_TIMEOUT_SECONDS):
-                    if callback:
-                        await self._answer_callback_query(str(callback.get("id") or ""), STATE_BUSY)
-                    # The router may already have acknowledged the callback
-                    # before a later state operation failed. Also send a chat
-                    # reply so a second callback answer cannot fail silently.
-                    message = callback.get("message") if callback else update.get("message")
-                    chat_id = ((message or {}).get("chat") or {}).get("id")
-                    if chat_id:
-                        await self._send_text(chat_id, STATE_BUSY)
-            except Exception as exc:
-                log.error("Telegram busy reply failed error=%s", telegram_error_summary(exc))
+            await self._reply_direct(args[0] if args and isinstance(args[0], dict) else {}, STATE_BUSY)
         except asyncio.CancelledError:
             outcome = "cancelled"
             # Preserve owner cancellation/shutdown, but contain a handler which
@@ -96,6 +85,22 @@ class TelegramUpdateSupervisor:
                 self._foreground_task = None
             log.info("Telegram work finished update_id=%s handler=%s duration=%.3fs outcome=%s",
                      update_id, name, time.monotonic() - started, outcome)
+
+    async def _reply_direct(self, update, text):
+        """Short notice straight to the chat of an update the bot could not finish."""
+        callback = update.get("callback_query") or {}
+        try:
+            async with asyncio.timeout(self.UPDATE_TIMEOUT_SECONDS):
+                if callback:
+                    await self._answer_callback_query(str(callback.get("id") or ""), text)
+                # The router may already have acknowledged the callback; also
+                # send a chat reply so a second callback answer cannot fail silently.
+                message = callback.get("message") if callback else update.get("message")
+                chat_id = ((message or {}).get("chat") or {}).get("id")
+                if chat_id:
+                    await self._send_text(chat_id, text)
+        except Exception as exc:
+            log.error("Telegram direct reply failed error=%s", telegram_error_summary(exc))
 
     async def _run_update(self, update):
         handler = "_handle_callback_query" if update.get("callback_query") else "_handle_update"

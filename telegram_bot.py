@@ -3382,9 +3382,12 @@ class TelegramBot(
             return
 
         if command == "/why_no_apply":
-            runs = self._recent_runs(profile_name, limit=1)
-            run = runs[0] if runs else None
-            diagnosis = analytics.zero_apply_diagnosis(run) if run else ""
+            def diagnose():  # reads the whole run journal: off the event loop (24.10: 6–8 s froze the bot)
+                runs = self._recent_runs(profile_name, limit=1)
+                run = runs[0] if runs else None
+                return run, (analytics.zero_apply_diagnosis(run) if run else "")
+            from telegram_app.guards import read_thread
+            run, diagnosis = await read_thread(diagnose)
             await self._send_text(chat_id, diagnosis or (
                 "В последнем поиске есть подтверждённые отклики." if run and (run.get("funnel") or run).get("applied")
                 else "Нет завершённого поиска с точным нулём откликов для диагностики."),
