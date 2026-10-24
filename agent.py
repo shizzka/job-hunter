@@ -688,6 +688,11 @@ async def do_manual_apply_token(token: str) -> dict:
         print(f"❌ Заявка не найдена или устарела: {token}")
         return {"ok": False, "message": "manual apply token not found"}
 
+    if item.get("status") == "uncertain":
+        message = item.get("message") or manual_apply_queue.ORPHAN_APPLY_MESSAGE
+        print(f"ℹ️ {message}")
+        return {"ok": False, "uncertain": True, "message": message}
+
     # 24.10: these early refusals were silent, users saw only «ошибка, подробности скрыты». Say why.
     if getattr(config, "HH_APPLICATION_MODE", "auto") == "preview":
         print("ℹ️ Включён режим просмотра: отклики не отправляются. Смените режим откликов, чтобы откликнуться.")

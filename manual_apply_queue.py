@@ -5,6 +5,7 @@ import hashlib
 import html
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -32,6 +33,62 @@ FEEDBACK_LABELS = {
 }
 MAX_ITEMS = 250
 MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+ORPHAN_APPLY_GRACE_SECONDS = 5 * 60
+ORPHAN_APPLY_MESSAGE = "Отклик мог уйти — проверьте на hh.ru"
+
+
+def _process_identity(pid: int) -> tuple[str, str]:
+    """Linux start ticks + boot ID distinguish a reused PID from its owner."""
+    stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    return stat[0], f"{boot}:{stat[19]}"
+
+
+def _owner_alive(item: dict) -> bool:
+    try:
+        pid = int(item.get("owner_pid") or 0)
+    except (ValueError, TypeError):
+        return False
+    if pid <= 0:
+        return False  # legacy cards have no process owner
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, OverflowError):
+        return False
+    except OSError:
+        return True  # inability to inspect a process is not proof of death
+    try:
+        state, identity = _process_identity(pid)
+    except (OSError, IndexError):
+        return True
+    return state not in {"Z", "X"} and (
+        not item.get("owner_process_start") or item["owner_process_start"] == identity)
+
+
+def _recover_applying(data: dict, now: float, token: str | None = None) -> None:
+    items = data["items"]
+    candidates = ([items[token]] if token in items else []) if token is not None else items.values()
+    for item in candidates:
+        if item.get("status") != "applying" or _owner_alive(item):
+            continue
+        try:
+            started = float(item.get("applying_ts") or 0)
+            if not started and item.get("updated_at"):
+                started = datetime.fromisoformat(item["updated_at"]).timestamp()
+            started = started or float(item.get("created_ts") or 0)
+        except (ValueError, TypeError, OverflowError):
+            started = 0
+        if not math.isfinite(started) or started <= 0:
+            started = item.setdefault("recovery_observed_ts", now)
+        if now - started < ORPHAN_APPLY_GRACE_SECONDS:
+            continue
+        item.update(status="uncertain", message=ORPHAN_APPLY_MESSAGE, orphan_recovered=True,
+                    updated_at=datetime.fromtimestamp(now).isoformat(timespec="seconds"))
+
+
+def recover_orphaned_applies(*, profile_name: str | None = None) -> dict:
+    """Local recovery only; never infer non-delivery or schedule another apply."""
+    return _store(profile_name).update(lambda data: _recover_applying(data, time.time()))
 
 
 def _queue_path(profile_name: str | None = None) -> Path:
@@ -169,7 +226,8 @@ def get_candidate(token: str, *, profile_name: str | None = None) -> dict | None
     token = (token or "").strip()
     if not token:
         return None
-    item = _read_queue(profile_name).get("items", {}).get(token)
+    data = _store(profile_name).update(lambda data: _recover_applying(data, time.time(), token))
+    item = data.get("items", {}).get(token)
     return item if isinstance(item, dict) else None
 
 
@@ -183,7 +241,7 @@ def mark_candidate(token: str, status: str, message: str = "", *, profile_name: 
             if item.get("status") == "applying":
                 item["revoked"] = True
                 return
-            if item.get("external_started") or item.get("status") == "uncertain":
+            if item.get("external_started") or item.get("status") == "uncertain" or item.get("orphan_recovered"):
                 return  # Generic UI updates cannot reopen or erase an external attempt.
             item["status"] = status
             item["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -198,11 +256,17 @@ def claim_candidate(token: str, *, store=None) -> dict | None:
     claimed = None
     def mutate(data):
         nonlocal claimed
+        _recover_applying(data, time.time(), token)
         item = data["items"].get(token)
         if (not item or item.get("status") != "pending" or not item.get("allow_ai_apply", True)
                 or item.get("feedback") == "bad"):
             return
-        item.update(status="applying", owner=uuid.uuid4().hex, external_started=False)
+        try:
+            _, process_start = _process_identity(os.getpid())
+        except (OSError, IndexError):
+            process_start = ""
+        item.update(status="applying", owner=uuid.uuid4().hex, external_started=False,
+                    owner_pid=os.getpid(), owner_process_start=process_start, applying_ts=time.time())
         claimed = dict(item)
     (store or _store()).update(mutate)
     return claimed
@@ -277,6 +341,51 @@ def finish_candidate(token, owner, status, message="", *, store=None) -> bool:
         changed = True
     (store or _store()).update(mutate)
     return changed
+
+
+def resolve_orphaned_apply(token: str, *, profile_name: str, user_id: int,
+                           confirmed_not_sent: bool = False) -> dict | None:
+    """Owner reconciliation; retry creates a fresh pending approval, never dispatches."""
+    resolved = None
+
+    def mutate(data):
+        nonlocal resolved
+        _recover_applying(data, time.time(), token)
+        item = data["items"].get(token)
+        if not item or item.get("status") != "uncertain" or not item.get("orphan_recovered"):
+            return
+        item.update(status="handled", resolved_by=int(user_id),
+                    resolved_at=datetime.now().isoformat(timespec="seconds"),
+                    resolution="confirmed_not_sent" if confirmed_not_sent else "handled")
+        resolved = dict(item)
+        if confirmed_not_sent:
+            retry = {key: value for key, value in item.items() if key in {
+                "profile_name", "vacancy", "evaluation", "details", "allow_ai_apply",
+                "direction", "direction_title", "run_id", "profile_id",
+                "hh_resume_hash", "hh_resume_numeric_id", "variant_text_sha256",
+            }}
+            now = time.time()
+            retry.update(token=uuid.uuid4().hex[:12], status="pending", retry_of=token,
+                         created_ts=now, created_at=datetime.fromtimestamp(now).isoformat(timespec="seconds"))
+            data["items"][retry["token"]] = retry
+            item["retry_token"] = retry["token"]
+            resolved = dict(retry)
+
+    _store(profile_name).update(mutate)
+    return resolved
+
+
+def build_orphaned_apply_markup(item: dict, profile_name: str) -> dict:
+    token = item["token"]
+    rows = []
+    url = (item.get("vacancy") or {}).get("url")
+    if url:
+        rows.append([{"text": "🔗 Проверить на hh.ru", "url": url}])
+    rows.extend([
+        [{"text": "Проверил — разобрано", "callback_data": f"mar:{profile_name}:{token}:handled"}],
+        [{"text": "Проверил — отклика нет", "callback_data": f"mar:{profile_name}:{token}:retry"}],
+    ])
+    return {"inline_keyboard": rows}
 
 
 def feedback_label(value: str) -> str:
@@ -397,7 +506,7 @@ def list_candidates(profile_name: str, *, limit: int = 8, include_snoozed: bool 
     """Newest first; limit pending decisions, always include unresolved attempts."""
     now = time.time()
     store = _store(profile_name)
-    data = _reconcile_pending(store, store.load(), profile_name)
+    data = _reconcile_pending(store, recover_orphaned_applies(profile_name=profile_name), profile_name)
     _prune(data, now)
     items = []
     for item in data.get("items", {}).values():

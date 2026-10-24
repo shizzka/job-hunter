@@ -163,6 +163,12 @@ def callback_guard(fn):
                 accepted = True
         self._update_state(mutate)
         if not accepted:
+            if data.startswith("manual_apply:") and hasattr(self, "_show_uncertain_manual_apply"):
+                from manual_apply_queue import parse_manual_apply_callback_data
+                profile, token = parse_manual_apply_callback_data(data)
+                if await self._show_uncertain_manual_apply(chat_id, principal, profile, token):
+                    await self._answer_callback_query(str(callback.get("id") or ""), "Нужна сверка на hh.ru")
+                    return
             await self._answer_callback_query(str(callback.get("id") or ""), DONE)
             return
         claimed = {**callback, "_guard_claim": claim}

@@ -293,6 +293,7 @@ class TelegramBot(
             expected_tokens=runtime_control.BOT_TOKENS,
         )
         self._write_runtime("bot_start", "Бот Telegram запущен", "idle")
+        await asyncio.to_thread(self._recover_manual_applies)
         log.info("Telegram consumer started profile=%s log_file=%s update_timeout=%ss",
                  self.profile_name, self.runtime_paths.bot_log_file, self.UPDATE_TIMEOUT_SECONDS)
 
@@ -693,6 +694,25 @@ class TelegramBot(
             ordered_named = sorted(named, key=lambda item: (item != "qa", item))
             return ordered_named
         return [name for name in visible if profile_access.profile_allowed(name)]
+
+    def _recover_manual_applies(self) -> None:
+        for name in self._profile_names():
+            try:
+                manual_apply_queue.recover_orphaned_applies(profile_name=name)
+            except Exception:
+                log.exception("Manual apply recovery failed profile=%s", name)
+
+    async def _show_uncertain_manual_apply(self, chat_id: int, principal: dict,
+                                         profile_name: str, token: str) -> bool:
+        # Also used by the duplicate callback guard: this path can only show a card.
+        if (profile_name not in self._profile_names() or
+                principal.get("role") != ROLE_ADMIN and self._selected_profile(principal) != profile_name):
+            return False
+        item = manual_apply_queue.get_candidate(token, profile_name=profile_name)
+        if not item or item.get("status") != "uncertain":
+            return False
+        await self._open_review_card(chat_id, profile_name, token)
+        return True
 
     def _default_profile_name(self) -> str:
         names = self._profile_names()
@@ -1168,7 +1188,8 @@ class TelegramBot(
             f"💰 {salary}" + (f" · 📊 {score}/100" if score not in (None, "") else ""),
         ]
         if item.get("status") == "uncertain":
-            lines.append("❔ Нужна сверка: результат отклика не подтверждён.")
+            lines.append("❔ " + (manual_apply_queue.ORPHAN_APPLY_MESSAGE if item.get("orphan_recovered")
+                                  else "Нужна сверка: результат отклика не подтверждён."))
         if reason:
             lines.append(str(reason))
         return "\n".join(lines)
@@ -1311,6 +1332,8 @@ class TelegramBot(
             item.get("vacancy") or {}, profile_name, token,
             include_feedback=item.get("status") != "uncertain",
             allow_ai_apply=item.get("status") == "pending" and bool(item.get("allow_ai_apply", True)))
+        if item.get("status") == "uncertain" and item.get("orphan_recovered"):
+            markup = manual_apply_queue.build_orphaned_apply_markup(item, profile_name)
         label = "Направление не указано.\n\n" if owner is None else (f"{view.title}\n\n" if view.title else "")
         await self._send_text(chat_id, label + self._review_item_text(item, "•"), reply_markup=markup)
 

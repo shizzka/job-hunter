@@ -283,6 +283,9 @@ def test_summary_includes_success_refusal_and_ttl(monkeypatch):
 class CallbackBot(Bot):
     _handle_callback_query = TelegramCallbackRouter._handle_callback_query
 
+    async def _show_uncertain_manual_apply(self, *args):
+        return False  # this queue-only fake has no persisted application cards
+
     def __init__(self):
         super().__init__()
         self.state = {}
@@ -344,6 +347,8 @@ def test_queued_callback_revalidates_current_access_before_replay(monkeypatch):
 def real_bot(monkeypatch, tmp_path):
     import telegram_bot
     import captcha_bridge
+    monkeypatch.setattr(telegram_bot.manual_apply_queue, "_queue_path", lambda profile_name=None:
+                        tmp_path / "manual_apply_queue.json")
     monkeypatch.setattr(captcha_bridge, "peek_pending", lambda **kwargs: None)
     bot = telegram_bot.TelegramBot("qa")
     messages, edits = [], []

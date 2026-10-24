@@ -495,10 +495,44 @@ class TelegramCallbackRouter:
             )
             return
 
+        if raw_data.startswith("mar:"):
+            parts = raw_data.split(":")
+            if (len(parts) != 4 or parts[1] not in self._profile_names() or not can_access_profile(parts[1])
+                    or parts[3] not in {"handled", "retry", "confirm"}
+                    or (message.get("chat") or {}).get("type") != "private"):
+                await self._answer_callback_query(callback_id, "Вакансия недоступна.", show_alert=True)
+                return
+            _, profile_name, token, action = parts
+            item = manual_apply_queue.get_candidate(token, profile_name=profile_name)
+            if not item or item.get("status") != "uncertain" or not item.get("orphan_recovered"):
+                await self._answer_callback_query(callback_id, "Карточка уже разобрана.")
+                return
+            await self._answer_callback_query(callback_id)
+            if action == "retry":
+                await self._send_text(chat_id, "Проверьте отклики на hh.ru. Подтверждаете, что отклик не отправлен? "
+                                      "После подтверждения появится новая карточка для ручного запуска.",
+                                      reply_markup={"inline_keyboard": [[
+                                          {"text": "Подтверждаю: отклик не отправлен",
+                                           "callback_data": f"mar:{profile_name}:{token}:confirm"}]]})
+                return
+            resolved = manual_apply_queue.resolve_orphaned_apply(
+                token, profile_name=profile_name, user_id=user_id, confirmed_not_sent=action == "confirm")
+            if resolved:
+                if message_id > 0:
+                    await self._edit_reply_markup(chat_id, message_id)
+                if action == "confirm":
+                    await self._open_review_card(chat_id, profile_name, resolved["token"])
+                else:
+                    await self._send_text(chat_id, "Карточка отмечена как разобранная.")
+            return
+
         if raw_data.startswith(f"{CALLBACK_MANUAL_APPLY}:"):
             profile_name, token = _parse_manual_apply_callback_data(raw_data)
             if not profile_name or profile_name not in self._profile_names() or not token or not can_access_profile(profile_name):
                 await self._answer_callback_query(callback_id, "Не удалось определить вакансию.", show_alert=True)
+                return
+            if await self._show_uncertain_manual_apply(chat_id, principal, profile_name, token):
+                await self._answer_callback_query(callback_id, "Нужна сверка на hh.ru")
                 return
             await self._answer_callback_query(callback_id, "Отправляю отклик через ИИ…")
             await self._start_manual_ai_apply(

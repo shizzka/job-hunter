@@ -62,6 +62,8 @@ def menu_bot(tmp_path, monkeypatch):
     monkeypatch.setattr(profile_mod, "update_profile_env", lambda *a, **kw: str(tmp_path / "settings.env"))
     monkeypatch.setattr(telegram_bot.client_hh_auth, "load_hh_resume_catalog", lambda name: [])
     monkeypatch.setattr(telegram_bot.manual_apply_queue, "list_candidates", lambda *a, **kw: [])
+    monkeypatch.setattr(telegram_bot.manual_apply_queue, "_queue_path", lambda profile_name=None:
+                        tmp_path / "manual_apply_queue.json")
     monkeypatch.setattr(telegram_bot.company_blacklist, "list_companies", lambda name: [])
     monkeypatch.setattr(telegram_bot.telegram_clients, "list_clients", lambda: [{"user_id": 43, "status": telegram_bot.telegram_clients.STATUS_PENDING_REVIEW}])
     monkeypatch.setattr(telegram_bot.telegram_access, "list_users", lambda: [])

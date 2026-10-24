@@ -381,6 +381,7 @@ def test_callback_router_starts_chat_ai_action(
 
 def test_callback_router_starts_manual_apply(monkeypatch):
     bot, calls = _configured_bot(monkeypatch)
+    monkeypatch.setattr(telegram_bot.manual_apply_queue, "get_candidate", lambda *a, **kw: None)
     starts = []
 
     async def start_apply(
@@ -417,6 +418,7 @@ def test_callback_router_starts_manual_apply(monkeypatch):
 def test_user_can_start_manual_apply_for_own_profile(monkeypatch):
     principal = {"user_id": 42, "role": telegram_bot.ROLE_USER, "profile": "qa"}
     bot, calls = _configured_bot(monkeypatch, principal=principal)
+    monkeypatch.setattr(telegram_bot.manual_apply_queue, "get_candidate", lambda *a, **kw: None)
     starts = []
 
     async def start_apply(chat_id, current_principal, *, profile_name, token):
