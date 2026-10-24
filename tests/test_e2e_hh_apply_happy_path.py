@@ -1,6 +1,7 @@
 """Offline Chromium gate: ordinary HH page traffic must not own an application."""
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import urlsplit
@@ -62,7 +63,7 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                       confirmation_html=APPLIED_HTML, form_disappears=False,
                       session_failure='', repeat_run=False, apply_next=False,
                       post_submit_effect='', conditions_case='', questionnaire=False,
-                      response_html=None):
+                      response_html=None, real_trace_factory=False):
     """Reuse the confirmed-success harness; replace transport and search inputs only."""
     for key, name in {
         "JOB_HUNTER_HOME": "", "SEEN_VACANCIES_FILE": "seen.json",
@@ -94,9 +95,10 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
         monkeypatch.setattr(apply_orchestrator, "fetch_vacancy_details", REAL_DETAILS)
     trace = (ApplyTrace.create(home_dir=str(tmp_path), source="hh", vacancy_id="2",
                                profile="synthetic", mode="auto")
-             if stale_receipt or form_disappears or conditions_case or response_html else None)
-    monkeypatch.setattr(apply_orchestrator, "create_hh_apply_trace",
-                        lambda vacancy, **kwargs: trace if vacancy['id'] == '2' else None)
+             if not real_trace_factory and (stale_receipt or form_disappears or conditions_case or response_html) else None)
+    if not real_trace_factory:
+        monkeypatch.setattr(apply_orchestrator, "create_hh_apply_trace",
+                            lambda vacancy, **kwargs: trace if vacancy['id'] == '2' else None)
     if questionnaire:
         async def answer_questions(self, vacancy_context="", *, before_submit=None):
             # Answer authoring is independent of the final native submit gate.
@@ -447,6 +449,41 @@ def test_unrecognized_resume_picker_recovers_without_stopping_next_vacancy(tmp_p
     assert attempt.repository.get(VACANCY_URL)['status'] == 'failed'
     assert not attempt.acting and not attempt.command_started and not attempt.uncertain
     assert (gate.trace.trace_dir / 'response_form_unrecognized.html').is_file()
+
+
+def test_unrecognized_picker_saves_minimal_private_trace_when_tracing_disabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, 'HH_APPLY_TRACE_ENABLED', False)
+    html = (Path(__file__).parent / 'fixtures/hh/resume_picker_unrecognized.html').read_text()
+    html = html.replace('<!-- control -->', '<div role="button" tabindex="0" data-qa="cell">Other control</div>')
+    gate = asyncio.run(run_hh_gate(tmp_path, monkeypatch, noise=False,
+                                  continue_after_apply=True, response_html=html, real_trace_factory=True))
+    assert gate.trace is None
+    result, = gate.dispatch_results
+    assert result['reason'] == 'hh_resume_picker_unrecognized' and result['proven_no_action']
+    assert result['hh_page_recovered']
+    assert not result.get('uncertain') and not result.get('hh_hard_stop'), gate.evidence
+    assert gate.evidence['matched'] == ['2', '3'], gate.evidence
+    assert not gate.result['hh_recovery']['stopped'] and gate.evidence['hard_stops'] == 0
+    assert not any(method == 'POST' for method, url in gate.requests), gate.evidence
+    trace_dir = Path(result['trace_dir'])
+    artifact = trace_dir / 'response_form_unrecognized.html'
+    content = artifact.read_text()
+    assert 'form name="vacancy_response"' in content
+    assert 'data-qa="vacancy-response-submit-popup"' in content
+    assert '[REDACTED]' in content
+    assert list(trace_dir.rglob('*.html')) == [artifact]
+    assert not list(trace_dir.rglob('*.png'))
+    # The entire minimal trace must omit the form's private-looking payload.
+    trace_text = '\n'.join(path.read_text() for path in trace_dir.rglob('*') if path.is_file())
+    for private in ('Синтетиков', 'Тестовое резюме', '+7 (999)', '79991234567',
+                    'synthetic@example.invalid', 'synthetic-cookie', 'private-id', 'Private title'):
+        assert private not in trace_text
+    assert artifact.stat().st_mode & 0o777 == 0o600
+    assert artifact.name in (trace_dir / 'summary.txt').read_text()
+    events = read_json_records(trace_dir / 'trace.jsonl')
+    assert events[0]['stage'] == 'TRACE_STARTED'
+    assert events[-1]['stage'] == 'TRACE_FAILED'
+    assert events[0]['trace_id'] == result['trace_id']
 
 
 def test_unknown_action_after_proven_resume_picker_click_stays_uncertain(tmp_path, monkeypatch):

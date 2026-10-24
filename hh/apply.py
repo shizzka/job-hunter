@@ -1429,12 +1429,34 @@ async def _apply_to_vacancy(
         )
         if not resume_verified:
             if resume_picker_unrecognized:
-                if trace is not None:
-                    await trace.capture_response_form(session._page)
+                message = "hh не показал список резюме — откликнитесь вручную или попробуйте позже"
+                trace_details = {}
+                try:
+                    diagnostic_trace = trace
+                    if diagnostic_trace is None:
+                        import config
+                        import profile as profile_mod
+                        from debug_trace import ApplyTrace
+                        # Capture before recovery destroys this response form,
+                        # even when ordinary apply tracing is disabled. Use the
+                        # client's captured home, without enabling full snapshots.
+                        diagnostic_trace = ApplyTrace.create(
+                            home_dir=session._ui_home, source="hh", vacancy_id=expected_vacancy_id,
+                            profile=str(profile_mod.active().name or "default"), mode="resume-picker-diagnostic",
+                            retention_days=getattr(config, "HH_APPLY_TRACE_RETENTION_DAYS", 14),
+                            max_runs=getattr(config, "HH_APPLY_TRACE_MAX_RUNS", 100),
+                        )
+                    await diagnostic_trace.capture_response_form(session._page)
+                    if trace is None:
+                        diagnostic_trace.event("RESUME_PICKER_UNRECOGNIZED", ok=False, proven_no_action=True)
+                        diagnostic_trace.finish(ok=False, message=message, failure_stage="RESUME_PICKER_UNRECOGNIZED")
+                        trace_details = {"trace_id": diagnostic_trace.trace_id,
+                                         "trace_dir": os.fspath(diagnostic_trace.trace_dir)}
+                except Exception as exc:
+                    logger.warning("Resume picker diagnostic unavailable: %s", type(exc).__name__)
                 trace_event("RESUME_PICKER_UNRECOGNIZED", ok=False, proven_no_action=True)
                 return {"ok": False, "reason": "hh_resume_picker_unrecognized", "proven_no_action": True,
-                        "message": "hh не показал список резюме — откликнитесь вручную или попробуйте позже",
-                        "resume_selection_verified": False}
+                        "message": message, "resume_selection_verified": False, **trace_details}
             await save_debug_snapshot("debug_resume_unverified")
             return {"ok": False, "message": "Нужное резюме не подтверждено — отклик не отправлен", "resume_selection_verified": False}
         logger.info("Requested resume verified before application")
