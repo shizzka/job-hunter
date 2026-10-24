@@ -595,13 +595,16 @@ async def notify_invitation(invitation: dict):
 
 
 def _fit_label(score: int) -> str:
-    """Plain words instead of «35/100»: a low number reads as a verdict on the person (F23)."""
+    """Plain words for the candidate (F23) plus the score for the owner."""
     threshold = config.HH_MATCHER_AUTO_APPLY_MIN_SCORE
+    # owner 24.10: keep the score next to the words — it is how he sorts vacancies at a glance
     if score >= threshold:
-        return "✅ Подходит под ваше резюме"
-    if score >= threshold - 15:
-        return "👍 Скорее подходит"
-    return "🤔 Подходит частично — решать вам"
+        words = "✅ Подходит под ваше резюме"
+    elif score >= threshold - 15:
+        words = "👍 Скорее подходит"
+    else:
+        words = "🤔 Подходит частично — решать вам"
+    return f"{words} · {score}/100"
 
 
 def _work_format_line(vacancy: dict) -> str:

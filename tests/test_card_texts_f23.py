@@ -36,11 +36,11 @@ def test_other_sources_have_no_format_line(monkeypatch):
 
 @pytest.mark.parametrize("delta,label", [(0, "✅ Подходит под ваше резюме"), (-10, "👍 Скорее подходит"),
                                          (-30, "🤔 Подходит частично — решать вам")])
-def test_score_is_words_not_a_number(monkeypatch, delta, label):
+def test_score_has_words_and_the_number(monkeypatch, delta, label):
     score = config.HH_MATCHER_AUTO_APPLY_MIN_SCORE + delta
     text = card(monkeypatch, {"title": "QA", "source": "hh"}, score)
     assert label in text
-    assert f"{score}/100" not in text and "Совпадение" not in text and "score" not in text
+    assert f"{label} · {score}/100" in text and "Совпадение" not in text and "score" not in text
     assert "Вакансия ждёт вашего решения" in text and "нужен ручной отклик" not in text
 
 
@@ -51,4 +51,4 @@ def test_sent_application_card_uses_the_same_words(monkeypatch):
     vacancy = {"title": "QA", "source": "hh", "_hh_work_conditions": {"formats": ["remote"], "fly_in_fly_out": False}}
     asyncio.run(notifier.notify_application(vacancy, config.HH_MATCHER_AUTO_APPLY_MIN_SCORE, ""))
     text = sent.await_args.args[0]
-    assert "🏠 Удалённо" in text and "✅ Подходит под ваше резюме" in text and "/100" not in text
+    assert "🏠 Удалённо" in text and "✅ Подходит под ваше резюме · " in text

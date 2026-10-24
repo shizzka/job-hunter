@@ -1807,6 +1807,18 @@ def build_log_text(profile_name: str, *, kind: str, path: str, content: str, lin
     return "\n".join([title, f"Последние {lines} строк:", "", content])
 
 
+def _local_time(value):
+    """«24.10 03:03» instead of «2026-10-24T00:16:05.540108+00:00» (24.10 scenarios: raw ISO on /log)."""
+    from datetime import datetime
+    try:
+        moment = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return value
+    if moment.tzinfo is not None:
+        moment = moment.astimezone()
+    return moment.strftime("%d.%m %H:%M")
+
+
 def build_run_summary_text(summary, *, profile_name):
     if summary is None:
         return "Запусков пока не было."
@@ -1824,11 +1836,11 @@ def build_run_summary_text(summary, *, profile_name):
              f"Итог: {states.get(summary['status'], '❔ неизвестно')}"]
     lines.append(format_run_observation(summary))
     lines.extend(line for line in format_run_losses(summary))
-    lines.append(f"Начало: {safe(summary['started_at'])}")
+    lines.append(f"Начало: {safe(_local_time(summary['started_at']))}")
     if summary.get("stop_reason") == "RUN_LIMIT":
         lines.append("Остановлен по лимиту поиска.")
     if summary.get("finished_at"):
-        lines.append(f"Завершён: {safe(summary['finished_at'])}")
+        lines.append(f"Завершён: {safe(_local_time(summary['finished_at']))}")
     if summary.get("duration_seconds") is not None:
         lines.append(f"Длительность: {summary['duration_seconds']:.0f} с")
     counters = summary['counters']
@@ -1849,7 +1861,7 @@ def build_run_summary_text(summary, *, profile_name):
             f"Этап: {safe(failure['stage'])}", f"Источник: {safe(failure['source'])}"]
         if failure.get("provider"):
             lines.append(f"Провайдер: {safe(failure['provider'])}")
-        lines += [f"Время: {safe(failure['first_failure_at'])}",
+        lines += [f"Время: {safe(_local_time(failure['first_failure_at']))}",
             f"Затронуто вакансий: {safe(failure['affected_count'])}"]
         consequences = failure.get('downstream_events') or {}
         lines.extend(f"• {count} × {safe(event)}" for event, count in list(consequences.items())[:5])
