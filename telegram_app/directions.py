@@ -41,6 +41,20 @@ STRATEGY_LABELS = {
     "closest": "Самое подходящее",
     "ab": "По очереди",
 }
+WORK_FORMAT_BUTTONS = {
+    "remote": "🏠 Удалённо",
+    "hybrid": "🏢 Гибрид",
+    "on_site": "🏬 На месте работодателя",
+    "field": "🚗 Разъездная",
+}
+
+
+def work_conditions_line(conditions):
+    selected = conditions["allowed_formats"]
+    allowed = ("только удалёнка" if selected == ["remote"] else
+               "любой формат" if set(selected) == set(work_conditions.FORMAT_LABELS) else
+               ", ".join(work_conditions.FORMAT_LABELS[f] for f in selected))
+    return f"Формат: {allowed}; вахта — {'да' if conditions['allow_fly_in_fly_out'] else 'нет'}"
 
 
 def counted(value, forms):
@@ -206,13 +220,12 @@ class TelegramDirections:
             formats = {"": "любой формат", "remote": "удалённо", "fullDay": "в офисе", "flyInFlyOut": "вахта", "shift": "сменный", "flexible": "гибкий"}
             profile_labels = [f"{cities.get(str(x['area']), str(x['area']))} / {formats.get(x['schedule'], x['schedule'])}" for x in profiles]
             conditions = draft.get("work_conditions", work_conditions.defaults(draft))
-            allowed = ", ".join(work_conditions.FORMAT_LABELS[f] for f in conditions["allowed_formats"])
             strategy = STRATEGY_LABELS.get(draft.get('selection_strategy', 'single'), STRATEGY_LABELS['single'])
             text = (f"Направление «{draft.get('title', '')}»\n"
                     f"Каким резюме откликаться: {strategy}.\n\n"
                     f"Ищу по словам: {', '.join(draft.get('search_queries', [])) or 'не указаны'}\n"
                     f"Должности: {', '.join(draft.get('goal', [])) or 'не указаны'}\n"
-                    f"Формат: {allowed}. Вахта — {'да' if conditions['allow_fly_in_fly_out'] else 'нет'}.\n"
+                    f"{work_conditions_line(conditions)}\n"
                     "Город и формат — " + (", ".join(profile_labels) or "из профиля") + ".\n"
                     f"Города работы — {', '.join(conditions.get('allowed_cities', [])) or 'любые'}.\n"
                     f"Зарплата: {str(draft['salary_baseline']) + ' ₽' if draft.get('salary_baseline') else 'не указана'}\n\n"
@@ -242,13 +255,34 @@ class TelegramDirections:
 
     async def _direction_edit_menu(self, chat_id, state):
         labels = [("Название", "title"), ("Описание", "positioning"), ("Должности", "goal"),
-                  ("Ищу по словам", "queries"), ("Город", "city"), ("Формат поиска", "format"), ("Города и форматы", "search_profiles"),
-                  ("Допустимые форматы работы", "work_formats"), ("Разрешена ли вахта", "fly_allowed"),
+                  ("Ищу по словам", "queries"), ("Город", "city"), ("Фильтр формата на hh.ru", "format"), ("Сочетания города и фильтра hh.ru", "search_profiles"),
+                  ("Где и как работать", "work_formats"), ("Разрешена ли вахта", "fly_allowed"),
                   ("Города места работы", "work_cities"),
                   ("Запасное сопроводительное письмо", "cover_letter_fallback"),
                   ("Зарплата", "salary"), ("Подходящие слова", "relevant"), ("Исключения", "exclude")]
         await self._send_text(chat_id, "Что изменить?", reply_markup=self._direction_inline(state,
             [[(label, f"edit:{field}")] for label, field in labels] + [[("Назад", "back"), ("Отмена", "cancel")]]))
+
+    async def _direction_show_work_conditions(self, chat_id, state, *, notice=""):
+        draft = state["draft"]
+        conditions = draft.get("work_conditions", work_conditions.defaults(draft))
+        selected = conditions["allowed_formats"]
+        rows = [[(("✓ " if selected == ["remote"] else "") + "🏠 Только удалёнка", "workremote")]]
+        rows += [[(("✓ " if key in selected else "") + label, "worktoggle:" + key)]
+                 for key, label in WORK_FORMAT_BUTTONS.items()]
+        rows += [[(f"Вахта: {'да' if conditions['allow_fly_in_fly_out'] else 'нет'}", "flytoggle")],
+                 [("Готово", "back"), ("Не сохранять", "cancel")]]
+        text = (f"Где и как работать · {draft.get('title', '')}\n"
+                f"{work_conditions_line(conditions)}\n\n"
+                "Выберите допустимые форматы кнопками. ✓ — выбрано. Оставьте хотя бы один формат.\n"
+                "«Только удалёнка» оставляет один формат. Кнопка «Вахта» переключает да/нет.\n"
+                + ("Для вахты можно отправить «да» или «нет».\n" if state.get("field") == "fly_allowed" else
+                   "Можно отправить форматы текстом через запятую: удалённо, гибрид, на месте, разъездная. "
+                   "«Любой» — выбрать все форматы.\n")
+                + "Изменение вступит в силу после кнопки «Сохранить».")
+        if notice:
+            text += "\n\n" + notice
+        await self._send_text(chat_id, text, reply_markup=self._direction_inline(state, rows))
 
     @telegram_access.scoped_request
     async def _direction_callback(self, chat_id, principal, data):
@@ -340,11 +374,32 @@ class TelegramDirections:
                 value = values[parts[3]]
                 started = True
                 await self._accept_direction_input(chat_id, principal, value)
-            elif action == "conditionpreset" and state.get("mode") == "edit":
-                values = {"yes": "да", "no": "нет", "remote": "удалённо, гибрид", "any": "любой"}
-                value = values[parts[3]]
+            elif (action in {"workremote", "worktoggle", "flytoggle"}
+                  and state.get("mode") == "edit" and state.get("field") in {"work_formats", "fly_allowed"}):
+                draft = state["draft"]
+                conditions = copy.deepcopy(draft.get("work_conditions", work_conditions.defaults(draft)))
+                if action == "workremote":
+                    conditions["allowed_formats"] = ["remote"]
+                elif action == "flytoggle":
+                    conditions["allow_fly_in_fly_out"] = not conditions["allow_fly_in_fly_out"]
+                else:
+                    key = parts[3]
+                    if key not in WORK_FORMAT_BUTTONS:
+                        raise ValueError("Неизвестный формат работы.")
+                    selected = conditions["allowed_formats"]
+                    if key in selected:
+                        if len(selected) == 1:
+                            await self._direction_show_work_conditions(chat_id, state,
+                                notice="Оставьте хотя бы один формат работы.")
+                            return False
+                        selected.remove(key)
+                    else:
+                        selected.append(key)
+                conditions = work_conditions.validate(conditions)
                 started = True
-                await self._accept_direction_input(chat_id, principal, value)
+                draft["work_conditions"] = conditions
+                state["summary"] = False
+                await self._direction_show_work_conditions(chat_id, state)
             elif action == "pair" and state.get("draft"):
                 pairs = {"spb": {"area": "2", "schedule": ""}, "fly": {"area": "113", "schedule": "flyInFlyOut"}}
                 pair = pairs[parts[3]]
@@ -794,6 +849,8 @@ class TelegramDirections:
         elif command == "/direction_cancel":
             self._direction_sessions().pop(principal["user_id"], None)
             await self._send_text(chat_id, "Изменения не сохранены. Настройки направления не менялись.", reply_markup=self._direction_markup())
+            if active:
+                await self._dispatch_direction(chat_id, principal, "/direction_summary", "")
         elif command in {"/direction_save", "/search_use_draft"}:
             if self._has_active_command(profile_name):
                 await self._send_busy_status(chat_id, principal, profile_name=profile_name)
@@ -877,13 +934,7 @@ class TelegramDirections:
                     reply_markup=self._direction_inline(state, [[("Назад", "back"), ("Отмена", "cancel")]]))
                 return
             if field in {"work_formats", "fly_allowed"}:
-                message = ("Какая работа допустима? Укажите через запятую: удалённо, гибрид, на месте, разъездная. Или «любой»."
-                           if field == "work_formats" else "Разрешена ли вахта в этом направлении? Отправьте «да» или «нет».")
-                choices = ([("Удалённо и гибрид", "remote"), ("Любой формат", "any")] if field == "work_formats" else
-                           [("Да", "yes"), ("Нет", "no")])
-                rows = [[(label, "conditionpreset:" + value)] for label, value in choices]
-                rows.append([("Назад", "back"), ("Отмена", "cancel")])
-                await self._send_text(chat_id, message, reply_markup=self._direction_inline(state, rows))
+                await self._direction_show_work_conditions(chat_id, state)
                 return
             if field in {"city", "format", "search_profiles"}:
                 choices = ({"Москва": "moscow", "Санкт-Петербург": "spb", "Россия": "russia"} if field == "city" else
@@ -891,7 +942,7 @@ class TelegramDirections:
                 rows = [[(label, "preset:" + value)] for label, value in choices.items()] if field != "search_profiles" else []
                 rows += [[("Добавить СПб · любой", "pair:spb")], [("Добавить РФ · вахта", "pair:fly")], [("Назад", "back"), ("Отмена", "cancel")]]
                 await self._send_text(chat_id, "Выберите значение или отправьте текст. Город: ID HH через запятую. Формат: remote, fullDay, flyInFlyOut.\n"
-                    "Для независимых сочетаний выберите «Города и форматы»: каждая строка содержит ID города и формат, например:\n2\n113 flyInFlyOut", reply_markup=self._direction_inline(state, rows))
+                    "Для независимых сочетаний выберите «Сочетания города и фильтра hh.ru»: каждая строка содержит ID города и формат, например:\n2\n113 flyInFlyOut", reply_markup=self._direction_inline(state, rows))
                 return
             label = {"title": "названия", "search_queries": "запросов", "positioning": "описания", "goal": "должностей",
                      "salary_baseline": "зарплаты от", "relevant_keywords": "подходящих слов", "exclude_keywords": "исключений", "filter_policy": "фильтра"}[field]

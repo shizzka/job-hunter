@@ -107,9 +107,10 @@ async def test_work_conditions_edit_is_a_confirmed_direction_draft(bot):
     assert await bot._accept_direction_input(1, USER, "удалённо, гибрид")
     assert directions.active_direction(home) == original
     assert state["draft"]["work_conditions"]["allowed_formats"] == ["remote", "hybrid"]
-    assert "Вахта — нет" in bot.sent[-1][1]
+    assert "Формат: удалённо, гибрид; вахта — нет" in bot.sent[-1][1]
     await bot._dispatch_direction(1, USER, "/direction_edit", "fly_allowed")
-    await bot._direction_callback(1, USER, f"dir:{state['token']}:conditionpreset:yes")
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:flytoggle")
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:back")
     await bot._dispatch_direction(1, USER, "/direction_edit", "work_cities")
     await bot._accept_direction_input(1, USER, "Город Пример")
     await bot._dispatch_direction(1, USER, "/direction_save", "")
@@ -515,6 +516,180 @@ async def test_admin_snapshot_summary_and_csv_use_selected_profile_without_ai(bo
 
 def inline_actions(bot):
     return [button['callback_data'] for row in bot.sent[-1][2]['reply_markup']['inline_keyboard'] for button in row]
+
+
+def condition_buttons(bot):
+    buttons = [button for row in bot.sent[-1][2]['reply_markup']['inline_keyboard'] for button in row]
+    assert all(len(button['callback_data'].encode('utf-8')) <= 64 for button in buttons)
+    return {button['callback_data'].split(':', 2)[-1]: button['text'] for button in buttons}
+
+
+async def click_direction(bot, action):
+    data = next(data for data in inline_actions(bot) if data.split(':', 2)[-1] == action)
+    return await bot._direction_callback(1, USER, data)
+
+
+@run_async
+async def test_work_conditions_remote_preset_checkboxes_and_save(bot):
+    home = bot.profiles['client_1'].home_dir
+    original = make_direction(home)
+    original['work_conditions'] = {'allowed_formats': ['hybrid', 'on_site'],
+                                   'allow_fly_in_fly_out': True, 'allowed_cities': ['Город Пример']}
+    original = directions.save_direction(home, original, texts={})
+    directions.set_active_direction(home, original['name'])
+    await bot._dispatch_direction(1, USER, '/direction_summary', '')
+    await click_direction(bot, 'editmenu')
+    labels = condition_buttons(bot)
+    assert labels['edit:work_formats'] == 'Где и как работать'
+    assert labels['edit:format'] == 'Фильтр формата на hh.ru'
+    assert labels['edit:search_profiles'] == 'Сочетания города и фильтра hh.ru'
+    await click_direction(bot, 'edit:work_formats')
+    buttons = condition_buttons(bot)
+    assert next(iter(buttons.values())) == '🏠 Только удалёнка'
+    assert buttons['worktoggle:remote'] == '🏠 Удалённо'
+    assert buttons['worktoggle:hybrid'] == '✓ 🏢 Гибрид'
+    assert buttons['worktoggle:on_site'] == '✓ 🏬 На месте работодателя'
+    assert buttons['worktoggle:field'] == '🚗 Разъездная'
+    assert buttons['flytoggle'] == 'Вахта: да'
+    assert 'Формат: гибрид, на месте работодателя; вахта — да' in bot.sent[-1][1]
+    await click_direction(bot, 'workremote')
+    state = bot._direction_sessions()[1]
+    assert state['mode'] == 'edit'
+    assert state['draft']['work_conditions'] == {**original['work_conditions'], 'allowed_formats': ['remote']}
+    buttons = condition_buttons(bot)
+    assert buttons['workremote'] == '✓ 🏠 Только удалёнка'
+    assert buttons['worktoggle:remote'] == '✓ 🏠 Удалённо'
+    assert buttons['worktoggle:hybrid'] == '🏢 Гибрид'
+    await click_direction(bot, 'flytoggle')
+    assert condition_buttons(bot)['flytoggle'] == 'Вахта: нет'
+    assert directions.active_direction(home) == original
+    await click_direction(bot, 'back')
+    assert 'Формат: только удалёнка; вахта — нет' in bot.sent[-1][1]
+    await click_direction(bot, 'save')
+    saved = directions.active_direction(home)
+    assert saved == {**original, 'work_conditions': {'allowed_formats': ['remote'],
+                    'allow_fly_in_fly_out': False, 'allowed_cities': ['Город Пример']}}
+
+
+@pytest.mark.parametrize('work_format', ['remote', 'hybrid', 'on_site', 'field'])
+@run_async
+async def test_work_format_toggle_off_and_on_keeps_other_conditions(bot, work_format):
+    home = bot.profiles['client_1'].home_dir
+    original = make_direction(home)
+    directions.set_active_direction(home, original['name'])
+    await bot._dispatch_direction(1, USER, '/direction_edit', 'work_formats')
+    initial = copy.deepcopy(bot._direction_sessions()[1]['draft']['work_conditions'])
+    await click_direction(bot, 'worktoggle:' + work_format)
+    state = bot._direction_sessions()[1]
+    assert state['draft']['work_conditions'] == {**initial, 'allowed_formats': [f for f in initial['allowed_formats'] if f != work_format]}
+    assert not condition_buttons(bot)['worktoggle:' + work_format].startswith('✓')
+    await click_direction(bot, 'worktoggle:' + work_format)
+    assert set(state['draft']['work_conditions']['allowed_formats']) == set(initial['allowed_formats'])
+    assert condition_buttons(bot)['worktoggle:' + work_format].startswith('✓')
+    assert directions.active_direction(home) == original
+
+
+@pytest.mark.parametrize('work_format', ['remote', 'hybrid', 'on_site', 'field'])
+@run_async
+async def test_last_work_format_stays_selected_and_buttons_keep_working(bot, work_format):
+    home = bot.profiles['client_1'].home_dir
+    original = make_direction(home)
+    original['work_conditions'] = {'allowed_formats': [work_format], 'allow_fly_in_fly_out': False, 'allowed_cities': []}
+    original = directions.save_direction(home, original, texts={})
+    directions.set_active_direction(home, original['name'])
+    await bot._dispatch_direction(1, USER, '/direction_edit', 'work_formats')
+    state = bot._direction_sessions()[1]
+    await click_direction(bot, 'worktoggle:' + work_format)
+    assert 'Оставьте хотя бы один формат работы' in bot.sent[-1][1]
+    assert state['draft']['work_conditions'] == original['work_conditions']
+    assert condition_buttons(bot)['worktoggle:' + work_format].startswith('✓')
+    other = 'hybrid' if work_format == 'remote' else 'remote'
+    await click_direction(bot, 'worktoggle:' + other)
+    assert set(state['draft']['work_conditions']['allowed_formats']) == {work_format, other}
+    await click_direction(bot, 'worktoggle:' + work_format)
+    assert state['draft']['work_conditions']['allowed_formats'] == [other]
+    assert directions.active_direction(home) == original
+
+
+@pytest.mark.parametrize('cancel_from_editor', [False, True])
+@run_async
+async def test_work_conditions_cancel_restores_saved_screen_with_fresh_buttons(bot, cancel_from_editor):
+    home = Path(bot.profiles['client_1'].home_dir)
+    original = make_direction(home)
+    directions.set_active_direction(home, original['name'])
+    before = {str(path.relative_to(home)): path.read_bytes() for path in home.rglob('*') if path.is_file()}
+    await bot._dispatch_direction(1, USER, '/direction_edit', 'work_formats')
+    abandoned = bot._direction_sessions()[1]
+    await click_direction(bot, 'workremote')
+    await click_direction(bot, 'flytoggle')
+    if not cancel_from_editor:
+        await click_direction(bot, 'back')
+    old_cancel = next(data for data in inline_actions(bot) if data.endswith(':cancel'))
+    await bot._direction_callback(1, USER, old_cancel)
+    assert directions.active_direction(home) == original
+    assert {str(path.relative_to(home)): path.read_bytes() for path in home.rglob('*') if path.is_file()} == before
+    assert bot._direction_sessions()[1] is not abandoned
+    assert bot._direction_sessions()[1]['summary']
+    assert bot._direction_sessions()[1]['draft'] == original
+    condition_buttons(bot)
+    await click_direction(bot, 'editmenu')
+    await click_direction(bot, 'edit:work_formats')
+    assert '✓ 🏠 Только удалёнка' not in condition_buttons(bot).values()
+    await click_direction(bot, 'workremote')
+    await click_direction(bot, 'back')
+    await click_direction(bot, 'save')
+    assert directions.active_direction(home)['work_conditions']['allowed_formats'] == ['remote']
+    assert await bot._direction_callback(1, USER, old_cancel) is False
+
+
+@run_async
+async def test_work_conditions_remote_default_and_typed_fallback(bot):
+    home = bot.profiles['client_1'].home_dir
+    original = make_direction(home)
+    original.pop('work_conditions', None)
+    original['search_profiles'] = [{'area': '1', 'schedule': 'remote'}]
+    original = directions.save_direction(home, original, texts={})
+    directions.set_active_direction(home, original['name'])
+    await bot._dispatch_direction(1, USER, '/direction_edit', 'work_formats')
+    assert condition_buttons(bot)['workremote'] == '✓ 🏠 Только удалёнка'
+    assert 'Формат: только удалёнка; вахта — нет' in bot.sent[-1][1]
+    await bot._accept_direction_input(1, USER, 'удалённо, гибрид')
+    state = bot._direction_sessions()[1]
+    assert state['draft']['work_conditions']['allowed_formats'] == ['remote', 'hybrid']
+    await bot._dispatch_direction(1, USER, '/direction_edit', 'fly_allowed')
+    await bot._accept_direction_input(1, USER, 'да')
+    assert state['draft']['work_conditions']['allow_fly_in_fly_out']
+    await bot._dispatch_direction(1, USER, '/direction_edit', 'work_formats')
+    before = copy.deepcopy(state['draft'])
+    await bot._accept_direction_input(1, USER, 'неизвестный формат')
+    assert state['draft'] == before and state['mode'] == 'edit'
+    await bot._accept_direction_input(1, USER, 'любой')
+    assert state['draft']['work_conditions']['allowed_formats'] == ['remote', 'hybrid', 'on_site', 'field']
+    assert directions.active_direction(home) == original
+
+
+@pytest.mark.parametrize('change', ['profile', 'direction', 'revision', 'user'])
+@run_async
+async def test_work_conditions_buttons_reject_changed_context(bot, change):
+    home = bot.profiles['client_1'].home_dir
+    original = make_direction(home)
+    directions.set_active_direction(home, original['name'])
+    await bot._dispatch_direction(99, ADMIN, '/direction_edit', 'work_formats')
+    state = bot._direction_sessions()[99]
+    before = copy.deepcopy(state['draft'])
+    data = next(data for data in inline_actions(bot) if data.endswith(':workremote'))
+    principal = ADMIN
+    if change == 'profile':
+        bot.selected = 'client_2'
+    elif change == 'direction':
+        directions.save_direction(home, {**original, 'title': 'Другое название'}, texts={})
+    elif change == 'revision':
+        await bot._dispatch_direction(99, ADMIN, '/direction_edit', 'work_formats')
+    else:
+        principal = {**ADMIN, 'user_id': 98}
+    assert await bot._direction_callback(principal['user_id'], principal, data) is False
+    assert state['draft'] == before
+    assert 'устарела' in bot.sent[-1][1]
 
 
 @run_async

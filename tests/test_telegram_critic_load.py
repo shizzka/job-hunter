@@ -48,6 +48,39 @@ def test_rendered_checkbox_reusable_but_double_tap_old_revision_is_spent(mode_bo
     asyncio.run(scenario())
 
 
+def test_work_conditions_checkboxes_guard_and_cancel_through_real_router(mode_bot):
+    bot, principal = mode_bot
+    add_direction(bot)
+    home = bot._profile('qa').home_dir
+    original = directions.active_direction(home)
+    async def scenario():
+        await bot._dispatch_direction(42, principal, '/direction_edit', 'work_formats')
+        await click(bot, button(bot, 'workremote'))
+        state = bot._direction_sessions()[42]
+        remote = button(bot, 'worktoggle:remote')
+        assert await click(bot, remote) is False
+        assert 'Оставьте хотя бы один формат работы' in bot._send_text.call_args.args[1]
+        assert state['draft']['work_conditions']['allowed_formats'] == ['remote']
+        hybrid = button(bot, 'worktoggle:hybrid')
+        await asyncio.gather(click(bot, hybrid), click(bot, hybrid))
+        assert state['draft']['work_conditions']['allowed_formats'] == ['remote', 'hybrid']
+        assert bot._answer_callback_query.call_args.args[1] == guards.DONE
+        await click(bot, button(bot, 'worktoggle:hybrid'))
+        assert state['draft']['work_conditions']['allowed_formats'] == ['remote']
+        await click(bot, button(bot, 'flytoggle'))
+        await click(bot, button(bot, 'flytoggle'))
+        assert not state['draft']['work_conditions']['allow_fly_in_fly_out']
+        await click(bot, button(bot, 'cancel'))
+        assert bot._direction_sessions()[42] is not state
+        assert bot._direction_sessions()[42]['draft'] == original
+        await click(bot, button(bot, 'editmenu'))
+        await click(bot, button(bot, 'edit:work_formats'))
+        await click(bot, button(bot, 'workremote'))
+        assert bot._direction_sessions()[42]['draft']['work_conditions']['allowed_formats'] == ['remote']
+        assert directions.active_direction(home) == original
+    asyncio.run(scenario())
+
+
 def test_direction_navigation_can_be_repeated_on_new_screens(mode_bot):
     bot, principal = mode_bot
     add_direction(bot)
