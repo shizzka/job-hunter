@@ -1,6 +1,6 @@
 # Job Hunter
 
-**Current version:** `v0.9.0`
+**Current version:** `v0.10.1`
 **Status:** v0.9.0 — several search directions per profile (e.g. QA and electrician), employer questionnaires with remembered answers, chat replies grounded in the resume the application used, command queue (2026-10-19).
 
 Русская версия: [README.ru.md](README.ru.md)
