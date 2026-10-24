@@ -1167,6 +1167,8 @@ class TelegramBot(
             f"{company} · {source}",
             f"💰 {salary}" + (f" · 📊 {score}/100" if score not in (None, "") else ""),
         ]
+        if item.get("status") == "uncertain":
+            lines.append("❔ Нужна сверка: результат отклика не подтверждён.")
         if reason:
             lines.append(str(reason))
         return "\n".join(lines)
@@ -1177,6 +1179,8 @@ class TelegramBot(
 
     @staticmethod
     def _review_score(item: dict) -> int | None:
+        if item.get("status") == "uncertain":
+            return None  # unresolved attempts must never enter bulk dismissal
         try:
             return int((item.get("evaluation") or {}).get("score"))
         except (TypeError, ValueError):
@@ -1233,6 +1237,8 @@ class TelegramBot(
             details = " · ".join(part for part in (
                 str(company[:40]), str(salary[:30]) if salary and "не указ" not in salary else "",
                 f"📊 {score}" if score not in (None, "") else "") if part)
+            if item.get("status") == "uncertain":
+                details = "❔ Нужна сверка" + (f" · {details}" if details else "")
             lines.append(f"{number}. {title[:70]}" + (f"\n     {details}" if details else ""))
             buttons.append({"text": str(number), "callback_data": f"rq:o:{profile_name}:{item.get('token')}"})
         keyboard = [buttons[i:i + 6] for i in range(0, len(buttons), 6)]
@@ -1293,7 +1299,7 @@ class TelegramBot(
 
     async def _open_review_card(self, chat_id: int, profile_name: str, token: str) -> None:
         item = manual_apply_queue.get_candidate(token, profile_name=profile_name)
-        if not item or item.get("status") != "pending":
+        if not item or item.get("status") not in {"pending", "uncertain"}:
             await self._send_text(chat_id, "Эта вакансия уже разобрана. Обновите список: «На разбор».")
             return
         view = DirectionView(self._profile(profile_name).home_dir)
@@ -1302,7 +1308,9 @@ class TelegramBot(
             await self._send_text(chat_id, "Выбрано другое направление. Обновите список «Вакансии на проверку».")
             return
         markup = manual_apply_queue.build_manual_apply_markup(
-            item.get("vacancy") or {}, profile_name, token, allow_ai_apply=bool(item.get("allow_ai_apply", True)))
+            item.get("vacancy") or {}, profile_name, token,
+            include_feedback=item.get("status") != "uncertain",
+            allow_ai_apply=item.get("status") == "pending" and bool(item.get("allow_ai_apply", True)))
         label = "Направление не указано.\n\n" if owner is None else (f"{view.title}\n\n" if view.title else "")
         await self._send_text(chat_id, label + self._review_item_text(item, "•"), reply_markup=markup)
 

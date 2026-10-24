@@ -14,7 +14,9 @@ from pathlib import Path
 
 import config
 import company_blacklist
+import seen
 from direction_history import runtime_metadata
+from state_store.private_journal import iter_json_records
 from state_store.protected import ProtectedJsonStore
 
 log = logging.getLogger(__name__)
@@ -339,18 +341,74 @@ def _append_feedback_log(item: dict, profile_name: str | None) -> None:
         log.warning("feedback log write failed: %s", type(exc).__name__)
 
 
+def _local_application_outcomes(home: Path) -> dict:
+    """Saved evidence only: rendering must never collect/refresh HH data."""
+    outcomes = seen.application_outcomes_from_file(str(home / "seen_vacancies.json"))
+    for filename in ("negotiation_snapshots.jsonl", "analytics_events.jsonl"):
+        for row in iter_json_records(home / filename):
+            if filename == "negotiation_snapshots.jsonl":
+                if row.get("kind"):
+                    continue  # summaries are not vacancy observations
+                vacancy_id = row.get("vacancyId")
+            else:
+                if row.get("event") not in {"negotiation_observation", "negotiation_status"}:
+                    continue
+                vacancy_id = row.get("vacancyId") or row.get("vacancy_id")
+            if (row.get("source") or "hh") != "hh" or not vacancy_id:
+                continue
+            identity = str(vacancy_id).removeprefix("hh:")
+            if outcomes.get(identity) != "apply_uncertain":
+                outcomes[identity] = "already_applied"
+    return outcomes
+
+
+def _reconcile_pending(store, data: dict, profile_name: str) -> dict:
+    if not any(item.get("status") == "pending"
+               and _safe_profile(item.get("profile_name")) == _safe_profile(profile_name)
+               and (item.get("vacancy", {}).get("source") or "hh") == "hh"
+               for item in data["items"].values()):
+        return data
+    outcomes = _local_application_outcomes(store.path.parent)
+    if not outcomes:
+        return data
+
+    def mutate(current):
+        for item in current["items"].values():
+            # Recheck under the queue lock: never overwrite a concurrent claim
+            # or a finished/revoked attempt with an older listing snapshot.
+            vacancy = item.get("vacancy") or {}
+            if (item.get("status") != "pending"
+                    or _safe_profile(item.get("profile_name")) != _safe_profile(profile_name)
+                    or (vacancy.get("source") or "hh") != "hh"):
+                continue
+            action = outcomes.get(str(vacancy.get("id") or "").removeprefix("hh:"))
+            if not action:
+                continue
+            uncertain = action == "apply_uncertain" or item.get("external_started")
+            item.update(status="uncertain" if uncertain else "already_applied",
+                        message="Нужна сверка: результат отклика не подтверждён."
+                                if uncertain else "Уже откликались ранее (локальная история HH).",
+                        updated_at=datetime.now().isoformat(timespec="seconds"))
+
+    return store.update(mutate)
+
+
 def list_candidates(profile_name: str, *, limit: int = 8, include_snoozed: bool = False) -> list[dict]:
-    """Pending decisions for one profile, newest first."""
+    """Pending decisions and unresolved attempts for one profile, newest first."""
     now = time.time()
-    data = _read_queue(profile_name)
+    store = _store(profile_name)
+    data = _reconcile_pending(store, store.load(), profile_name)
     _prune(data, now)
     items = []
     for item in data.get("items", {}).values():
-        if not isinstance(item, dict) or item.get("status") != "pending":
+        if not isinstance(item, dict) or item.get("status") not in {"pending", "uncertain"}:
             continue
         if _safe_profile(item.get("profile_name")) != _safe_profile(profile_name):
             continue
         snoozed_until = float(item.get("snoozed_until") or 0)
+        if item.get("status") == "uncertain":
+            items.append(item)
+            continue
         if not include_snoozed and snoozed_until > now:
             continue
         if company_blacklist.is_blocked((item.get("vacancy") or {}).get("company", ""), profile_name):

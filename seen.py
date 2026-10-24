@@ -117,6 +117,23 @@ def terminal_action(vacancy_id):
     return max(actions, key=lambda action: priority.get(action, 0), default=None)
 
 
+def application_outcomes_from_file(path):
+    """Index saved application outcomes across directions in one profile.
+
+    An unresolved attempt wins over confirmed history; a later skip/card offer
+    must not mask either outcome.
+    """
+    outcomes = {}
+    for key, entry in _store(path).load().items():
+        action = entry.get("action")
+        if action not in APPLIED_ACTIONS | {"apply_uncertain"}:
+            continue
+        identity = _identity(key, entry).removeprefix("hh:")
+        if outcomes.get(identity) != "apply_uncertain":
+            outcomes[identity] = action
+    return outcomes
+
+
 def _key(vacancy_id, metadata=None):
     direction = (metadata or direction_history.runtime_metadata()).get("direction")
     return f"direction:{direction}:{vacancy_id}" if direction else str(vacancy_id)
