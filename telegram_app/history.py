@@ -9,7 +9,7 @@ from pathlib import Path
 import analytics
 import profile_access
 from telegram_app.guards import read_thread
-from direction_history import ALL, UNSPECIFIED, HistoryScope
+from direction_history import ALL, UNSPECIFIED, LEGACY_TITLE, HistoryScope
 from state_store.private_journal import read_json_records
 
 RUN_SUMMARY_TIMEOUT_SECONDS = 10.0
@@ -25,7 +25,7 @@ def token(home):
 def markup(home, command, *, scope="active"):
     view = HistoryScope(home)
     selected = {"*": "all", "?": "unspecified"}.get(scope, "active")
-    labels = ((f"Только «{view.title}»", "active"), ("Все направления", "all"), ("Отклики без направления", "unspecified"))
+    labels = ((f"Только «{view.title}»", "active"), ("Все направления", "all"), (LEGACY_TITLE, "unspecified"))
     return {"inline_keyboard": [[{"text": ("✓ " if key == selected else "") + label,
             "callback_data": f"hist:{token(home)}:{command.removeprefix('/')}:{key}"}]
             for label, key in labels
@@ -140,6 +140,7 @@ def _history_report(bot, principal, profile_name, command, arg):
         snapshot = bot._stats_snapshot(profile_name, scope=scope)
         snapshots = None
         if principal.get("role") == "admin":
+            # one block per profile, each counted only from its own files (owner's overview, 24.10)
             names = [profile_name, *(name for name in bot._profile_names() if name != profile_name)]
             snapshots = [{**(snapshot if name == profile_name else bot._stats_snapshot(name)),
                           "selected": name == profile_name} for name in names]
@@ -151,8 +152,24 @@ def _history_report(bot, principal, profile_name, command, arg):
         import hiring_research
         texts = list(hiring_research.render(hiring_research.summarize(profile.analytics_events_file, scope=scope)))
     elif command == "/runs":
+        import application_history
         runs = bot._recent_runs(profile_name, limit=5, scope=scope)
-        texts = [f"🕓 Поиски · {title}\n" + build_runs_text(runs)]
+        applications = application_history.summarize(profile.home_dir, scope=scope,
+            events_file=profile.analytics_events_file, seen_file=profile.seen_file)
+        text = f"🕓 Поиски · {title}\n" + application_history.totals_text(applications)
+        if not runs and applications["count"]:
+            text += "\nСведения об откликах есть, но подробные записи поисков не сохранились."
+        elif not runs and applications["profile_total"]:
+            text += "\nВ этом направлении записей поисков пока нет. Сохранённые отклики доступны в других разделах ниже."
+        else:
+            text += "\n\n" + build_runs_text(runs)
+        if applications["recent"]:
+            text += "\n\nПоследние сохранённые отклики:"
+            for row in applications["recent"]:
+                text += "\n• " + html.escape(str(row.get("title") or "Вакансия")[:120])
+                if row.get("company"):
+                    text += " · " + html.escape(str(row["company"])[:80])
+        texts = [text]
     elif command in {"/chat_log", "/hunter_chat_log"}:
         _, legacy = bot._log_tail(profile_name, kind="chat_log")
         texts = [chat_text(profile.home_dir, view, legacy)]

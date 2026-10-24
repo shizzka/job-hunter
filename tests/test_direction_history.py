@@ -202,7 +202,7 @@ def test_summaries_and_legacy_status_join_use_application_resume(account):
     electric = analytics.summarize(all_time=True)
     assert electric["auto_applied"] == 1 and electric["positive_statuses"] == 1 and electric["rejected_statuses"] == 0
     total = analytics.summarize(all_time=True, scope=ALL)
-    assert total["auto_applied"] == 4 and total["by_direction"]["направление не указано"] == 1
+    assert total["auto_applied"] == 4 and total["by_direction"]["Отклики до появления направлений"] == 1
     assert hiring_research.summarize(str(home / "analytics_events.jsonl"), scope=ALL)["total"] == 4
     assert analytics.summarize(all_time=True, scope=UNSPECIFIED)["auto_applied"] == 1
     write_rows(home, [{"id": 1, "vacancyId": "1", "resumeId": 222}])
@@ -339,7 +339,7 @@ def test_history_screens_name_active_direction_and_offer_totals(account, monkeyp
     text = "\n".join(c.args[1] for c in bot._send_text.await_args_list)
     buttons = str([c.kwargs for c in bot._send_text.await_args_list])
     assert "QA Engineer" in text and "Электромонтажник" not in text
-    assert "Все направления" in buttons and ("Направление не указано" if command == "/seen_reset" else "Отклики без направления") in buttons
+    assert "Все направления" in buttons and ("Направление не указано" if command == "/seen_reset" else "Отклики до появления направлений") in buttons
     if command != "/seen_reset":
         bot._send_text.reset_mock()
         # Scope navigation is still the same heavy command: respect its cooldown.

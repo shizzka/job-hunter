@@ -994,7 +994,7 @@ class TelegramDirections:
                 rows = summary.get("rows", [])
                 owner = f" · профиль {profile_name}" if principal.get("role") == "admin" else ""
                 invited_total = sum(int(row.get("next_stage", 0) or 0) for row in rows) + sum(int(summary.get(bucket, {}).get("next_stage", 0) or 0) for bucket in ("unmatched", "ambiguous"))
-                heading = ("Все направления" if scope == "*" else "Отклики без направления" if scope == "?" else f"«{summary['direction_title']}»")
+                heading = ("Все направления" if scope == "*" else history.LEGACY_TITLE if scope == "?" else f"«{summary['direction_title']}»")
                 lines = [f"📊 {heading}: {counted(summary.get('total_topics'), ('отклик', 'отклика', 'откликов'))}, {counted(invited_total, ('приглашение', 'приглашения', 'приглашений'))}{owner}", ""]
                 previous_direction = None
                 for row in rows[:12]:
@@ -1010,12 +1010,10 @@ class TelegramDirections:
                               f"{counted(applied, ('отклик', 'отклика', 'откликов'))} · просмотрели {row.get('viewed', 0)} · "
                               f"отказов {row.get('rejected', 0)} · приглашений {invited}{share} · "
                               f"ждут {row.get('no_response', 0)}", ""]
-                other = summary.get('unmatched', {}).get('topics', 0)
+                other = (summary.get('unmatched', {}).get('topics', 0) +
+                         summary.get("ambiguous", {}).get("topics", 0))
                 if other:
-                    lines.append(f"Отклики без направления: {other}")
-                ambiguous = summary.get("ambiguous", {}).get("topics", 0)
-                if ambiguous:
-                    lines.append(f"Отклики без направления (резюме относится к нескольким): {ambiguous}")
+                    lines.append(f"{history.LEGACY_TITLE}: {other}")
                 mismatches = await read_thread(direction_stats.resume_mismatches, profile.home_dir)
                 view = history.HistoryScope(profile.home_dir, scope)
                 mismatches = [m for m in mismatches if view.matches({"requested_resume_id": m.get("requested_resume_hash")})]

@@ -10,11 +10,20 @@ import profile_access
 
 ALL = "*"
 UNSPECIFIED = "?"
+LEGACY_TITLE = "Отклики до появления направлений"
 
 
 def vacancy_key(record, field="vacancy_id"):
     source = record.get("source") or "hh"
     return source, str(record.get(field) or "").removeprefix(source + ":")
+
+
+def has_identity(row):
+    sources = [row, row.get("vacancy") or {}, row.get("_direction_selection") or {}]
+    return any(source.get(key) for source in sources for key in (
+        "direction", "hh_resume_hash", "hh_resume_numeric_id", "resume_id", "resumeId", "requested_resume_id",
+        "variant_text_sha256", "text_sha256", "matcher_resume_sha256", "cover_letter_resume_sha256",
+        "_resume_input_versions", "_direction_selection"))
 
 
 def runtime_metadata(vacancy=None):
@@ -48,7 +57,7 @@ class HistoryScope:
                                          UNSPECIFIED if self.directions else "")
         self.name = default if scope == "active" else scope
         profile_access.require_direction(self.name)
-        self.title = ("все направления" if self.name == ALL else "направление не указано"
+        self.title = ("все направления" if self.name == ALL else LEGACY_TITLE
                       if self.name in {UNSPECIFIED, "", None} else
                       next((d["title"] for d in self.directions if d["name"] == self.name), self.name))
 
@@ -78,6 +87,10 @@ class HistoryScope:
                     evidence.append(matches)
         if not names and not evidence:
             return ""
+        # A tester sees only its bound direction, not the profile's full list.
+        # That restricted list cannot prove a single-direction legacy owner.
+        if not evidence and len(names) == 1 and not profile_access.current_scope()[1]:
+            return next(iter(names))
         if not evidence:
             query = next((s.get(k) for s in sources for k in ("search_query", "_search_query", "query") if s.get(k)), "")
             query = " ".join(str(query).casefold().split())
@@ -147,10 +160,25 @@ class HistoryScope:
     def events(self, records):
         """Recover lifecycle/status ownership only from an unambiguous join."""
         records = [dict(r) for r in records]
+        # The workflow receipt and its terminal decision are the same send.
+        # Bind an anonymous counterpart only within that run and vacancy.
+        sends = [r for r in records if r.get("run_id") and r.get("vacancy_id") and (
+            r.get("event") == "decision" and r.get("decision") == "applied_auto" or
+            r.get("event") == "application_result" and r.get("outcome") == "sent")]
+        send_owners = {}
+        for row in sends:
+            owner = self.owner(row)
+            if owner:
+                send_owners.setdefault((row["run_id"], vacancy_key(row)), set()).add(owner)
+        for row in sends:
+            owners = send_owners.get((row["run_id"], vacancy_key(row)), set())
+            if self.owner(row) is None and not has_identity(row) and len(owners) == 1:
+                row["direction"] = next(iter(owners))
         run_owners = self.run_owners(records)
         vacancy_owners, application_resumes = {}, {}
         for r in records:
-            if r.get("event") == "decision" and r.get("decision") == "applied_auto":
+            if (r.get("event") == "decision" and r.get("decision") == "applied_auto") or (
+                    r.get("event") == "application_result" and r.get("outcome") == "sent"):
                 key = vacancy_key(r)
                 vacancy_owners.setdefault(key, set()).add(self.owner(r))
                 metadata = self.metadata(r)

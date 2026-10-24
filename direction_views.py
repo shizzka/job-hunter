@@ -85,8 +85,8 @@ def response_counts(home):
                     records.setdefault(key, {})[str(row["id"])] = row
     except FileNotFoundError:
         pass
-    mapping = chat_context.profile_resumes(home)
-    view = DirectionView(home)
+    from direction_history import HistoryScope
+    view = HistoryScope(home)
     result = {}
     for section, passes in summaries.items():
         complete = [s for s in passes if s.get("complete") is True
@@ -102,7 +102,7 @@ def response_counts(home):
                   "newer_partial": any(s.get("fetched_at", "") > latest.get("fetched_at", "")
                                        and s.get("complete") is not True for s in passes)}
         for row in rows:
-            direction = mapping.get(str(row.get("resumeId") or ""), (None,))[0]
+            direction = view.owner(row)
             if direction is None or (view.directions and not direction):
                 counts["unmapped"] += 1
             elif direction == view.name:

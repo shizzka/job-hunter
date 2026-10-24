@@ -1610,7 +1610,7 @@ def _summarize(
         event_type = event.get("event")
         if event_type == "decision":
             owner = view.owner(event)
-            label = next((d["title"] for d in view.directions if d["name"] == owner), "направление не указано")
+            label = next((d["title"] for d in view.directions if d["name"] == owner), direction_history.LEGACY_TITLE)
             summary["by_direction"][label] = summary["by_direction"].get(label, 0) + 1
         if event_type == "search_finished":
             summary["search_runs"] += 1

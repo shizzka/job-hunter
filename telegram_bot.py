@@ -1902,11 +1902,15 @@ class TelegramBot(
         return list(reversed(analytics.reconcile_run_records(items, events_file=profile.analytics_events_file)[-limit:]))
 
     def _stats_snapshot(self, profile_name: str, *, scope="active") -> dict:
+        import application_history
         profile = self._profile(profile_name)
+        summary = analytics.summarize(events_file=profile.analytics_events_file, all_time=True, scope=scope)
+        summary["applications"] = application_history.summarize(profile.home_dir, scope=scope,
+            events_file=profile.analytics_events_file, seen_file=profile.seen_file)
         return {
             "profile_name": profile_name,
             "seen_stats": seen.stats_from_file(profile.seen_file, scope=scope),
-            "analytics_summary": analytics.summarize(events_file=profile.analytics_events_file, all_time=True, scope=scope),
+            "analytics_summary": summary,
             "recent_runs": self._recent_runs(profile_name, limit=3, scope=scope),
         }
 

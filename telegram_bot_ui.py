@@ -1582,6 +1582,13 @@ def build_stats_text(
         analytics_summary.get("auto_applied", 0),
         funnel.get("applied", 0),
     )
+    applications = analytics_summary.get("applications")
+    if applications is not None:
+        sent_total = ("не меньше " if applications["incomplete"] else "") + str(applications["count"])
+        count = applications["count"]
+        funnel = {**funnel, "applied": count,
+                  "response_rate": round(funnel.get("viewed", 0) / count * 100, 1) if count else 0,
+                  "positive_rate": round(funnel.get("positive", 0) / count * 100, 1) if count else 0}
     interview_total = analytics_summary.get("interview_statuses", 0)
     offer_total = analytics_summary.get("offer_statuses", 0)
     rejected_total = analytics_summary.get("rejected_statuses", 0)
@@ -1616,6 +1623,9 @@ def build_stats_text(
         f"• Всего просмотрено: {seen_stats.get('total', 0)}",
         f"• Ручных решений: {seen_stats.get('manual', 0)} | Пропущено: {seen_stats.get('skipped', 0)}",
     ]
+    if applications is not None:
+        from application_history import totals_text
+        lines[3:3] = [totals_text(applications), ""]
     by_source = seen_stats.get("by_source", {})
     if by_source:
         lines.extend(["", "🌐 По источникам:"])
@@ -1634,7 +1644,7 @@ def build_stats_text(
             f"решений {analytics_summary.get('decisions', 0)}"
         ),
     ])
-    if funnel.get("applied", 0) > 0:
+    if funnel.get("applied", 0) > 0 and not (applications and applications["incomplete"]):
         lines.extend([
             (
                 f"• Доля ответов: {funnel['response_rate']:.1f}% | "
@@ -1897,6 +1907,15 @@ def _counter_updated_at(value):
 
 
 def build_hh_response_count_text(snapshot: dict, *, home_dir: str | None = None) -> str:
+    saved_text = ""
+    if home_dir is not None:
+        import application_history
+        saved = application_history.summarize(home_dir)
+        if saved["profile_total"] or saved["incomplete"]:
+            saved_text = ("\n\n" + application_history.totals_text(saved) +
+                "\nСтатистика и история считают сохранённые отклики за всё время по всем сайтам. "
+                "Активные на hh.ru — текущий список; архив и удалённые считаются отдельно. "
+                "На hh.ru также могут быть отклики, отправленные вручную. Даты обновления могут отличаться.")
     if home_dir is not None:
         from direction_views import DirectionView, response_counts
         view = DirectionView(home_dir)
@@ -1924,12 +1943,16 @@ def build_hh_response_count_text(snapshot: dict, *, home_dir: str | None = None)
                 if value and not value['complete']:
                     number = "не меньше " + number
                 unknown.append(f"{label} — {number}")
-            lines.extend(["", "Отклики без направления: " + ", ".join(unknown) + "."])
+            from direction_history import LEGACY_TITLE
+            lines.extend(["", LEGACY_TITLE + ": " + ", ".join(unknown) + "."])
             if snapshot.get('total') is not None:
                 lines.extend(["", f"Весь аккаунт hh.ru: всего {_format_counter_number(snapshot['total'])}, "
                               f"удалённые — {_format_counter_number(snapshot.get('deleted'))}.",
                               "Удалённые по направлениям не разделены."])
-            return "\n".join(lines)
+            if snapshot.get("active") is not None:
+                lines.append(f"Весь аккаунт hh.ru: активные — {_format_counter_number(snapshot['active'])}, "
+                             f"архив — {_format_counter_number(snapshot.get('archived'))}.")
+            return "\n".join(lines) + saved_text
     profile_name = str(snapshot.get("profile") or "default")
     lines = [
         f"📨 Отклики на hh.ru — {_pretty_profile_name(profile_name)}",
@@ -1951,7 +1974,7 @@ def build_hh_response_count_text(snapshot: dict, *, home_dir: str | None = None)
     fetched_at = str(snapshot.get("fetched_at") or "").strip()
     if fetched_at:
         lines.append(f"Обновлено: {_counter_updated_at(fetched_at)}")
-    return "\n".join(lines)
+    return "\n".join(lines) + saved_text
 
 
 def _pretty_command_label(label: str) -> str:

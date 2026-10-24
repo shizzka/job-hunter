@@ -211,7 +211,7 @@ def test_response_counts_use_latest_complete_per_filter_and_switch(tmp_path):
     text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
     assert "Отклики на hh.ru — QA Engineer" in text
     assert "• Активные: 1" in text and "• Архив: 1" in text
-    assert "Отклики без направления: активные — 1, архив — 1" in text
+    assert "Отклики до появления направлений: активные — 1, архив — 1" in text
     assert "Весь аккаунт hh.ru: всего 57, удалённые — 7" in text
     assert "последнее обновление неполное" in text
     directions.set_active_direction(str(tmp_path), "electric")
@@ -246,4 +246,4 @@ def test_response_counts_single_direction_and_legacy_profile(tmp_path):
     write_rows(tmp_path, snapshot("a", "active", [111, 111]) + snapshot("b", "archived", [111]))
     text = ui.build_hh_response_count_text(account, home_dir=str(tmp_path))
     assert "QA Engineer" in text and "• Активные: 2" in text and "• Архив: 1" in text
-    assert "Отклики без направления: активные — 0, архив — 0" in text
+    assert "Отклики до появления направлений: активные — 0, архив — 0" in text
