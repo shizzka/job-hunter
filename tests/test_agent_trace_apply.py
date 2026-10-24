@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import agent
+import matcher
 
 
 class FakeTrace:
@@ -72,7 +73,8 @@ def test_trace_apply_passes_one_trace_through_cover_generation_and_dispatch(monk
     monkeypatch.setattr(agent, "HHClient", lambda: client)
     monkeypatch.setattr(agent.apply_orchestrator, "create_hh_apply_trace", lambda *a, **kw: trace)
     monkeypatch.setattr(agent.apply_orchestrator, "dispatch_apply", dispatch)
-    monkeypatch.setattr(agent, "generate_cover_letter", AsyncMock(return_value="Cover letter"))
+    monkeypatch.setattr(agent, "generate_cover_letter", AsyncMock(return_value=
+        matcher._remember_cover_letter_meta("Cover letter", cover_style="", grounding_status="verified")))
 
     result = asyncio.run(agent.do_trace_apply("https://hh.ru/vacancy/123", confirm_real=True))
 
@@ -96,3 +98,20 @@ def test_trace_apply_requires_explicit_real_submission_confirmation(monkeypatch)
     assert result["ok"] is False
     assert "--confirm-real" in result["message"]
     create_trace.assert_not_called()
+
+
+def test_trace_confirmation_cannot_silently_approve_a_stub(monkeypatch):
+    trace = FakeTrace()
+    client = SimpleNamespace(_page=FakePage(), start=AsyncMock(), stop=AsyncMock(),
+        is_logged_in=AsyncMock(return_value=True), get_vacancy_details=AsyncMock(return_value="Описание"))
+    monkeypatch.setattr(agent, "HHClient", lambda: client)
+    monkeypatch.setattr(agent.apply_orchestrator, "create_hh_apply_trace", lambda *a, **kw: trace)
+    monkeypatch.setattr(agent, "generate_cover_letter", AsyncMock(return_value="Непроверенный текст"))
+    dispatch = AsyncMock()
+    monkeypatch.setattr(agent.apply_orchestrator, "dispatch_apply", dispatch)
+    monkeypatch.setattr(agent, "_notify_stub_cover", AsyncMock())
+    result = asyncio.run(agent.do_trace_apply("123", confirm_real=True))
+    assert result["stub_review"] and not result["ok"]
+    dispatch.assert_not_awaited()
+    agent._notify_stub_cover.assert_awaited_once()
+    client.stop.assert_awaited_once()

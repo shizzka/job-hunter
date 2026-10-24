@@ -1,4 +1,5 @@
 """Owner outcome and accounting use typed delivery, preserving safety signals."""
+from tests.cover_letters import grounded_cover_mock
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -159,7 +160,7 @@ def test_manual_queue_remains_uncertain_while_owner_is_told_sent(tmp_path, monke
     client.is_logged_in = AsyncMock(return_value=True)
     monkeypatch.setattr(agent, 'HHClient', lambda: client)
     monkeypatch.setattr(agent.hh_guard, 'can_auto_apply', lambda:(True,''))
-    monkeypatch.setattr(agent, 'generate_cover_letter', AsyncMock(return_value='PRIVATE_LETTER'))
+    monkeypatch.setattr(agent, 'generate_cover_letter', grounded_cover_mock('PRIVATE_LETTER'))
     monkeypatch.setattr(agent, 'notify_application', AsyncMock())
     monkeypatch.setattr(agent, 'notify_needs_manual', AsyncMock())
     vacancy = {'id':'130000002','source':'hh','url':attempt.url,'title':'QA','company':'Synthetic'}

@@ -72,7 +72,7 @@ from habr_career_client import HabrCareerClient
 from hh_client import HHClient
 from hh.ui import HHUnexpectedUI
 from hh.vacancy_details import HHVacancyUnavailable
-from matcher import analyze_cover_letter, evaluate_vacancy, generate_cover_letter, is_manual_review_candidate, is_deferred_evaluation
+from matcher import analyze_cover_letter, cover_letter_requires_review, evaluate_vacancy, generate_cover_letter, is_manual_review_candidate, is_deferred_evaluation
 from office_bridge import office_log, create_task, task_progress, task_complete
 from office_bridge import close_session as close_office_session
 import notifier
@@ -868,6 +868,7 @@ async def do_manual_apply_token(token: str) -> dict:
         cover_limit = apply_orchestrator.get_cover_letter_limit(source)
         cover = await analytics.tracked_call("cover_letter", run_id, vacancy, generate_cover_letter, vacancy, details)
         cover = cover or ""
+        cover_needs_review = cover_letter_requires_review(vacancy, cover)
         if len(cover) > cover_limit:
             cover = direction_runtime.trim_cover(vacancy, cover, cover_limit)
         cover_evaluation = _evaluation_with_cover_letter(evaluation, cover)
@@ -895,10 +896,10 @@ async def do_manual_apply_token(token: str) -> dict:
             print(f"❌ {message}")
             return {"ok": False, "message": message, "no_cover": True}
 
-        if analyze_cover_letter(cover).get("fallback") and not item.get("allow_stub_cover"):
+        if cover_needs_review and not item.get("allow_stub_cover"):
             # B17: the letter failed its fact check and fell back to the template. A manual
             # application waits for the owner instead of sending the template silently.
-            message = "Письмо не прошло проверку фактов, получился шаблон — без твоего решения не отправляю."
+            message = "Не удалось подготовить письмо с подтверждёнными фактами. Сохранённого письма для этого направления нет; шаблон отправлю только с твоего разрешения."
             await stop_manual_result({"ok": False, "message": message}, raise_on_uncertain=True)
             finish("pending", message)
             await _notify_stub_cover(vacancy, cover, token,
@@ -1086,7 +1087,8 @@ async def _notify_stub_cover(vacancy: dict, cover: str, token: str, *, profile_n
     text = (
         "✉️ <b>Письмо не прошло проверку фактов</b>\n\n"
         f"<b>{_html.escape(str(vacancy.get('title') or '—'))}</b> · {_html.escape(str(vacancy.get('company') or '—'))}\n\n"
-        "Вместо него получился шаблон:\n"
+        "Не удалось подготовить письмо с подтверждёнными фактами. "
+        "Сохранённого письма для этого направления нет. Нужно твоё решение по этому тексту:\n"
         f"<i>{_html.escape(cover[:900])}</i>\n\n"
         "Отклик не отправлен. Сгенерировать письмо заново или отправить этот шаблон?"
     )
@@ -2355,6 +2357,7 @@ async def do_search(dry_run: bool = False) -> dict:
                 cover_fallback_used = True
                 log.info("  hh retry fallback cover letter used for %s", vid)
             cover_meta = analyze_cover_letter(cover)
+            cover_needs_review = cover_letter_requires_review(v, cover)
             if len(cover) > cover_limit:
                 cover = direction_runtime.trim_cover(v, cover, cover_limit)
             if apply_trace is not None:
@@ -2401,6 +2404,33 @@ async def do_search(dry_run: bool = False) -> dict:
                     resume_variant=hh_resume_variant,
                     analytics_note=f"{source}:no_cover_letter",
                     observe=observe_hh_receipts,
+                ))
+                continue
+            if cover_needs_review:
+                manual_note = (
+                    "Не удалось подготовить письмо с подтверждёнными фактами. "
+                    "Сохранённого письма для этого направления нет. "
+                    "Автоотклик не отправлен; выбери письмо в карточке."
+                )
+                if apply_trace is not None:
+                    apply_trace.finish(ok=False, message=manual_note)
+                profile_name = profile_mod.active().name
+                candidate = manual_apply_queue.create_candidate(
+                    v, cover_evaluation, details, profile_name=profile_name,
+                    allow_ai_apply=source == "hh",
+                )
+                reply_markup = manual_apply_queue.build_manual_apply_markup(
+                    v, profile_name, candidate.get("token", ""), allow_ai_apply=source == "hh",
+                )
+                await observe_hh_receipts(_mark_manual(
+                    f"Ручной {short_label}: проверь письмо",
+                    f"manual_{source}_stub_cover", f"manual_{source}_stub_cover",
+                    manual_note, v, vid, score, reason,
+                    _evaluation_with_guard_flag(cover_evaluation, "stub_cover_letter"), details,
+                    result, bucket, run_id, set_hunter_status,
+                    resume_variant=hh_resume_variant,
+                    analytics_note=f"{source}:stub_cover_letter", observe=observe_hh_receipts,
+                    reply_markup=reply_markup,
                 ))
                 continue
             log.info("  %s cover prepared: vacancy=%s chars=%d", source_label, vid, len(cover or ""))
@@ -3386,6 +3416,7 @@ async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> d
         )
 
         cover = await generate_cover_letter(vacancy, details)
+        cover_needs_review = cover_letter_requires_review(vacancy, cover or "")
         cover_meta = analyze_cover_letter(cover or "")
         cover = direction_runtime.trim_cover(vacancy, cover or "", apply_orchestrator.get_cover_letter_limit("hh"))
         trace.event(
@@ -3404,6 +3435,17 @@ async def do_trace_apply(vacancy_value: str, *, confirm_real: bool = False) -> d
             await trace.capture(client._page, "failure", screenshot=True, html=True)
             result = {"ok": False, "message": "LLM не сгенерировал сопроводительное письмо"}
             trace.finish(ok=False, message=result["message"], failure_stage=failure_stage)
+            return result
+
+        if cover_needs_review:
+            message = "Письмо требует твоего решения. Отклик не отправлен; открой карточку вакансии и выбери письмо."
+            profile_name = profile_mod.active().name
+            candidate = manual_apply_queue.create_candidate(
+                vacancy, {"score": None, "reason": message}, details, profile_name=profile_name,
+            )
+            await _notify_stub_cover(vacancy, cover, candidate["token"], profile_name=profile_name)
+            trace.finish(ok=False, message=message, failure_stage="COVER_LETTER_GENERATED")
+            result = {"ok": False, "message": message, "stub_review": True}
             return result
 
         result = await apply_orchestrator.dispatch_apply(

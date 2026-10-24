@@ -1,4 +1,5 @@
 """Offline Chromium gate: ordinary HH page traffic must not own an application."""
+from tests.cover_letters import grounded_cover_mock
 import asyncio
 import json
 from pathlib import Path
@@ -136,7 +137,7 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
 
     monkeypatch.setattr(agent, "evaluate_vacancy", evaluate)
     # Keep F15's resume/letter binding; stub only the generated text.
-    monkeypatch.setattr(matcher, "_generate_cover_letter", AsyncMock(return_value=COVER_LETTER))
+    monkeypatch.setattr(matcher, "_generate_cover_letter", grounded_cover_mock(COVER_LETTER))
     monkeypatch.setattr(agent, "generate_cover_letter", matcher.generate_cover_letter)
 
     async with async_playwright() as pw:

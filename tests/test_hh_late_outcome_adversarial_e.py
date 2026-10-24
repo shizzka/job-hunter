@@ -1,4 +1,5 @@
 """Independent end-to-end timing probes: real receipt/monitor/agent, no network."""
+from tests.cover_letters import grounded_cover_mock
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -283,7 +284,7 @@ def test_manual_token_final_shutdown_cannot_return_stale_owned_receipt(monkeypat
     monkeypatch.setattr(agent.company_blacklist, 'is_blocked', lambda *args: False)
     monkeypatch.setattr(agent.hh_guard, 'can_auto_apply', lambda: (True, ''))
     monkeypatch.setattr(agent.hh_guard, 'record_apply_success', lambda: None)
-    monkeypatch.setattr(agent, 'generate_cover_letter', AsyncMock(return_value='Synthetic authorized cover'))
+    monkeypatch.setattr(agent, 'generate_cover_letter', grounded_cover_mock('Synthetic authorized cover'))
     monkeypatch.setattr(agent, 'notify_needs_manual', AsyncMock())
     monkeypatch.setattr(agent, 'notify_application', AsyncMock())
     vacancy = {'id': '4', 'source': 'hh', 'title': 'Synthetic', 'company': 'Synthetic', 'url': URL}

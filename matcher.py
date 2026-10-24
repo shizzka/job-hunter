@@ -1060,13 +1060,13 @@ def _clean_cover_letter_output(value: str) -> str:
     return "\n".join(lines).strip().strip("\"")
 
 
-def _fallback_cover_letter(vacancy: dict, details: str = "", cover_style: str = "") -> str:
+def _saved_fallback_cover_letter() -> str | None:
     # Activation sets JOB_HUNTER_HOME to the active profile's home_dir.
     path = os.path.join(config.JOB_HUNTER_HOME, "cover_letter_fallback.md")
     direction = getattr(config, "ACTIVE_DIRECTION", None) or {}
     # A profile template can describe another profession in the same account.
     raw = direction.get("cover_letter_fallback", "") if direction else None
-    if raw is None:
+    if not direction:
         try:
             with open(path, encoding="utf-8", newline="") as source:
                 raw = source.read()
@@ -1085,6 +1085,13 @@ def _fallback_cover_letter(vacancy: dict, details: str = "", cover_style: str = 
         else:
             # Owner-authored, resume-checked text; never send it to the LLM.
             return text
+    return None
+
+
+def _fallback_cover_letter(vacancy: dict, details: str = "", cover_style: str = "") -> str:
+    saved = _saved_fallback_cover_letter()
+    if saved is not None:
+        return saved
 
     # A provider failure must not turn a shared template into invented biography.
     subject = "другой вариант резюме" if cover_style == "short_retry" else "резюме"
@@ -1156,6 +1163,26 @@ COVER_STYLE_RULES = {
 _COVER_LETTER_META_BY_HASH: dict[str, dict] = {}
 
 
+def _cover_letter_context() -> tuple[str, str]:
+    direction = getattr(config, "ACTIVE_DIRECTION", None) or {}
+    return os.path.realpath(config.JOB_HUNTER_HOME), direction.get("name", "")
+
+
+def cover_letter_requires_review(vacancy: dict, cover: str) -> bool:
+    """Unknown or generic letters need the owner's choice before dispatch.
+
+    Check the original text before transport trimming. A saved fallback must
+    belong to the current direction, even if another direction used this text.
+    """
+    meta = _COVER_LETTER_META_BY_HASH.get(_cover_letter_hash(cover)) or {}
+    if (meta.get("_context") == _cover_letter_context()
+            and not meta.get("fallback_cover_letter")
+            and meta.get("grounding_status") in {"verified", "neutral_only"}):
+        return False
+    saved = _saved_fallback_cover_letter()
+    return saved is None or cover.strip() != salary_policy.finish_cover(vacancy, saved).strip()
+
+
 def _cover_letter_hash(value: str) -> str:
     normalized = (value or "").strip()
     if not normalized:
@@ -1222,6 +1249,7 @@ def _remember_cover_letter_meta(
             overclaim_guard=overclaim_guard,
             grounding_status=grounding_status,
         )
+        _COVER_LETTER_META_BY_HASH[digest]["_context"] = _cover_letter_context()
     return cover_letter
 
 
@@ -1711,10 +1739,12 @@ async def _generate_cover_letter(vacancy: dict, details: str = "") -> str:
     grounding = GroundingResult(False, "generation_error")
     try:
         client = _get_client()
-        # A full re-audit of a nonliteral quote and the rewritten draft share
-        # the same two-call budget; neither path can start a third audit.
+        # Semantic rewrite / full re-audit share two calls. One separate
+        # regeneration after nonliteral_quote gets one fresh, complete audit.
         verifier_budget = 2
-        for attempt in range(2):
+        nonliteral_retry_used = False
+        rewrite_used = False
+        for attempt in range(3):
             resp = await client.chat.completions.create(
                 llm_role="cover_letter" if attempt == 0 else "cover_letter_rewrite",
                 model=config.HH_COVER_LETTER_MODEL or config.LLM_MODEL,
@@ -1747,7 +1777,12 @@ async def _generate_cover_letter(vacancy: dict, details: str = "") -> str:
                 return _remember_cover_letter_meta(
                     salary_policy.finish_cover(vacancy, cover), cover_style=cover_style, grounding_status=grounding.reason,
                 )
-            if attempt == 1 or verifier_budget == 0 or grounding.reason not in overclaim_reasons:
+            if grounding.reason == "nonliteral_quote" and not nonliteral_retry_used:
+                nonliteral_retry_used = True
+                verifier_budget = 1
+            elif not rewrite_used and verifier_budget > 0 and grounding.reason in overclaim_reasons:
+                rewrite_used = True
+            else:
                 break
             log.warning("Cover letter rewriting: status=%s rejected_count=%d",
                         grounding.reason, len(grounding.rejected_sentences))

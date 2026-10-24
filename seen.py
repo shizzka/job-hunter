@@ -70,7 +70,7 @@ ACCOUNT_SAFETY_ACTIONS = {
 }
 APPLIED_ACTIONS = {"applied", "already_applied", "manual_ai_applied"}
 # A card was offered for the owner's decision, nothing was sent yet (24.10: these blocked the card's own apply button).
-CARD_OFFER_ACTIONS = {"manual_hh_confirm", "manual_hh_preview", "manual_hh_salary_confirmation"}
+CARD_OFFER_ACTIONS = {"manual_hh_confirm", "manual_hh_preview", "manual_hh_salary_confirmation", "manual_hh_stub_cover"}
 
 
 def is_card_offer(action):

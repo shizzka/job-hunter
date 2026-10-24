@@ -1,4 +1,5 @@
 """Offline lifecycle/CLI checks: audit only after final persisted observations."""
+from tests.cover_letters import grounded_cover_mock
 import asyncio
 import json
 import os
@@ -174,7 +175,7 @@ def test_trace_dispatch_reuses_audited_run_id(monkeypatch, auditor):
     monkeypatch.setattr(agent, "HHClient", lambda: client)
     monkeypatch.setattr(agent.apply_orchestrator, "create_hh_apply_trace", lambda *a, **kw: FakeTrace())
     monkeypatch.setattr(agent.apply_orchestrator, "dispatch_apply", dispatch)
-    monkeypatch.setattr(agent, "generate_cover_letter", AsyncMock(return_value="Cover letter"))
+    monkeypatch.setattr(agent, "generate_cover_letter", grounded_cover_mock("Cover letter"))
     assert asyncio.run(agent.do_trace_apply("123", confirm_real=True))["ok"] is True
     assert dispatch.call_args.args[0]["_analytics_run_id"] == auditor.enqueue_completed_run.call_args.args[0]
 

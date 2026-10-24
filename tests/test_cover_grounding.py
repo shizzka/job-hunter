@@ -297,7 +297,9 @@ def test_profile_fallback_keeps_metadata_without_leaking_text(
 
 
 def test_nonliteral_quote_is_check_failure_not_overclaim(isolated_candidate, monkeypatch):
-    client = client_for(" ".join(SENTENCES), json.dumps(approved("Absent quote")))
+    client = client_for(" ".join(SENTENCES), json.dumps(approved("Absent quote")),
+                        json.dumps(approved("Absent quote")), " ".join(SENTENCES),
+                        json.dumps(approved("Absent quote")))
     monkeypatch.setattr(matcher, "_get_client", lambda: client)
     result = asyncio.run(matcher.generate_cover_letter({"title": "QA", "id": "unit-only"}))
     meta = matcher.analyze_cover_letter(result)
@@ -305,7 +307,10 @@ def test_nonliteral_quote_is_check_failure_not_overclaim(isolated_candidate, mon
     assert meta["grounding_status"] == "nonliteral_quote"
     assert meta["grounding_check_failed"] and meta["fallback_cover_letter"]
     assert not meta["overclaim_guard"]
-    assert len(client.calls) == 3
+    assert [call["llm_role"] for call in client.calls] == [
+        "cover_letter", "cover_grounding", "cover_grounding",
+        "cover_letter_rewrite", "cover_grounding",
+    ]
 
 
 def test_hh_retry_fallback_does_not_bypass_grounding_with_invented_skills():
@@ -380,15 +385,19 @@ def test_semantic_rejection_is_rewritten_with_exact_rejected_sentences(isolated_
         {"index": 1, "supported": True, "evidence": []},
     ]}, "missing_evidence"),
 ])
-def test_rewritten_letter_has_no_grounding_exemptions_or_extra_audit(
+def test_rewritten_letter_has_no_grounding_exemptions_and_bounded_nonliteral_retry(
         isolated_candidate, monkeypatch, second_check, reason):
     draft = "Создаю чек-листы. Обсудим детали?"
-    client = client_for(draft, json.dumps(unsupported_first()), " ".join(SENTENCES), json.dumps(second_check))
+    responses = [draft, json.dumps(unsupported_first()), " ".join(SENTENCES), json.dumps(second_check)]
+    if reason == "nonliteral_quote":
+        responses.extend([" ".join(SENTENCES), json.dumps(second_check)])
+    client = client_for(*responses)
     monkeypatch.setattr(matcher, "_get_client", lambda: client)
     result = asyncio.run(matcher.generate_cover_letter({"title": "QA"}))
     assert result == matcher._fallback_cover_letter({})
     assert matcher.analyze_cover_letter(result)["grounding_status"] == reason
-    assert len(client.calls) == 4  # Two authors, two auditors, even on a nonliteral quote.
+    # A nonliteral quote gets one separate regeneration with a complete audit.
+    assert len(client.calls) == (6 if reason == "nonliteral_quote" else 4)
 
 
 def test_unknown_source_is_overclaim_and_does_not_retry_same_audit(isolated_candidate, monkeypatch):

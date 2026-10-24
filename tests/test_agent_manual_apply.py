@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+import matcher
 
 import agent
 import manual_apply_queue
@@ -161,7 +162,8 @@ def _stub_setup(tmp_path, monkeypatch, *, allow_stub):
         return stub
 
     monkeypatch.setattr(agent, "generate_cover_letter", fake_generate_cover_letter)
-    monkeypatch.setattr(agent, "analyze_cover_letter", lambda cover, **kw: {"fallback": True})
+    matcher._remember_cover_letter_meta(stub, cover_style="", fallback=True,
+                                        grounding_status="nonliteral_quote")
     cards, dispatched = [], []
 
     async def send_with_markup(text, reply_markup=None, **kwargs):

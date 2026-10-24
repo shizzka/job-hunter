@@ -1,4 +1,5 @@
 """Terminal seen outcomes cannot be replayed by saved cards or preflight races."""
+from tests.cover_letters import grounded_cover_mock
 import asyncio
 import json
 from types import SimpleNamespace
@@ -89,7 +90,7 @@ def racing_client(home, monkeypatch, action, owner):
     monkeypatch.setattr(config, "HH_PRIMARY_RESUME_TITLE", "Synthetic resume")
     monkeypatch.setattr(config, "HH_APPLICATION_MODE", "auto")
     monkeypatch.setattr(apply_orchestrator, "create_hh_apply_trace", lambda *a, **kw: None)
-    monkeypatch.setattr(agent, "generate_cover_letter", AsyncMock(return_value="Synthetic approved cover"))
+    monkeypatch.setattr(agent, "generate_cover_letter", grounded_cover_mock("Synthetic approved cover"))
     before = []
     async def catalog():
         await asyncio.sleep(0)
@@ -157,7 +158,7 @@ def test_mark_seen_cannot_downgrade_applied_evidence_but_preserves_uncertainty(s
     assert json.loads((home / "seen.json").read_text())["7"]["action"] == "apply_uncertain"
 
 
-@pytest.mark.parametrize("action", ["manual_hh_confirm", "manual_hh_preview", "manual_yellow_hh"])
+@pytest.mark.parametrize("action", ["manual_hh_confirm", "manual_hh_preview", "manual_yellow_hh", "manual_hh_stub_cover"])
 def test_card_offer_mark_blocks_search_but_not_the_cards_own_button(search_harness, action):
     """24.10 blocker: «Откликнуться с ИИ» on a confirm card answered «Вакансия уже обработана» —
     the card's own «offered» mark was read as an earlier outcome. Search must still never re-apply it."""

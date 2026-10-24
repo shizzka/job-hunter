@@ -1,4 +1,5 @@
 """Offline soak diagnostics: observe the original decisions, never send/retry."""
+from tests.cover_letters import grounded_cover_mock
 import asyncio
 import json
 import logging
@@ -310,7 +311,7 @@ def configure_synthetic_search(monkeypatch, home):
                 "red_flags": [PRIVATE] if v["id"] == "2" else [], "reason": PRIVATE}
     monkeypatch.setattr(agent, "evaluate_vacancy", evaluate)
     monkeypatch.setattr(agent, "is_manual_review_candidate", lambda e: False)
-    monkeypatch.setattr(agent, "generate_cover_letter", AsyncMock(return_value=PRIVATE))
+    monkeypatch.setattr(agent, "generate_cover_letter", grounded_cover_mock(PRIVATE))
     monkeypatch.setattr(agent.apply_orchestrator, "is_auto_apply_enabled", lambda source: True)
     async def apply(v, cover, *a, **k):
         trace.append(["apply", v["id"], cover])

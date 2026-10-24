@@ -1,4 +1,5 @@
 """A-01 adversarial desired invariants; all state and transports are synthetic."""
+from tests.cover_letters import grounded_cover_mock
 import asyncio
 import socket
 from types import SimpleNamespace
@@ -142,7 +143,7 @@ def test_manual_uncertain_is_sticky_and_cannot_be_retried(lower_result, isolated
     fake = SimpleNamespace(start=AsyncMock(), stop=AsyncMock(), is_logged_in=AsyncMock(return_value=True))
     monkeypatch.setattr(agent, 'HHClient', lambda: fake)
     monkeypatch.setattr(agent.hh_guard, 'can_auto_apply', lambda:(True,''))
-    monkeypatch.setattr(agent, 'generate_cover_letter', AsyncMock(return_value='Approved synthetic cover'))
+    monkeypatch.setattr(agent, 'generate_cover_letter', grounded_cover_mock('Approved synthetic cover'))
     dispatch = AsyncMock(return_value=dict(lower_result))
     monkeypatch.setattr(agent.apply_orchestrator, 'dispatch_apply', dispatch)
     monkeypatch.setattr(agent, 'notify_needs_manual', AsyncMock())
@@ -289,7 +290,7 @@ def test_manual_proven_failure_does_not_become_uncertain_after_dispatch(isolated
     fake = SimpleNamespace(start=AsyncMock(), stop=AsyncMock(), is_logged_in=AsyncMock(return_value=True))
     monkeypatch.setattr(agent, 'HHClient', lambda:fake)
     monkeypatch.setattr(agent.hh_guard, 'can_auto_apply', lambda:(True,''))
-    monkeypatch.setattr(agent, 'generate_cover_letter', AsyncMock(return_value='Approved synthetic cover'))
+    monkeypatch.setattr(agent, 'generate_cover_letter', grounded_cover_mock('Approved synthetic cover'))
     monkeypatch.setattr(agent, 'notify_needs_manual', AsyncMock())
     monkeypatch.setattr(agent.apply_orchestrator, 'dispatch_apply',
                         AsyncMock(return_value={'ok':False, 'uncertain':False, 'message':'Exact resume ID not verified'}))

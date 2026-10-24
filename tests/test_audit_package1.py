@@ -1,4 +1,5 @@
 """Offline reproductions of A1/A3; fake clicks, temporary durable state."""
+from tests.cover_letters import grounded_cover_mock, grounded_letter
 import asyncio
 import multiprocessing
 from types import SimpleNamespace
@@ -133,7 +134,7 @@ def manual(isolated, monkeypatch):
         async def stop(self): pass
     monkeypatch.setattr(agent, 'HHClient', Client)
     monkeypatch.setattr(agent.hh_guard, 'can_auto_apply', lambda: (True, ''))
-    monkeypatch.setattr(agent, 'generate_cover_letter', AsyncMock(return_value='letter'))
+    monkeypatch.setattr(agent, 'generate_cover_letter', grounded_cover_mock('letter'))
     monkeypatch.setattr(agent, 'notify_needs_manual', AsyncMock())
     monkeypatch.setattr(agent.analytics, 'record_decision', lambda **kw: None)
     return token
@@ -145,7 +146,7 @@ def test_manual_two_processes_one_token_exactly_one_dispatch(manual, isolated, m
     dispatches = isolated / 'dispatches'
     async def cover(*a):
         await asyncio.sleep(0.05)
-        return 'letter'
+        return grounded_letter('letter')
     async def dispatch(*a, **kw):
         with dispatches.open('a') as stream: stream.write('dispatch\n')
         return {'ok': False, 'message': 'offline'}
@@ -165,7 +166,7 @@ def test_manual_two_processes_one_token_exactly_one_dispatch(manual, isolated, m
 def test_manual_revoked_during_model_await_cannot_dispatch(manual, monkeypatch):
     async def cover(*a):
         queue.record_feedback(manual, 'bad')
-        return 'letter'
+        return grounded_letter('letter')
     dispatch = AsyncMock(return_value={'ok': False})
     monkeypatch.setattr(agent, 'generate_cover_letter', cover)
     monkeypatch.setattr(agent.apply_orchestrator, 'dispatch_apply', dispatch)

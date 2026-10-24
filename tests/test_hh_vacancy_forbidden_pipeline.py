@@ -127,7 +127,8 @@ def forbidden_pipeline(tmp_path, monkeypatch):
 
     async def cover(vacancy, *args, **kwargs):
         covered.append(vacancy['id'])
-        return 'Synthetic cover'
+        from tests.cover_letters import grounded_letter
+        return grounded_letter('Synthetic cover')
 
     async def dispatch(vacancy, *args, **kwargs):
         applied.append(vacancy['id'])

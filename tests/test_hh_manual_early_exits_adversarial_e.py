@@ -73,7 +73,8 @@ def run_early(monkeypatch, home, outcome, *, late=False, termination='success'):
         if outcome == 'revoked':
             # Exercise the actual human feedback API while this owner applies.
             manual_apply_queue.record_feedback(candidate['token'], 'bad')
-        return '' if outcome == 'no_cover' else 'Synthetic authorized cover'
+        from tests.cover_letters import grounded_letter
+        return '' if outcome == 'no_cover' else grounded_letter('Synthetic authorized cover')
 
     async def cookies():
         item = manual_apply_queue.get_candidate(candidate['token'])

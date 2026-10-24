@@ -1,5 +1,6 @@
 """Local A9/F4/F5/F6 safety regressions; no network or candidate data."""
 from tests.browser_action_fakes import fake_cdp_context
+from tests.cover_letters import grounded_cover_mock
 import asyncio
 import json
 import logging
@@ -71,7 +72,7 @@ def test_operational_search_logs_do_not_dump_cover_or_question_answers(search_ha
     monkeypatch.setattr(config, 'HH_APPLICATION_MODE', 'auto')
     monkeypatch.setattr(config, 'HH_MIN_SECONDS_BETWEEN_APPLICATIONS', 0)
     monkeypatch.setattr(agent, 'evaluate_vacancy', AsyncMock(return_value={'score': 95, 'should_apply': True, 'reason': 'Match', 'red_flags': []}))
-    monkeypatch.setattr(agent, 'generate_cover_letter', AsyncMock(return_value=private))
+    monkeypatch.setattr(agent, 'generate_cover_letter', grounded_cover_mock(private))
     dispatch = AsyncMock(return_value={'ok': False, 'requires_questions': True, 'message': 'Questions need review',
                 'question_answers': [{'question': 'Identity?', 'answer': private}]})
     monkeypatch.setattr(agent.apply_orchestrator, 'dispatch_apply', dispatch)

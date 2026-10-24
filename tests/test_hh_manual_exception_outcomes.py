@@ -1,4 +1,5 @@
 """A UI exception must not finalize a manual token before owned shutdown."""
+from tests.cover_letters import grounded_cover_mock
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -32,7 +33,7 @@ def run_exception(monkeypatch, tmp_path, *, phase='apply', late=False, recovered
     monkeypatch.setattr(manual_apply_queue, '_queue_path', lambda profile_name=None: tmp_path / 'queue.json')
     monkeypatch.setattr(agent.company_blacklist, 'is_blocked', lambda *args: False)
     monkeypatch.setattr(agent.hh_guard, 'can_auto_apply', lambda: (True, ''))
-    monkeypatch.setattr(agent, 'generate_cover_letter', AsyncMock(return_value='Synthetic approved cover'))
+    monkeypatch.setattr(agent, 'generate_cover_letter', grounded_cover_mock('Synthetic approved cover'))
     vacancy = {'id': '4', 'source': 'hh', 'title': 'Synthetic', 'company': 'Synthetic', 'url': URL}
     candidate = manual_apply_queue.create_candidate(vacancy, {'score': 55, 'reason': 'Synthetic'},
                                                     details='Synthetic vacancy', profile_name='synthetic')
