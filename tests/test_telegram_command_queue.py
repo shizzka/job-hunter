@@ -874,3 +874,28 @@ def test_timed_out_admission_does_not_block_following_commands(monkeypatch, canc
         assert all(label != 'incomplete' for _, label, _ in bot.started)
 
     asyncio.run(scenario())
+
+
+def test_paused_queue_admission_says_why_and_offers_resume(monkeypatch, tmp_path):
+    """24.10 e2e: after an HHUnexpectedUI pause a new apply answered «В очереди №2 после «пауза»» and waited
+    unnoticed. It must say the queue is paused, why in plain words, and offer «Продолжить очередь» right there."""
+    async def scenario():
+        bot, profile, messages, _ = real_bot(monkeypatch, tmp_path)
+        bot._queue_paused["qa"] = "HHUnexpectedUI при ручном отклике"
+        principal = {"user_id": 1, "role": "admin", "profile": "qa"}
+        await bot._start_manual_ai_apply(42, principal, profile_name="qa", token="one")
+        notice = next(p for p in messages if "Очередь на паузе" in p["text"])
+        assert "непривычное окно" in notice["text"] and "HHUnexpectedUI" not in notice["text"]
+        assert "после «пауза»" not in notice["text"]
+        buttons = [b for row in notice["reply_markup"]["inline_keyboard"] for b in row]
+        resume = next(b for b in buttons if b["text"] == "Продолжить очередь")
+        token = resume["callback_data"].split(":")[-1]
+        assert bot._queue_resume_profiles[token] == "qa"
+        assert bot._queue_resume_token("qa") == token  # one token per paused profile
+        await bot._shutdown_command_queue()
+    asyncio.run(scenario())
+
+
+def test_pause_reasons_are_plain_words():
+    assert "HHUnexpectedUI" not in queue.human_pause_reason("HHUnexpectedUI")
+    assert queue.human_pause_reason("Не залогинен") == "Не залогинен"

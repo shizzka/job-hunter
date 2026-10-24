@@ -245,3 +245,22 @@ async def test_stop_from_mode_menu_preserves_selection_and_controls(mode_bot, mo
         cancel.assert_not_called()
     else:
         cancel.assert_called_once_with(command)
+
+
+@pytest.mark.parametrize("with_direction", [True, False])
+@pytest.mark.parametrize("entry", ["onboarding", "menu", "command"])
+@run_async
+async def test_auto_already_on_says_so_without_asking(mode_bot, with_direction, entry):
+    """24.10 e2e: auto was on (✓ on the button) but the bot asked «Включить?» and «Нет» said «не включены»."""
+    bot, principal = mode_bot
+    if with_direction:
+        add_direction(bot, mode="auto")
+    else:
+        env = Path(bot._profile(bot.selected).home_dir) / "profile.env"
+        env.write_bytes(b"# synthetic settings\nHH_APPLICATION_MODE=auto\n")
+    before = settings_bytes(bot)
+    await choose(bot, principal, entry, "auto")
+    text = bot._send_text.call_args.args[1]
+    assert "уже включены" in text and "Включить?" not in text
+    assert settings_bytes(bot) == before
+    bot._reload_profile_daemon.assert_not_called()

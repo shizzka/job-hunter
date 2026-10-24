@@ -106,6 +106,14 @@ class TelegramDirections:
         if self._has_active_command(profile_name):
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
             return
+        current = (active or {}).get("application_mode") or getattr(profile.hh, "application_mode", None)
+        if mode == "auto" and current == "auto":
+            # 24.10 e2e: with auto already on, the button asked «Включить?» and «Нет» said «не включены».
+            scope = f" для направления «{active['title']}»" if active else ""
+            await self._send_text(chat_id,
+                f"✅ Автоматические отклики{scope} уже включены. Чтобы бот спрашивал перед откликом, "
+                "выберите «Спрашивать меня».", reply_markup=self._menu_reply_markup(principal, menu=menu))
+            return
         if mode == "auto":
             state = self._direction_bind(principal, mode="application_auto",
                 base_mode=getattr(profile.hh, "application_mode", None), menu=menu)

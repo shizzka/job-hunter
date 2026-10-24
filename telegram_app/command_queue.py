@@ -170,6 +170,17 @@ def profile_command(fn):
     return wraps(fn)(telegram_access.scoped_request(wrapped))
 
 
+def human_pause_reason(reason):
+    """Plain words for why hh work stopped; the raw code stays in the logs."""
+    text = str(reason or "")
+    if "HHUnexpectedUI" in text or "hh_unexpected_ui" in text:
+        return ("hh показал непривычное окно при отклике, бот остановился и ничего не отправил. "
+                "Проверьте последний отклик на hh.ru и нажмите «Продолжить очередь».")
+    if "hh_hard_stop" in text:
+        return "hh повёл себя необычно, работа с hh остановлена. Проверьте hh.ru и нажмите «Продолжить очередь»."
+    return text or "причина не указана"
+
+
 class TelegramCommandQueue:
     def _init_command_queue(self):
         self._command_queues = {}
@@ -243,13 +254,23 @@ class TelegramCommandQueue:
             self._queue_history.setdefault(profile, []).append(entry)
             position = len(waiting)
             after = active.label if active else launching.label if launching else "пауза" if profile in self._queue_paused else waiting[0].label
+            remove = [{"text": "Убрать из очереди", "callback_data": f"queue:remove:{entry.id}"}]
+            if profile in self._queue_paused:
+                # 24.10 e2e: «В очереди №2 после «пауза»» looked like progress; the apply waited forever unnoticed.
+                from telegram_bot_ui import _pretty_command_label
+                notice = (f"⏸ Очередь на паузе: {human_pause_reason(self._queue_paused[profile])}\n"
+                          f"«{_pretty_command_label(entry.label)}» ждёт (№{position}) и начнётся после «Продолжить очередь».")
+                markup = {"inline_keyboard": [[{"text": "Продолжить очередь",
+                                                "callback_data": f"queue:resume:{self._queue_resume_token(profile)}"}], remove]}
+            else:
+                notice = f"📥 В очереди №{position} после «{after}»"
+                markup = {"inline_keyboard": [remove]}
             try:
                 await self._queue_markup(entry)
                 if self._commands_stopping():
                     await self._queue_markup(entry, restore=True)
                     return False
-                await self._queue_notice(entry.chat_id, f"📥 В очереди №{position} после «{after}»",
-                                         reply_markup={"inline_keyboard": [[{"text": "Убрать из очереди", "callback_data": f"queue:remove:{entry.id}"}]]})
+                await self._queue_notice(entry.chat_id, notice, reply_markup=markup)
                 if entry.source:
                     with contextlib.suppress(Exception):
                         await self._answer_callback_query(entry.source.get("id", ""))
@@ -341,12 +362,19 @@ class TelegramCommandQueue:
         except Exception:
             return "Состояние HH-guard недоступно"
 
+    def _queue_resume_token(self, profile):
+        for token, owner in self._queue_resume_profiles.items():
+            if owner == profile:
+                return token
+        token = uuid.uuid4().hex[:16]
+        self._queue_resume_profiles[token] = profile
+        return token
+
     async def _pause_queue(self, profile, reason):
         if profile in self._queue_paused:
             return
         self._queue_paused[profile] = reason
-        resume_token = uuid.uuid4().hex[:16]
-        self._queue_resume_profiles[resume_token] = profile
+        resume_token = self._queue_resume_token(profile)
         entries = self._command_queues.get(profile, [])
         chats = {entry.chat_id for entry in entries}
         try:
@@ -354,7 +382,7 @@ class TelegramCommandQueue:
         except Exception:
             log.warning("Queue owner lookup failed for %s", profile, exc_info=True)
         for chat in chats:
-            await self._queue_notice(chat, f"⏸ Очередь профиля {profile} на паузе: {reason}",
+            await self._queue_notice(chat, f"⏸ Очередь профиля {profile} на паузе: {human_pause_reason(reason)}",
                                      reply_markup={"inline_keyboard": [[{"text": "Продолжить очередь", "callback_data": f"queue:resume:{resume_token}"}]]})
 
     @nonblocking_state_locks
