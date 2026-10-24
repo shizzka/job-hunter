@@ -21,13 +21,30 @@ def summarize(home, *, scope="active", events_file=None, seen_file=None):
     return cache.memo(key, lambda: (_summarize(view, events_path, seen_path), None))
 
 
+RUN_IDENTITY = ("direction", "resume_id", "resumeId", "requested_resume_id", "hh_resume_hash", "hh_resume_numeric_id")
+
+
+def _send_or_uncertain(event):
+    return ((event.get("event") == "decision" and event.get("decision") in {"applied_auto", "apply_uncertain"})
+            or (event.get("event") == "application_result" and event.get("outcome") == "sent"))
+
+
+def _relevant(events):
+    """Sends plus the runs an anonymous send may be joined to; the ownership pass over the whole
+    journal took ~5 s on a 230 MB profile (24.10). A run's owner depends only on that run's records."""
+    sends = [e for e in events if _send_or_uncertain(e)]
+    runs = {e.get("run_id") for e in sends if e.get("run_id") and not any(e.get(k) for k in RUN_IDENTITY)}
+    return [e for e in events if _send_or_uncertain(e) or (
+        e.get("run_id") in runs and e.get("event") in {"decision", "search_started", "search_finished"})]
+
+
 def _summarize(view, events_path, seen_path):
     incomplete = False
     try:
         events, _ = cache.journal(events_path).read(events_path)
     except (OSError, ValueError):
         events, incomplete = [], True
-    events = view.events(events)
+    events = view.events(_relevant(events))
     uncertain = {(e.get("run_id"), vacancy_key(e), view.owner(e)) for e in events
                  if e.get("event") == "decision" and e.get("decision") == "apply_uncertain"}
     receipts = [event for event in events if not event.get("dry_run") and event.get("mode") != "dry-run"
