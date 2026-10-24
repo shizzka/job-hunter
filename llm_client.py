@@ -392,7 +392,8 @@ def _build_provider_specs(role: str | None = None) -> list[ProviderSpec]:
     primary_aliases = _ollama_model_aliases(primary_env) if "ollama" in primary_base.lower() else {}
     add("primary", primary_base, config.LLM_API_KEY, model_aliases=primary_aliases)
 
-    for name in ("OLLAMA", "OLLAMA2", "OLLAMA3"):
+    # OLLAMA4/OLLAMA5: the same Ollama Cloud keys bound to another model, e.g. a writer model for letters (24.10)
+    for name in ("OLLAMA", "OLLAMA2", "OLLAMA3", "OLLAMA4", "OLLAMA5"):
         local_model = provider_env.get(f"{name}_FALLBACK_MODEL", "").strip()
         add(
             name.lower(),
@@ -497,7 +498,7 @@ def _build_provider_specs(role: str | None = None) -> list[ProviderSpec]:
     if order:
         requested = list(dict.fromkeys(name.strip().lower() for name in order.split(",") if name.strip()))
         known = {
-            "primary", "ollama", "ollama2", "ollama3", "cerebras", "openrouter", "openrouter2",
+            "primary", "ollama", "ollama2", "ollama3", "ollama4", "ollama5", "cerebras", "openrouter", "openrouter2",
             "groq", "groq2", "sambanova", "gemini", "deepseek", "cloudflare", "huggingface", "siliconflow",
         }
         if not requested or any(name not in known for name in requested):

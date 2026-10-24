@@ -111,6 +111,23 @@ def test_config_same_credentials_different_models_and_prefixes(monkeypatch):
     assert providers[1].timeout_seconds == 7
 
 
+def test_same_cloud_keys_bound_to_a_second_model_for_selected_roles(monkeypatch):
+    """OLLAMA4/5 reuse the OLLAMA2/3 keys with a writer model; each role picks its slots."""
+    cloud_env = {"OLLAMA_BASE_URL": "http://ollama.test/v1", "OLLAMA_API_KEY": "lan"}
+    for slot, key, model in (("OLLAMA2", "two", "gpt-oss:120b"), ("OLLAMA3", "three", "gpt-oss:120b"),
+                             ("OLLAMA4", "two", "gemma4:31b"), ("OLLAMA5", "three", "gemma4:31b")):
+        cloud_env.update({f"{slot}_BASE_URL": "https://cloud.test/v1", f"{slot}_API_KEY": key,
+                          f"{slot}_FALLBACK_MODEL": model})
+    cloud_env.update({"LLM_PROVIDER_ORDER_MATCHER": "ollama2,ollama3",
+                      "LLM_PROVIDER_ORDER_COVER_LETTER": "ollama4,ollama5,ollama2"})
+    monkeypatch.setattr(llm, "_load_provider_env", lambda: cloud_env)
+    writer = llm._build_provider_specs("cover_letter")
+    assert [p.name for p in writer] == ["ollama4", "ollama5", "ollama2"]
+    assert [p.model_for("openai/gpt-oss-120b") for p in writer] == ["gemma4:31b", "gemma4:31b", "gpt-oss:120b"]
+    assert [p.model_for("openai/gpt-oss-120b") for p in llm._build_provider_specs("matcher")] == [
+        "gpt-oss:120b", "gpt-oss:120b"]
+
+
 def test_legacy_without_ollama_unchanged(monkeypatch):
     monkeypatch.setattr(llm, "_load_provider_env", lambda: {
         "GROQ_BASE_URL": "https://cloud.test/v1", "GROQ_API_KEY": "synthetic"})
