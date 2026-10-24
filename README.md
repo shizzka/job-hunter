@@ -1,6 +1,6 @@
 # Job Hunter
 
-**A Telegram bot that finds jobs on hh.ru, explains why each one fits, and applies only after you say yes.**
+**A Telegram bot that searches hh.ru, SuperJob, Habr Career and GeekJob, explains why each vacancy fits, and can apply for you, with your approval by default.**
 
 [![Offline regression tests](https://github.com/shizzka/job-hunter/actions/workflows/offline-tests.yml/badge.svg)](https://github.com/shizzka/job-hunter/actions/workflows/offline-tests.yml) ![version](https://img.shields.io/badge/version-0.10.1-blue) ![python](https://img.shields.io/badge/python-3.12-blue) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -14,25 +14,23 @@
 - **You decide, the bot does the routine.** By default each vacancy arrives as a card: work format, fit score and the reason it fits. One tap and the bot applies with a cover letter. Fully automatic applying is a setting you switch on yourself.
 - **Noise goes before the AI.** Office or hybrid jobs for a remote-only search, the wrong profession, blacklisted companies — cut by plain filters first, so the AI only scores what is worth reading.
 - **It does not make things up.** Cover letters, questionnaire answers and HR chat replies use only facts from your resume and confirmed answers. Unknown stays unknown.
-- **hh.ru, SuperJob, Habr Career, GeekJob.** One profile can hold several search directions (say, QA and electrician), each with its own resumes, queries and filters.
+- **Several careers in one profile.** Search directions (say, QA and electrician) each have their own resumes, queries, filters and application mode.
 
 > «The bot finds vacancies better than I do» — the first user, searching for remote-only work.
 
-**Who makes it.** The author is an electrician, not a programmer. The code is written by AI agents (Claude Code and Codex); the author sets the tasks, tests the bot as a user and decides what gets released. An AI tester also goes through the dev bot every night like a real person.
+**Who makes it.** The author is an electrician, not a programmer. The code is written by AI agents (Claude Code and Codex); the author sets the tasks, tests the bot as a user and decides what gets released. AI writes, a human designs and checks: about 7,000 offline tests run in CI on every push, an AI tester goes through the dev bot every night like a real person, and the bot runs daily for two real job searches. When it cannot prove an action is safe, it stops and asks.
 
 **Current version:** `v0.10.1` (2026-10-24): the bot no longer hangs on heavy commands (10 identical commands in a row: 127 s → ~9 s), work format and plain-words fit on every card, a strict «remote only» filter, plain-language texts. See [CHANGELOG](CHANGELOG.md).
 
-Job Hunter is a job-search automation system focused on **decision quality, not application volume**. It searches vacancies, removes obvious noise, evaluates fit against the candidate's real experience, grounds generated text in candidate data, and only then decides whether an application is safe to send automatically or needs human review.
+## How it decides
 
-## Why it exists
-
-Typical auto-apply:
+Typical auto-apply chases volume:
 
 ```text
 vacancy -> rewrite resume -> apply -> apply -> apply
 ```
 
-Job Hunter:
+Job Hunter optimizes the decision, not the application count:
 
 ```text
 job boards
@@ -55,8 +53,6 @@ skip    manual review / apply
                ↓
             analytics
 ```
-
-The project optimizes the quality of the application decision rather than raw application count.
 
 ## Capabilities
 
@@ -335,7 +331,7 @@ Runtime artifacts can contain personal data. Review and redact them before attac
 
 ## Development status
 
-Current release: **v0.9.0** (2026-10-19) — see [CHANGELOG.md](CHANGELOG.md). Development happens on the `dev` branch;
+Releases and what changed in each: [CHANGELOG.md](CHANGELOG.md). Development happens on the `dev` branch;
 every change passes the full offline suite before it reaches the running bot.
 
 New abstractions should solve repeated real failure modes, not exist merely because another subsystem can be invented.
