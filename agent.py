@@ -688,13 +688,19 @@ async def do_manual_apply_token(token: str) -> dict:
         print(f"❌ Заявка не найдена или устарела: {token}")
         return {"ok": False, "message": "manual apply token not found"}
 
+    # 24.10: these early refusals were silent, users saw only «ошибка, подробности скрыты». Say why.
     if getattr(config, "HH_APPLICATION_MODE", "auto") == "preview":
+        print("ℹ️ Включён режим просмотра: отклики не отправляются. Смените режим откликов, чтобы откликнуться.")
         return {"ok": False, "message": "Включён режим просмотра без отправки"}
     vacancy = dict(item.get("vacancy") or {})
     if company_blacklist.is_blocked(vacancy.get("company", "")):
         manual_apply_queue.mark_candidate(token, "company_blocked", "Компания в чёрном списке")
+        print("ℹ️ Компания в чёрном списке — отклик не отправлен.")
         return {"ok": False, "message": "Компания в чёрном списке"}
     if item.get("status") != "pending" or not item.get("allow_ai_apply", True):
+        state = {"applying": "по этой карточке отклик уже отправляется", "applied": "отклик по ней уже отправлен",
+                 "stale": "она устарела", "dismissed": "она закрыта"}.get(item.get("status"), "она уже обработана")
+        print(f"ℹ️ Отклик по этой карточке недоступен: {state}. Откройте «Вакансии на проверку» заново.")
         return {"ok": False, "message": "Отклик для этой карточки недоступен"}
     from direction_runtime import validate_queued
     try:
@@ -702,6 +708,7 @@ async def do_manual_apply_token(token: str) -> dict:
     except (ValueError, OSError) as exc:
         message = str(exc)
         manual_apply_queue.mark_candidate(token, "stale", message)
+        print(f"ℹ️ {message}")
         return {"ok": False, "reason": "direction_context_changed", "message": message}
     # The owner pressed this card's own button: its «offered» mark is not an earlier outcome (24.10 blocker).
     # The flag stays for this one-card command, so the dispatch checkpoints see it too.
