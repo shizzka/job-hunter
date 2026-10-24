@@ -69,3 +69,13 @@ def test_dispatch_trace_uses_failing_guard_stage_instead_of_last_success(tmp_pat
     assert result['uncertain'] is True
     assert result['hh_uncertainty_scope'] == 'browser_preflight'
     assert finished[-1]['failure_stage'] == 'resume_preflight'
+
+
+def test_late_unknown_action_overrides_preflight_no_action_classification():
+    import apply_orchestrator
+    client = SimpleNamespace(_hh_recovery_uncertain=True)
+    result = apply_orchestrator.apply_result_with_current_uncertainty(
+        {'source': 'hh', 'url': 'https://hh.ru/vacancy/123'}, client,
+        {'ok': False, 'proven_no_action': True, 'reason': 'hh_resume_picker_unrecognized'})
+    assert not result['ok'] and result['uncertain']
+    assert result['proven_no_action'] is False

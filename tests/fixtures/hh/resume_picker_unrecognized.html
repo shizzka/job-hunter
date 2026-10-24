@@ -1,0 +1,23 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><body>
+<!-- Entirely synthetic private-looking values for redaction tests. -->
+<form name="vacancy_response" data-cookie="synthetic-cookie">
+  <h1>Отклик на вакансию</h1>
+  <!-- control -->
+  <div id="private-id" title="Private title" aria-label="Синтетиков">
+    Синтетиков Тестовый, Тестовое резюме
+    <span>+7 (999) 123-45-67</span><a href="tel:79991234567">79991234567</a>
+    <a href="mailto:synthetic@example.invalid">synthetic@example.invalid</a>
+  </div>
+  <input type="hidden" name="_xsrf" value="synthetic-cookie">
+  <textarea name="letter">Private title</textarea>
+  <button type="submit" data-qa="vacancy-response-submit-popup">Откликнуться</button>
+</form>
+<script>
+window.submitCalls = 0;
+window.toggleCalls = 0;
+window.options = [];
+document.addEventListener('click', () => window.toggleCalls++, true);
+document.querySelector('form').addEventListener('submit', event => {
+    event.preventDefault(); window.submitCalls++;
+});
+</script></body></html>

@@ -60,6 +60,12 @@ def server_delivery_note(result: dict) -> str:
     record = fact(result)
     if record is None:
         return ''
+    if (record.status == 'unknown' and result.get('proven_no_action')
+            and not apply_result_is_uncertain(result) and not record.attempt.acting
+            and not record.attempt.command_started and not record.attempt.uncertain):
+        # A preparation stop has no delivery to describe. Keep its actionable
+        # reason readable; the typed diagnostic fact remains in the result.
+        return ''
     if record.status == 'confirmed':
         return 'Отклик отправлен, подтверждено сервером hh.'
     meaning = ('Новый отклик пока не виден; это не доказывает недоставку.'

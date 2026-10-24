@@ -61,7 +61,8 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                       continue_after_apply=False, stale_receipt=False,
                       confirmation_html=APPLIED_HTML, form_disappears=False,
                       session_failure='', repeat_run=False, apply_next=False,
-                      post_submit_effect='', conditions_case='', questionnaire=False):
+                      post_submit_effect='', conditions_case='', questionnaire=False,
+                      response_html=None):
     """Reuse the confirmed-success harness; replace transport and search inputs only."""
     for key, name in {
         "JOB_HUNTER_HOME": "", "SEEN_VACANCIES_FILE": "seen.json",
@@ -93,7 +94,7 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
         monkeypatch.setattr(apply_orchestrator, "fetch_vacancy_details", REAL_DETAILS)
     trace = (ApplyTrace.create(home_dir=str(tmp_path), source="hh", vacancy_id="2",
                                profile="synthetic", mode="auto")
-             if stale_receipt or form_disappears or conditions_case else None)
+             if stale_receipt or form_disappears or conditions_case or response_html else None)
     monkeypatch.setattr(apply_orchestrator, "create_hh_apply_trace",
                         lambda vacancy, **kwargs: trace if vacancy['id'] == '2' else None)
     if questionnaire:
@@ -209,6 +210,8 @@ async def run_hh_gate(tmp_path, monkeypatch, *, continuity=False, noise=True,
                     form = (FIXTURE.replace("'2':{resumes:", f"'{vid}':{{resumes:")
                             .replace('vacancyId:2,', f'vacancyId:{vid},')
                             .replace("vacancyId:'2'", f"vacancyId:'{vid}'"))
+                    if response_html is not None:
+                        form = response_html
                     if questionnaire:
                         form += '<h2>Ответьте на вопросы</h2>'
                     return PassiveResponse(url, form + script)
@@ -420,6 +423,64 @@ def test_hh_apply_happy_path_through_real_page_noise(tmp_path, monkeypatch):
     assert gate.result["hh_recovery"]["stopped"] is False, gate.evidence
     confirmation = [call for call in gate.fresh_gets if call["url"] == VACANCY_URL]
     assert len(confirmation) == 1 and confirmation[0]["max_redirects"] == 0, gate.evidence
+
+
+def test_unrecognized_resume_picker_recovers_without_stopping_next_vacancy(tmp_path, monkeypatch):
+    html = '''<form name="vacancy_response"><h1>Отклик на вакансию</h1>
+      <div role="button" tabindex="0" data-qa="cell"
+           onclick="fetch('/unknown', {method:'POST'})">Other control</div>
+      <textarea name="letter"></textarea>
+      <button type="submit" data-qa="vacancy-response-submit-popup">Откликнуться</button>
+    </form>'''
+    gate = asyncio.run(run_hh_gate(tmp_path, monkeypatch, noise=False,
+                                  continue_after_apply=True, response_html=html))
+    result, = gate.dispatch_results
+    assert not result['ok'] and result['proven_no_action'], gate.evidence
+    assert result['reason'] == 'hh_resume_picker_unrecognized'
+    assert result['message'] == 'hh не показал список резюме — откликнитесь вручную или попробуйте позже'
+    assert result['hh_page_recovered']
+    assert not result.get('uncertain') and not result.get('hh_hard_stop'), gate.evidence
+    assert gate.evidence['matched'] == ['2', '3'], gate.evidence
+    assert not gate.result['hh_recovery']['stopped'] and gate.evidence['hard_stops'] == 0
+    assert not any(method == 'POST' for method, url in gate.requests), gate.evidence
+    attempt, = gate.native_attempts
+    assert attempt.repository.get(VACANCY_URL)['status'] == 'failed'
+    assert not attempt.acting and not attempt.command_started and not attempt.uncertain
+    assert (gate.trace.trace_dir / 'response_form_unrecognized.html').is_file()
+
+
+def test_unknown_action_after_proven_resume_picker_click_stays_uncertain(tmp_path, monkeypatch):
+    original_click = HHClient._click_with_fallbacks
+    clicked = []
+
+    async def click_then_unknown(self, element, label, **kwargs):
+        result = await original_click(self, element, label, **kwargs)
+        if label.startswith('resume_toggle:') and result:
+            clicked.append(label)
+            # Inject an unclassified browser callback after a real picker click.
+            # The boundary blocks an unapproved fetch before transport, so that
+            # alone cannot manufacture evidence of a possible external action.
+            self._page._hh_action_monitor.mark_unknown(reason='unclassified_event')
+        return result
+
+    monkeypatch.setattr(HHClient, '_click_with_fallbacks', click_then_unknown)
+    html = '''<form name="vacancy_response"><h1>Отклик на вакансию</h1>
+      <div role="button" tabindex="0" data-qa="resume-title">Synthetic resume</div>
+      <textarea name="letter"></textarea>
+      <button type="submit" data-qa="vacancy-response-submit-popup">Откликнуться</button>
+    </form>'''
+    gate = asyncio.run(run_hh_gate(tmp_path, monkeypatch, noise=False,
+                                  continue_after_apply=True, response_html=html))
+    result, = gate.dispatch_results
+    assert not result['ok'] and result['uncertain'] and result['hh_hard_stop'], gate.evidence
+    assert not result.get('proven_no_action')
+    assert gate.result['hh_recovery']['stopped'], gate.evidence
+    assert gate.evidence['matched'] == ['2'], gate.evidence
+    attempt, = gate.native_attempts
+    assert clicked
+    assert attempt.uncertain and not attempt.proven_no_action
+    assert attempt.repository.get(VACANCY_URL)['status'] == 'uncertain'
+    assert not gate.application_posts
 
 
 @pytest.mark.parametrize('case', ['fly', 'on_site', 'unknown', 'allowed'])

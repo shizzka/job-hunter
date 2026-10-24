@@ -316,6 +316,63 @@ class ApplyTrace:
             self.event("ARTIFACT_CAPTURED", ok=False, name=artifact_name, error=type(exc).__name__)
         return saved
 
+    async def capture_response_form(self, page) -> dict[str, str]:
+        """Save structure only; never persist resume text, entered data or URLs."""
+        name = "response_form_unrecognized"
+        try:
+            content = await page.evaluate(r"""() => {
+                const forms = [...document.querySelectorAll('form[name="vacancy_response"]')];
+                const safeQa = new Set(['resume-select', 'resume-title', 'resume-detail',
+                    'resume-item', 'vacancy-response-popup-form-resume',
+                    'vacancy-response-popup-form-letter-input', 'vacancy-response-submit-popup',
+                    'vacancy-response-letter-submit', 'cell', 'cell-left-side', 'cell-text-content',
+                    'drop', 'drop-base', 'magritte-select-option-list']);
+                const enums = {
+                    role: ['button', 'combobox', 'listbox', 'option', 'dialog', 'textbox', 'radio'],
+                    type: ['button', 'submit', 'hidden', 'radio', 'checkbox', 'text', 'email', 'tel'],
+                    name: ['vacancy_response', 'resume_id', 'resumeId', 'resumeHash', 'resume', 'letter'],
+                    'aria-haspopup': ['true', 'false', 'listbox', 'dialog'],
+                    'aria-expanded': ['true', 'false'], 'aria-selected': ['true', 'false'],
+                    'aria-checked': ['true', 'false', 'mixed'], tabindex: ['0', '-1'],
+                    'aria-label': ['Резюме', 'Выбрать резюме', 'Resume', 'Select resume'],
+                };
+                return forms.map(form => {
+                    const clone = form.cloneNode(true);
+                    clone.querySelectorAll('script, style, template, iframe, object, embed, svg').forEach(el => el.remove());
+                    for (const el of [clone, ...clone.querySelectorAll('*')]) {
+                        for (const attr of [...el.attributes]) {
+                            const value = attr.value;
+                            if ((attr.name === 'data-qa' && safeQa.has(value)) ||
+                                enums[attr.name]?.includes(value)) continue;
+                            // Preserve attribute presence without arbitrary identifiers or data.
+                            if (['value', 'data-qa', 'id', 'aria-label', 'aria-labelledby',
+                                 'aria-controls', 'data-resume-id', 'data-magritte-select-option'].includes(attr.name))
+                                el.setAttribute(attr.name, '[REDACTED]');
+                            else el.removeAttribute(attr.name);
+                        }
+                    }
+                    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT);
+                    const nodes = [];
+                    while (walker.nextNode()) nodes.push(walker.currentNode);
+                    for (const node of nodes) {
+                        if (node.nodeType === Node.COMMENT_NODE) node.remove();
+                        else if (node.textContent.trim()) node.textContent = '[REDACTED]';
+                    }
+                    return clone.outerHTML;
+                }).join('\n');
+            }""")
+            if not isinstance(content, str):
+                raise ValueError("Response form DOM unavailable")
+            path = self.trace_dir / (name + ".html")
+            _private_write_text(path, content)
+            self._artifacts.append(path.name)
+            saved = {"html": str(path)}
+            self.event("ARTIFACT_CAPTURED", ok=True, name=name, files=list(saved.values()))
+            return saved
+        except Exception as exc:
+            self.event("ARTIFACT_CAPTURED", ok=False, name=name, error=type(exc).__name__)
+            return {}
+
     def finish(self, *, ok: bool, message: str = "", failure_stage: str = "", application_outcome: str = "unknown") -> None:
         if self.finished:
             return

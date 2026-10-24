@@ -781,12 +781,12 @@ SELECTED_RESUME_SCRIPT = r"""() => {
             return {ids, titles};
         }""".replace('__REACT_STATE__', REACT_RESPONSE_STATE_SCRIPT)
 
-async def selected_resume_matches(page, resume_id: str, title: str) -> bool:
+async def selected_resume_matches(page, resume_id: str, title: str, *, open_picker: bool = True) -> bool:
     """Read selected controls only; a title elsewhere in the page is not evidence."""
     try:
         script = SELECTED_RESUME_SCRIPT
         selected = await page.evaluate(script)
-        if isinstance(selected, dict) and resume_id and not selected.get('ids'):
+        if open_picker and isinstance(selected, dict) and resume_id and not selected.get('ids'):
             # Open only the response form's resume control, never the submit button.
             toggle = await page.query_selector('form[name="vacancy_response"] [data-qa="resume-title"]')
             if toggle:
@@ -934,6 +934,8 @@ async def apply_to_vacancy(session, vacancy_url, cover_letter="", response_url="
     if confirmed is not None:
         return result_with_delivery(confirmed, owned_attempt)
     if bool(result.get('uncertain')) or result.get('submission_status') in {'uncertain', 'preparing', 'acting'}:
+        if result.get('proven_no_action'):
+            result = {**result, 'proven_no_action': False}
         if can_continue_uncertain(session, owned_attempt):
             # Retire only this known request from the live action window. Its
             # durable uncertain receipt and sticky attempt flag remain intact;
@@ -1004,6 +1006,7 @@ async def _apply_to_vacancy(
             await trace.capture(session._page, "failure", screenshot=True, html=True)
 
     cover_letter_filled = False
+    resume_picker_unrecognized = False
     auto_answer_notes: list[str] = []
     auto_answer_question_answers: list[dict] = []
 
@@ -1152,6 +1155,8 @@ async def _apply_to_vacancy(
         return tag
 
     async def select_preferred_resume() -> bool:
+        nonlocal resume_picker_unrecognized
+        resume_picker_unrecognized = False
         title_norm = normalize_text(preferred_resume_title)
         id_norm = (preferred_resume_id or "").strip()
 
@@ -1160,17 +1165,15 @@ async def _apply_to_vacancy(
 
         async def collect_resume_items():
             return await session._page.query_selector_all(
-                "[data-magritte-select-option], "
-                "[data-qa^='magritte-select-option-'], "
+                "[data-magritte-select-option]:has([data-qa='resume-title']), "
+                "[data-qa^='magritte-select-option-']:has([data-qa='resume-title']), "
                 "[data-qa*='resume-item'], "
                 "[data-qa='vacancy-response-popup-form-resume'], "
                 "[data-qa='resume-select'] [role='button'][tabindex='0'], "
                 "[data-qa='resume-select'] [data-qa='cell'], "
                 "[data-qa='resume-select'] label, "
-                "label[data-qa='cell'], "
                 "[data-qa='resume-title'], "
-                "[data-qa='resume-detail'], "
-                "[data-qa='cell-text-content']"
+                "[data-qa='resume-detail']"
             )
 
         async def has_resume_choices() -> bool:
@@ -1192,35 +1195,34 @@ async def _apply_to_vacancy(
             return False
 
         async def expand_resume_picker():
+            nonlocal resume_picker_unrecognized
             toggles = [
                 "[data-qa='resume-select'] [role='button'][tabindex='0']",
-                "[role='dialog'] [role='button'][tabindex='0']",
-                "form[name='vacancy_response'] [role='button'][tabindex='0']",
+                "[data-qa='resume-select']",
                 "[data-qa='vacancy-response-popup-form-resume']",
                 "[data-qa='resume-select'] [data-qa='cell']",
-                "[data-qa='resume-title']",
-                "[data-qa='resume-detail']",
-                "[data-qa='cell']",
+                "form[name='vacancy_response'] [data-qa='resume-title']",
             ]
+            recognized = False
             for selector in toggles:
                 handle = await session._page.query_selector(selector)
                 if not handle:
                     continue
+                recognized = True
                 if await session._click_with_fallbacks(handle, f"resume_toggle:{selector}"):
                     await session._page.wait_for_timeout(1000)
                     if await has_resume_choices():
                         return True
+            resume_picker_unrecognized = not recognized
             return False
 
-        if resume_select:
-            await session._click_with_fallbacks(resume_select, "resume_select")
-            await session._page.wait_for_timeout(1000)
-
-        if await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title):
+        # Read without opening anything first: missing semantic picker evidence
+        # must remain a provable stop before any form interaction.
+        if await selected_resume_matches(session._page, preferred_resume_id, preferred_resume_title, open_picker=False):
             return True
 
-        # Exact readback can open HH's portalled picker. Refetch its current
-        # options before matching; a stale collapsed list would toggle it shut.
+        # Read current options before opening a collapsed picker: toggling an
+        # already open Magritte portal would hide its choices.
         resume_items = await collect_resume_items()
 
         if not title_norm and not id_norm:
@@ -1426,6 +1428,13 @@ async def _apply_to_vacancy(
             resume_title=preferred_resume_title,
         )
         if not resume_verified:
+            if resume_picker_unrecognized:
+                if trace is not None:
+                    await trace.capture_response_form(session._page)
+                trace_event("RESUME_PICKER_UNRECOGNIZED", ok=False, proven_no_action=True)
+                return {"ok": False, "reason": "hh_resume_picker_unrecognized", "proven_no_action": True,
+                        "message": "hh не показал список резюме — откликнитесь вручную или попробуйте позже",
+                        "resume_selection_verified": False}
             await save_debug_snapshot("debug_resume_unverified")
             return {"ok": False, "message": "Нужное резюме не подтверждено — отклик не отправлен", "resume_selection_verified": False}
         logger.info("Requested resume verified before application")

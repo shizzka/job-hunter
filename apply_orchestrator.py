@@ -181,7 +181,8 @@ def _apply_result_with_current_uncertainty(vacancy: dict, hh_client, result: dic
     def uncertain():
         stale_confirmation = ({'submission_status': 'uncertain'}
                               if result.get('submission_status') == 'success_confirmed' else {})
-        return {**result, **stale_confirmation, "ok": False, "uncertain": True,
+        no_action = {'proven_no_action': False} if result.get('proven_no_action') else {}
+        return {**result, **stale_confirmation, **no_action, "ok": False, "uncertain": True,
                 "message": "Исход отклика не подтверждён; нужна ручная сверка без автоматического повтора"}
 
     if result.get('submission_status') == 'success_confirmed':

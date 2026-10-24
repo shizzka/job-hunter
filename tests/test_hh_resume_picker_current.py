@@ -9,6 +9,7 @@ from playwright.async_api import async_playwright, ElementHandle
 import hh_client
 from hh import apply
 from hh.ui import HHUnexpectedUI
+from debug_trace import ApplyTrace
 
 HTML = (Path(__file__).parent / 'fixtures/hh/resume_picker_current.html').read_text()
 
@@ -31,14 +32,14 @@ class PreflightTrace:
         pass
 
 
-async def run_preflight(tmp_path, *, mode='', expected_id='qa-target', already_applied=False):
+async def run_preflight(tmp_path, *, mode='', expected_id='qa-target', already_applied=False, html=HTML, trace=None):
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         try:
             context = await browser.new_context()
             # Every navigation resolves locally. Neither HH nor any other host is contacted.
             async def fixture(route):
-                await route.fulfill(status=200, content_type='text/html', body=HTML)
+                await route.fulfill(status=200, content_type='text/html', body=html)
             await context.route('**/*', fixture)
             page = await context.new_page()
             await page.add_init_script("""document.addEventListener('DOMContentLoaded', () => {
@@ -66,7 +67,7 @@ async def run_preflight(tmp_path, *, mode='', expected_id='qa-target', already_a
                 assert options == {'max_redirects': 0, 'max_retries': 0, 'timeout': 20000}
                 return SimpleNamespace(
                     status=200, url=target, headers={'content-type': 'text/html'},
-                    text=AsyncMock(return_value=HTML), dispose=AsyncMock(),
+                    text=AsyncMock(return_value=html), dispose=AsyncMock(),
                 )
 
             client._save_debug_snapshot = AsyncMock()
@@ -87,7 +88,7 @@ async def run_preflight(tmp_path, *, mode='', expected_id='qa-target', already_a
                 return await original_click(element, **kwargs)
             submit = AsyncMock(side_effect=AssertionError('Picker tests must never submit'))
             client._submit_response_form_via_dom = submit
-            trace = PreflightTrace()
+            trace = trace or PreflightTrace()
             # Picker delays are unnecessary in this synchronous synthetic DOM.
             page.wait_for_timeout = AsyncMock()
             try:
@@ -112,11 +113,11 @@ async def run_preflight(tmp_path, *, mode='', expected_id='qa-target', already_a
             await browser.close()
 
 
-def test_current_picker_refetches_options_opened_by_exact_readback(tmp_path):
+def test_current_picker_opens_options_and_verifies_exact_selection(tmp_path):
     result, selected, toggles = asyncio.run(run_preflight(tmp_path))
     assert result['resume_selection_verified'] is True
     assert set(selected['ids']) == {'qa-target'}
-    # One open to inspect the default, then reopen to read back the selected ID.
+    # One open to select the target, then reopen to read back its exact ID.
     assert toggles == 2
 
 
@@ -148,3 +149,34 @@ def test_default_electrician_does_not_verify_qa_target(tmp_path):
     result, selected, _ = asyncio.run(run_preflight(tmp_path, mode='missing-id'))
     assert not result['resume_selection_verified']
     assert selected['ids'] != ['qa-target']
+
+
+@pytest.mark.parametrize('control', [
+    '<div role="button" tabindex="0">Other control</div>',
+    '<div data-qa="cell">Other cell</div>',
+    '<label data-qa="cell"><input type="radio" value="qa-target">Other choice</label>',
+    '<div data-qa="cell-text-content" data-resume-id="qa-target">Other content</div>',
+])
+def test_unrecognized_picker_stops_without_any_click_and_saves_private_structure(tmp_path, control):
+    html = (Path(__file__).parent / 'fixtures/hh/resume_picker_unrecognized.html').read_text()
+    html = html.replace('<!-- control -->', control)
+    trace = ApplyTrace.create(home_dir=str(tmp_path), source='hh', vacancy_id='1',
+                              profile='synthetic', mode='manual')
+    result, selected, clicks = asyncio.run(run_preflight(tmp_path, html=html, trace=trace))
+    assert result == {
+        'ok': False, 'reason': 'hh_resume_picker_unrecognized', 'proven_no_action': True,
+        'message': 'hh не показал список резюме — откликнитесь вручную или попробуйте позже',
+        'resume_selection_verified': False,
+    }
+    assert not selected['ids'] and clicks == 0
+    artifact = trace.trace_dir / 'response_form_unrecognized.html'
+    content = artifact.read_text()
+    assert 'form name="vacancy_response"' in content
+    assert 'data-qa="vacancy-response-submit-popup"' in content
+    assert '[REDACTED]' in content
+    for private in ('Синтетиков', 'Тестовое резюме', '+7 (999)', '79991234567',
+                    'synthetic@example.invalid', 'synthetic-cookie', 'private-id', 'Private title'):
+        assert private not in content
+    assert artifact.stat().st_mode & 0o777 == 0o600
+    trace.finish(ok=False, message=result['message'])
+    assert artifact.name in trace.summary_path.read_text()
