@@ -1,13 +1,28 @@
 # Job Hunter
 
-**Current version:** `v0.10.1`
-**Status:** v0.9.0 — several search directions per profile (e.g. QA and electrician), employer questionnaires with remembered answers, chat replies grounded in the resume the application used, command queue (2026-10-19).
+**A Telegram bot that finds jobs on hh.ru, explains why each one fits, and applies only after you say yes.**
+
+[![Offline regression tests](https://github.com/shizzka/job-hunter/actions/workflows/offline-tests.yml/badge.svg)](https://github.com/shizzka/job-hunter/actions/workflows/offline-tests.yml) ![version](https://img.shields.io/badge/version-0.10.1-blue) ![python](https://img.shields.io/badge/python-3.12-blue) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Русская версия: [README.ru.md](README.ru.md)
 
-Job Hunter is a job-search automation system focused on **decision quality, not application volume**. It searches vacancies, removes obvious noise, evaluates fit against the candidate's real experience, grounds generated text in candidate data, and only then decides whether an application is safe to send automatically or needs human review.
+<p align="center">
+  <img src="docs/assets/demo-card.gif" width="420" alt="A vacancy card in Telegram: fit score, remote format, why it fits; the user taps «Why», then «Apply with AI», and the bot reports the application with its cover letter">
+  <br><sub>Demo, made-up data. Texts and buttons are the bot's real ones.</sub>
+</p>
 
-One candidate profile can hold several **search directions** — for example QA and electrician — each with its own resumes, queries, filters, regions and positioning. The default policy targets QA/testing roles.
+- **You decide, the bot does the routine.** By default each vacancy arrives as a card: work format, fit score and the reason it fits. One tap and the bot applies with a cover letter. Fully automatic applying is a setting you switch on yourself.
+- **Noise goes before the AI.** Office or hybrid jobs for a remote-only search, the wrong profession, blacklisted companies — cut by plain filters first, so the AI only scores what is worth reading.
+- **It does not make things up.** Cover letters, questionnaire answers and HR chat replies use only facts from your resume and confirmed answers. Unknown stays unknown.
+- **hh.ru, SuperJob, Habr Career, GeekJob.** One profile can hold several search directions (say, QA and electrician), each with its own resumes, queries and filters.
+
+> «The bot finds vacancies better than I do» — the first user, searching for remote-only work.
+
+**Who makes it.** The author is an electrician, not a programmer. The code is written by AI agents (Claude Code and Codex); the author sets the tasks, tests the bot as a user and decides what gets released. An AI tester also goes through the dev bot every night like a real person.
+
+**Current version:** `v0.10.1` (2026-10-24): the bot no longer hangs on heavy commands (10 identical commands in a row: 127 s → ~9 s), work format and plain-words fit on every card, a strict «remote only» filter, plain-language texts. See [CHANGELOG](CHANGELOG.md).
+
+Job Hunter is a job-search automation system focused on **decision quality, not application volume**. It searches vacancies, removes obvious noise, evaluates fit against the candidate's real experience, grounds generated text in candidate data, and only then decides whether an application is safe to send automatically or needs human review.
 
 ## Why it exists
 
@@ -238,6 +253,15 @@ Named profiles must not inherit another candidate's biography, salary expectatio
 Confirmed candidate information can be stored in `knowledge/*.md`.
 
 Before generating text, Job Hunter selects relevant sections and combines them with the current resume and structured facts. Vacancy text is treated as requirements/context, never as evidence that the candidate has a skill or experience.
+
+## Setup in Telegram
+
+<p align="center">
+  <img src="docs/assets/demo-setup.gif" width="420" alt="«Getting started» checklist: steps marked done, the user picks «Ask me before applying», the checklist updates">
+  <br><sub>Demo, made-up data.</sub>
+</p>
+
+`/getting_started` shows where you are: hh.ru login, resumes, search directions, application mode, first search. Each step has its button.
 
 ## Telegram
 
