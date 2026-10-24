@@ -58,7 +58,7 @@ def test_every_terminal_outcome_blocks_both_dispatch_checkpoints(search_harness,
 
 
 @pytest.mark.parametrize("owner", [None, "qa", "electric"])
-@pytest.mark.parametrize("action", TERMINAL_ACTIONS)
+@pytest.mark.parametrize("action", [a for a in TERMINAL_ACTIONS if not seen.is_card_offer(a)])
 def test_saved_card_cannot_reopen_terminal_outcome(search_harness, monkeypatch, action, owner):
     home, _, _ = search_harness
     two_directions(home)
@@ -155,3 +155,32 @@ def test_mark_seen_cannot_downgrade_applied_evidence_but_preserves_uncertainty(s
     assert (home / "seen.json").read_bytes() == before
     seen.mark_seen("7", vacancy(), "apply_uncertain")
     assert json.loads((home / "seen.json").read_text())["7"]["action"] == "apply_uncertain"
+
+
+@pytest.mark.parametrize("action", ["manual_hh_confirm", "manual_hh_preview", "manual_yellow_hh"])
+def test_card_offer_mark_blocks_search_but_not_the_cards_own_button(search_harness, action):
+    """24.10 blocker: «Откликнуться с ИИ» on a confirm card answered «Вакансия уже обработана» —
+    the card's own «offered» mark was read as an earlier outcome. Search must still never re-apply it."""
+    import contextvars
+    home, _, _ = search_harness
+    terminal_record(home, action, None)
+    card_vacancy = vacancy()
+    blocked = apply_orchestrator.handled_application_result(card_vacancy)
+    assert blocked and blocked["handled_action"] == action  # the search path stays blocked
+
+    def from_card():
+        apply_orchestrator.card_apply.set(True)
+        return apply_orchestrator.handled_application_result(card_vacancy)
+    assert contextvars.copy_context().run(from_card) is None  # the owner's own card may send
+
+
+@pytest.mark.parametrize("action", ["manual_ai_applied", "apply_uncertain", "manual_hh_guard_stop", "applied"])
+def test_card_button_still_blocked_by_a_real_outcome(search_harness, action):
+    import contextvars
+    home, _, _ = search_harness
+    terminal_record(home, action, None)
+
+    def from_card():
+        apply_orchestrator.card_apply.set(True)
+        return apply_orchestrator.handled_application_result(vacancy())
+    assert contextvars.copy_context().run(from_card)["handled_action"] == action

@@ -703,6 +703,9 @@ async def do_manual_apply_token(token: str) -> dict:
         message = str(exc)
         manual_apply_queue.mark_candidate(token, "stale", message)
         return {"ok": False, "reason": "direction_context_changed", "message": message}
+    # The owner pressed this card's own button: its «offered» mark is not an earlier outcome (24.10 blocker).
+    # The flag stays for this one-card command, so the dispatch checkpoints see it too.
+    apply_orchestrator.card_apply.set(True)
     handled = apply_orchestrator.handled_application_result(vacancy)
     if handled:
         historical_uncertain = handled["handled_action"] == "apply_uncertain"

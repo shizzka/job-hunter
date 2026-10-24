@@ -69,6 +69,12 @@ ACCOUNT_SAFETY_ACTIONS = {
     "skipped_feedback_bad", "apply_unconfirmed_no_manual",
 }
 APPLIED_ACTIONS = {"applied", "already_applied", "manual_ai_applied"}
+# A card was offered for the owner's decision, nothing was sent yet (24.10: these blocked the card's own apply button).
+CARD_OFFER_ACTIONS = {"manual_hh_confirm", "manual_hh_preview", "manual_hh_salary_confirmation"}
+
+
+def is_card_offer(action):
+    return action in CARD_OFFER_ACTIONS or str(action or "").startswith("manual_yellow_")
 
 
 def is_terminal_action(action):

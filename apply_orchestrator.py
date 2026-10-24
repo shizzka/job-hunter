@@ -3,6 +3,7 @@
 
 Извлечено из agent.py (A-002).
 """
+import contextvars
 import logging
 import os
 import uuid
@@ -203,8 +204,14 @@ def _apply_result_with_current_uncertainty(vacancy: dict, hh_client, result: dic
     return result
 
 
+# Set while the owner's own card button runs: that card's «offered» mark is not a previous outcome.
+card_apply = contextvars.ContextVar("card_apply", default=False)
+
+
 def handled_application_result(vacancy):
     action = seen.terminal_action(vacancy["id"]) if vacancy.get("id") else None
+    if action and card_apply.get() and seen.is_card_offer(action):
+        return None
     if action:
         applied = action in seen.APPLIED_ACTIONS
         return {"ok": applied, "already_applied": applied, "already_handled": True,
