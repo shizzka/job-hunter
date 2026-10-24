@@ -171,18 +171,38 @@ def test_handle_and_retry_are_atomic_and_keep_old_attempt_closed(homes):
     assert queue.resolve_orphaned_apply(another["token"], profile_name="qa", user_id=42)["status"] == "handled"
 
 
-def test_spent_apply_button_shows_uncertainty_without_dispatch(homes, monkeypatch):
+@pytest.mark.parametrize("prefix", ["manual_apply", "stub", "mad"])
+def test_spent_apply_button_shows_uncertainty_without_dispatch(homes, monkeypatch, prefix):
     item = applying(live=True)
     bot, calls = _configured_bot(monkeypatch)
     launch = AsyncMock()
     monkeypatch.setattr(bot, "_start_manual_ai_apply", launch)
-    callback = _callback(f"manual_apply:qa:{item['token']}", chat_type="private")
+    callback = _callback(f"{prefix}:qa:{item['token']}", chat_type="private")
     asyncio.run(bot._handle_callback_query(callback))
-    assert launch.await_count == 1
+    expected_launches = 0 if prefix == "stub" else 1  # live applying cannot accept a template approval
+    assert launch.await_count == expected_launches
     queue._store().update(lambda data: data["items"][item["token"]].update(owner_pid=None))
     asyncio.run(bot._handle_callback_query(callback))
-    assert launch.await_count == 1
+    assert launch.await_count == expected_launches
     assert queue.ORPHAN_APPLY_MESSAGE in calls["messages"][-1][1]
+
+
+@pytest.mark.parametrize("prefix", ["manual_apply", "stub", "mad"])
+def test_fresh_launch_button_recovers_after_startup_grace(homes, monkeypatch, prefix):
+    item = applying(age=1)
+    queue.recover_orphaned_applies(profile_name="qa")
+    assert queue.get_candidate(item["token"])["status"] == "applying"
+    queue._store().update(lambda data: data["items"][item["token"]].update(applying_ts=time.time() - 301))
+    bot, calls = _configured_bot(monkeypatch)
+    launch, stub = AsyncMock(), lambda *a, **k: pytest.fail("Must recover before stub approval")
+    monkeypatch.setattr(bot, "_start_manual_ai_apply", launch)
+    monkeypatch.setattr(queue, "allow_stub_cover", stub)
+    asyncio.run(bot._handle_callback_query(_callback(f"{prefix}:qa:{item['token']}", chat_type="private")))
+    assert launch.await_count == 0
+    assert queue.get_candidate(item["token"])["status"] == "uncertain"
+    assert queue.ORPHAN_APPLY_MESSAGE in calls["messages"][-1][1]
+    buttons = calls["messages"][-1][2]["inline_keyboard"]
+    assert any(b.get("callback_data", "").endswith(":retry") for row in buttons for b in row)
 
 
 def test_retry_ui_requires_confirmation_then_separate_apply(homes, monkeypatch):

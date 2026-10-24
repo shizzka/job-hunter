@@ -129,6 +129,14 @@ class TelegramCallbackRouter:
                 or self._selected_profile(principal) == profile_name
             )
 
+        if str(raw_data).startswith(("manual_apply:", "stub:", "mad:")):
+            profile_name, token = manual_apply_queue.parse_apply_launch_callback_data(raw_data)
+            if (profile_name and token and can_access_profile(profile_name)
+                    and (principal.get("role") == ROLE_ADMIN or (message.get("chat") or {}).get("type") == "private")
+                    and await self._show_uncertain_manual_apply(chat_id, principal, profile_name, token)):
+                await self._answer_callback_query(callback_id, "Нужна сверка на hh.ru")
+                return
+
         if str(raw_data).startswith(("cbo:", "cbs:")):
             if (message.get("chat") or {}).get("type") != "private":
                 await self._answer_callback_query(callback_id, "Откройте личный чат с ботом.", show_alert=True)
@@ -524,15 +532,15 @@ class TelegramCallbackRouter:
                     await self._open_review_card(chat_id, profile_name, resolved["token"])
                 else:
                     await self._send_text(chat_id, "Карточка отмечена как разобранная.")
+            else:
+                await self._send_text(chat_id, "Повтор пока недоступен: есть другая или живая попытка либо "
+                                      "подтверждённый отклик. Проверьте на hh.ru.")
             return
 
         if raw_data.startswith(f"{CALLBACK_MANUAL_APPLY}:"):
             profile_name, token = _parse_manual_apply_callback_data(raw_data)
             if not profile_name or profile_name not in self._profile_names() or not token or not can_access_profile(profile_name):
                 await self._answer_callback_query(callback_id, "Не удалось определить вакансию.", show_alert=True)
-                return
-            if await self._show_uncertain_manual_apply(chat_id, principal, profile_name, token):
-                await self._answer_callback_query(callback_id, "Нужна сверка на hh.ru")
                 return
             await self._answer_callback_query(callback_id, "Отправляю отклик через ИИ…")
             await self._start_manual_ai_apply(

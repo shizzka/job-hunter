@@ -694,6 +694,7 @@ def test_user_ai_access_does_not_open_admin_callbacks(monkeypatch, payload):
 def test_callback_router_sends_accepted_template_letter(monkeypatch):
     """B17: «📨 Отправить шаблон» marks the card and starts the application with the same token."""
     bot, calls = _configured_bot(monkeypatch)
+    monkeypatch.setattr(telegram_bot.manual_apply_queue, "get_candidate", lambda *a, **kw: None)
     marked, started = [], []
     monkeypatch.setattr(telegram_bot.manual_apply_queue, "allow_stub_cover",
                         lambda token, *, profile_name=None: marked.append((token, profile_name)) or True)

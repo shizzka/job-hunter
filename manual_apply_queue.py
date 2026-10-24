@@ -19,6 +19,7 @@ import seen
 from direction_history import runtime_metadata
 from state_store.private_journal import iter_json_records
 from state_store.protected import ProtectedJsonStore
+from state_store.process_owner import current_process_owner, owner_alive as _owner_alive
 
 log = logging.getLogger(__name__)
 
@@ -35,34 +36,6 @@ MAX_ITEMS = 250
 MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 ORPHAN_APPLY_GRACE_SECONDS = 5 * 60
 ORPHAN_APPLY_MESSAGE = "Отклик мог уйти — проверьте на hh.ru"
-
-
-def _process_identity(pid: int) -> tuple[str, str]:
-    """Linux start ticks + boot ID distinguish a reused PID from its owner."""
-    stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-    return stat[0], f"{boot}:{stat[19]}"
-
-
-def _owner_alive(item: dict) -> bool:
-    try:
-        pid = int(item.get("owner_pid") or 0)
-    except (ValueError, TypeError):
-        return False
-    if pid <= 0:
-        return False  # legacy cards have no process owner
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, OverflowError):
-        return False
-    except OSError:
-        return True  # inability to inspect a process is not proof of death
-    try:
-        state, identity = _process_identity(pid)
-    except (OSError, IndexError):
-        return True
-    return state not in {"Z", "X"} and (
-        not item.get("owner_process_start") or item["owner_process_start"] == identity)
 
 
 def _recover_applying(data: dict, now: float, token: str | None = None) -> None:
@@ -261,12 +234,9 @@ def claim_candidate(token: str, *, store=None) -> dict | None:
         if (not item or item.get("status") != "pending" or not item.get("allow_ai_apply", True)
                 or item.get("feedback") == "bad"):
             return
-        try:
-            _, process_start = _process_identity(os.getpid())
-        except (OSError, IndexError):
-            process_start = ""
         item.update(status="applying", owner=uuid.uuid4().hex, external_started=False,
-                    owner_pid=os.getpid(), owner_process_start=process_start, applying_ts=time.time())
+                    **current_process_owner(), applying_ts=time.time())
+        item.pop("native_attempt", None)
         claimed = dict(item)
     (store or _store()).update(mutate)
     return claimed
@@ -347,6 +317,7 @@ def resolve_orphaned_apply(token: str, *, profile_name: str, user_id: int,
                            confirmed_not_sent: bool = False) -> dict | None:
     """Owner reconciliation; retry creates a fresh pending approval, never dispatches."""
     resolved = None
+    store = _store(profile_name)
 
     def mutate(data):
         nonlocal resolved
@@ -354,6 +325,23 @@ def resolve_orphaned_apply(token: str, *, profile_name: str, user_id: int,
         item = data["items"].get(token)
         if not item or item.get("status") != "uncertain" or not item.get("orphan_recovered"):
             return
+        retry_token = uuid.uuid4().hex[:12]
+        if confirmed_not_sent:
+            if _owner_alive(item):
+                return
+            from state_store.native_apply import NativeApplyRepository
+            binding = item.get("native_attempt") or {}
+            path = Path(binding.get("path") or store.path.with_name("hh_apply_attempts.json"))
+            if path.name != "hh_apply_attempts.json":
+                raise ValueError("Invalid manual native attempt binding")
+            repository = NativeApplyRepository(path.with_name("hh_cookies.json"), "hh")
+            url = binding.get("url") or (item.get("vacancy") or {}).get("url")
+            if not repository.authorize_manual_retry(
+                    url, token, item.get("owner"), binding.get("owner"), retry_token, int(user_id),
+                    grace_seconds=ORPHAN_APPLY_GRACE_SECONDS,
+                    not_before=float(item.get("applying_ts") or item.get("created_ts") or 0),
+                    retry_of=item.get("retry_of", "")):
+                return
         item.update(status="handled", resolved_by=int(user_id),
                     resolved_at=datetime.now().isoformat(timespec="seconds"),
                     resolution="confirmed_not_sent" if confirmed_not_sent else "handled")
@@ -365,14 +353,34 @@ def resolve_orphaned_apply(token: str, *, profile_name: str, user_id: int,
                 "hh_resume_hash", "hh_resume_numeric_id", "variant_text_sha256",
             }}
             now = time.time()
-            retry.update(token=uuid.uuid4().hex[:12], status="pending", retry_of=token,
+            retry.update(token=retry_token, status="pending", retry_of=token,
                          created_ts=now, created_at=datetime.fromtimestamp(now).isoformat(timespec="seconds"))
             data["items"][retry["token"]] = retry
             item["retry_token"] = retry["token"]
             resolved = dict(retry)
 
-    _store(profile_name).update(mutate)
+    store.update(mutate)
     return resolved
+
+
+def claim_native_attempt(token, owner, repository, url, *, store):
+    """Lock order is always queue -> native; a failed queue write cannot dispatch."""
+    claimed = None
+
+    def mutate(data):
+        nonlocal claimed
+        item = data["items"].get(token, {})
+        if (item.get("owner") != owner or item.get("status") != "applying"
+                or item.get("revoked") or item.get("feedback") == "bad"
+                or not item.get("allow_ai_apply", True) or item.get("native_attempt")):
+            return
+        claimed = repository.claim(url, "", "", manual_token=token, manual_owner=owner,
+                                   retry_of=item.get("retry_of", ""))
+        if claimed:
+            item["native_attempt"] = {"path": str(repository.path), "url": url, "owner": claimed}
+
+    store.update(mutate)
+    return claimed
 
 
 def build_orphaned_apply_markup(item: dict, profile_name: str) -> dict:
@@ -582,6 +590,13 @@ def parse_manual_apply_callback_data(data: str) -> tuple[str, str]:
     if not sep:
         return "", ""
     return _safe_profile(profile_name), token.strip()
+
+
+def parse_apply_launch_callback_data(data: str) -> tuple[str, str]:
+    parts = str(data).split(":")
+    if len(parts) != 3 or parts[0] not in {CALLBACK_MANUAL_APPLY, "stub", "mad"}:
+        return "", ""
+    return _safe_profile(parts[1]), parts[2].strip()
 
 
 def parse_manual_feedback_callback_data(data: str) -> tuple[str, str, str]:

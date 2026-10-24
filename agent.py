@@ -773,6 +773,7 @@ async def do_manual_apply_token(token: str) -> dict:
     # Manual apply = explicit owner decision on this vacancy; hh's salary hint is informational.
     hh_client._owner_confirmed_application = True
     hh_client._manual_apply_guard = begin_external
+    hh_client._manual_apply_context = (queue_store, token, owner)
     hh_client._manual_apply_no_action = lambda: manual_apply_queue.confirm_no_action(token, owner, store=queue_store)
     manual_uncertainty_note = None
     def record_manual_uncertain():

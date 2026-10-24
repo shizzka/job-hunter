@@ -1,11 +1,14 @@
 """HH/Habr attempt records using the existing GeekJob owner semantics."""
 import hashlib
 import re
+import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .geekjob_apply import GeekJobApplyRepository, _valid
 from .protected import ProtectedJsonStore
+from .process_owner import current_process_owner, owner_alive
 
 
 class NativeApplyRepository(GeekJobApplyRepository):
@@ -15,6 +18,69 @@ class NativeApplyRepository(GeekJobApplyRepository):
         self.source = source
         self.path = Path(cookies_file).absolute().with_name(source + '_apply_attempts.json')
         self.store = ProtectedJsonStore(self.path, default_factory=dict, validator=_valid)
+
+    def claim(self, url, session, approval, *, manual_token='', manual_owner='', retry_of=''):
+        key, owner = self.key(url), uuid.uuid4().hex
+        claimed = False
+
+        def update(state):
+            nonlocal claimed
+            previous = state.get(key, {})
+            grant = previous.get('manual_retry') or {}
+            authorized = (bool(manual_token) and grant.get('token') == manual_token
+                          and grant.get('from_token') == retry_of and not owner_alive(previous))
+            if (previous.get('status') in {'preparing', 'acting', 'completed', 'uncertain'} or grant) and not authorized:
+                return
+            if previous.get('status') == 'completed':
+                return  # a confirmed delivery cannot be overridden by reconciliation
+            item = {'owner': owner, 'status': 'preparing', 'session': session, 'approval': approval,
+                    'started_at': time.time(), **current_process_owner()}
+            if manual_token:
+                item.update(manual_token=manual_token, manual_owner=manual_owner)
+            if previous:
+                item['history'] = [*previous.get('history', []),
+                                   {key: value for key, value in previous.items() if key != 'history'}]
+            state[key] = item
+            claimed = True
+
+        self.store.update(update)
+        return owner if claimed else None
+
+    def authorize_manual_retry(self, url, token, manual_owner, native_owner, retry_token, user_id,
+                               *, grace_seconds, not_before, retry_of):
+        """Keep the old receipt blocking; only its confirmed successor may consume this grant."""
+        allowed = False
+        key = self.key(url)
+
+        def update(state):
+            nonlocal allowed
+            previous = state.get(key)
+            if not previous:
+                allowed = native_owner is None
+                return
+            if (native_owner and previous['owner'] != native_owner
+                    or previous.get('status') == 'completed' or owner_alive(previous)
+                    or time.time() - previous['started_at'] < grace_seconds):
+                return
+            grant = previous.get('manual_retry') or {}
+            unused_successor = grant.get('token') == token and grant.get('from_token') == retry_of
+            if unused_successor:
+                pass  # successor died before native claim; a new confirmation replaces its unused grant
+            elif previous.get('manual_token'):
+                if previous['manual_token'] != token or previous.get('manual_owner') != manual_owner:
+                    return
+            elif previous.get('owner_pid') or previous['started_at'] < not_before:
+                return  # an unbound tracked/earlier attempt belongs to another flow
+            # Legacy untracked records can be reconciled only for this exact
+            # vacancy, after the queue owner's death and the same grace period.
+            if grant:
+                previous.setdefault('manual_retry_history', []).append(grant)
+            previous['manual_retry'] = {'token': retry_token, 'from_token': token,
+                                        'confirmed_by': user_id, 'confirmed_at': time.time()}
+            allowed = True
+
+        self.store.update(update)
+        return allowed
 
     def key(self, url):
         parsed = urlsplit(url)
@@ -168,7 +234,13 @@ async def run_native_attempt(client, repository, url, operation):
         return {'ok': False, 'uncertain': True, 'reason': 'native_client_busy',
                 'message': 'Browser уже принадлежит активной/остановленной попытке; нужна ручная сверка'}
     try:
-        owner = repository.claim(url, '', '')
+        manual = getattr(client, '_manual_apply_context', None)
+        if manual is not None:
+            from manual_apply_queue import claim_native_attempt
+            store, token, queue_owner = manual
+            owner = claim_native_attempt(token, queue_owner, repository, url, store=store)
+        else:
+            owner = repository.claim(url, '', '')
     except Exception:
         return {'ok': False, 'uncertain': True, 'reason': 'native_ownership_unproven',
                 'message': 'Владелец попытки не подтверждён; нужна ручная сверка без автоматического повтора'}
