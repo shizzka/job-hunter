@@ -1,0 +1,231 @@
+{
+  "summary": {
+    "days": 7,
+    "direction_title": "все направления",
+    "all_time": true,
+    "events": 45,
+    "search_runs": 2,
+    "decisions": 27,
+    "auto_applied": 12,
+    "uncertain": 2,
+    "dry_run_matched": 1,
+    "manual": 6,
+    "keyword_filtered": 1,
+    "red_flagged": 1,
+    "low_score": 1,
+    "deferred_unscored": 1,
+    "invitations": 1,
+    "questionnaires": 2,
+    "questionnaire_successes": 1,
+    "questionnaire_failures": 1,
+    "questionnaire_questions": 3,
+    "questionnaire_best_guess": 1,
+    "questionnaire_required": 2,
+    "positive_statuses": 5,
+    "rejected_statuses": 1,
+    "pending_statuses": 4,
+    "interview_statuses": 1,
+    "offer_statuses": 1,
+    "test_task_statuses": 1,
+    "positive_other_statuses": 2,
+    "pending_new_statuses": 2,
+    "pending_viewed_statuses": 2,
+    "by_source": {
+      "hh": {
+        "decisions": 25,
+        "auto_applied": 10,
+        "manual": 6,
+        "positive": 4,
+        "rejected": 2,
+        "deferred_unscored": 1,
+        "uncertain": 2
+      },
+      "habr": {
+        "decisions": 2,
+        "auto_applied": 2,
+        "manual": 0,
+        "positive": 0,
+        "rejected": 0
+      }
+    },
+    "by_query": {
+      "QA Engineer": {
+        "decisions": 22,
+        "auto_applied": 8,
+        "positive": 4,
+        "rejected": 1
+      }
+    },
+    "by_resume_variant": {
+      "A": {
+        "applications": 8,
+        "positive": 4,
+        "rejected": 1,
+        "viewed": 6,
+        "not_viewed": 1,
+        "pending": 2,
+        "response_rate": 75.0,
+        "positive_rate": 50.0
+      },
+      "B": {
+        "applications": 2,
+        "positive": 0,
+        "rejected": 0,
+        "viewed": 0,
+        "not_viewed": 1,
+        "pending": 1,
+        "response_rate": 0.0,
+        "positive_rate": 0.0
+      }
+    },
+    "by_cluster": {
+      "api_qa": {
+        "decisions": 22,
+        "auto_applied": 8,
+        "manual": 5,
+        "viewed": 6,
+        "not_viewed": 1,
+        "pending": 2,
+        "positive": 4,
+        "rejected": 2,
+        "response_rate": 75.0,
+        "positive_rate": 50.0
+      },
+      "unknown": {
+        "decisions": 5,
+        "auto_applied": 4,
+        "manual": 1,
+        "viewed": 1,
+        "not_viewed": 1,
+        "pending": 2,
+        "positive": 0,
+        "rejected": 0,
+        "response_rate": 25.0,
+        "positive_rate": 0.0
+      }
+    },
+    "by_cover_style": {
+      "short": {
+        "decisions": 0,
+        "auto_applied": 8,
+        "manual": 0,
+        "viewed": 6,
+        "not_viewed": 1,
+        "pending": 2,
+        "positive": 4,
+        "rejected": 1,
+        "response_rate": 75.0,
+        "positive_rate": 50.0
+      }
+    },
+    "by_retry_reason": {
+      "retry": {
+        "decisions": 14,
+        "auto_applied": 0,
+        "manual": 0,
+        "viewed": 0,
+        "not_viewed": 0,
+        "pending": 0,
+        "positive": 0,
+        "rejected": 0,
+        "response_rate": 0,
+        "positive_rate": 0
+      },
+      "viewed_no_response": {
+        "decisions": 8,
+        "auto_applied": 8,
+        "manual": 0,
+        "viewed": 6,
+        "not_viewed": 1,
+        "pending": 2,
+        "positive": 4,
+        "rejected": 1,
+        "response_rate": 75.0,
+        "positive_rate": 50.0
+      }
+    },
+    "top_decisions": [
+      [
+        "applied_auto",
+        12
+      ],
+      [
+        "apply_uncertain",
+        2
+      ],
+      [
+        "skipped_keyword_filter",
+        1
+      ],
+      [
+        "skipped_red_flags",
+        1
+      ],
+      [
+        "skipped_low_score",
+        1
+      ],
+      [
+        "dry_run_match",
+        1
+      ],
+      [
+        "deferred_unscored",
+        1
+      ],
+      [
+        "already_applied",
+        1
+      ]
+    ],
+    "reason_breakdown": {
+      "explicit": 1,
+      "red_flags": 1,
+      "low_score": 1,
+      "dry_run_match": 1,
+      "deferred_unscored": 1,
+      "already_applied": 1,
+      "manual_required": 2,
+      "apply_uncertain": 2,
+      "apply_failed": 2,
+      "guard_stop": 1,
+      "unclassified": 2,
+      "applied": 12
+    },
+    "reason_groups": {
+      "explicit": 1,
+      "custom": 1,
+      "matcher_reject": 1,
+      "dry_run_match": 1,
+      "deferred_unscored": 1,
+      "already_applied": 1,
+      "manual_required": 2,
+      "apply_uncertain": 2,
+      "apply_failed": 2,
+      "guard_stop": 1,
+      "unclassified": 2,
+      "applied": 12
+    },
+    "search_funnel": {
+      "fetched": 32,
+      "new": 24,
+      "invalid": 0
+    },
+    "by_direction": {
+      "QA Engineer": 25,
+      "Отклики до появления направлений": 1,
+      "Электромонтажник": 1
+    },
+    "funnel": {
+      "applied": 12,
+      "viewed": 7,
+      "pending": 4,
+      "not_viewed": 2,
+      "rejected": 1,
+      "positive": 4,
+      "response_rate": 58.3,
+      "positive_rate": 33.3
+    }
+  },
+  "stats_text": "✅ Профиль pilot · текущий\nвсе направления\n\n📬 Отклики и исходы:\n• Отправлено: 12\n• Отказы: 1 | Собесы: 1 | Офферы: 1\n• Тестовые: 1 | Приглашения: 1 | В ожидании: 4\n• Анкеты: 2 | успешно 1 | best_guess 1\n• Просмотрено: 2 | Не просмотрено: 2 | Прочий позитив: 2\n\n🗂 Обработка:\n• Всего просмотрено: 0\n• Ручных решений: 0 | Пропущено: 0\n\n🧮 Аналитика:\n• Поисков 2 | событий 45 | решений 27\n• Доля ответов: 58.3% | Позитивных ответов: 33.3%\n• Воронка: отклики 12 | просмотры 7 | не просмотрено 2 | ожидание 4 | отказы 1 | позитив 4\n\n🔁 Повторные отклики:\n• viewed_no_response: отклики 8 | просмотры 6 | позитив 4 | ответ 75.0%\n• retry: отклики 0 | просмотры 0 | позитив 0 | ответ 0.0%\n\n🧩 Кластеры:\n• api_qa: отклики 8 | просмотры 6 | позитив 4 | ответ 75.0%\n• unknown: отклики 4 | просмотры 1 | позитив 0 | ответ 25.0%"
+}

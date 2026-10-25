@@ -1,0 +1,39 @@
+{
+  "summary": {
+    "run_id": "pilot",
+    "profile": "pilot",
+    "profile_id": null,
+    "direction": "qa",
+    "direction_title": "QA Engineer",
+    "started_at": "2026-10-24T12:00:00+00:00",
+    "finished_at": "2026-10-24T12:00:42+00:00",
+    "duration_seconds": 42.0,
+    "sources": [],
+    "source_stats": {},
+    "stage_failures": [],
+    "status": "partial",
+    "counters": {
+      "fetched": null,
+      "already_seen": null,
+      "new": null,
+      "keyword_pass": null,
+      "evaluated": null,
+      "matcher_pass": null,
+      "applied": null,
+      "skipped": null,
+      "deferred_unscored": null,
+      "not_processed": 3,
+      "failed": null,
+      "uncertain": null
+    },
+    "counter_status": "recorded",
+    "primary_failure": null,
+    "failure_count": 0,
+    "stop_reason": "RUN_LIMIT",
+    "artifacts": [],
+    "execution_status": "completed",
+    "application_outcome": "unknown",
+    "zero_apply_diagnosis": ""
+  },
+  "text": "📊 Последний / выбранный запуск\nRun: pilot\nПрофиль: pilot\nИсточники: неизвестно\nИтог: ⚠ частично\nВыполнение: завершён\nИсход отклика: неизвестен\nНачало: 24.10 15:00\nОстановлен по лимиту поиска.\nЗавершён: 24.10 15:00\nДлительность: 42 с\n📥 получено: неизвестно\n♻ уже просмотрено: неизвестно\n🔎 оценено: неизвестно\n🎯 подходит: неизвестно\n📨 подтверждено откликов: неизвестно\n⏭ пропущено: неизвестно\n⚠ оценка отложена: неизвестно\n⚠ не обработано: 3\n❌ неудачных операций: неизвестно\n❔ требуют сверки: неизвестно\n\n🧾 /raw_log · другой запуск: /log run_id"
+}

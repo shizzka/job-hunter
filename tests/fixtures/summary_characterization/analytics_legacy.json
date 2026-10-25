@@ -1,0 +1,99 @@
+{
+  "summary": {
+    "days": 7,
+    "direction_title": "Отклики до появления направлений",
+    "all_time": true,
+    "events": 11,
+    "search_runs": 2,
+    "decisions": 3,
+    "auto_applied": 3,
+    "uncertain": 0,
+    "dry_run_matched": 0,
+    "manual": 0,
+    "keyword_filtered": 0,
+    "red_flagged": 0,
+    "low_score": 0,
+    "deferred_unscored": 0,
+    "invitations": 1,
+    "questionnaires": 2,
+    "questionnaire_successes": 1,
+    "questionnaire_failures": 1,
+    "questionnaire_questions": 3,
+    "questionnaire_best_guess": 1,
+    "questionnaire_required": 2,
+    "positive_statuses": 1,
+    "rejected_statuses": 0,
+    "pending_statuses": 1,
+    "interview_statuses": 0,
+    "offer_statuses": 0,
+    "test_task_statuses": 0,
+    "positive_other_statuses": 1,
+    "pending_new_statuses": 0,
+    "pending_viewed_statuses": 1,
+    "by_source": {
+      "habr": {
+        "decisions": 1,
+        "auto_applied": 1,
+        "manual": 0,
+        "positive": 0,
+        "rejected": 0
+      },
+      "hh": {
+        "decisions": 2,
+        "auto_applied": 2,
+        "manual": 0,
+        "positive": 0,
+        "rejected": 0
+      }
+    },
+    "by_query": {},
+    "by_resume_variant": {},
+    "by_cluster": {
+      "unknown": {
+        "decisions": 3,
+        "auto_applied": 3,
+        "manual": 0,
+        "viewed": 1,
+        "not_viewed": 0,
+        "pending": 1,
+        "positive": 0,
+        "rejected": 0,
+        "response_rate": 33.3,
+        "positive_rate": 0.0
+      }
+    },
+    "by_cover_style": {},
+    "by_retry_reason": {},
+    "top_decisions": [
+      [
+        "applied_auto",
+        3
+      ]
+    ],
+    "reason_breakdown": {
+      "applied": 3
+    },
+    "reason_groups": {
+      "applied": 3
+    },
+    "search_funnel": {
+      "fetched": 32,
+      "new": 24,
+      "invalid": 0
+    },
+    "by_direction": {
+      "Отклики до появления направлений": 3
+    },
+    "funnel": {
+      "applied": 3,
+      "viewed": 1,
+      "pending": 1,
+      "not_viewed": 0,
+      "rejected": 0,
+      "positive": 0,
+      "response_rate": 33.3,
+      "positive_rate": 0.0
+    }
+  },
+  "stats_text": "✅ Профиль pilot · текущий\nОтклики до появления направлений\n\n📬 Отклики и исходы:\n• Отправлено: 3\n• Отказы: 0 | Собесы: 0 | Офферы: 0\n• Тестовые: 0 | Приглашения: 1 | В ожидании: 1\n• Анкеты: 2 | успешно 1 | best_guess 1\n• Просмотрено: 1 | Не просмотрено: 0 | Прочий позитив: 1\n\n🗂 Обработка:\n• Всего просмотрено: 0\n• Ручных решений: 0 | Пропущено: 0\n\n🧮 Аналитика:\n• Поисков 2 | событий 11 | решений 3\n• Доля ответов: 33.3% | Позитивных ответов: 0.0%\n• Воронка: отклики 3 | просмотры 1 | не просмотрено 0 | ожидание 1 | отказы 0 | позитив 0\n\n🧩 Кластеры:\n• unknown: отклики 3 | просмотры 1 | позитив 0 | ответ 33.3%"
+}

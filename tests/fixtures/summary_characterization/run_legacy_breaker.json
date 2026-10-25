@@ -1,0 +1,71 @@
+{
+  "summary": {
+    "run_id": "pilot",
+    "profile": "pilot",
+    "profile_id": null,
+    "direction": "qa",
+    "direction_title": "QA Engineer",
+    "started_at": "2026-10-24T12:00:00+00:00",
+    "finished_at": "2026-10-24T12:00:42+00:00",
+    "duration_seconds": 42.0,
+    "sources": [
+      "habr",
+      "hh"
+    ],
+    "source_stats": {},
+    "stage_failures": [
+      {
+        "failure_id": "6e57ffdf3e9e5ae6961d113fe36e7941",
+        "reason_code": "apply_uncertain",
+        "source": "hh",
+        "vacancy_id": "u",
+        "stage": "unknown",
+        "retryable": false,
+        "continued": false,
+        "source_stopped": true,
+        "created_at": "2026-10-24T12:00:00+00:00",
+        "correlation_origin": "journal_decision"
+      }
+    ],
+    "status": "failed",
+    "counters": {
+      "fetched": 3,
+      "already_seen": null,
+      "new": null,
+      "keyword_pass": null,
+      "evaluated": null,
+      "matcher_pass": null,
+      "applied": 0,
+      "skipped": null,
+      "deferred_unscored": null,
+      "not_processed": 3,
+      "failed": null,
+      "uncertain": 1
+    },
+    "counter_status": "recorded",
+    "primary_failure": {
+      "failure_id": "6e57ffdf3e9e5ae6961d113fe36e7941",
+      "reason_code": "apply_uncertain",
+      "stage": "unknown",
+      "source": "hh",
+      "provider": null,
+      "retryable": false,
+      "fallback_status": null,
+      "first_failure_at": "2026-10-24T12:00:00+00:00",
+      "continued": false,
+      "correlation_origin": "journal_decision",
+      "affected_count": 2,
+      "downstream_events": {
+        "apply_uncertain": 1,
+        "not_processed": 1
+      }
+    },
+    "failure_count": 1,
+    "stop_reason": null,
+    "artifacts": [],
+    "execution_status": "completed",
+    "application_outcome": "uncertain",
+    "zero_apply_diagnosis": "Подтверждено откликов: 0; требуется ручная сверка: 1\n• hh: этап unknown, apply_uncertain"
+  },
+  "text": "📊 Последний / выбранный запуск\nRun: pilot\nПрофиль: pilot\nИсточники: habr, hh\nИтог: ❔ требуется ручная сверка\nВыполнение: завершён\nИсход отклика: не подтверждён; нужна ручная сверка\n⚠ hh: источник остановлен\nНачало: 24.10 15:00\nЗавершён: 24.10 15:00\nДлительность: 42 с\n📥 получено: 3\n♻ уже просмотрено: неизвестно\n🔎 оценено: неизвестно\n🎯 подходит: неизвестно\n📨 подтверждено откликов: 0\n⏭ пропущено: неизвестно\n⚠ оценка отложена: неизвестно\n⚠ не обработано: 3\n❌ неудачных операций: неизвестно\n❔ требуют сверки: 1\n\nПодтверждено откликов: 0; требуется ручная сверка: 1\n• hh: этап unknown, apply_uncertain\n\n❔ Требуется ручная сверка\napply_uncertain\nЭтап: unknown\nИсточник: hh\nВремя: 24.10 15:00\nЗатронуто вакансий: 2\n• 1 × apply_uncertain\n• 1 × not_processed\nRetryable: нет\nFallback: неизвестно\nFailure ID: 6e57ffdf3e9e5ae6961d113fe36e7941\n\n🧾 /raw_log · другой запуск: /log run_id"
+}

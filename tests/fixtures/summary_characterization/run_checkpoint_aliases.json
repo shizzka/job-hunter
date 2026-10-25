@@ -1,0 +1,111 @@
+{
+  "summary": {
+    "run_id": "pilot",
+    "profile": "pilot",
+    "profile_id": null,
+    "direction": "qa",
+    "direction_title": "QA Engineer",
+    "started_at": "2026-10-24T12:00:00+00:00",
+    "finished_at": "2026-10-24T12:00:42+00:00",
+    "duration_seconds": 42.0,
+    "sources": [
+      "hh"
+    ],
+    "source_stats": {},
+    "stage_failures": [
+      {
+        "event": "stage_failed",
+        "run_id": "pilot",
+        "source": "hh",
+        "created_at": "2026-10-24T12:00:00+00:00",
+        "failure_id": "root",
+        "reason_code": "SOURCE_TIMEOUT",
+        "stage": "collection",
+        "retryable": true,
+        "continued": false,
+        "collection": {
+          "vacancies_retained": 2
+        }
+      },
+      {
+        "failure_id": "saved",
+        "stage": "matcher",
+        "continued": true
+      },
+      {
+        "event": "failure_observed",
+        "run_id": "pilot",
+        "source": "hh",
+        "created_at": "2026-10-24T12:00:00+00:00",
+        "failure_id": "root",
+        "reason_code": "SOURCE_TIMEOUT",
+        "stage": "collection",
+        "retryable": true,
+        "continued": false,
+        "collection": {
+          "vacancies_retained": 2
+        },
+        "vacancy_id": "x"
+      },
+      {
+        "event": "stage_failed",
+        "run_id": "pilot",
+        "source": "hh",
+        "created_at": "2026-10-24T12:00:00+00:00",
+        "failure_id": "child",
+        "parent_failure_id": "root",
+        "vacancy_id": "y"
+      }
+    ],
+    "status": "partial",
+    "counters": {
+      "fetched": 3,
+      "already_seen": null,
+      "new": null,
+      "keyword_pass": null,
+      "evaluated": null,
+      "matcher_pass": null,
+      "applied": 0,
+      "skipped": null,
+      "deferred_unscored": 1,
+      "not_processed": null,
+      "failed": null,
+      "uncertain": null
+    },
+    "counter_status": "recorded",
+    "primary_failure": {
+      "failure_id": "root",
+      "reason_code": "SOURCE_TIMEOUT",
+      "stage": "collection",
+      "source": "hh",
+      "provider": null,
+      "retryable": true,
+      "fallback_status": null,
+      "first_failure_at": "2026-10-24T12:00:00+00:00",
+      "continued": false,
+      "collection": {
+        "vacancies_retained": 2
+      },
+      "affected_count": 3,
+      "downstream_events": {
+        "deferred_unscored": 1
+      }
+    },
+    "failure_count": 2,
+    "stop_reason": null,
+    "artifacts": [
+      {
+        "artifact_type": "apply_trace",
+        "artifact_ref": "synthetic/trace",
+        "trace_id": "trace",
+        "source": "hh",
+        "vacancy_id": "nav",
+        "failure_ids": []
+      }
+    ],
+    "execution_status": "completed",
+    "application_outcome": "no_applications",
+    "zero_apply_diagnosis": "0 откликов: найдено 0\n• hh: этап collection, SOURCE_TIMEOUT\n• комбинаций не опрошено: None; вакансий отброшено: None\n• unknown: этап matcher, UNKNOWN_ROOT_CAUSE\n• hh: этап unknown, UNKNOWN_ROOT_CAUSE"
+  },
+  "text": "📊 Последний / выбранный запуск\nRun: pilot\nПрофиль: pilot\nИсточники: hh\nИтог: ⚠ частично\nВыполнение: завершён\nИсход отклика: нет откликов\nНачало: 24.10 15:00\nЗавершён: 24.10 15:00\nДлительность: 42 с\n📥 получено: 3\n♻ уже просмотрено: неизвестно\n🔎 оценено: неизвестно\n🎯 подходит: неизвестно\n📨 подтверждено откликов: 0\n⏭ пропущено: неизвестно\n⚠ оценка отложена: 1\n⚠ не обработано: неизвестно\n❌ неудачных операций: неизвестно\n❔ требуют сверки: неизвестно\n\n0 откликов: найдено 0\n• hh: этап collection, SOURCE_TIMEOUT\n• комбинаций не опрошено: None; вакансий отброшено: None\n• unknown: этап matcher, UNKNOWN_ROOT_CAUSE\n• hh: этап unknown, UNKNOWN_ROOT_CAUSE\n\n❌ Основная проблема\nSOURCE_TIMEOUT\nЭтап: collection\nИсточник: hh\nВремя: 24.10 15:00\nЗатронуто вакансий: 3\n• 1 × deferred_unscored\nRetryable: да\nFallback: неизвестно\nFailure ID: root\nВсего первичных проблем: 2\n\nDebug artifacts:\n• apply_trace: synthetic/trace\n\n🧾 /raw_log · другой запуск: /log run_id"
+}

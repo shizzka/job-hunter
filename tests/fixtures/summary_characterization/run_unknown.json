@@ -1,0 +1,39 @@
+{
+  "summary": {
+    "run_id": "",
+    "profile": "pilot",
+    "profile_id": null,
+    "direction": null,
+    "direction_title": "",
+    "started_at": null,
+    "finished_at": null,
+    "duration_seconds": null,
+    "sources": [],
+    "source_stats": {},
+    "stage_failures": [],
+    "status": "incomplete",
+    "counters": {
+      "fetched": null,
+      "already_seen": null,
+      "new": null,
+      "keyword_pass": null,
+      "evaluated": null,
+      "matcher_pass": null,
+      "applied": null,
+      "skipped": null,
+      "deferred_unscored": null,
+      "not_processed": null,
+      "failed": null,
+      "uncertain": null
+    },
+    "counter_status": "minimum_or_unknown",
+    "primary_failure": null,
+    "failure_count": 0,
+    "stop_reason": null,
+    "artifacts": [],
+    "execution_status": "incomplete",
+    "application_outcome": "unknown",
+    "zero_apply_diagnosis": ""
+  },
+  "text": "📊 Последний / выбранный запуск\nRun: \nПрофиль: pilot\nИсточники: неизвестно\nИтог: ⏳ не завершён / прерван\nВыполнение: неполный\nИсход отклика: неизвестен\nНачало: неизвестно\n📥 получено: неизвестно\n♻ уже просмотрено: неизвестно\n🔎 оценено: неизвестно\n🎯 подходит: неизвестно\n📨 подтверждено откликов: неизвестно\n⏭ пропущено: неизвестно\n⚠ оценка отложена: неизвестно\n⚠ не обработано: неизвестно\n❌ неудачных операций: неизвестно\n❔ требуют сверки: неизвестно\n\n🧾 /raw_log · другой запуск: /log run_id"
+}
