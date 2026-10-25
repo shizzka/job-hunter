@@ -1754,6 +1754,73 @@ def _summarize_status_conversions(summary, latest_apply_by_vacancy, latest_statu
                 variant_bucket["rejected"] += 1
 
 
+def _summarize_funnel_and_rates(summary, latest_apply_by_vacancy, latest_status_by_vacancy):
+    # ── Воронка ──
+    funnel_applied = summary["auto_applied"]
+    funnel_viewed = 0
+    funnel_rejected = 0
+    funnel_positive = 0
+    funnel_pending = 0
+    funnel_not_viewed = 0
+    for vacancy_key, status_event in latest_status_by_vacancy.items():
+        if vacancy_key not in latest_apply_by_vacancy:
+            continue
+        bucket = status_event.get("status_bucket", "unknown")
+        detail_bucket = status_event.get("status_detail_bucket") or _status_detail_bucket(status_event.get("status", ""))
+        if _summary_status_is_viewed(bucket, detail_bucket):
+            funnel_viewed += 1
+        if detail_bucket == "pending_new":
+            funnel_not_viewed += 1
+        if bucket == "positive":
+            funnel_positive += 1
+        elif bucket == "rejected":
+            funnel_rejected += 1
+        elif bucket == "pending":
+            funnel_pending += 1
+    summary["funnel"] = {
+        "applied": funnel_applied,
+        "viewed": funnel_viewed,
+        "pending": funnel_pending,
+        "not_viewed": funnel_not_viewed,
+        "rejected": funnel_rejected,
+        "positive": funnel_positive,
+        "response_rate": round(funnel_viewed / funnel_applied * 100, 1) if funnel_applied else 0,
+        "positive_rate": round(funnel_positive / funnel_applied * 100, 1) if funnel_applied else 0,
+    }
+
+    # ── A/B resume: добавляем viewed/pending и conversion rates ──
+    for vacancy_key, status_event in latest_status_by_vacancy.items():
+        apply_event = latest_apply_by_vacancy.get(vacancy_key)
+        if not apply_event:
+            continue
+        resume_variant = apply_event.get("resume_variant", "")
+        if not resume_variant:
+            continue
+        variant_bucket = summary["by_resume_variant"].setdefault(
+            resume_variant,
+            {"applications": 0, "positive": 0, "rejected": 0},
+        )
+        bucket = status_event.get("status_bucket", "unknown")
+        detail_bucket = status_event.get("status_detail_bucket") or _status_detail_bucket(status_event.get("status", ""))
+        variant_bucket.setdefault("viewed", 0)
+        variant_bucket.setdefault("not_viewed", 0)
+        variant_bucket.setdefault("pending", 0)
+        if _summary_status_is_viewed(bucket, detail_bucket):
+            variant_bucket["viewed"] += 1
+        if detail_bucket == "pending_new":
+            variant_bucket["not_viewed"] += 1
+        if bucket == "pending":
+            variant_bucket["pending"] += 1
+
+    for group_name in ("by_resume_variant", "by_cluster", "by_cover_style", "by_retry_reason"):
+        for bucket_values in summary[group_name].values():
+            apps = bucket_values.get("applications", bucket_values.get("auto_applied", 0))
+            viewed = bucket_values.get("viewed", 0)
+            positive = bucket_values.get("positive", 0)
+            bucket_values["response_rate"] = round(viewed / apps * 100, 1) if apps else 0
+            bucket_values["positive_rate"] = round(positive / apps * 100, 1) if apps else 0
+
+
 def _summarize(
     days: int | None = None,
     *,
@@ -1847,70 +1914,7 @@ def _summarize(
 
     summary["top_decisions"] = decision_counter.most_common(8)
 
-    # ── Воронка ──
-    funnel_applied = summary["auto_applied"]
-    funnel_viewed = 0
-    funnel_rejected = 0
-    funnel_positive = 0
-    funnel_pending = 0
-    funnel_not_viewed = 0
-    for vacancy_key, status_event in latest_status_by_vacancy.items():
-        if vacancy_key not in latest_apply_by_vacancy:
-            continue
-        bucket = status_event.get("status_bucket", "unknown")
-        detail_bucket = status_event.get("status_detail_bucket") or _status_detail_bucket(status_event.get("status", ""))
-        if _summary_status_is_viewed(bucket, detail_bucket):
-            funnel_viewed += 1
-        if detail_bucket == "pending_new":
-            funnel_not_viewed += 1
-        if bucket == "positive":
-            funnel_positive += 1
-        elif bucket == "rejected":
-            funnel_rejected += 1
-        elif bucket == "pending":
-            funnel_pending += 1
-    summary["funnel"] = {
-        "applied": funnel_applied,
-        "viewed": funnel_viewed,
-        "pending": funnel_pending,
-        "not_viewed": funnel_not_viewed,
-        "rejected": funnel_rejected,
-        "positive": funnel_positive,
-        "response_rate": round(funnel_viewed / funnel_applied * 100, 1) if funnel_applied else 0,
-        "positive_rate": round(funnel_positive / funnel_applied * 100, 1) if funnel_applied else 0,
-    }
-
-    # ── A/B resume: добавляем viewed/pending и conversion rates ──
-    for vacancy_key, status_event in latest_status_by_vacancy.items():
-        apply_event = latest_apply_by_vacancy.get(vacancy_key)
-        if not apply_event:
-            continue
-        resume_variant = apply_event.get("resume_variant", "")
-        if not resume_variant:
-            continue
-        variant_bucket = summary["by_resume_variant"].setdefault(
-            resume_variant,
-            {"applications": 0, "positive": 0, "rejected": 0},
-        )
-        bucket = status_event.get("status_bucket", "unknown")
-        detail_bucket = status_event.get("status_detail_bucket") or _status_detail_bucket(status_event.get("status", ""))
-        variant_bucket.setdefault("viewed", 0)
-        variant_bucket.setdefault("not_viewed", 0)
-        variant_bucket.setdefault("pending", 0)
-        if _summary_status_is_viewed(bucket, detail_bucket):
-            variant_bucket["viewed"] += 1
-        if detail_bucket == "pending_new":
-            variant_bucket["not_viewed"] += 1
-        if bucket == "pending":
-            variant_bucket["pending"] += 1
-
-    for group_name in ("by_resume_variant", "by_cluster", "by_cover_style", "by_retry_reason"):
-        for bucket_values in summary[group_name].values():
-            apps = bucket_values.get("applications", bucket_values.get("auto_applied", 0))
-            viewed = bucket_values.get("viewed", 0)
-            positive = bucket_values.get("positive", 0)
-            bucket_values["response_rate"] = round(viewed / apps * 100, 1) if apps else 0
-            bucket_values["positive_rate"] = round(positive / apps * 100, 1) if apps else 0
+    _summarize_funnel_and_rates(summary, latest_apply_by_vacancy, latest_status_by_vacancy)
 
     return summary
 
