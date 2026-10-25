@@ -265,3 +265,38 @@ def test_tester_cannot_approve_foreign_template(setup, monkeypatch):
     monkeypatch.setattr(directions, 'active_direction', lambda home: allowed)
     assert queue.allow_stub_cover(token, profile_name='qa') is False
     assert not queue._read_queue('qa')['items'][token].get('allow_stub_cover')
+
+
+@pytest.mark.parametrize('prefix', ['manual_apply', 'stub', 'mad'])
+def test_duplicate_manual_callback_scopes_uncertain_preview_before_router(setup, monkeypatch, prefix):
+    """Spent callbacks run the outer guard before scoped_request binds the tester."""
+    import hashlib
+    import time
+    import directions
+    import profile_access
+    from tests.test_telegram_callbacks import _configured_bot, _callback
+    fake, _, _ = setup
+    principal = {'user_id': 42, 'role': 'tester', 'profile': 'qa-dev', 'direction': 'allowed'}
+    bot, calls = _configured_bot(monkeypatch, principal=principal)
+    monkeypatch.setattr(bot, '_profile_names', lambda: ['qa-dev'])
+    monkeypatch.setattr(bot, '_selected_profile', lambda p: p['profile'])
+    monkeypatch.setattr(bot, '_profile', fake._profile)
+    # Registry preparation is separate from the context binding exercised here.
+    monkeypatch.setattr(profile_access, 'require_tester_binding',
+                        lambda p: (p['profile'], p['direction']))
+    allowed = {'name': 'allowed', 'title': 'Allowed', 'search_queries': ['QA'], 'variants': []}
+    monkeypatch.setattr(directions, 'list_directions', lambda home: [allowed])
+    monkeypatch.setattr(directions, 'active_direction', lambda home: allowed)
+    item = queue.create_candidate({'id': 'foreign', 'title': 'Private foreign vacancy'}, {},
+                                  profile_name='qa-dev')
+    queue._store('qa-dev').update(lambda data: data['items'][item['token']].update(
+        direction='foreign', status='uncertain', orphan_recovered=True))
+    data = f'{prefix}:qa-dev:{item["token"]}'
+    claim = hashlib.sha256(repr((42, 42, 0, data)).encode()).hexdigest()
+    bot._update_state(lambda state: state.setdefault('callback_claims', {}).update({claim: time.time()}))
+    assert not profile_access.current_scope()[1]
+    before = queue._read_queue('qa-dev')
+    asyncio.run(bot._handle_callback_query(_callback(data, user_id=42, chat_type='private')))
+    assert calls['messages'] == []
+    assert calls['answers'][-1][1] == 'Карточка: не ждёт решения.'
+    assert queue._read_queue('qa-dev') == before

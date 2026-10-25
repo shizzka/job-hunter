@@ -31,11 +31,16 @@ class TelegramReview:
         if (profile_name not in self._profile_names() or
                 principal.get("role") != ROLE_ADMIN and self._selected_profile(principal) != profile_name):
             return False
-        item = manual_apply_queue.get_candidate(token, profile_name=profile_name)
-        if not item or item.get("status") != "uncertain":
+        import profile_access
+        try:
+            with profile_access.principal_scope(principal):
+                item = manual_apply_queue.get_candidate(token, profile_name=profile_name)
+                if not item or item.get("status") != "uncertain":
+                    return False
+                await self._open_review_card(chat_id, profile_name, token)
+                return True
+        except PermissionError:
             return False
-        await self._open_review_card(chat_id, profile_name, token)
-        return True
 
     @staticmethod
     def _review_item_text(item: dict, index: int) -> str:
