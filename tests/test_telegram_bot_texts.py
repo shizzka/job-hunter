@@ -1,3 +1,5 @@
+import telegram_bot_ui as ui
+
 from telegram_bot import (
     BUTTON_AI_LIMITS,
     BUTTON_BACKFILL,
@@ -37,15 +39,15 @@ def test_button_labels_are_russian():
     assert BUTTON_DAEMON_ON == "🟢 Фоновый режим: вкл"
     assert BUTTON_DAEMON_OFF == "⛔ Фоновый режим: выкл"
     assert BUTTON_REPEAT_OFF == "🛑 Повтор: выкл"
-    assert BUTTON_SEARCH_SETTINGS == "🎯 Направления"
+    assert BUTTON_SEARCH_SETTINGS == "🎯 Мои поиски"
     assert BUTTON_SEARCH_USE_DRAFT == "✅ Сохранить предложенное"
 
 
 def test_search_settings_menu_is_available_to_regular_user():
     from telegram_bot_ui import MENU_SEARCH, build_reply_markup
 
-    markup = build_reply_markup(ROLE_USER, menu=MENU_SEARCH)
-    labels = [button["text"] for row in markup["keyboard"] for button in row]
+    markup = ui.build_menu_inline_markup(ROLE_USER, MENU_SEARCH, token="synthetic")
+    labels = [button["text"] for row in markup["inline_keyboard"] for button in row]
 
     assert "✏️ Изменить запросы" in labels
     assert "✨ Предложить ИИ" in labels
@@ -53,7 +55,7 @@ def test_search_settings_menu_is_available_to_regular_user():
     assert "🧾 Выбрать резюме" not in labels
     assert "⚙️ Условия поиска" in labels
     assert "🛡 Режим откликов" in labels
-    assert "📋 Отклики" in [
+    assert "📨 Отклики" in [
         button["text"]
         for row in build_reply_markup(ROLE_USER)["keyboard"]
         for button in row
@@ -70,7 +72,7 @@ def test_search_conditions_and_application_modes_are_available_to_regular_user()
 
     condition_labels = [
         button["text"]
-        for row in build_reply_markup(ROLE_USER, menu=MENU_SEARCH_CONDITIONS)["keyboard"]
+        for row in ui.build_menu_inline_markup(ROLE_USER, MENU_SEARCH_CONDITIONS, token="synthetic")["inline_keyboard"]
         for button in row
     ]
     assert "👤 Опыт" in condition_labels
@@ -79,42 +81,27 @@ def test_search_conditions_and_application_modes_are_available_to_regular_user()
 
     mode_labels = [
         button["text"]
-        for row in build_reply_markup(ROLE_USER, menu=MENU_APPLICATION_MODE)["keyboard"]
+        for row in ui.build_menu_inline_markup(ROLE_USER, MENU_APPLICATION_MODE, token="synthetic")["inline_keyboard"]
         for button in row
     ]
-    assert {"👀 Только показать", "✋ Спрашивать меня", "⚡ Автоматически"} <= set(mode_labels)
+    assert {"👀 Только показать", "✋ Подтверждать отклик", "⚡ Автоматически"} <= set(mode_labels)
 
     experience_labels = [
         button["text"]
-        for row in build_reply_markup(ROLE_USER, menu=MENU_EXPERIENCE)["keyboard"]
+        for row in ui.build_menu_inline_markup(ROLE_USER, MENU_EXPERIENCE, token="synthetic")["inline_keyboard"]
         for button in row
     ]
     assert "1–3 года" in experience_labels
 
 
-def test_every_section_has_persistent_back_and_home_navigation():
-    from telegram_bot_ui import (
-        BUTTON_BACK,
-        BUTTON_MENU,
-        MENU_ADMIN,
-        MENU_MONITOR,
-        MENU_REPEAT,
-        MENU_RUN,
-        MENU_SEARCH,
-        build_reply_markup,
-        normalize_command,
-    )
-
-    assert normalize_command("/back") == ("/back", "")
-    for role, menus in (
-        (ROLE_ADMIN, (MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH, MENU_ADMIN)),
-        (ROLE_USER, (MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH)),
-    ):
-        for menu in menus:
-            markup = build_reply_markup(role, menu=menu)
-            labels = [button["text"] for row in markup["keyboard"] for button in row]
-            assert BUTTON_BACK in labels
-            assert BUTTON_MENU in labels
+def test_every_section_has_persistent_global_navigation():
+    import telegram_bot_ui as ui
+    assert ui.normalize_command("/back") == ("/back", "")
+    for role in (ROLE_ADMIN, ROLE_USER):
+        for menu in ui.reply_menu_layouts(role):
+            markup = ui.build_reply_markup(role, menu=menu)
+            assert [b["text"] for row in markup["keyboard"] for b in row] == [
+                "🔎 Найти вакансии", "📋 Ждут решения", "📨 Отклики", "⚙️ Настройки"]
             assert markup["is_persistent"] is True
 
 
@@ -222,7 +209,7 @@ def test_manual_block_company_and_why_callback_parser_and_markup():
 
     assert any(button["text"] == "❓ Почему" for button in buttons)
     assert any(button.get("callback_data") == "manual_why:qa:abcdef123456" for button in buttons)
-    assert any(button["text"] == "🚫 Компанию в ЧС" for button in buttons)
+    assert any(button["text"] == "🚫 Заблокировать компанию" for button in buttons)
     assert any(button.get("callback_data") == "manual_block_company:qa:abcdef123456" for button in buttons)
 
 
@@ -277,22 +264,23 @@ def test_chat_ai_command_is_available_to_admin_menu():
     assert "/chat_ai" in build_help_text(ROLE_ADMIN, profile_name="qa", help_section=True)
 
 
-def test_chat_ai_button_is_visible_in_admin_responses_menu():
+def test_response_menu_keeps_results_separate_from_pending_actions():
     from telegram_bot_ui import MENU_RESPONSES, build_reply_markup
 
-    markup = build_reply_markup(ROLE_ADMIN, menu=MENU_RESPONSES)
-    labels = [button["text"] for row in markup["keyboard"] for button in row]
+    markup = ui.build_menu_inline_markup(ROLE_ADMIN, MENU_RESPONSES, token="synthetic")
+    labels = [button["text"] for row in markup["inline_keyboard"] for button in row]
 
-    assert BUTTON_CHAT_AI in labels
+    assert BUTTON_CHAT_AI not in labels
+    assert "📈 Статистика" in labels
 
 
 def test_diagnostics_button_is_visible_in_admin_section_only():
     from telegram_bot_ui import MENU_ADMIN, build_reply_markup
 
-    admin_markup = build_reply_markup(ROLE_ADMIN, menu=MENU_ADMIN)
-    user_markup = build_reply_markup(ROLE_USER, menu=MENU_ADMIN)
-    admin_labels = [button["text"] for row in admin_markup["keyboard"] for button in row]
-    user_labels = [button["text"] for row in user_markup["keyboard"] for button in row]
+    admin_markup = ui.build_menu_inline_markup(ROLE_ADMIN, MENU_ADMIN, token="synthetic")
+    user_markup = ui.build_menu_inline_markup(ROLE_USER, MENU_ADMIN, token="synthetic")
+    admin_labels = [button["text"] for row in admin_markup["inline_keyboard"] for button in row]
+    user_labels = [button["text"] for row in user_markup["inline_keyboard"] for button in row]
 
     assert BUTTON_DIAGNOSTICS in admin_labels
     assert BUTTON_DIAGNOSTICS not in user_labels
@@ -302,9 +290,9 @@ def test_hh_response_button_is_visible_and_mapped_for_both_roles():
     from telegram_bot_ui import ADMIN_BUTTON_MAP, MENU_RESPONSES, USER_BUTTON_MAP, build_reply_markup
 
     for role in (ROLE_ADMIN, ROLE_USER):
-        markup = build_reply_markup(role, menu=MENU_RESPONSES)
-        labels = [button["text"] for row in markup["keyboard"] for button in row]
-        assert BUTTON_HH_RESPONSES in labels
+        markup = ui.build_menu_inline_markup(role, MENU_RESPONSES, token="synthetic")
+        labels = [button["text"] for row in markup["inline_keyboard"] for button in row]
+        assert "📨 Все" in labels
 
     assert ADMIN_BUTTON_MAP[BUTTON_HH_RESPONSES] == "/hh_responses"
     assert USER_BUTTON_MAP[BUTTON_HH_RESPONSES] == "/hh_responses"
@@ -474,8 +462,10 @@ def test_renamed_buttons_keep_their_commands_and_old_keyboard_shortcuts():
     ]
     for role in (ui.ROLE_USER, ui.ROLE_ADMIN):
         for old, new, command in shortcuts:
-            assert ui._resolve_message_command(new, role) == (command, "")
-            assert ui._resolve_message_command(old, role) == (command, "")
+            expected = "/directions" if new == ui.BUTTON_SEARCH_SETTINGS else "/find" if new == ui.BUTTON_SEARCH else command
+            assert ui._resolve_message_command(new, role) == (expected, "")
+            old_expected = "/find" if old == "🔎 Поиск" else command
+            assert ui._resolve_message_command(old, role) == (old_expected, "")
 
 
 def test_help_has_troubleshooting_and_start_uses_buttons():
@@ -488,13 +478,12 @@ def test_help_has_troubleshooting_and_start_uses_buttons():
     assert "Состояние → Журналы → Подробный" in help_text
 
 
-def test_trial_search_label_in_help_menu_and_command_messages():
+def test_trial_search_label_in_search_section_and_command_messages():
     import telegram_bot_ui as ui
 
     label = "Пробный поиск (без откликов)"
     for role in (ui.ROLE_USER, ui.ROLE_ADMIN):
-        texts = [ui.build_help_text(role, help_section=help_section) for help_section in (False, True)]
-        texts += [ui.build_menu_section_text(ui.MENU_SEARCH, role=role, profile_name="synthetic"),
+        texts = [ui.build_menu_section_text(ui.MENU_SEARCH, role=role, profile_name="synthetic"),
                   ui.build_progress_text("dry-run", profile_name="synthetic"),
                   ui.build_busy_status_text(active_command="dry-run", profile_name="synthetic", elapsed_sec=1)]
         texts += [ui.format_command_result("dry-run", result, role=role) for result in

@@ -199,9 +199,21 @@ def get_candidate(token: str, *, profile_name: str | None = None) -> dict | None
     token = (token or "").strip()
     if not token:
         return None
-    data = _store(profile_name).update(lambda data: _recover_applying(data, time.time(), token))
+    store = _store(profile_name)
+    import profile_access
+    bound_direction = profile_access.current_scope()[1]
+    if bound_direction:
+        from direction_history import HistoryScope
+        saved = store.load().get("items", {}).get(token)
+        if not isinstance(saved, dict) or HistoryScope(store.path.parent).owner(saved) != bound_direction:
+            return None
+    data = store.update(lambda data: _recover_applying(data, time.time(), token))
     item = data.get("items", {}).get(token)
-    return item if isinstance(item, dict) else None
+    if not isinstance(item, dict):
+        return None
+    if profile_name and _safe_profile(item.get("profile_name")) != _safe_profile(profile_name):
+        return None
+    return item
 
 
 def mark_candidate(token: str, status: str, message: str = "", *, profile_name: str | None = None) -> dict | None:
@@ -278,6 +290,9 @@ def confirm_no_action(token, owner, *, store=None) -> bool:
 
 def allow_stub_cover(token: str, *, profile_name: str | None = None) -> bool:
     """«📨 Отправить шаблон» (B17): the owner accepts the template letter for this pending card."""
+    import profile_access
+    if profile_access.current_scope()[1] and get_candidate(token, profile_name=profile_name) is None:
+        return False
     changed = False
 
     def mutate(data):
@@ -400,7 +415,8 @@ def feedback_label(value: str) -> str:
     return FEEDBACK_LABELS.get((value or "").strip(), "")
 
 
-def record_feedback(token: str, value: str, *, user_id: int = 0, profile_name: str | None = None) -> dict | None:
+def record_feedback(token: str, value: str, *, user_id: int = 0, profile_name: str | None = None,
+                    consume_decision: bool = False) -> dict | None:
     value = (value or "").strip()
     if value not in FEEDBACK_LABELS:
         return None
@@ -408,9 +424,12 @@ def record_feedback(token: str, value: str, *, user_id: int = 0, profile_name: s
 
     def mutate(data):
         nonlocal item
-        item = data["items"].get((token or "").strip())
-        if item is None:
+        current = data["items"].get((token or "").strip())
+        if current is None or (consume_decision and (
+                current.get("status") != "pending" or current.get("snoozed_until", 0) > time.time()
+                or _safe_profile(current.get("profile_name")) != _safe_profile(profile_name))):
             return
+        item = current
         item["feedback"] = value
         item["feedback_label"] = feedback_label(value)
         item["feedback_at"] = datetime.now().isoformat(timespec="seconds")
@@ -418,7 +437,7 @@ def record_feedback(token: str, value: str, *, user_id: int = 0, profile_name: s
             item["feedback_user_id"] = int(user_id)
         if value == "bad" and item.get("status") == "applying":
             item["revoked"] = True
-        if value == "bad" and item.get("status") == "pending":
+        if (value == "bad" or consume_decision) and item.get("status") == "pending":
             item["status"] = "dismissed"
         item["updated_at"] = item["feedback_at"]
 
@@ -549,7 +568,9 @@ def snooze_candidate(token: str, *, profile_name: str, hours: int = 24) -> dict 
     def mutate(data):
         nonlocal item
         current = data["items"].get((token or "").strip())
-        if current is None or current.get("status") != "pending":
+        if (current is None or current.get("status") != "pending"
+                or float(current.get("snoozed_until") or 0) > time.time()
+                or _safe_profile(current.get("profile_name")) != _safe_profile(profile_name)):
             return
         item = current
         until = time.time() + max(1, int(hours)) * 3600
@@ -740,7 +761,7 @@ def build_manual_apply_markup(
         first.append({"text": "✅ Откликнуться с ИИ", "callback_data": callback_data})
     url = (vacancy.get("url") or "").strip()
     if url:
-        first.append({"text": "🔗 Открою сам", "url": url})
+        first.append({"text": "🔗 Открыть вакансию", "url": url})
     if first:
         rows.append(first)
     second = []
@@ -761,7 +782,34 @@ def build_manual_apply_markup(
             third.append({"text": "⏰ Через сутки", "callback_data": snooze_data})
     block_company_data = manual_block_company_callback_data(profile_name, token)
     if vacancy.get("company") and len(block_company_data.encode("utf-8")) <= 64:
-        third.append({"text": "🚫 Компанию в ЧС", "callback_data": block_company_data})
+        third.append({"text": "🚫 Заблокировать компанию", "callback_data": block_company_data})
     if third:
         rows.append(third)
     return {"inline_keyboard": rows} if rows else None
+
+
+def save_sent_cover(token: str, owner: str, cover: str, *, store=None) -> bool:
+    """Save the exact dispatched cover under the current apply claim only."""
+    saved = False
+    def mutate(data):
+        nonlocal saved
+        item = data["items"].get(token, {})
+        if item.get("status") == "applying" and item.get("owner") == owner:
+            item["sent_cover"] = str(cover)
+            saved = True
+    (store or _store()).update(mutate)
+    return saved
+
+
+def build_review_card_markup(item: dict, profile_name: str) -> dict:
+    token = item["token"]
+    vacancy = item.get("vacancy") or {}
+    def button(text, action):
+        return {"text": text, "callback_data": f"rq:{action}:{profile_name}:{token}"}
+    rows = []
+    if item.get("allow_ai_apply", True) and (vacancy.get("source") or "hh") == "hh":
+        rows.append([{"text": "✅ Откликнуться", "callback_data": manual_apply_callback_data(profile_name, token)}])
+    rows.extend([[button("◀", "h"), button("👍", "g"), button("👎", "b"), button("▶", "v")],
+                 [button("❓ Почему", "w"), button("⋯ Ещё", "m")]])
+    return {"inline_keyboard": [[b for b in row if len(b["callback_data"].encode()) <= 64]
+                                for row in rows if row]}

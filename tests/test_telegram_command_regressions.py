@@ -253,7 +253,7 @@ def test_resume_picker_button_never_uses_internal_id_as_missing_title(menu_bot, 
 
 
 @pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN])
-@pytest.mark.parametrize("mode,expected", [("confirm", "Спрашивать меня"), ("auto", "Автоматически")])
+@pytest.mark.parametrize("mode,expected", [("confirm", "Подтверждать отклик"), ("auto", "Автоматически")])
 def test_application_mode_button_and_screen_use_the_same_terms(menu_bot, monkeypatch, role, mode, expected):
     import profile as profile_mod
 
@@ -264,14 +264,14 @@ def test_application_mode_button_and_screen_use_the_same_terms(menu_bot, monkeyp
     monkeypatch.setattr(profile_mod, "update_profile_env", updates)
     command, arg = ui._resolve_message_command(ui.BUTTON_SEARCH_APPLICATION_MODE, role)
     assert (command, arg) == ("/search_application_mode", "")
-    text = dispatch(bot, command, arg, role=role)[-1]
+    text = next(text for text in dispatch(bot, command, arg, role=role) if text.startswith("🛡 Режим откликов"))
     assert f"Сейчас: {expected}" in text
-    assert "✋ Спрашивать меня —" in text and "⚡ Автоматически —" in text
-    assert "подтверждать" not in text.casefold() and "автоотклик" not in text.casefold()
-    labels = [b["text"] for row in bot._send_text.call_args.kwargs["reply_markup"]["keyboard"] for b in row]
-    marked = [label for label in labels if label.startswith("✅ ")]
-    assert len(marked) == 1 and expected in marked[0]
-    assert ui._resolve_message_command(marked[0], role) == ("/search_application_" + mode, "")
+    assert "✋ Подтверждать отклик —" in text and "⚡ Автоматически —" in text
+    assert "Спрашивать меня" not in text and "автоотклик" not in text.casefold()
+    buttons = [b for row in bot._send_text.call_args.kwargs["reply_markup"]["inline_keyboard"] for b in row]
+    marked = [button for button in buttons if button["text"].startswith("✓ ")]
+    assert len(marked) == 1 and expected in marked[0]["text"]
+    assert marked[0]["callback_data"].endswith(":search_application_" + mode)
     assert profile.hh.application_mode == mode
     updates.assert_not_called()
 

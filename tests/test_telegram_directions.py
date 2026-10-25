@@ -390,6 +390,9 @@ async def test_real_dispatch_routes_active_search_commands_before_legacy_env_upd
     bot._queue_launching = {}
     bot._queue_length = lambda name: 0
     bot._selected_menu = lambda principal: "main"
+    # F27 appends local inline controls after routing; this harness isolates dispatch.
+    from unittest.mock import AsyncMock
+    bot._send_section_actions = AsyncMock()
     bot._menu_reply_markup = lambda principal, menu=None: {"keyboard": [[{"text": str(menu)}]]}
     observed = []
     async def dispatch(chat_id, principal, command, arg):

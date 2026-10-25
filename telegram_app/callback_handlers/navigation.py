@@ -73,3 +73,37 @@ async def handle_direction(self, context: CallbackContext):
         return
     await self._answer_callback_query(callback_id)
     return await self._direction_callback(chat_id, principal, raw_data)
+
+
+async def handle_navigation(self, context: CallbackContext):
+    """Bound, read-only navigation delegates actions through all command guards."""
+    from telegram_bot_ui import ADMIN_BUTTON_MAP, USER_BUTTON_MAP, ADMIN_ONLY_COMMANDS
+    from telegram_app import history
+    if (context.message.get("chat") or {}).get("type") != "private":
+        await self._answer_callback_query(context.callback_id, "Откройте личный чат с ботом.", show_alert=True)
+        return
+    await self._answer_callback_query(context.callback_id)
+    profile_name = self._selected_profile(context.principal)
+    if not context.can_access_profile(profile_name):
+        await self._send_text(context.chat_id, "🔒 Нет доступа к этому профилю.")
+        return
+    parts = str(context.raw_data).split(":")
+    if len(parts) == 4 and parts[2] == "profile":
+        profiles = self._profile_names()
+        if context.principal.get("role") != ROLE_ADMIN or parts[1] != history.profile_picker_token(self._profile(profile_name).home_dir, profiles):
+            await self._send_text(context.chat_id, "Экран изменился или недоступен. Откройте раздел заново.")
+            return
+        if not parts[3].isdigit() or int(parts[3]) >= len(profiles):
+            await self._send_text(context.chat_id, "Список профилей изменился. Откройте его заново.")
+            return
+        await self._dispatch(context.chat_id, context.principal, "/profile", profiles[int(parts[3])])
+        return
+    role = context.principal.get("role")
+    mapping = ADMIN_BUTTON_MAP if role == ROLE_ADMIN else USER_BUTTON_MAP
+    allowed = set(mapping.values()) | {"/directions"}
+    command = "/" + parts[2] if len(parts) == 3 else ""
+    if (len(parts) != 3 or parts[1] != history.token(self._profile(profile_name).home_dir)
+            or command not in allowed or (command in ADMIN_ONLY_COMMANDS and role != ROLE_ADMIN)):
+        await self._send_text(context.chat_id, "Экран изменился или недоступен. Откройте раздел заново.")
+        return
+    await self._dispatch(context.chat_id, context.principal, command, "")

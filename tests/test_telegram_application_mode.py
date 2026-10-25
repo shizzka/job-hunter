@@ -74,6 +74,16 @@ def confirmation_buttons(bot):
     return [b["callback_data"] for b in buttons]
 
 
+def assert_global_navigation(markup):
+    assert [[b["text"] for b in row] for row in markup["keyboard"]] == [
+        ["🔎 Найти вакансии", "📋 Ждут решения"], ["📨 Отклики", "⚙️ Настройки"]]
+
+
+def latest_global_message(bot):
+    return next(call for call in reversed(bot._send_text.call_args_list)
+                if "keyboard" in (call.kwargs.get("reply_markup") or {}))
+
+
 @pytest.mark.parametrize("with_direction", [True, False])
 @pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN])
 @pytest.mark.parametrize("entry", ["onboarding", "menu", "marked_menu", "command"])
@@ -98,8 +108,9 @@ async def test_auto_requires_confirmation_from_every_entry(mode_bot, with_direct
         bot._reload_profile_daemon.assert_not_called()
     else:
         bot._reload_profile_daemon.assert_called_once_with("qa")
-        labels = [b["text"] for row in bot._send_text.call_args.kwargs["reply_markup"]["keyboard"] for b in row]
-        assert "✅ " + ui.BUTTON_APPLICATION_AUTO in labels
+        saved = latest_global_message(bot)
+        assert "бот теперь откликается сам" in saved.args[1]
+        assert_global_navigation(saved.kwargs["reply_markup"])
     # A refused or already consumed confirmation never turns into a new save.
     after = settings_bytes(bot)
     await callback(bot, yes)
@@ -123,11 +134,9 @@ async def test_safe_mode_is_immediate_and_visible(mode_bot, with_direction, role
         profile_mod.update_profile_env("qa", {"HH_APPLICATION_MODE": "auto"})
     await choose(bot, principal, entry, "confirm")
     assert bot._profile("qa").hh.application_mode == "confirm"
-    call = bot._send_text.call_args
+    call = latest_global_message(bot)
     assert "бот сначала присылает вакансию вам и откликается только после вашего «да»" in call.args[1]
-    labels = [b["text"] for row in call.kwargs["reply_markup"]["keyboard"] for b in row]
-    assert "✅ " + ui.BUTTON_APPLICATION_CONFIRM in labels
-    assert "✅ " + ui.BUTTON_APPLICATION_AUTO not in labels
+    assert_global_navigation(call.kwargs["reply_markup"])
     assert 42 not in bot._direction_sessions()
 
 
@@ -186,10 +195,12 @@ def test_current_mode_is_marked_on_each_mode_picker(mode_bot, mode, role):
     bot, principal = mode_bot
     principal["role"] = role
     add_direction(bot, mode=mode)
-    markup = bot._menu_reply_markup(principal, menu=ui.MENU_APPLICATION_MODE)
-    marked = [b["text"] for row in markup["keyboard"] for b in row if b["text"].startswith("✅ ")]
+    assert_global_navigation(bot._menu_reply_markup(principal, menu=ui.MENU_APPLICATION_MODE))
+    markup = ui.build_menu_inline_markup(role, ui.MENU_APPLICATION_MODE,
+        token="synthetic-mode", application_mode=bot._effective_application_mode(principal))
+    marked = [b for row in markup["inline_keyboard"] for b in row if b["text"].startswith("✓ ")]
     assert len(marked) == 1
-    assert ui._resolve_message_command(marked[0], principal["role"]) == ("/search_application_" + mode, "")
+    assert marked[0]["callback_data"] == "nav:synthetic-mode:search_application_" + mode
     _, rows, _ = onboarding.build(hh_ok=True, resumes=[], directions=[], active=None, mode=mode, has_search=False)
     for label, action in (b for row in rows for b in row if b[1] in {"auto", "confirm"}):
         assert label.startswith("✓ ") == (action == mode)
@@ -234,7 +245,7 @@ async def test_stop_from_mode_menu_preserves_selection_and_controls(mode_bot, mo
     cancel = Mock(return_value={"signal": "SIGTERM"} if outcome == "process" else None)
     monkeypatch.setattr(bot, "_request_active_command_cancel", cancel)
     await bot._dispatch(42, principal, "/search_application_mode", "")
-    assert bot._send_text.call_args.kwargs["reply_markup"] == ui.build_reply_markup(
+    assert latest_global_message(bot).kwargs["reply_markup"] == ui.build_reply_markup(
         ui.ROLE_USER, menu=ui.MENU_APPLICATION_MODE, application_mode=mode,
         active=True, can_stop=outcome != "denied")
     await bot._dispatch(42, principal, "/cancel_active", "")

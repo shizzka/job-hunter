@@ -34,15 +34,13 @@ class TelegramCandidate:
     def _clear_candidate_state(self, user_id: int) -> None:
         self._clear_search_settings_state(user_id, "candidate_interview")
 
-    def _candidate_confirm_markup(self) -> dict:
-        return {
-            "keyboard": [
-                [{"text": BUTTON_CANDIDATE_SAVE}, {"text": BUTTON_CANDIDATE_EDIT}],
-                [{"text": BUTTON_CANDIDATE_SKIP}, {"text": BUTTON_BACK}],
-            ],
-            "resize_keyboard": True,
-            "is_persistent": True,
-        }
+    def _candidate_confirm_markup(self, principal) -> dict:
+        from telegram_app.history import token
+        home = self._profile(self._selected_profile(principal)).home_dir
+        rows = [[(BUTTON_CANDIDATE_SAVE, "candidate_save"), (BUTTON_CANDIDATE_EDIT, "candidate_edit")],
+                [(BUTTON_CANDIDATE_SKIP, "candidate_skip"), (BUTTON_BACK, "back")]]
+        return {"inline_keyboard": [[{"text": label, "callback_data": f"nav:{token(home)}:{command}"}
+                                    for label, command in row] for row in rows]}
 
     async def _send_candidate_question(self, chat_id: int, principal: dict, profile_name: str) -> None:
         reply_menu = reply_menu_for_command(principal.get("role", ROLE_USER), "/candidate_interview")
@@ -170,7 +168,7 @@ class TelegramCandidate:
             return True
         state.update(mode="confirm", pending_text=answer, pending_topic="база знаний")
         self._set_candidate_state(principal["user_id"], state)
-        await self._send_text(chat_id, f"Файл «{filename}» прочитан ({len(answer)} символов).\n\nСохранить как один подтверждённый факт?", reply_markup=self._candidate_confirm_markup())
+        await self._send_text(chat_id, f"Файл «{filename}» прочитан ({len(answer)} символов).\n\nСохранить как один подтверждённый факт?", reply_markup=self._candidate_confirm_markup(principal))
         return True
 
     async def _accept_candidate_interview_input(self, chat_id: int, principal: dict, text: str) -> bool:
@@ -209,7 +207,7 @@ class TelegramCandidate:
         await self._send_text(
             chat_id,
             f"Вот что будет сохранено как подтверждённый факт:\n\n[{topic}] {answer}\n\nПроверьте формулировку.",
-            reply_markup=self._candidate_confirm_markup(),
+            reply_markup=self._candidate_confirm_markup(principal),
         )
         return True
 
@@ -276,7 +274,7 @@ class TelegramCandidate:
         if command == "/candidate_interview":
             if state.get("questions") and state.get("mode") in {"answer", "confirm"}:
                 if state.get("mode") == "confirm":
-                    await self._send_text(chat_id, "Остался неподтверждённый ответ. Сохраните, измените или пропустите его.", reply_markup=self._candidate_confirm_markup())
+                    await self._send_text(chat_id, "Остался неподтверждённый ответ. Сохраните, измените или пропустите его.", reply_markup=self._candidate_confirm_markup(principal))
                 else:
                     await self._send_candidate_question(chat_id, principal, profile_name)
                 return

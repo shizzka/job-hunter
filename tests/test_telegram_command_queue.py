@@ -305,7 +305,16 @@ class CallbackBot(Bot):
             label="manual AI apply", task=None, entry=queue.current_entry())
 
 
+def pending_card_lookup(monkeypatch):
+    """Queue-only subprocess fakes still need an actionable card at router admission."""
+    import manual_apply_queue
+    monkeypatch.setattr(manual_apply_queue, "get_candidate", lambda token, **kwargs: {
+        "token": token, "status": "pending", "allow_ai_apply": True,
+        "vacancy": {"source": "hh"}})
+
+
 def test_original_manual_callback_only_deletes_button_after_admission_and_replays_checks(monkeypatch):
+    pending_card_lookup(monkeypatch)
     monkeypatch.setenv("BOT_COMMAND_QUEUE_MAX", "1")
     monkeypatch.setattr(queue.telegram_access, "resolve_user", lambda uid: {
         "user_id": uid, "role": "user", "profile": "qa"})
@@ -388,6 +397,7 @@ async def spin_until(predicate):
 
 
 def test_real_bot_duplicate_manual_callbacks_run_sequentially_and_report_each_chat(monkeypatch, tmp_path):
+    pending_card_lookup(monkeypatch)
     import runtime_control
     async def scenario():
         bot, _, messages, _ = real_bot(monkeypatch, tmp_path)
@@ -615,6 +625,7 @@ def test_paused_resume_button_survives_removal_of_original_head(monkeypatch):
 
 
 def test_pruning_finished_task_wakes_waiting_profile(monkeypatch, tmp_path):
+    pending_card_lookup(monkeypatch)
     import runtime_control
     async def scenario():
         bot, _, _, _ = real_bot(monkeypatch, tmp_path)
@@ -635,6 +646,7 @@ def test_pruning_finished_task_wakes_waiting_profile(monkeypatch, tmp_path):
 
 
 def test_second_queued_manual_token_is_not_admitted_again(monkeypatch, tmp_path):
+    pending_card_lookup(monkeypatch)
     import runtime_control
     async def scenario():
         bot, _, messages, _ = real_bot(monkeypatch, tmp_path)
@@ -661,11 +673,11 @@ def test_queued_candidate_applied_before_drain_is_revalidated_before_hh(monkeypa
     import config
     import runtime_control
     import manual_apply_queue
-    from unittest.mock import Mock
+    from unittest.mock import AsyncMock, Mock
     candidate = {"status": "pending", "allow_ai_apply": True, "vacancy": {"source": "hh"}}
     monkeypatch.setattr(config, "HH_APPLICATION_MODE", "auto")
     monkeypatch.setattr(manual_apply_queue, "get_candidate", lambda token, **kwargs: dict(candidate))
-    monkeypatch.setattr(agent.company_blacklist, "is_blocked", lambda company: False)
+    monkeypatch.setattr(agent.company_blacklist, "is_blocked", lambda company, *args, **kwargs: False)
     hh = Mock(side_effect=AssertionError("Applied candidate must be refused before opening HH"))
     monkeypatch.setattr(agent, "HHClient", hh)
 
@@ -673,6 +685,7 @@ def test_queued_candidate_applied_before_drain_is_revalidated_before_hh(monkeypa
         bot, _, messages, _ = real_bot(monkeypatch, tmp_path)
         blocker = bot._mark_active_command(principal={"user_id": 1}, label="blocker", profile_name="qa")
         blocker.task = SimpleNamespace(done=lambda: False)
+        monkeypatch.setattr(bot, "_answer_callback_query", AsyncMock())
         await bot._handle_callback_query(source("applied-before-drain"))
         assert bot._queue_length("qa") == 1
         candidate["status"] = "applied"
@@ -684,11 +697,12 @@ def test_queued_candidate_applied_before_drain_is_revalidated_before_hh(monkeypa
             return {"ok": False, "stdout": "", "stderr": "", "returncode": 1}
         monkeypatch.setattr(runtime_control, "run_command_capture", capture)
         bot._clear_active_command("qa")
-        await spin_until(lambda: attempts and not bot._active_commands and not bot._queue_drainers)
-        assert attempts == ["applied-before-drain"]
+        await spin_until(lambda: not bot._active_commands and not bot._queue_drainers)
+        assert attempts == []
         hh.assert_not_called()
         summary = next(payload["text"] for payload in messages if "Очередь выполнена" in payload["text"])
-        assert "статус карточки: applied" in summary
+        assert "пропуск" in summary
+        assert "отклик отправлен" in bot._answer_callback_query.call_args.args[1]
     asyncio.run(scenario())
 
 

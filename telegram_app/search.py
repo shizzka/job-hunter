@@ -45,7 +45,7 @@ class TelegramSearch:
         client = self._client_record(user_id) or {}
         queries = profile.hh.search_queries
         lines = [
-            f"🎯 Направления · профиль {_pretty_profile_name(profile_name)}",
+            f"🎯 Мои поиски · профиль {_pretty_profile_name(profile_name)}",
             "",
             "🔑 Ключевые слова:",
         ]
@@ -66,7 +66,7 @@ class TelegramSearch:
     def _application_mode_label(value: str) -> str:
         return {
             "preview": "только показать",
-            "confirm": "Спрашивать меня",
+            "confirm": "Подтверждать отклик",
             "auto": "Автоматически",
         }.get(value, "Автоматически")
 
@@ -105,7 +105,7 @@ class TelegramSearch:
             f"Сейчас: {self._application_mode_label(mode)}{scope}.",
             "Чтобы включить режим «Автоматически», нужно ваше подтверждение. Остальные режимы сохраняются сразу.",
             "👀 Только показать — пришлёт подходящие вакансии, без отправки.",
-            "✋ Спрашивать меня — бот присылает вакансию и откликается только после нажатия «Откликнуться с ИИ».",
+            "✋ Подтверждать отклик — бот присылает вакансию и откликается только после нажатия «Откликнуться».",
             "⚡ Автоматически — бот откликается сам на подходящие вакансии в пределах лимитов.",
         ])
 
@@ -371,6 +371,68 @@ class TelegramSearch:
 
         active_command.task = self._create_active_task(active_command, runner)
 
+    def _find_snapshot(self, profile_name):
+        import directions
+        import hashlib
+        import json
+        profile = self._profile(profile_name)
+        items = directions.list_directions(profile.home_dir)
+        active = directions.active_direction(profile.home_dir)
+        base = {"home": profile.home_dir, "items": items, "active": active,
+                "mode": profile.hh.application_mode, "queries": profile.hh.search_queries}
+        return hashlib.sha256(json.dumps(base, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+    def _find_launch_current(self, state):
+        try:
+            return state.get("snapshot") == self._find_snapshot(state["profile"])
+        except (ValueError, OSError, KeyError):
+            return False
+
+    async def _show_find_launch(self, chat_id, principal, profile_name, *, selected=None):
+        import directions
+        import secrets
+        profile = self._profile(profile_name)
+        items = [item for item in directions.list_directions(profile.home_dir)
+                 if not item.get("paused")]
+        # A tester can only see and launch their assigned search. The direction
+        # store and subsequent command admission retain their own access checks.
+        if principal.get("role") == "tester":
+            items = [item for item in items if item["name"] == principal.get("direction")]
+        state = {"token": secrets.token_hex(6), "profile": profile_name,
+                 "snapshot": self._find_snapshot(profile_name),
+                 "choices": [item["name"] for item in items]}
+        prefix = f"fs:pick:{state['token']}:"
+        if selected is None and len(items) > 1:
+            rows = [[{"text": item["title"], "callback_data": prefix + str(index)}]
+                    for index, item in enumerate(items)]
+            rows.append([{"text": "Все поиски", "callback_data": prefix + str(len(items))}])
+            text = "🔎 Найти вакансии\n\nВыберите поиск или запустите все поиски."
+        else:
+            selected = selected if selected is not None else state["choices"]
+            chosen = [item for item in items if item["name"] in selected]
+            if selected and len(chosen) != len(selected):
+                await self._send_text(chat_id, "Поиск изменился. Откройте «Найти вакансии» заново.")
+                return
+            state["selected"] = selected
+            state["auto"] = any(item.get("application_mode", "confirm") == "auto" for item in chosen) if chosen else profile.hh.application_mode == "auto"
+            lines = ["🔎 Найти вакансии сейчас", ""]
+            if chosen:
+                for item in chosen:
+                    lines.extend([f"Поиск: {item['title']}",
+                                  f"Режим: {self._application_mode_label(item.get('application_mode', 'confirm'))}"])
+            else:
+                lines.extend(["Поиск: " + ", ".join(profile.hh.search_queries),
+                              f"Режим: {self._application_mode_label(profile.hh.application_mode)}"])
+            text = "\n".join(lines)
+            rows = [[{"text": "🔎 Начать поиск", "callback_data": f"fs:go:{state['token']}"}]]
+            if state["auto"]:
+                rows.append([{"text": "🧪 Только показать результаты", "callback_data": f"fs:dry:{state['token']}"}])
+        self._set_search_settings_state(principal["user_id"], find_launch=state)
+        await self._send_text(chat_id, text, reply_markup={"inline_keyboard": rows})
+
+    async def _route_find(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        await self._show_find_launch(chat_id, principal, profile_name)
+
     async def _route_market_research(self, chat_id, principal, command, arg, profile_name, reply_menu):
         if arg.strip():
             await self._start_market_research(chat_id, principal, arg)
@@ -415,7 +477,7 @@ class TelegramSearch:
         if directions.active_direction(self._profile(profile_name).home_dir):
             # Keep the «Мой поиск» submenu on the keyboard, then show the active direction card.
             self._set_selected_menu(principal["user_id"], MENU_SEARCH)
-            await self._send_text(chat_id, "🎯 Направления — условия текущего поиска ниже.",
+            await self._send_text(chat_id, "🎯 Мои поиски — условия текущего поиска ниже.",
                                   reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH))
             await self._dispatch_direction(chat_id, principal, "/direction_summary", "")
             return

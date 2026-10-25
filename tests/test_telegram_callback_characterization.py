@@ -172,8 +172,86 @@ def record_case(case, monkeypatch):
     return asyncio.run(run())
 
 
+def f27_review_contract(case, expected):
+    """Explicit intentional UX deltas over the frozen split22 evidence.
+
+    Preserve the original inventory verbatim. Every phase still compares exact
+    claims, admission, access scopes and operations; only the named review
+    outcomes change to the F27 pending-only contract.
+    """
+    expected = [deepcopy(outcome) for outcome in expected]
+    name = case["name"]
+    applies = {"apply", "apply_user", "apply_tester", "apply_group_admin",
+               "admission_stopping", "apply_no_message"}
+    feedbacks = {"feedback_good", "feedback_bad", "feedback_good_user",
+                 "feedback_failed", "feedback_good_no_message"}
+    blocks = {"block", "block_user", "block_failed", "block_no_company"}
+    for outcome in expected:
+        events = outcome["events"]
+        if name == "review_unknown":
+            outcome["state"] = {}
+            outcome["events"] = [
+                ["get_candidate", ["2"], {"profile_name": "qa-dev"}],
+                ["_answer_callback_query", ["callback", "Карточка уже обработана: результат не подтверждён, проверьте на hh.ru."], {}, ["", "", ""]]]
+        elif name in applies and any(e[0] == "_start_manual_ai_apply" for e in events):
+            updated = []
+            for event in events:
+                if event[0] == "_start_manual_ai_apply":
+                    continue
+                if event[0] == "_answer_callback_query" and event[1][1:] == ["Отправляю отклик через ИИ…"]:
+                    updated.extend([
+                        ["get_candidate", ["token"], {"profile_name": "qa-dev"}],
+                        [event[0], ["callback", "Карточка уже обработана: нужна сверка на hh.ru."], {"show_alert": True}, event[3]]])
+                else:
+                    updated.append(event)
+            outcome["events"] = updated
+        elif name in feedbacks and any(e[0] == "record_feedback" for e in events):
+            start = next(i for i, e in enumerate(events) if e[0] == "record_feedback")
+            scope = next(e[3] for e in events if e[0] == "_answer_callback_query")
+            state = "не найдена" if name == "feedback_failed" else "нужна сверка на hh.ru"
+            outcome["events"] = events[:start] + [
+                ["get_candidate", ["token"], {"profile_name": "qa-dev"}],
+                ["_answer_callback_query", ["callback", f"Карточка уже не ждёт решения: {state}."], {"show_alert": True}, scope]]
+        elif name in blocks and any(e[0] == "get_candidate" for e in events):
+            start = next(i for i, e in enumerate(events) if e[0] == "get_candidate")
+            scope = next(e[3] for e in events if e[0] == "_answer_callback_query")
+            missing = name == "block_failed"
+            outcome["events"] = events[:start + 1] + [
+                ["_answer_callback_query", ["callback", "Карточка недоступна. Обновите список." if missing else
+                    "Карточка уже обработана: результат не подтверждён, проверьте на hh.ru."],
+                    {"show_alert": True} if missing else {}, scope]]
+        elif name == "block_foreign":
+            for event in events:
+                if event[0] == "_answer_callback_query" and event[1][1:] != ["Уже сделано"]:
+                    event[1] = ["callback", "Карточка недоступна."]
+                    event[2] = {"show_alert": True}
+    # Replaying a spent review action now reads its saved state; claims stay
+    # identical to split22 and the action itself is never retried.
+    parts = case["data"].split(":")
+    profile = parts[1] if len(parts) >= 3 else ""
+    card_protocol = parts[0] in {"manual_apply", "manual_fb", "manual_snooze", "manual_block_company", "stub", "mad"}
+    allowed = case.get("role", "admin") == "admin" or (profile == "qa-dev" and case.get("chat_type", "private") == "private")
+    if card_protocol and profile in {"qa-dev", "other"} and allowed:
+        for outcome in expected:
+            updated = []
+            for event in outcome["events"]:
+                if event[0] == "_answer_callback_query" and event[1][1:] == ["Уже сделано"]:
+                    state = "не ждёт решения" if case.get("options", {}).get("missing_item") else "нужна сверка на hh.ru"
+                    updated.append(["get_candidate", [parts[2]], {"profile_name": profile}])
+                    event[1][1] = f"Карточка: {state}."
+                updated.append(event)
+            outcome["events"] = updated
+    if case["name"] in {"why", "why_user"}:
+        for outcome in expected:
+            for event in outcome["events"]:
+                if event[0] == "_answer_callback_query" and event[1][1:] == ["Показываю причину"]:
+                    event[1][1] = "Карточка: нужна сверка на hh.ru. Показываю причину."
+    return expected
+
+
 @pytest.mark.parametrize("case", INVENTORY["cases"], ids=lambda case: case["name"])
 def test_callback_outcome(case, monkeypatch):
-    assert record_case(case, monkeypatch) == [{"phase": phase, **INVENTORY["traces"][index]}
+    expected = [{"phase": phase, **INVENTORY["traces"][index]}
         for phase, index in zip(("first", "repeat", "copied", "restart"),
                                 INVENTORY["outcomes"][case["name"]], strict=True)]
+    assert record_case(case, monkeypatch) == f27_review_contract(case, expected)

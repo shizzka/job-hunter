@@ -253,11 +253,15 @@ class TelegramAdmin:
         return
 
     async def _route_profiles(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        from telegram_app import history
         profiles = self._profile_names()
+        await self._send_text(chat_id, "Выберите профиль:", reply_markup=self._menu_reply_markup(principal))
         await self._send_text(
             chat_id,
             build_profiles_text(profiles, selected_profile=profile_name),
-            reply_markup=self._menu_reply_markup(principal, profile_buttons=profiles),
+            reply_markup={"inline_keyboard": [[{"text": name,
+                "callback_data": f"nav:{history.profile_picker_token(self._profile(profile_name).home_dir, profiles)}:profile:{index}"}]
+                for index, name in enumerate(profiles)]},
         )
         return
 

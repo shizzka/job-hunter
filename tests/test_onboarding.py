@@ -30,7 +30,7 @@ def test_ready_profile_offers_search_and_completes_after_first_run():
     active = {"title": "Электромонтажник"}
     text, rows, complete = onboarding.build(hh_ok=True, resumes=[{"title": "A"}], directions=[active], active=active,
                                             mode="confirm", has_search=False)
-    assert "search" in actions(rows) and not complete and "Направления: Электромонтажник" in text
+    assert "search" in actions(rows) and not complete and "Мои поиски: Электромонтажник" in text
     _, _, complete = onboarding.build(hh_ok=True, resumes=[{"title": "A"}], directions=[active], active=active,
                                       mode="confirm", has_search=True)
     assert complete
@@ -40,7 +40,7 @@ def test_every_action_maps_to_an_existing_command():
     import telegram_bot_ui as ui
     known = set(ui.ADMIN_BUTTON_MAP.values()) | set(ui.USER_BUTTON_MAP.values())
     for command in onboarding.ACTIONS.values():
-        assert command in known or command in {"/hh_resumes", "/directions"}, command
+        assert command in known or command in {"/hh_resumes", "/directions", "/search"}, command
 
 
 @pytest.mark.parametrize("done", list(product((False, True), repeat=5)))
@@ -58,7 +58,7 @@ def test_each_step_mark_uses_its_own_state_and_summary_requires_all(done):
     assert ("Всё готово!" in text) == all(done)
     assert ("Дальше бот присылает вакансии сам." in text) == all(done)
     assert ("search" in actions(rows)) == all(done[:4])
-    assert "3. Направления" in text
+    assert "3. Мои поиски" in text
 
 
 @pytest.mark.parametrize("mode", ["confirm", "preview", "auto", "", "unknown"])

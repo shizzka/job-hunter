@@ -22,6 +22,11 @@ def token(home):
     return hashlib.sha256((str(Path(home).resolve()) + "|" + view.name).encode()).hexdigest()[:12]
 
 
+def profile_picker_token(home, profiles):
+    """Also bind profile indexes to their displayed order."""
+    return hashlib.sha256((token(home) + "|" + "|".join(profiles)).encode()).hexdigest()[:12]
+
+
 def markup(home, command, *, scope="active"):
     view = HistoryScope(home)
     selected = {"*": "all", "?": "unspecified"}.get(scope, "active")
@@ -190,3 +195,31 @@ async def show(bot, chat_id, principal, profile_name, command, arg):
     await bot._send_text(chat_id, f"История откликов · {title}", reply_markup=bot._menu_reply_markup(principal))
     for text in texts:
         await bot._send_text(chat_id, text, reply_markup=controls)
+
+
+def responses_snapshot(profile, *, days=30):
+    """Local saved-send totals and observed outcomes; never refresh hh.ru here."""
+    import application_history
+    from direction_history import vacancy_key
+    from outcome import status_bucket, status_detail_bucket
+    sends = application_history.summarize(profile.home_dir, events_file=profile.analytics_events_file,
+        seen_file=profile.seen_file, days=days, recent_limit=None)
+    view = HistoryScope(profile.home_dir)
+    latest = {}
+    for event in analytics.history_events(profile.analytics_events_file):
+        if event.get("event") == "negotiation_status":
+            key = view.owner(event), vacancy_key(event)
+            prior = latest.get(key, {})
+            if str(event.get("created_at") or "") >= str(prior.get("created_at") or ""):
+                latest[key] = event
+    viewed = invitations = rejected = 0
+    for row in sends["recent"]:
+        event = latest.get((view.owner(row), vacancy_key(row)), {})
+        bucket = event.get("status_bucket") or status_bucket(event.get("status", ""))
+        detail = event.get("status_detail_bucket") or status_detail_bucket(event.get("status", ""))
+        viewed += bucket in {"positive", "rejected"} or detail == "pending_viewed"
+        invitations += bucket == "positive"
+        rejected += bucket == "rejected"
+    return {"sent": sends["count"], "viewed": viewed,
+            "invitations": invitations, "rejected": rejected,
+            "waiting": max(0, sends["count"] - invitations - rejected), "incomplete": sends["incomplete"]}

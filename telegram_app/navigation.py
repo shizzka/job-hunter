@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 
 from telegram_app.auth_bridge import looks_like_standalone_hh_auth_code as _looks_like_standalone_hh_auth_code
 from telegram_app.command_queue import current_entry
@@ -16,6 +17,7 @@ from telegram_bot_ui import (
     CLIENT_ONBOARDING_STEPS,
     LEGACY_BUTTON_MAP,
     MENU_MAIN,
+    MENU_RESPONSES,
     MENU_PARENTS,
     ROLE_ADMIN,
     ROLE_USER,
@@ -33,6 +35,8 @@ from telegram_bot_ui import (
     build_help_text,
     build_hh_resumes_text,
     build_menu_section_text,
+    build_menu_inline_markup,
+    build_responses_summary_text,
     reply_menu_for_command,
 )
 import client_hh_auth
@@ -69,15 +73,18 @@ class TelegramNavigation:
             reply_markup=self._menu_reply_markup(principal),
         )
 
-    async def _send_getting_started(self, chat_id: int, principal: dict, *, only_if_incomplete: bool = False) -> None:
+    async def _send_getting_started(self, chat_id: int, principal: dict, *, only_if_incomplete: bool = False, cached: bool = False) -> None:
         from telegram_app import onboarding
         import directions as directions_mod
         profile_name = self._selected_profile(principal)
         profile = self._profile(profile_name)
         from hh.session_probe import probe, save_catalog, OK
-        checked = await asyncio.to_thread(probe, profile.hh.cookies_file)
+        checked = ({"status": OK if Path(profile.hh.cookies_file).is_file() else "login",
+                    "message": "Проверить вход можно кнопкой ниже.",
+                    "resumes": client_hh_auth.load_hh_resume_catalog(profile_name)}
+                   if cached else await asyncio.to_thread(probe, profile.hh.cookies_file))
         resumes = checked["resumes"] if checked["status"] == OK else []
-        if checked["status"] == OK:
+        if checked["status"] == OK and not cached:
             try:
                 save_catalog(client_hh_auth.hh_resume_catalog_path(profile_name), resumes)
             except Exception as exc:
@@ -100,15 +107,84 @@ class TelegramNavigation:
                                        for label, action in row] for row in rows]}
         await self._send_text(chat_id, text, reply_markup=markup)
 
+    async def _send_section_actions(self, chat_id: int, principal: dict, menu: str | None = None) -> None:
+        from telegram_app import history
+        selected_menu = menu or self._selected_menu(principal)
+        role = principal.get("role", ROLE_USER)
+        profile = self._profile(self._selected_profile(principal))
+        markup = build_menu_inline_markup(role, selected_menu, token=history.token(profile.home_dir),
+            application_mode=self._effective_application_mode(principal))
+        if markup["inline_keyboard"]:
+            await self._send_text(chat_id, "Выберите действие:", reply_markup=markup)
+
     async def _send_menu(self, chat_id: int, principal: dict, *, profile_name: str, menu: str = MENU_MAIN, help_section: bool = False) -> None:
+        from telegram_app import history
+        from telegram_app.guards import read_thread
         role = principal.get("role", ROLE_USER)
         selected_menu = _normalize_menu(role, menu)
         self._set_selected_menu(principal["user_id"], selected_menu)
-        await self._send_text(
-            chat_id,
-            build_help_text(role, profile_name=profile_name, help_section=help_section) if selected_menu == MENU_MAIN else build_menu_section_text(selected_menu, role=role, profile_name=profile_name),
-            reply_markup=self._menu_reply_markup(principal, menu=selected_menu),
-        )
+        if selected_menu == MENU_RESPONSES:
+            snapshot = await read_thread(history.responses_snapshot, self._profile(profile_name))
+            text = build_responses_summary_text(snapshot)
+        else:
+            text = (build_help_text(role, profile_name=profile_name, help_section=help_section)
+                    if selected_menu == MENU_MAIN else
+                    build_menu_section_text(selected_menu, role=role, profile_name=profile_name))
+        await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal, menu=selected_menu))
+        if selected_menu != MENU_MAIN:
+            await self._send_section_actions(chat_id, principal, selected_menu)
+
+    async def _send_start_summary(self, chat_id: int, principal: dict, profile_name: str) -> bool:
+        """Restore context from local state; opening /start never probes hh.ru."""
+        import directions
+        import application_history
+        import json
+        import time
+        import company_blacklist
+        from direction_views import DirectionView
+        from telegram_app import history
+        from telegram_app.guards import read_thread
+        profile = self._profile(profile_name)
+        try:
+            active = directions.active_direction(profile.home_dir) or {}
+        except (OSError, ValueError, PermissionError):
+            return False
+        mode = str(active.get("application_mode") or profile.hh.application_mode or "")
+        resumes = client_hh_auth.load_hh_resume_catalog(profile_name)
+        if not (active and resumes and Path(profile.hh.cookies_file).is_file()
+                and mode in {"preview", "confirm", "auto"}):
+            return False
+        # Scope the count exactly like the decision inbox, including tester restrictions.
+        view = DirectionView(profile.home_dir)
+        try:
+            queue = json.loads((Path(profile.home_dir) / "manual_apply_queue.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            queue = {"items": {}}
+        candidates = [item for item in queue.get("items", {}).values()
+                      if isinstance(item, dict) and item.get("status") in {"pending", "uncertain"}
+                      and item.get("profile_name", profile_name) == profile_name
+                      and (item.get("status") == "uncertain" or (
+                          float(item.get("snoozed_until") or 0) <= time.time()
+                          and (not item.get("created_ts") or time.time() - float(item["created_ts"]) <= 7 * 24 * 60 * 60)
+                          and not company_blacklist.is_blocked((item.get("vacancy") or {}).get("company", ""), profile_name)))]
+        pending = len(view.review_items(candidates))
+        applications = await read_thread(application_history.summarize, profile.home_dir,
+            events_file=profile.analytics_events_file, seen_file=profile.seen_file, days=7)
+        daemon = self._daemon_state(profile_name)
+        interval, _ = self._profile_schedule(profile_name)
+        next_search = (f"в течение {interval} мин (по расписанию)" if daemon.get("running") and interval > 0
+                       else "расписание выключено")
+        labels = {"preview": "👀 Только показать", "confirm": "✋ Подтверждать отклик", "auto": "⚡ Автоматически"}
+        prefix = "не меньше " if applications.get("incomplete") else ""
+        text = (f"Job Hunter работает\n\n📋 Ждут решения: {pending}\n"
+                f"📨 Отправлено за неделю: {prefix}{applications['count']}\n"
+                f"🔎 Следующий поиск: {next_search}\n\nРежим откликов: {labels[mode]}")
+        self._set_selected_menu(principal["user_id"], MENU_MAIN)
+        await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal, menu=MENU_MAIN))
+        if pending:
+            await self._send_text(chat_id, "Подходящие вакансии ждут вашего решения.", reply_markup={"inline_keyboard": [[{
+                "text": f"📋 Посмотреть {pending}", "callback_data": f"nav:{history.token(profile.home_dir)}:review"}]]})
+        return True
 
     async def _send_guest_welcome(self, chat_id: int, user_id: int) -> None:
         await self._send_text(
@@ -374,6 +450,8 @@ class TelegramNavigation:
 
         handler = route.handler if route else "_route_unknown"
         await getattr(self, handler)(chat_id, principal, command, arg, profile_name, reply_menu)
+        if route and route.actions:
+            await self._send_section_actions(chat_id, principal)
 
     async def _route_busy(self, chat_id, principal, command, arg, profile_name, reply_menu):
         await self._send_busy_status(chat_id, principal, profile_name=profile_name)
@@ -387,9 +465,11 @@ class TelegramNavigation:
     async def _route_main(self, chat_id, principal, command, arg, profile_name, reply_menu):
         if principal.get("impersonating"):
             await self._send_text(chat_id, f"👤 Режим «смотреть как клиент»: профиль {profile_name}. Вернуться: /act_as_self")
+        if command == "/start" and await self._send_start_summary(chat_id, principal, profile_name):
+            return
         await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_MAIN, help_section=command == "/help")
         if command == "/start":
-            await self._send_getting_started(chat_id, principal, only_if_incomplete=True)
+            await self._send_getting_started(chat_id, principal, only_if_incomplete=True, cached=True)
         return
 
     async def _route_getting_started(self, chat_id, principal, command, arg, profile_name, reply_menu):

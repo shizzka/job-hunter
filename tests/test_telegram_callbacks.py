@@ -381,7 +381,7 @@ def test_callback_router_starts_chat_ai_action(
 
 def test_callback_router_starts_manual_apply(monkeypatch):
     bot, calls = _configured_bot(monkeypatch)
-    monkeypatch.setattr(telegram_bot.manual_apply_queue, "get_candidate", lambda *a, **kw: None)
+    monkeypatch.setattr(telegram_bot.manual_apply_queue, "get_candidate", lambda *a, **kw: {"status": "pending", "vacancy": {}})
     starts = []
 
     async def start_apply(
@@ -418,7 +418,7 @@ def test_callback_router_starts_manual_apply(monkeypatch):
 def test_user_can_start_manual_apply_for_own_profile(monkeypatch):
     principal = {"user_id": 42, "role": telegram_bot.ROLE_USER, "profile": "qa"}
     bot, calls = _configured_bot(monkeypatch, principal=principal)
-    monkeypatch.setattr(telegram_bot.manual_apply_queue, "get_candidate", lambda *a, **kw: None)
+    monkeypatch.setattr(telegram_bot.manual_apply_queue, "get_candidate", lambda *a, **kw: {"status": "pending", "vacancy": {}})
     starts = []
 
     async def start_apply(chat_id, current_principal, *, profile_name, token):
@@ -436,12 +436,13 @@ def test_user_can_start_manual_apply_for_own_profile(monkeypatch):
 def test_callback_router_records_manual_feedback(monkeypatch):
     bot, calls = _configured_bot(monkeypatch)
     feedback_calls = []
-    item = {"vacancy": {"id": "1"}}
+    item = {"status": "pending", "vacancy": {"id": "1"}}
+    monkeypatch.setattr(telegram_bot.manual_apply_queue, "get_candidate", lambda *a, **kw: item)
 
     monkeypatch.setattr(
         telegram_bot.manual_apply_queue,
         "record_feedback",
-        lambda token, feedback, *, user_id, profile_name=None: (
+        lambda token, feedback, *, user_id, profile_name=None, consume_decision=False: (
             feedback_calls.append(
                 (token, feedback, user_id)
             )
@@ -461,6 +462,9 @@ def test_callback_router_records_manual_feedback(monkeypatch):
         },
     )
 
+    from unittest.mock import AsyncMock
+    show = AsyncMock()
+    monkeypatch.setattr(bot, "_show_review_queue", show)
     asyncio.run(
         bot._handle_callback_query(
             _callback("manual_fb:qa:token-1:good")
@@ -469,11 +473,10 @@ def test_callback_router_records_manual_feedback(monkeypatch):
 
     assert feedback_calls == [("token-1", "good", 1)]
     assert calls["answers"] == [
-        ("callback-1", "Записал: Полезно", False)
+        ("callback-1", "Запомнил: вакансия хорошая. Отклик не отправлен.", False)
     ]
-    assert calls["edits"] == [
-        (42, 7, {"manual": "token-1"})
-    ]
+    assert calls["edits"] == []
+    assert show.call_args.kwargs == {"profile_name": "qa", "message_id": 7, "advance_from": "token-1", "hint": True}
 
 
 def test_callback_router_shows_manual_reason(monkeypatch):
@@ -513,7 +516,7 @@ def test_callback_router_blocks_company(monkeypatch, tmp_path):
         telegram_bot.manual_apply_queue,
         "get_candidate",
         lambda token, *, profile_name=None: {
-            "vacancy": {"company": "Example"}
+            "status": "pending", "token": "token-1", "vacancy": {"company": "Example"}
         },
     )
     monkeypatch.setattr(
@@ -533,6 +536,11 @@ def test_callback_router_blocks_company(monkeypatch, tmp_path):
         run_command_capture,
     )
 
+    from types import SimpleNamespace
+    monkeypatch.setattr(bot, "_profile", lambda name: SimpleNamespace(home_dir=str(tmp_path)))
+    async def edit(chat_id, message_id, text, **kwargs):
+        calls["messages"].append((chat_id, text, kwargs.get("reply_markup")))
+    monkeypatch.setattr(bot, "_edit_text", edit)
     asyncio.run(
         bot._handle_callback_query(
             _callback(
@@ -541,18 +549,10 @@ def test_callback_router_blocks_company(monkeypatch, tmp_path):
         )
     )
 
-    assert company_blacklist.is_blocked("Example", "qa")
-    assert not company_blacklist.is_blocked("Example", "other")
-    assert marks == [
-        (
-            "token-1",
-            "company_blocked",
-            "Example",
-        )
-    ]
-    assert calls["messages"][0][1] == (
-        "🚫 Новые отклики в Example запрещены для профиля qa."
-    )
+    assert not company_blacklist.is_blocked("Example", "qa")
+    assert marks == []
+    assert "Заблокировать Example?" in calls["messages"][0][1]
+    assert calls["messages"][0][2]["inline_keyboard"][0][0]["callback_data"] == "rq:X:qa:token-1"
 
 
 def test_callback_router_retries_captcha_search(monkeypatch):

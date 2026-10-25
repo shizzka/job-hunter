@@ -18,6 +18,25 @@ def test_route_groups_have_unique_commands_and_existing_handlers():
         assert callable(getattr(TelegramBot, route.handler))
 
 
+@pytest.mark.parametrize("command,handler", [
+    ("/find", "_route_find"),
+    ("/menu_settings", "_route_menu"),
+    ("/review", "_route_review"),
+])
+def test_f27_destinations_are_declared_in_the_command_table(command, handler):
+    assert route_for_command(command).handler == handler
+
+
+@pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN, "tester"])
+def test_new_global_buttons_use_existing_guarded_routes(role):
+    for label, command in (("🔎 Найти вакансии", "/find"),
+                           ("📋 Ждут решения", "/review"),
+                           ("📨 Отклики", "/menu_responses"),
+                           ("⚙️ Настройки", "/menu_settings")):
+        assert ui._resolve_message_command(label, role) == (command, "")
+        assert route_for_command(command) is not None
+
+
 @pytest.mark.parametrize("button_map", [ui.ADMIN_BUTTON_MAP, ui.USER_BUTTON_MAP, ui.LEGACY_BUTTON_MAP])
 def test_every_authenticated_keyboard_command_has_a_route(button_map):
     for command in button_map.values():

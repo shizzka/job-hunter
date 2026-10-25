@@ -26,6 +26,7 @@ import telegram_access
 import telegram_bot
 import telegram_bot_ui as ui
 from tests.direction_view_fakes import make_direction
+from tests.telegram_f27_expectations import f27_expected
 from tests.test_telegram_menu_routing import menu_bot  # noqa: F401
 
 
@@ -118,6 +119,10 @@ def dispatch_bot(menu_bot, monkeypatch, tmp_path):
 
 def normalize(value, home):
     if isinstance(value, dict):
+        if {"token", "snapshot", "choices", "profile"} <= value.keys():
+            # F27 launch token and path-dependent settings digest are opaque;
+            # retain all profile, search selection and mode fields around them.
+            value = {**value, "token": "<launch-token>", "snapshot": "<launch-snapshot>"}
         return {str(key): "<fingerprint>" if key == "base" else normalize(item, home)
                 for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -127,6 +132,8 @@ def normalize(value, home):
     if isinstance(value, float) and 1_000_000_000 <= value < 10_000_000_000:
         return "<epoch>"
     if isinstance(value, str):
+        if re.fullmatch(r"fs:stop:[a-f0-9]+", value):
+            return "fs:stop:<active-token>"
         value = value.replace(str(home), "<profile>")
         for checkout in (CURRENT_CHECKOUT, RECORDED_CHECKOUT):
             value = value.replace(checkout, "<checkout>")
@@ -257,5 +264,37 @@ def test_dispatch_outcome(dispatch_bot, monkeypatch, role, scenario, text, arg):
         assert all(reply["first_line"] != "🔒 Профиль tester или привязанное направление не подготовлены."
                    for reply in actual["replies"])
     key = case_key(role, scenario, text, "" if is_button else arg)
-    expected = normalize(INVENTORY["outcomes"][INVENTORY["cases"][key]], profile.home_dir)
+    baseline = normalize(INVENTORY["outcomes"][INVENTORY["cases"][key]], profile.home_dir)
+    expected = f27_expected("dispatch", key, baseline)
     assert actual == expected
+
+
+@pytest.mark.parametrize("role", ROLES)
+@pytest.mark.parametrize("label,command,first_line", [
+    ("🔎 Найти вакансии", "/find", "🔎 Найти вакансии сейчас"),
+    ("📋 Ждут решения", "/review", "✅ Всё разобрано. Сейчас от вас ничего не требуется."),
+    ("⚙️ Настройки", "/menu_settings", "⚙️ Настройки"),
+])
+def test_f27_new_destinations_are_read_only(dispatch_bot, monkeypatch, role, label, command, first_line):
+    """New labels extend the inventory without replacing its legacy evidence."""
+    bot, workers, profile, events, writes = dispatch_bot
+    principal = {"user_id": 42, "role": role, "profile": "qa-dev", "direction": "qa"}
+    directions.set_active_direction(profile.home_dir, "qa")
+    monkeypatch.setattr(telegram_access, "resolve_user", lambda uid: principal)
+    assert ui._resolve_message_command(label, role) == (command, "")
+    before = profile_files(profile.home_dir)
+    asyncio.run(bot._dispatch(42, principal, command, ""))
+    assert bot._send_text.call_args_list[0].args[1].splitlines()[0] == first_line
+    assert workers == []
+    assert writes == []
+    assert profile_files(profile.home_dir) == before
+    assert all(event[0] != "_start_cli_command" for event in events)
+    if command == "/find":
+        launch = bot._load_state()["user_state"]["42"]["find_launch"]
+        assert launch["profile"] == "qa-dev"
+        assert launch["choices"] == launch["selected"] == ["qa"]
+        assert launch["auto"] is False
+    elif command == "/review":
+        assert events == [["_show_review_queue", [], {"profile_name": "qa-dev", "reset": True}]]
+    else:
+        assert bot._load_state()["user_state"]["42"]["menu"] == "settings"

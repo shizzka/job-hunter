@@ -28,6 +28,9 @@ class TelegramCommands:
         flag: str,
         label: str,
         timeout: int,
+        *,
+        search_directions: list[str] | None = None,
+        search_snapshot: str = "",
     ) -> None:
         role = principal.get("role", ROLE_USER)
         reply_markup = self._menu_reply_markup(principal)
@@ -50,10 +53,14 @@ class TelegramCommands:
             return
 
         active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
+        from telegram_app.callback_handlers.search import stop_token
+        progress_markup = ({"inline_keyboard": [[{"text": "⏹ Остановить",
+                            "callback_data": f"fs:stop:{stop_token(profile_name, active_command)}"}]]}
+                           if flag in {"--search", "--dry-run"} else self._menu_reply_markup(principal))
         progress_message = await self._send_text(
             chat_id,
             build_progress_text(label, profile_name=profile_name),
-            reply_markup=self._menu_reply_markup(principal),
+            reply_markup=progress_markup,
         )
         progress_task: asyncio.Task | None = None
         progress_message_id = int((progress_message or {}).get("message_id") or 0)
@@ -76,11 +83,15 @@ class TelegramCommands:
                     chat_id, principal, profile_name=profile_name, action="analyze_ai_used",
                 ):
                     return
-                result = await self._run_active_command_capture(
-                    active_command,
-                    runtime_control.agent_command_argv(profile_name, flag),
-                    timeout=timeout,
-                )
+                if search_directions is None:
+                    result = await self._run_active_command_capture(
+                        active_command,
+                        runtime_control.agent_command_argv(profile_name, flag),
+                        timeout=timeout,
+                    )
+                else:
+                    result = await self._run_selected_searches(
+                        active_command, profile_name, flag, timeout, search_directions, search_snapshot)
                 message, send_as_document, document_name, document_content = self._cli_command_result(
                     profile_name, principal, flag, label, result, role)
                 if progress_task:
@@ -135,6 +146,35 @@ class TelegramCommands:
                 self._clear_active_command(profile_name)
 
         active_command.task = self._create_active_task(active_command, runner)
+
+    async def _run_selected_searches(self, active_command, profile_name, flag, timeout, selected, snapshot):
+        import directions
+        if flag not in {"--search", "--dry-run"} or snapshot != self._find_snapshot(profile_name):
+            return {"ok": False, "stdout": "Настройки поиска изменились. Откройте «Найти вакансии» заново."}
+        home = self._profile(profile_name).home_dir
+        original = directions.active_direction(home)
+        original_name = (original or {}).get("name")
+        results = []
+        for name in selected or [None]:
+            if snapshot != self._find_snapshot(profile_name):
+                results.append({"ok": False, "stdout": "Настройки поиска изменились. Оставшиеся поиски отменены."})
+                break
+            switched = name is not None and name != original_name
+            if switched:
+                directions.set_active_direction(home, name)
+            try:
+                result = await self._run_active_command_capture(
+                    active_command, runtime_control.agent_command_argv(profile_name, flag), timeout=timeout)
+                results.append(result)
+            finally:
+                if switched and (directions.active_direction(home) or {}).get("name") == name:
+                    directions.set_active_direction(home, original_name)
+            if not result.get("ok") or active_command.cancel_requested:
+                break
+            if directions.active_direction(home) != original:
+                break
+        return {**results[-1], "ok": all(item.get("ok") for item in results),
+                "stdout": "\n".join(item.get("stdout") or "" for item in results)}
 
     def _cli_command_result(self, profile_name, principal, flag, label, result, role):
         message = format_command_result(label, result, role=role)

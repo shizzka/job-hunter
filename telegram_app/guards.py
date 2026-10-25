@@ -99,11 +99,18 @@ def read_command(fn):
 
 def read_callback(data):
     parts = str(data).split(":")
-    return (parts[0] == "hist"
+    return (parts[0] == "nav" and len(parts) == 3 and (parts[2].startswith("menu_") or parts[2] in {
+                "back", "find", "review", "directions", "companies", "candidate_profile", "candidate_facts",
+                "schedule", "help", "getting_started", "hh_responses", "stats", "runs", "research",
+                "why_no_apply", "search_settings", "search_conditions", "search_experience",
+                "search_application_mode", "hh_resumes", "status", "diagnostics", "profiles", "users",
+                "clients", "ai_limits", "log", "raw_log", "chat_log"})
+            or parts[0] == "hist"
+            or parts[0] == "fs" and len(parts) > 1 and parts[1] in {"pick", "open"}
             or parts[0] == "gs" and len(parts) > 1 and parts[1] in {"auto", "dirs", "resumes", "check"}
             or parts[0] == "dir" and len(parts) > 2 and parts[2] in {
                 "stats", "list", "back", "editmenu", "edit", "delete", "strategy", "letteroffer", "variants"}
-            or parts[0] == "rq" and len(parts) > 1 and parts[1] in {"p", "u", "o", "d"}
+            or parts[0] == "rq" and len(parts) > 1 and parts[1] in {"p", "u", "o", "d", "h", "v", "c", "m", "w", "l", "x", "e", "L", "U"}
             or parts[0] in {"manual_why", "chat_ai", "chat_ai_any", "chat_ai_alt", "chat_ai_any_alt",
                             "gform_preview"}
             or parts[0] == "gf" and len(parts) > 1 and parts[1] in {"view", "check"})
@@ -128,6 +135,38 @@ def release_callback_soon(bot, callback, attempts=20):
             asyncio.get_running_loop().call_later(0.5, release_callback_soon, bot, callback, attempts - 1)
         else:
             log.warning("Callback claim release gave up: bot state lock stayed busy")
+
+
+def _repeated_card_state(bot, principal, message, data):
+    """A spent action explains its card's current outcome without retrying it."""
+    parts = str(data).split(":")
+    if len(parts) < 3:
+        return None
+    if parts[0] == "rq" and len(parts) == 4 and parts[1] in {"g", "b", "s", "X"}:
+        profile, token = parts[2:]
+    elif parts[0] in {"manual_apply", "manual_fb", "manual_snooze", "manual_block_company", "stub", "mad"}:
+        profile, token = parts[1:3]
+    else:
+        return None
+    if (profile not in bot._profile_names()
+            or principal.get("role") != "admin" and (
+                bot._selected_profile(principal) != profile or (message.get("chat") or {}).get("type") != "private")):
+        return None
+    import manual_apply_queue
+    import profile_access
+    try:
+        with profile_access.principal_scope(principal):
+            item = manual_apply_queue.get_candidate(token, profile_name=profile)
+    except PermissionError:
+        return "Карточка недоступна: доступ или направление изменились."
+    labels = {"applied": "отклик отправлен", "already_applied": "уже откликались",
+              "applying": "отклик выполняется", "uncertain": "нужна сверка на hh.ru",
+              "dismissed": "решение сохранено", "company_blocked": "компания заблокирована",
+              "pending": "ждёт решения"}
+    status = labels.get((item or {}).get("status"), "не ждёт решения")
+    if (item or {}).get("snoozed_until", 0) > time.time():
+        status = "отложена"
+    return "Карточка: " + status + "."
 
 
 def callback_guard(fn):
@@ -171,7 +210,8 @@ def callback_guard(fn):
                 if await self._show_uncertain_manual_apply(chat_id, principal, profile, token):
                     await self._answer_callback_query(str(callback.get("id") or ""), "Нужна сверка на hh.ru")
                     return
-            await self._answer_callback_query(str(callback.get("id") or ""), DONE)
+            await self._answer_callback_query(str(callback.get("id") or ""),
+                                              _repeated_card_state(self, principal, message, data) or DONE)
             return
         claimed = {**callback, "_guard_claim": claim}
         result = await fn(self, claimed)

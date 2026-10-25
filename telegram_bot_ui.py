@@ -34,8 +34,8 @@ BUTTON_SEARCH = "🔎 Найти вакансии"
 BUTTON_BLACKLIST = "🚫 Компании"
 BUTTON_BLACKLIST_ADD = "➕ В чёрный список"
 BUTTON_BLACKLIST_REMOVE = "➖ Разрешить компанию"
-BUTTON_SEARCH_SETTINGS = "🎯 Направления"
-BUTTON_DIRECTIONS = "🧭 Направления"
+BUTTON_SEARCH_SETTINGS = "🎯 Мои поиски"
+BUTTON_DIRECTIONS = "🧭 Мои поиски"
 BUTTON_REVIEW = "📋 Вакансии на проверку"
 BUTTON_SEARCH_EDIT = "✏️ Изменить запросы"
 BUTTON_SEARCH_SUGGEST = "✨ Предложить ИИ"
@@ -54,7 +54,7 @@ BUTTON_EXPERIENCE_1_3 = "1–3 года"
 BUTTON_EXPERIENCE_3_6 = "3–6 лет"
 BUTTON_EXPERIENCE_6_PLUS = "6+ лет"
 BUTTON_APPLICATION_PREVIEW = "👀 Только показать"
-BUTTON_APPLICATION_CONFIRM = "✋ Спрашивать меня"
+BUTTON_APPLICATION_CONFIRM = "✋ Подтверждать отклик"
 BUTTON_APPLICATION_AUTO = "⚡ Автоматически"
 BUTTON_DRYRUN = "🧪 Пробный поиск (без откликов)"
 BUTTON_CHECK = "📬 Приглашения"
@@ -87,14 +87,16 @@ BUTTON_BACK = "◀ Назад"
 BUTTON_BUSY = "⏳ Выполняется..."
 BUTTON_CANCEL_ACTIVE = "⏹ Остановить"
 BUTTON_MENU_MONITOR = "📊 Состояние"
-BUTTON_RESPONSES = "📋 Отклики"
+BUTTON_RESPONSES = "📨 Отклики"
+BUTTON_PENDING = "📋 Ждут решения"
+BUTTON_SETTINGS = "⚙️ Настройки"
 BUTTON_HH = "🔐 hh.ru и резюме"
 BUTTON_LOGS = "📜 Журналы"
 BUTTON_ZERO_APPLY = "❓ Почему не было откликов"
 BUTTON_MENU_RUN = "🚀 Запуск"
 BUTTON_MENU_REPEAT = "⏰ Повтор"
-BUTTON_MENU_ADMIN = "⚙️ Админ"
-BUTTON_CANDIDATE_PROFILE = "🧠 Обо мне"
+BUTTON_MENU_ADMIN = "🛠 Для админа"
+BUTTON_CANDIDATE_PROFILE = "🧠 Факты для ИИ"
 BUTTON_CANDIDATE_FACTS = "📋 Мои факты"
 BUTTON_CANDIDATE_INTERVIEW = "✨ Уточнить профиль"
 BUTTON_CANDIDATE_ADD_FACT = "➕ Добавить факт"
@@ -106,6 +108,7 @@ BUTTON_PROFILE_PREFIX = "📁 Профиль: "
 LEGACY_BUTTON_PROFILE_PREFIX = "Профиль: "
 
 MENU_MAIN = "main"
+MENU_SETTINGS = "settings"
 MENU_MONITOR = "monitor"
 MENU_RUN = "run"
 MENU_REPEAT = "repeat"
@@ -124,7 +127,9 @@ MENU_HH = MENU_RUN  # Preserve saved menu IDs and legacy /menu_run navigation.
 MENU_RESPONSES = MENU_REVIEW
 MENU_LOGS = "logs"
 MENU_COMPANIES = "companies"
-MENU_PARENTS = {MENU_LLM: MENU_ADMIN, MENU_LOGS: MENU_MONITOR,
+MENU_PARENTS = {MENU_LLM: MENU_ADMIN, MENU_LOGS: MENU_ADMIN,
+                MENU_HH: MENU_SETTINGS, MENU_CANDIDATE: MENU_SETTINGS,
+                MENU_ADMIN: MENU_SETTINGS, MENU_SEARCH: MENU_SETTINGS,
                 MENU_SEARCH_CONDITIONS: MENU_SEARCH, MENU_EXPERIENCE: MENU_SEARCH_CONDITIONS,
                 MENU_APPLICATION_MODE: MENU_SEARCH, MENU_COMPANIES: MENU_SEARCH, MENU_REPEAT: MENU_SEARCH}
 PROGRESS_FRAMES = ["⏳", "⌛️", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕"]
@@ -175,7 +180,9 @@ ADMIN_BUTTON_MAP = {
     BUTTON_LOG: "/log",
     BUTTON_RAW_LOG: "/raw_log",
     BUTTON_CHAT_LOG: "/chat_log",
-    BUTTON_SEARCH: "/search",
+    BUTTON_SEARCH: "/find",
+    BUTTON_PENDING: "/review",
+    BUTTON_SETTINGS: "/menu_settings",
     BUTTON_SEARCH_SETTINGS: "/search_settings",
     BUTTON_BLACKLIST: "/companies",
     BUTTON_BLACKLIST_ADD: "/company_block",
@@ -255,7 +262,9 @@ USER_BUTTON_MAP = {
     BUTTON_LOG: "/log",
     BUTTON_RAW_LOG: "/raw_log",
     BUTTON_CHAT_LOG: "/chat_log",
-    BUTTON_SEARCH: "/search",
+    BUTTON_SEARCH: "/find",
+    BUTTON_PENDING: "/review",
+    BUTTON_SETTINGS: "/menu_settings",
     BUTTON_SEARCH_SETTINGS: "/search_settings",
     BUTTON_BLACKLIST: "/companies",
     BUTTON_BLACKLIST_ADD: "/company_block",
@@ -311,8 +320,15 @@ GUEST_BUTTON_MAP = {
     BUTTON_HELP: "/start",
 }
 LEGACY_BUTTON_MAP = {
+    "🎯 Направления": "/search_settings",
+    "🧭 Направления": "/directions",
+    "🧠 Обо мне": "/candidate_profile",
+    "✋ Спрашивать меня": "/search_application_confirm",
+    "✅ ✋ Спрашивать меня": "/search_application_confirm",
+    "📋 Отклики": "/menu_responses",
+    "⚙️ Админ": "/menu_admin",
     "🧪 Тестовый прогон": "/dryrun",
-    '🔎 Поиск': '/search',
+    '🔎 Поиск': '/find',
     '🎯 Мой поиск': '/search_settings',
     '🧭 Что ищу': '/directions',
     '📊 Мониторинг': '/menu_monitor',
@@ -352,7 +368,7 @@ LEGACY_BUTTON_MAP = {
     "логи": "/log",
     "лог чатов": "/chat_log",
     "чат лог": "/chat_log",
-    "Поиск": "/search",
+    "Поиск": "/find",
     "Мой поиск": "/search_settings",
     "На рассмотрении": "/review",
     "Изменить запросы": "/search_edit",
@@ -406,6 +422,8 @@ LEGACY_BUTTON_MAP = {
 from telegram_app.directions import TelegramDirections
 ADMIN_BUTTON_MAP.update(TelegramDirections._direction_button_commands())
 USER_BUTTON_MAP.update(TelegramDirections._direction_button_commands())
+for _button_map in (ADMIN_BUTTON_MAP, USER_BUTTON_MAP):
+    _button_map[BUTTON_DIRECTIONS] = "/directions"
 
 ADMIN_ONLY_COMMANDS = {
     "/direction_csv",
@@ -593,9 +611,9 @@ def _format_runtime_block(title: str, runtime: dict) -> list[str]:
 
 def _normalize_menu(role: str, menu: str | None) -> str:
     if role == ROLE_ADMIN:
-        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_ADMIN, MENU_LLM, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW, MENU_CANDIDATE, MENU_LOGS, MENU_COMPANIES}
+        allowed = {MENU_MAIN, MENU_SETTINGS, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_ADMIN, MENU_LLM, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW, MENU_CANDIDATE, MENU_LOGS, MENU_COMPANIES}
     else:
-        allowed = {MENU_MAIN, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW, MENU_CANDIDATE, MENU_LOGS, MENU_COMPANIES}
+        allowed = {MENU_MAIN, MENU_SETTINGS, MENU_MONITOR, MENU_RUN, MENU_REPEAT, MENU_SEARCH, MENU_SEARCH_CONDITIONS, MENU_APPLICATION_MODE, MENU_EXPERIENCE, MENU_REVIEW, MENU_CANDIDATE, MENU_LOGS, MENU_COMPANIES}
     return menu if menu in allowed else MENU_MAIN
 
 
@@ -639,9 +657,11 @@ def _normalize_process_runtime(runtime: dict | None, *, expected_tokens: tuple[s
 def reply_menu_layouts(role: str) -> dict[str, list[list[str]]]:
     """Single source of truth for persistent action buttons and their owners."""
     layouts = {
-        MENU_MAIN: [[BUTTON_SEARCH, BUTTON_DRYRUN], [BUTTON_RESPONSES, BUTTON_SEARCH_SETTINGS],
-                    [BUTTON_HH, BUTTON_CANDIDATE_PROFILE], [BUTTON_MENU_MONITOR], [BUTTON_GETTING_STARTED, BUTTON_HELP]],
-        MENU_RESPONSES: [[BUTTON_REVIEW, BUTTON_HH_RESPONSES], [BUTTON_FORMS, BUTTON_CHAT_AI]],
+        MENU_MAIN: [[BUTTON_SEARCH, BUTTON_PENDING], [BUTTON_RESPONSES, BUTTON_SETTINGS]],
+        MENU_SETTINGS: [[BUTTON_SEARCH_SETTINGS], [BUTTON_HH], [BUTTON_CANDIDATE_PROFILE],
+                        [BUTTON_SCHEDULE, BUTTON_BLACKLIST], [BUTTON_HELP]],
+        MENU_RESPONSES: [[BUTTON_HH_RESPONSES, BUTTON_CHECK], [BUTTON_RESEARCH],
+                         [BUTTON_STATS, BUTTON_RUNS], [BUTTON_ZERO_APPLY]],
         MENU_SEARCH: [[BUTTON_DIRECTIONS], [BUTTON_SEARCH_EDIT, BUTTON_SEARCH_SUGGEST], [BUTTON_SEARCH_USE_DRAFT],
                       [BUTTON_SEARCH_CONDITIONS, BUTTON_BLACKLIST],
                       [BUTTON_SEARCH_APPLICATION_MODE, BUTTON_SCHEDULE]],
@@ -658,7 +678,7 @@ def reply_menu_layouts(role: str) -> dict[str, list[list[str]]]:
         MENU_MONITOR: [[BUTTON_STATUS], [BUTTON_ZERO_APPLY], [BUTTON_RUNS, BUTTON_STATS],
                        [BUTTON_RESEARCH, BUTTON_CHECK], [BUTTON_LOGS]],
         MENU_LOGS: [[BUTTON_LOG, BUTTON_RAW_LOG], [BUTTON_CHAT_LOG]],
-        MENU_ADMIN: [[BUTTON_DIAGNOSTICS, BUTTON_MARKET_RESEARCH], [BUTTON_SEEN_RESET], [BUTTON_PROFILES, BUTTON_USERS], [BUTTON_CLIENTS, BUTTON_LLM],
+        MENU_ADMIN: [[BUTTON_STATUS, BUTTON_LOGS], [BUTTON_DIAGNOSTICS, BUTTON_MARKET_RESEARCH], [BUTTON_SEEN_RESET], [BUTTON_PROFILES, BUTTON_USERS], [BUTTON_CLIENTS, BUTTON_LLM],
                      [BUTTON_DIGEST, BUTTON_BACKFILL], [BUTTON_DAEMON_ON, BUTTON_DAEMON_OFF]],
         MENU_LLM: [[BUTTON_LLM_BALANCE, BUTTON_LLM_TEST], [BUTTON_AI_LIMITS]],
     }
@@ -666,8 +686,7 @@ def reply_menu_layouts(role: str) -> dict[str, list[list[str]]]:
         layouts.pop(MENU_ADMIN)
         layouts.pop(MENU_LLM)
     else:
-        labels = layouts[MENU_MAIN]
-        layouts[MENU_MAIN] = [*labels[:-1], [BUTTON_MENU_ADMIN], labels[-1]]
+        layouts[MENU_SETTINGS].append([BUTTON_MENU_ADMIN])
     return layouts
 
 
@@ -690,47 +709,58 @@ def build_reply_markup(
     can_stop: bool = False,
     application_mode: str = "",
 ) -> dict:
-    if profile_buttons is not None:
-        rows = [[{"text": f"{BUTTON_PROFILE_PREFIX}{name}"}] for name in profile_buttons]
-        rows.append([{"text": BUTTON_BACK}])
-        rows = _append_active_controls(rows, active=active, can_stop=can_stop)
-        return {
-            "keyboard": rows,
-            "resize_keyboard": True,
-            "one_time_keyboard": True,
-            "is_persistent": False,
-        }
-
-    menu = _normalize_menu(role, menu)
-    labels = reply_menu_layouts(role)[menu]
-    rows = [[{"text": label} for label in row] for row in labels]
-    if menu == MENU_APPLICATION_MODE:
-        selected = {"preview": BUTTON_APPLICATION_PREVIEW, "confirm": BUTTON_APPLICATION_CONFIRM,
-                    "auto": BUTTON_APPLICATION_AUTO}.get(application_mode)
-        for row in rows:
-            for button in row:
-                if button["text"] == selected:
-                    button["text"] = "✅ " + button["text"]
-    if menu != MENU_MAIN:
-        rows.extend(_navigation_rows())
-    rows = _append_active_controls(rows, active=active, can_stop=can_stop)
     return {
-        "keyboard": rows,
+        "keyboard": [[{"text": label} for label in row]
+                     for row in reply_menu_layouts(role)[MENU_MAIN]],
         "resize_keyboard": True,
         "is_persistent": True,
     }
 
 
 def build_busy_reply_markup(*, can_stop: bool = True) -> dict:
-    rows = [[{"text": BUTTON_BUSY}]]
-    if can_stop:
-        rows[0].append({"text": BUTTON_CANCEL_ACTIVE})
-    return {
-        "keyboard": rows,
-        "resize_keyboard": True,
-        "one_time_keyboard": False,
-        "is_persistent": False,
-    }
+    """Busy status is text; stop is an inline action beside that status."""
+    return build_reply_markup(ROLE_USER)
+
+
+def build_menu_inline_markup(role: str, menu: str, *, token: str, application_mode: str = "") -> dict:
+    """Local actions use the existing command table and a bound callback."""
+    menu = _normalize_menu(role, menu)
+    mapping = ADMIN_BUTTON_MAP if role == ROLE_ADMIN else USER_BUTTON_MAP
+    labels = reply_menu_layouts(role)[menu]
+    if menu == MENU_SETTINGS:
+        # Match the settings hub's simple, one-action reading order.
+        labels = [[label] for row in labels for label in row]
+    selected = {"preview": BUTTON_APPLICATION_PREVIEW, "confirm": BUTTON_APPLICATION_CONFIRM,
+                "auto": BUTTON_APPLICATION_AUTO}.get(application_mode)
+    rows = []
+    for row in labels:
+        buttons = []
+        for label in row:
+            command = mapping.get(label)
+            if not command:
+                continue
+            if menu == MENU_SETTINGS and label == BUTTON_SEARCH_SETTINGS:
+                command = "/directions"
+            visible = "✓ " + label if menu == MENU_APPLICATION_MODE and label == selected else label
+            visible = {BUTTON_HH_RESPONSES: "📨 Все", BUTTON_CHECK: "📬 Приглашения",
+                       BUTTON_RESEARCH: "❌ Отказы", BUTTON_RUNS: "🕓 История поисков"}.get(visible, visible)
+            buttons.append({"text": visible, "callback_data": f"nav:{token}:{command.removeprefix('/')}"})
+        if buttons:
+            rows.append(buttons)
+    if menu not in {MENU_MAIN, MENU_SETTINGS, MENU_RESPONSES}:
+        rows.append([{"text": BUTTON_BACK, "callback_data": f"nav:{token}:back"}])
+    return {"inline_keyboard": rows}
+
+
+def build_responses_summary_text(summary: dict) -> str:
+    prefix = "не меньше " if summary.get("incomplete") else ""
+    return "\n".join([
+        f"📨 Отклики за 30 дней: {prefix}{summary['sent']}", "",
+        f"👀 Просмотрено работодателем: {summary['viewed']}",
+        f"📬 Приглашения: {summary['invitations']}",
+        f"❌ Отказы: {summary['rejected']}",
+        f"⏳ Работодатель ещё не ответил: {summary['waiting']}",
+    ])
 
 
 def build_guest_reply_markup() -> dict:
@@ -964,7 +994,7 @@ def build_busy_status_text(
         "",
         "Новые задачи этого профиля будут поставлены в очередь.",
         "Навигация по меню, статус и статистика остаются доступны.",
-        "Нажмите «⏳ Выполняется...», чтобы обновить статус.",
+        "Результат придёт отдельным сообщением.",
     ])
     if can_cancel:
         lines.append("Если запуск завис, можно нажать «⏹ Остановить».")
@@ -978,13 +1008,10 @@ def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default", he
         "",
         "Кнопки внизу:",
         "• Найти вакансии — поиск прямо сейчас",
-        "• Пробный поиск (без откликов) — в главном меню",
-        "• Отклики — вакансии на проверку, ваши отклики, анкеты, ответы работодателям",
-        "• Направления — что ищу, резюме, город, зарплата, расписание",
-        "• hh.ru и резюме — вход на hh.ru и ваши резюме",
-        "• Обо мне — что бот знает о вас",
-        "• Состояние — работает ли бот, отклики, приглашения",
-        "• С чего начать — настройка по шагам",
+        "• Ждут решения — вакансии, которые требуют вашего решения",
+        "• Отклики — отправленные отклики, приглашения и отказы",
+        "• Настройки — Мои поиски, hh.ru, Факты для ИИ и расписание",
+
     ]
     if help_section:
         lines += ["", "Если что-то не работает:",
@@ -1002,6 +1029,8 @@ def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default", he
 def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
     section = _normalize_menu(role, menu)
     profile_title = _pretty_profile_name(profile_name)
+    if section == MENU_SETTINGS:
+        return "⚙️ Настройки\nЧто бот делает и с какими данными."
     if section == MENU_MONITOR:
         return "\n".join([
             f"Состояние · профиль {profile_title}",
@@ -1023,17 +1052,17 @@ def build_menu_section_text(menu: str, *, role: str, profile_name: str) -> str:
         return f"⏰ Расписание · {profile_title}\nПовторные запуски: 3 раза в день, раз в день или раз в неделю."
     if section == MENU_SEARCH:
         return "\n".join([
-            f"🎯 Направления · профиль {profile_title}",
+            f"🎯 Мои поиски · профиль {profile_title}",
             "",
             "• Посмотрите и измените ключевые слова",
             "• Попросите ИИ предложить направление по резюме",
             "• Настройте опыт, зарплату, удалёнку и режим откликов",
-            "• Найти вакансии и Пробный поиск (без откликов) — в главном меню",
+            "• Найти вакансии — кнопка внизу; Пробный поиск (без откликов) доступен перед запуском",
             "• Расписание управляет только этим профилем",
         ])
     if section == MENU_CANDIDATE:
         return "\n".join([
-            f"Что бот знает о вас · профиль {profile_title}",
+            f"🧠 Факты для ИИ · профиль {profile_title}",
             "",
             "• То, что вы подтвердили, важнее догадок ИИ",
             "Бот задаёт вопросы по вашему резюме и запоминает ответы.",

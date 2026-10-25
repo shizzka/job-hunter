@@ -126,7 +126,7 @@ class TelegramDirections:
             scope = f" для направления «{active['title']}»" if active else ""
             await self._send_text(chat_id,
                 f"✅ Автоматические отклики{scope} уже включены. Чтобы бот спрашивал перед откликом, "
-                "выберите «Спрашивать меня».", reply_markup=self._menu_reply_markup(principal, menu=menu))
+                "выберите «Подтверждать отклик».", reply_markup=self._menu_reply_markup(principal, menu=menu))
             return
         if mode == "auto":
             state = self._direction_bind(principal, mode="application_auto",
@@ -173,11 +173,8 @@ class TelegramDirections:
             reply_markup=self._menu_reply_markup(principal, menu=menu))
 
     def _direction_markup(self, *, draft=False):
-        rows = ([["✅ Сохранить направление", "✏️ Править направление"], ["❌ Отменить направление"]] if draft else
-                # Actions live on inline buttons of the cards; the reply keyboard stays minimal.
-                [])
-        rows.append(["🧭 Направления", "🏠 Главное"])
-        return {"keyboard": [[{"text": label} for label in row] for row in rows], "resize_keyboard": True}
+        from telegram_bot_ui import build_reply_markup, ROLE_USER
+        return build_reply_markup(ROLE_USER)
 
     async def _ask_choose_direction(self, chat_id, principal, text):
         """A request to pick a direction comes with the direction buttons themselves."""
@@ -289,7 +286,7 @@ class TelegramDirections:
         parts = str(data).split(":")
         state = self._direction_sessions().get(principal["user_id"])
         if len(parts) < 3 or not state or parts[1] != state.get("token") or not self._direction_current(principal, state):
-            await self._send_text(chat_id, "Эта кнопка устарела. Откройте «Направления» заново.")
+            await self._send_text(chat_id, "Эта кнопка устарела. Откройте «Мои поиски» заново.")
             return False
         action = parts[2]
         started = False
@@ -797,7 +794,7 @@ class TelegramDirections:
     @staticmethod
     def _direction_button_commands():
         return {
-            "🧭 Направления": "/directions", "➕ Новое направление": "/direction_new",
+            "🧭 Направления": "/directions", "🎯 Мои поиски": "/directions", "➕ Новое направление": "/direction_new",
             "🔀 Переключить направление": "/direction_switch", "🧾 Варианты направления": "/direction_variants",
             "➕ Добавить варианты": "/direction_add", "⏸ Пауза варианта": "/direction_pause",
             "▶️ Включить вариант": "/direction_resume", "➖ Удалить вариант": "/direction_remove",
@@ -860,7 +857,7 @@ class TelegramDirections:
         if not profile_access.current_scope()[1]:
             rows += [[("➕ Новое направление", "new")]]
         rows += [[("📊 Статистика резюме", "stats")]]
-        await self._send_text(chat_id, "🧭 Направления — выберите кнопкой ниже.",
+        await self._send_text(chat_id, "🎯 Мои поиски — выберите кнопкой ниже.",
                               reply_markup=self._direction_markup())
         await self._send_text(chat_id, (f"Ваши направления · профиль {profile_name}\n" +
                               (f"Сейчас бот ищет по направлению «{active['title']}»." if active else "Направление для поиска пока не выбрано.") +
@@ -886,7 +883,7 @@ class TelegramDirections:
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
             return False
         if not state or state.get("mode") != "draft":
-            await self._send_text(chat_id, "Нет несохранённых изменений. Откройте «Направления».")
+            await self._send_text(chat_id, "Нет несохранённых изменений. Откройте «Мои поиски».")
             return False
         committed = False
         try:

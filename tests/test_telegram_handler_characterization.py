@@ -18,6 +18,7 @@ import pytest
 import directions
 import telegram_bot
 from tests.test_telegram_dispatch_characterization import normalize, profile_files
+from tests.telegram_f27_expectations import f27_expected
 from tests.test_telegram_menu_routing import menu_bot  # noqa: F401
 from tests.test_telegram_directions import Harness, USER, make_direction
 
@@ -26,7 +27,7 @@ SNAPSHOT = Path(__file__).with_name('fixtures') / 'telegram_handlers.json'
 
 def frozen(key, actual):
     expected = json.loads(SNAPSHOT.read_text(encoding='utf-8'))
-    assert actual == expected[key]
+    assert actual == f27_expected("handlers", key, expected[key])
 
 
 RUNNERS = ('search', 'dryrun', 'analyze', 'cli', 'form', 'list', 'reply', 'send', 'manual')
@@ -37,6 +38,13 @@ OUTCOMES = ('success', 'failed', 'cancelled', 'error', 'denied')
 @pytest.mark.parametrize('outcome', OUTCOMES)
 def test_runner_outcomes(menu_bot, monkeypatch, kind, outcome):
     bot, workers = menu_bot
+    original_mark = bot._mark_active_command
+    def mark(**kwargs):
+        active = original_mark(**kwargs)
+        active.started_at = 123.0
+        active.cancel_requested = False
+        return active
+    monkeypatch.setattr(bot, '_mark_active_command', mark)
     principal = {'user_id': 42, 'role': 'admin', 'profile': 'qa'}
     audit, cleared, authorized, captures = [], [], [], []
     import chat_context

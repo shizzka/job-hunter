@@ -985,7 +985,9 @@ async def do_manual_apply_token(token: str) -> dict:
             seen.mark_seen(vacancy.get("id", token), vacancy, "manual_ai_applied")
             hh_guard.record_apply_success()
             hh_pipeline.record_successful_apply(vacancy, {"name": "manual_ai", "title": "", "id": ""})
+            manual_apply_queue.save_sent_cover(token, owner, cover, store=queue_store)
             finish("applied", apply_message or "ok")
+            manual_apply_queue.record_feedback(token, "good", profile_name=item.get("profile_name"))
             analytics.record_decision(
                 run_id=run_id,
                 vacancy=vacancy,

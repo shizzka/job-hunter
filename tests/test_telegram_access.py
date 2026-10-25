@@ -146,7 +146,7 @@ def test_ai_credit_does_not_consume_another_users_allowance(user_bot):
 @pytest.mark.parametrize("menu,parent", [(ui.MENU_EXPERIENCE, ui.MENU_SEARCH_CONDITIONS),
     (ui.MENU_SEARCH_CONDITIONS, ui.MENU_SEARCH), (ui.MENU_COMPANIES, ui.MENU_SEARCH),
     (ui.MENU_APPLICATION_MODE, ui.MENU_SEARCH), (ui.MENU_REPEAT, ui.MENU_SEARCH),
-    (ui.MENU_LOGS, ui.MENU_MONITOR), (ui.MENU_RESPONSES, ui.MENU_MAIN), (ui.MENU_LLM, ui.MENU_ADMIN)])
+    (ui.MENU_LOGS, ui.MENU_ADMIN), (ui.MENU_RESPONSES, ui.MENU_MAIN), (ui.MENU_LLM, ui.MENU_ADMIN)])
 def test_back_follows_menu_tree(user_bot, monkeypatch, menu, parent):
     bot, principal = user_bot
     monkeypatch.setattr(bot, "_selected_menu", lambda principal: menu)

@@ -40,7 +40,7 @@ def test_review_screen_sends_profile_queue_with_actions(monkeypatch):
         return {}
 
     monkeypatch.setattr(bot, "_send_text", send_text)
-    asyncio.run(bot._show_review_queue(42, principal, profile_name="client_42"))
+    asyncio.run(bot._show_review_list(42, principal, profile_name="client_42"))
 
     # One compact list message; a number opens the full card.
     assert len(messages) == 1 and messages[0][1].startswith("📋 Вакансии на проверку: 1")
@@ -50,8 +50,8 @@ def test_review_screen_sends_profile_queue_with_actions(monkeypatch):
     asyncio.run(bot._open_review_card(42, "client_42", "token-1"))
     assert "QA Engineer" in messages[1][1]
     buttons = [button for row in messages[1][2]["inline_keyboard"] for button in row]
-    assert any(button["text"] == "✅ Откликнуться с ИИ" for button in buttons)
-    assert any(button["text"] == "⏰ Через сутки" for button in buttons)
+    assert any(button["text"] == "✅ Откликнуться" for button in buttons)
+    assert any(button["text"] == "⋯ Ещё" for button in buttons)
     assert len(messages[1][2]["inline_keyboard"]) == 3
 
 
@@ -72,11 +72,11 @@ def test_review_list_pages_by_six(monkeypatch):
 
     monkeypatch.setattr(bot, "_send_text", send_text)
     monkeypatch.setattr(bot, "_edit_text", edit_text)
-    asyncio.run(bot._show_review_queue(42, principal, profile_name="client_42", sort="new"))
-    asyncio.run(bot._show_review_queue(42, principal, profile_name="client_42", page=2, message_id=5, sort="new"))
+    asyncio.run(bot._show_review_list(42, principal, profile_name="client_42", sort="new"))
+    asyncio.run(bot._show_review_list(42, principal, profile_name="client_42", page=2, message_id=5, sort="new"))
     assert "стр. 1/3" in messages[0][0] and "6. V6" in messages[0][0] and "7. V7" not in messages[0][0]
     nav = messages[0][1]["inline_keyboard"][-3]
-    assert [b["callback_data"] for b in nav] == ["rq:p:client_42:2:n", "rq:p:client_42:0:n", "rq:p:client_42:1:n"]
+    assert [b["callback_data"] for b in nav] == ["rq:L:client_42:2:n", "rq:L:client_42:0:n", "rq:L:client_42:1:n"]
     assert "стр. 3/3" in messages[1][0] and "13. V13" in messages[1][0] and "14. V14" in messages[1][0]
 
 
@@ -95,12 +95,12 @@ def test_review_list_puts_best_first_and_offers_bulk_dismiss(monkeypatch):
         messages.append((text, reply_markup))
 
     monkeypatch.setattr(bot, "_send_text", send_text)
-    asyncio.run(bot._show_review_queue(42, principal, profile_name="client_42"))
+    asyncio.run(bot._show_review_list(42, principal, profile_name="client_42"))
     text, markup = messages[0]
     order = [line.split(". ", 1)[1].split("\n")[0] for line in text.splitlines() if line[:1].isdigit()]
     assert order == ["V2", "V4", "V5", "V1", "V3"]  # 80, 55, 45, 30, unscored last
     rows = markup["inline_keyboard"]
-    assert rows[-2] == [{"text": "🆕 Сначала новые", "callback_data": "rq:p:client_42:0:n"}]
+    assert rows[-2] == [{"text": "🆕 Сначала новые", "callback_data": "rq:L:client_42:0:n"}]
     assert [b["callback_data"] for b in rows[-1]] == ["rq:d:client_42:40", "rq:d:client_42:50", "rq:d:client_42:60"]
 
     asyncio.run(bot._review_dismiss_below(42, principal, "client_42", 50, confirmed=False))
@@ -131,21 +131,21 @@ def test_review_direction_filter_paging_legacy_and_switch(tmp_path, monkeypatch)
         sent.append((text, kw.get("reply_markup")))
     monkeypatch.setattr(bot, "_send_text", send)
     monkeypatch.setattr(bot, "_edit_text", lambda chat, message, text, **kw: send(chat, text, **kw))
-    asyncio.run(bot._show_review_queue(42, principal, profile_name="qa", page=1, sort="new"))
+    asyncio.run(bot._show_review_list(42, principal, profile_name="qa", page=1, sort="new"))
     text, markup = sent[-1]
     assert "Вакансии на проверку: 8 · QA Engineer · стр. 2/2" in text
     assert "7. QA 6" in text and "8. Old query" in text
     assert "Electric" not in text and "Unknown" not in text
     assert markup['inline_keyboard'][0] == [
         {"text": "7", "callback_data": "rq:o:qa:qa6"}, {"text": "8", "callback_data": "rq:o:qa:query"}]
-    assert any(b['callback_data'] == 'rq:u:qa:0:s' for r in markup['inline_keyboard'] for b in r)
-    asyncio.run(bot._show_review_queue(42, principal, profile_name="qa", unspecified=True))
+    assert any(b['callback_data'] == 'rq:U:qa:0:s' for r in markup['inline_keyboard'] for b in r)
+    asyncio.run(bot._show_review_list(42, principal, profile_name="qa", unspecified=True))
     assert "Вакансии на проверку: 1 · направление не указано" in sent[-1][0]
     assert "Unknown" in sent[-1][0] and "Old query" not in sent[-1][0]
     asyncio.run(bot._review_dismiss_below(42, principal, "qa", 30, confirmed=True))
     assert feedback == [f"qa{i}" for i in range(7)]
     directions.set_active_direction(str(tmp_path), "electric")
-    asyncio.run(bot._show_review_queue(42, principal, profile_name="qa", page=1, message_id=5))
+    asyncio.run(bot._show_review_list(42, principal, profile_name="qa", page=1, message_id=5))
     assert "Вакансии на проверку: 2 · Электромонтажник" in sent[-1][0]
     assert "Electric" in sent[-1][0] and "Old resume" in sent[-1][0] and "QA 0" not in sent[-1][0]
     asyncio.run(bot._open_review_card(42, "qa", "qa0"))

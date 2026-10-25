@@ -17,10 +17,12 @@ class CommandRoute:
     args: tuple = ()
     phase: str = "normal"
     direction_command: str = ""
+    actions: bool = False
 
 
 ROUTE_GROUPS = {
     'search': {
+        '/find': CommandRoute('_route_find'),
         '/market_research': CommandRoute('_route_market_research'),
         '/search': CommandRoute('_route_cli', args=('--search', 'search', 3600)),
         '/dryrun': CommandRoute('_route_cli', args=('--dry-run', 'dry-run', 3600)),
@@ -40,27 +42,27 @@ ROUTE_GROUPS = {
     },
     'directions/search settings': {
         '/direction*': CommandRoute('_route_direction', phase='direction'),
-        '/companies': CommandRoute('_route_companies'),
-        '/company_block': CommandRoute('_route_companies'),
-        '/company_unblock': CommandRoute('_route_companies'),
-        '/search_settings': CommandRoute('_route_search_settings'),
-        '/search_conditions': CommandRoute('_route_search_conditions'),
-        '/search_experience': CommandRoute('_route_search_experience'),
-        '/search_experience_any': CommandRoute('_route_experience', args=('', 'любой')),
-        '/search_experience_none': CommandRoute('_route_experience', args=('noExperience', 'без опыта')),
-        '/search_experience_1_3': CommandRoute('_route_experience', args=('between1And3', '1–3 года')),
-        '/search_experience_3_6': CommandRoute('_route_experience', args=('between3And6', '3–6 лет')),
-        '/search_experience_6_plus': CommandRoute('_route_experience', args=('moreThan6', '6+ лет')),
-        '/search_salary': CommandRoute('_route_search_salary'),
-        '/search_salary_toggle': CommandRoute('_route_search_salary_toggle'),
-        '/search_remote_toggle': CommandRoute('_route_search_remote_toggle'),
-        '/search_application_mode': CommandRoute('_route_search_application_mode'),
-        '/search_application_preview': CommandRoute('_route_application_mode', args=('preview',), direction_command='/search_application_preview'),
-        '/search_application_confirm': CommandRoute('_route_application_mode', args=('confirm',), direction_command='/search_application_confirm'),
+        '/companies': CommandRoute('_route_companies', actions=True),
+        '/company_block': CommandRoute('_route_companies', actions=True),
+        '/company_unblock': CommandRoute('_route_companies', actions=True),
+        '/search_settings': CommandRoute('_route_search_settings', actions=True),
+        '/search_conditions': CommandRoute('_route_search_conditions', actions=True),
+        '/search_experience': CommandRoute('_route_search_experience', actions=True),
+        '/search_experience_any': CommandRoute('_route_experience', args=('', 'любой'), actions=True),
+        '/search_experience_none': CommandRoute('_route_experience', args=('noExperience', 'без опыта'), actions=True),
+        '/search_experience_1_3': CommandRoute('_route_experience', args=('between1And3', '1–3 года'), actions=True),
+        '/search_experience_3_6': CommandRoute('_route_experience', args=('between3And6', '3–6 лет'), actions=True),
+        '/search_experience_6_plus': CommandRoute('_route_experience', args=('moreThan6', '6+ лет'), actions=True),
+        '/search_salary': CommandRoute('_route_search_salary', actions=True),
+        '/search_salary_toggle': CommandRoute('_route_search_salary_toggle', actions=True),
+        '/search_remote_toggle': CommandRoute('_route_search_remote_toggle', actions=True),
+        '/search_application_mode': CommandRoute('_route_search_application_mode', actions=True),
+        '/search_application_preview': CommandRoute('_route_application_mode', args=('preview',), direction_command='/search_application_preview', actions=True),
+        '/search_application_confirm': CommandRoute('_route_application_mode', args=('confirm',), direction_command='/search_application_confirm', actions=True),
         '/search_application_auto': CommandRoute('_route_application_mode', args=('auto',), direction_command='/search_application_auto'),
-        '/search_edit': CommandRoute('_route_search_edit', direction_command='/search_edit'),
+        '/search_edit': CommandRoute('_route_search_edit', direction_command='/search_edit', actions=True),
         '/search_suggest': CommandRoute('_route_search_suggest', direction_command='/search_suggest'),
-        '/search_use_draft': CommandRoute('_route_search_use_draft', direction_command='/search_use_draft'),
+        '/search_use_draft': CommandRoute('_route_search_use_draft', direction_command='/search_use_draft', actions=True),
     },
     'hh & resumes': {
         '/menu_hh': CommandRoute('_route_menu', args=('run',)),
@@ -103,7 +105,7 @@ ROUTE_GROUPS = {
     },
     'schedule': {
         '/menu_repeat': CommandRoute('_route_menu', args=('repeat',)),
-        '/schedule': CommandRoute('_route_schedule'),
+        '/schedule': CommandRoute('_route_schedule', actions=True),
         '/daemon_on': CommandRoute('_route_daemon_on'),
         '/repeat_3day': CommandRoute('_route_repeat', args=('3 раза в день', 480)),
         '/repeat_daily': CommandRoute('_route_repeat', args=('1 раз в день', 1440)),
@@ -135,6 +137,7 @@ ROUTE_GROUPS = {
         '/seen_reset': CommandRoute('_route_seen_reset'),
     },
     'navigation': {
+        '/menu_settings': CommandRoute('_route_menu', args=('settings',)),
         '/busy': CommandRoute('_route_busy', phase='early'),
         '/back': CommandRoute('_route_back', phase='early'),
         '/help': CommandRoute('_route_main', phase='public'),

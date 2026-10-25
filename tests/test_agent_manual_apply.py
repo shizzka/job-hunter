@@ -196,3 +196,23 @@ def test_accepted_template_goes_to_dispatch(tmp_path, monkeypatch):
     token, cards, dispatched = _stub_setup(tmp_path, monkeypatch, allow_stub=True)
     asyncio.run(agent.do_manual_apply_token(token))
     assert dispatched and not any("Отправить шаблон" in str(card) for card in cards)
+
+
+def test_confirmed_manual_apply_keeps_full_dispatched_cover(tmp_path, monkeypatch):
+    """F27 opens the exact final letter, including its tail, after a confirmed send."""
+    from unittest.mock import AsyncMock
+    token, _, _ = _stub_setup(tmp_path, monkeypatch, allow_stub=True)
+    cover = "Здравствуйте! " + "Опыт работы. " * 50 + "Конец полного письма."
+    monkeypatch.setattr(agent, "generate_cover_letter", AsyncMock(return_value=cover))
+    monkeypatch.setattr(agent.apply_orchestrator, "dispatch_apply", AsyncMock(return_value={"ok": True, "message": "sent"}))
+    monkeypatch.setattr(agent, "notify_application", AsyncMock())
+    monkeypatch.setattr(agent.hh_pipeline, "record_successful_apply", lambda *a, **kw: None)
+    result = asyncio.run(agent.do_manual_apply_token(token))
+    assert result["ok"]
+    saved = manual_apply_queue.get_candidate(token)
+    assert saved["status"] == "applied"
+    assert saved["sent_cover"] == cover
+    assert saved["feedback"] == "good"
+    # A duplicate command still cannot send again after showing the full letter.
+    asyncio.run(agent.do_manual_apply_token(token))
+    agent.apply_orchestrator.dispatch_apply.assert_awaited_once()

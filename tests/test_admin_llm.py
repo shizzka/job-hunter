@@ -25,9 +25,9 @@ def test_user_cannot_access(monkeypatch, command):
 
 
 def test_menu_admin_only():
-    assert ui.BUTTON_LLM in str(ui.build_reply_markup(ui.ROLE_ADMIN, menu=ui.MENU_ADMIN))
-    assert ui.BUTTON_LLM_TEST in str(ui.build_reply_markup(ui.ROLE_ADMIN, menu=ui.MENU_LLM))
-    assert ui.BUTTON_LLM_TEST not in str(ui.build_reply_markup(ui.ROLE_USER, menu=ui.MENU_LLM))
+    assert ui.BUTTON_LLM in str(ui.build_menu_inline_markup(ui.ROLE_ADMIN, ui.MENU_ADMIN, token="synthetic"))
+    assert ui.BUTTON_LLM_TEST in str(ui.build_menu_inline_markup(ui.ROLE_ADMIN, ui.MENU_LLM, token="synthetic"))
+    assert ui.BUTTON_LLM_TEST not in str(ui.build_menu_inline_markup(ui.ROLE_USER, ui.MENU_LLM, token="synthetic"))
 
 
 @pytest.mark.parametrize('available', [True, False])

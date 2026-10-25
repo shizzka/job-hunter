@@ -16,11 +16,21 @@ from telegram_app.callbacks import _lists_several_chats as legacy_lists_several_
 from tests.test_telegram_callbacks import _callback, _configured_bot
 
 
+# F27 additions supplement the immutable split-22 callback inventory. Each
+# payload is exercised with real routing/admission in the focused F27 suites.
+F27_CALLBACK_CASES = {
+    "nav:": ("nav:synthetic-token:directions", "tests/test_f27_navigation.py"),
+    "fs:": ("fs:go:synthetic-token", "tests/test_f27_search.py"),
+    "manual_snooze:": ("manual_snooze:qa:abcdef123456", "tests/test_f27_review.py"),
+}
+
+
 def test_groups_have_unique_prefixes_and_characterized_handlers():
     prefixes = [prefix for routes in CALLBACK_ROUTE_GROUPS.values() for prefix in routes]
     assert len(prefixes) == len(set(prefixes))
     assert set(CALLBACK_ROUTES) == set(prefixes)
     cases = json.loads((Path(__file__).with_name("fixtures") / "telegram_callbacks.json").read_text())["cases"]
+    cases += [{"data": payload} for payload, _ in F27_CALLBACK_CASES.values()]
     for prefix, route in CALLBACK_ROUTES.items():
         assert callable(route.handler)
         assert route.phase in {"navigation", "profile", "normal"}
@@ -41,6 +51,12 @@ def test_groups_have_unique_prefixes_and_characterized_handlers():
     ("chat_send_any:qa:1:2~abcdef123456", "chat_send_any:"),
     (" ca:42 ", "*"),
     ("unknown:42", "*"),
+    ("nav:synthetic-token:directions", "nav:"),
+    ("nav", "*"),
+    ("fs:go:synthetic-token", "fs:"),
+    ("fs", "*"),
+    ("manual_snooze:qa:abcdef123456", "manual_snooze:"),
+    ("manual_snooze_alt:qa:abcdef123456", "*"),
 ])
 def test_callback_lookup_keeps_payload_boundaries(payload, prefix):
     assert route_for_callback(payload) is CALLBACK_ROUTES[prefix]

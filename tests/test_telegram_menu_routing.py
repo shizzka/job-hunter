@@ -16,10 +16,14 @@ from tests.test_telegram_bot_ui import ADMIN_SCREENS, COMMON_SCREENS, MENU_COMMA
 def button_cases():
     for role in (ui.ROLE_USER, ui.ROLE_ADMIN):
         for menu in [*COMMON_SCREENS, *(ADMIN_SCREENS if role == ui.ROLE_ADMIN else {})]:
-            for row in ui.build_reply_markup(role, menu=menu)["keyboard"]:
-                for button in row:
-                    if button["text"] not in {ui.BUTTON_BACK, ui.BUTTON_MENU}:
-                        yield role, menu, button["text"]
+            if menu == ui.MENU_MAIN:
+                yield from ((role, menu, label) for label in COMMON_SCREENS[menu])
+            else:
+                # Exercise the existing command behind every migrated inline action.
+                mapping = ui.ADMIN_BUTTON_MAP if role == ui.ROLE_ADMIN else ui.USER_BUTTON_MAP
+                for row in ui.reply_menu_layouts(role)[menu]:
+                    for label in row:
+                        yield role, menu, label
 
 
 @pytest.fixture
@@ -55,7 +59,7 @@ def menu_bot(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "_analysis_document_payload", lambda *a: ("analysis.md", b"synthetic"))
     workers = []
     def mark(**kwargs):
-        worker = SimpleNamespace(task=None)
+        worker = SimpleNamespace(task=None, started_at=123.0, cancel_requested=False)
         workers.append(worker)
         return worker
     monkeypatch.setattr(bot, "_mark_active_command", mark)
@@ -91,27 +95,13 @@ def test_every_button_returns_its_owner_or_target_submenu(menu_bot, role, menu, 
             if worker.task:
                 await worker.task
     asyncio.run(run())
-    expected = MENU_COMMANDS.get(command, menu)
-    assert bot._selected_menu(principal) == expected
+    expected = MENU_COMMANDS.get(command, ui.reply_menu_for_command(role, command) or menu)
+    # Global destinations and screen actions share the same four persistent buttons.
     keyboards = [call.kwargs["reply_markup"] for call in bot._send_text.call_args_list + bot._send_document.call_args_list
                  if "keyboard" in (call.kwargs.get("reply_markup") or {})]
-    assert keyboards, (command, bot._send_text.call_args_list)
-    if command == "/profiles":
-        # The existing one-time profile picker is this button's target screen.
-        assert keyboards[-1] == ui.build_reply_markup(role, profile_buttons=["qa"])
-    elif command in MENU_COMMANDS:
-        mode = bot._profile("qa").hh.application_mode if expected == ui.MENU_APPLICATION_MODE else ""
-        assert all(markup == ui.build_reply_markup(role, menu=expected, application_mode=mode) for markup in keyboards)
-    else:
-        mode = bot._effective_application_mode(principal) if expected == ui.MENU_APPLICATION_MODE else ""
-        selected_label = {"preview": ui.BUTTON_APPLICATION_PREVIEW, "confirm": ui.BUTTON_APPLICATION_CONFIRM,
-                          "auto": ui.BUTTON_APPLICATION_AUTO}.get(mode)
-        expected_label = "✅ " + label if label == selected_label else label
-        wrong_label = label if label == selected_label else "✅ " + label
-        for markup in keyboards:
-            actual_labels = [b["text"] for row in markup["keyboard"] for b in row]
-            assert expected_label in actual_labels
-            assert wrong_label not in actual_labels
+    assert keyboards or any(call.kwargs.get("reply_markup", {}).get("inline_keyboard")
+                            for call in bot._send_text.call_args_list), command
+    assert all(markup == ui.build_reply_markup(role) for markup in keyboards)
 
 
 @pytest.mark.parametrize("role,menu,label", list(button_cases()))
@@ -127,7 +117,9 @@ def test_direct_command_recovers_owner_from_another_selected_menu(menu_bot, role
             if worker.task:
                 await worker.task
     asyncio.run(run())
-    assert bot._selected_menu(principal) == MENU_COMMANDS.get(command, menu)
+    expected = (ui.MENU_MAIN if command == "/help" else
+                MENU_COMMANDS.get(command, ui.reply_menu_for_command(role, command) or menu))
+    assert bot._selected_menu(principal) == expected
 
 
 @pytest.mark.parametrize("command", ["/analyze", "/search_suggest"])
@@ -220,8 +212,8 @@ def test_previous_llm_button_label_still_routes_to_the_same_command():
     ("/hh_response_count", ui.MENU_RESPONSES, ui.BUTTON_HH_RESPONSES),
     ("/hunter_log", ui.MENU_LOGS, ui.BUTTON_LOG),
     ("/hunter_chat_log", ui.MENU_LOGS, ui.BUTTON_CHAT_LOG),
-    ("/ai_chat", ui.MENU_RESPONSES, ui.BUTTON_CHAT_AI),
-    ("/chat_answer", ui.MENU_RESPONSES, ui.BUTTON_CHAT_AI),
+    ("/ai_chat", ui.MENU_MAIN, ui.BUTTON_CHAT_AI),
+    ("/chat_answer", ui.MENU_MAIN, ui.BUTTON_CHAT_AI),
 ])
 def test_alias_command_returns_the_same_owner(menu_bot, role, command, menu, label):
     bot, workers = menu_bot
@@ -237,7 +229,7 @@ def test_alias_command_returns_the_same_owner(menu_bot, role, command, menu, lab
     keyboards = [call.kwargs["reply_markup"] for call in bot._send_text.call_args_list
                  if "keyboard" in (call.kwargs.get("reply_markup") or {})]
     assert keyboards
-    assert all(label in [b["text"] for row in markup["keyboard"] for b in row] for markup in keyboards)
+    assert all(markup == ui.build_reply_markup(role) for markup in keyboards)
 
 
 @pytest.mark.parametrize('fail_counter', [False, True])

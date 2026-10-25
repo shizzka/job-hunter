@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from datetime import datetime
 
 import telegram_bot
@@ -93,59 +94,24 @@ class TestFormatting:
     def test_build_help_text_user_mentions_schedule_button(self):
         text = telegram_bot.build_help_text(role=telegram_bot.ROLE_USER, profile_name="qa")
         assert "Сейчас: профиль QA" in text
-        assert "• Направления — что ищу, резюме, город, зарплата, расписание" in text
+        assert "• Настройки — Мои поиски, hh.ru, Факты для ИИ и расписание" in text
 
     def test_build_reply_markup_admin(self):
         markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_ADMIN)
         assert markup["resize_keyboard"] is True
-        assert any(button["text"] == telegram_bot.BUTTON_MENU_MONITOR for row in markup["keyboard"] for button in row)
-        assert not any(button["text"] == telegram_bot.BUTTON_DAEMON_ON for row in markup["keyboard"] for button in row)
+        assert [b["text"] for row in markup["keyboard"] for b in row] == [
+            "🔎 Найти вакансии", "📋 Ждут решения", "📨 Отклики", "⚙️ Настройки"]
 
-    def test_build_reply_markup_admin_repeat_menu(self):
-        markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_ADMIN, menu=telegram_bot.MENU_REPEAT)
-        assert any(button["text"] == telegram_bot.BUTTON_REPEAT_DAILY for row in markup["keyboard"] for button in row)
-        assert markup["is_persistent"] is True
-
-    def test_build_reply_markup_admin_menu_admin(self):
-        markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_ADMIN, menu=telegram_bot.MENU_LLM)
-        assert any(button["text"] == telegram_bot.BUTTON_AI_LIMITS for row in markup["keyboard"] for button in row)
-
-    def test_build_reply_markup_user_main_menu(self):
-        markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_USER)
-        assert any(button["text"] == telegram_bot.BUTTON_SEARCH for row in markup["keyboard"] for button in row)
-        assert any(button["text"] == telegram_bot.BUTTON_DRYRUN for row in markup["keyboard"] for button in row)
-
-    def test_build_reply_markup_user_run_menu(self):
-        markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_USER, menu=telegram_bot.MENU_RUN)
-        assert any(button["text"] == telegram_bot.BUTTON_ANALYZE for row in markup["keyboard"] for button in row)
-        assert any(button["text"] == telegram_bot.BUTTON_HH_AUTH for row in markup["keyboard"] for button in row)
-
-    def test_build_reply_markup_user_repeat_menu(self):
-        markup = telegram_bot.build_reply_markup(telegram_bot.ROLE_USER, menu=telegram_bot.MENU_REPEAT)
-        assert any(button["text"] == telegram_bot.BUTTON_REPEAT_DAILY for row in markup["keyboard"] for button in row)
-        assert not any(button["text"] == telegram_bot.BUTTON_DAEMON_ON for row in markup["keyboard"] for button in row)
-
-    def test_build_reply_markup_active_adds_busy_controls(self):
-        markup = telegram_bot.build_reply_markup(
-            telegram_bot.ROLE_USER,
-            menu=telegram_bot.MENU_MONITOR,
-            active=True,
-            can_stop=True,
-        )
-        assert any(button["text"] == telegram_bot.BUTTON_STATUS for row in markup["keyboard"] for button in row)
-        assert any(button["text"] == telegram_bot.BUTTON_BUSY for row in markup["keyboard"] for button in row)
-        assert any(button["text"] == telegram_bot.BUTTON_CANCEL_ACTIVE for row in markup["keyboard"] for button in row)
-        assert markup["is_persistent"] is True
+    @pytest.mark.parametrize("role", [telegram_bot.ROLE_ADMIN, telegram_bot.ROLE_USER])
+    @pytest.mark.parametrize("menu", [telegram_bot.MENU_REPEAT, telegram_bot.MENU_LLM, telegram_bot.MENU_RUN, telegram_bot.MENU_MONITOR])
+    def test_build_reply_markup_keeps_global_destinations(self, role, menu):
+        assert telegram_bot.build_reply_markup(role, menu=menu, active=True, can_stop=True) == telegram_bot.build_reply_markup(role)
 
     def test_build_busy_reply_markup(self):
-        markup = telegram_bot.build_busy_reply_markup()
-        assert markup["keyboard"][0][0]["text"] == telegram_bot.BUTTON_BUSY
-        assert markup["keyboard"][0][1]["text"] == telegram_bot.BUTTON_CANCEL_ACTIVE
-        assert markup["is_persistent"] is False
+        assert telegram_bot.build_busy_reply_markup() == telegram_bot.build_reply_markup(telegram_bot.ROLE_USER)
 
     def test_build_busy_reply_markup_without_stop(self):
-        markup = telegram_bot.build_busy_reply_markup(can_stop=False)
-        assert markup["keyboard"] == [[{"text": telegram_bot.BUTTON_BUSY}]]
+        assert telegram_bot.build_busy_reply_markup(can_stop=False) == telegram_bot.build_reply_markup(telegram_bot.ROLE_USER)
 
     def test_build_busy_status_text(self):
         text = telegram_bot.build_busy_status_text(
@@ -615,8 +581,10 @@ class TestActiveCommands:
         admin_markup = bot._menu_reply_markup(admin)
         user_markup = bot._menu_reply_markup(user)
 
-        assert any(button["text"] == telegram_bot.BUTTON_BUSY for row in admin_markup["keyboard"] for button in row)
-        assert not any(button["text"] == telegram_bot.BUTTON_BUSY for row in user_markup["keyboard"] for button in row)
+        assert admin_markup == telegram_bot.build_reply_markup(telegram_bot.ROLE_ADMIN)
+        assert user_markup == telegram_bot.build_reply_markup(telegram_bot.ROLE_USER)
+        assert bot._active_command("qa") is active_command
+        assert bot._active_command("client_42") is None
 
     def test_send_busy_status_does_not_leak_other_profile_run(self, monkeypatch):
         bot = telegram_bot.TelegramBot(profile_name="default")

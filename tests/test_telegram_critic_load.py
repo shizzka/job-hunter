@@ -163,6 +163,8 @@ def test_busy_auto_confirmation_keeps_prompt_for_retry(mode_bot, monkeypatch):
 
 
 def test_due_daily_summary_waiting_on_stats_index_does_not_block_polling_start(bot, tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, '_send_start_summary', AsyncMock(return_value=False))
+    monkeypatch.setattr(bot, '_recover_manual_applies', lambda: None)
     profile = profile_mod.Profile(name='synthetic', home_dir=str(tmp_path), resume_file=str(tmp_path / 'resume.md'))
     principal = {'user_id': 42, 'role': 'admin', 'profile': 'synthetic'}
     monkeypatch.setattr(bot, '_profile', lambda name: profile)

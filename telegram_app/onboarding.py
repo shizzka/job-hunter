@@ -52,10 +52,10 @@ def build(*, hh_ok: bool, resumes: list[dict], directions: list[dict], active: d
 
     if active:
         others = len(directions) - 1
-        lines.append(f"✅ 3. Направления: {active.get('title', '')}" + (f" (и ещё {others})" if others > 0 else ""))
-        rows.append([("🧭 Направления", "dirs")])
+        lines.append(f"✅ 3. Мои поиски: {active.get('title', '')}" + (f" (и ещё {others})" if others > 0 else ""))
+        rows.append([("🎯 Мои поиски", "dirs")])
     else:
-        lines.append("⬜️ 3. Направления — выберите резюме, бот сам предложит запросы и как вас представить; "
+        lines.append("⬜️ 3. Мои поиски — выберите резюме, бот сам предложит запросы и как вас представить; "
                      "вы проверите и сохраните.")
         if resumes:
             rows.append([("➕ Создать направление", "new")])
@@ -63,7 +63,7 @@ def build(*, hh_ok: bool, resumes: list[dict], directions: list[dict], active: d
     scope = f" по направлению «{active.get('title', '')}»" if active else ""
     lines.append(f"{mark(mode_ok)} 4. Отклики{scope}: " + MODE_LABELS.get(mode, "не выбрано"))
     rows.append([(("✓ " if mode == value else "") + label, value)
-                 for label, value in [("✋ Спрашивать меня перед откликом", "confirm"), ("🤖 Откликаться автоматически", "auto")]])
+                 for label, value in [("✋ Подтверждать отклик", "confirm"), ("🤖 Откликаться автоматически", "auto")]])
 
     ready = all(steps_ok[:4])
     lines.append(f"{mark(has_search)} 5. Первый поиск" + ("" if has_search else " — когда шаги 1–4 готовы."))

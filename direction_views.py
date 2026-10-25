@@ -57,6 +57,12 @@ class DirectionView:
         return "" if not names else None
 
     def review_items(self, items, *, unspecified=False):
+        import profile_access
+        bound_direction = profile_access.current_scope()[1]
+        if bound_direction:
+            from direction_history import HistoryScope
+            ownership = HistoryScope(self.home)
+            items = [item for item in items if ownership.owner(item) == bound_direction]
         return [item for item in items if self.item_direction(item) == (None if unspecified else self.name)]
 
     def chat_status(self, chat_id):

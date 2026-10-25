@@ -46,6 +46,7 @@ def test_telegram_answer_needs_confirmation_before_write(tmp_path, monkeypatch):
     profile_dir = tmp_path / "qa"
     monkeypatch.setattr(bot, "_selected_profile", lambda _: "qa")
     monkeypatch.setattr(bot, "_candidate_profile_dir", lambda _: str(profile_dir))
+    monkeypatch.setattr(bot, "_profile", lambda _: SimpleNamespace(home_dir=str(profile_dir)))
     monkeypatch.setattr(bot, "_menu_reply_markup", lambda *args, **kwargs: {})
 
     async def send_text(*args, **kwargs):
@@ -63,6 +64,6 @@ def test_telegram_answer_needs_confirmation_before_write(tmp_path, monkeypatch):
 
 
 def test_candidate_menu_is_available_to_regular_user():
-    markup = ui.build_reply_markup(ui.ROLE_USER, menu=ui.MENU_CANDIDATE)
+    markup = ui.build_menu_inline_markup(ui.ROLE_USER, ui.MENU_CANDIDATE, token="synthetic")
     assert ui.BUTTON_CANDIDATE_FACTS in str(markup)
-    assert ui.BUTTON_CANDIDATE_PROFILE in str(ui.build_reply_markup(ui.ROLE_USER))
+    assert ui.BUTTON_CANDIDATE_PROFILE in str(ui.build_menu_inline_markup(ui.ROLE_USER, ui.MENU_SETTINGS, token="synthetic"))
