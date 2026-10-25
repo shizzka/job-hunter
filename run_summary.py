@@ -48,27 +48,7 @@ def _run_counters(data, events, incomplete):
     return counters, decisions, observed
 
 
-def build_run_summary(run, events=(), *, profile=""):
-    """No text-log inference. Missing legacy data remains explicitly unknown."""
-    run_id = run.get("run_id", "")
-    events = [e for e in events if run_id and e.get("run_id") == run_id]
-    started = next((e for e in events if e.get("event") == "search_started"), {})
-    finished = next((e for e in reversed(events) if e.get("event") == "search_finished"), {})
-    data = {**run, **finished}
-    if finished:
-        data["status"] = finished.get("status") or "finished"
-        data["finished_at"] = finished.get("finished_at") or finished.get("created_at")
-    incomplete = data.get("status") == "incomplete" or not finished and not data.get("finished_at") and data.get("ok") is None
-    funnel = data.get("funnel") or {}
-    counters, decisions, observed = _run_counters(data, events, incomplete)
-
-    roots, affected, downstream = {}, {}, {}
-    journal_failures = [e for e in events if e.get("event") in {"stage_failed", "failure_observed"}]
-    # Checkpoints preserve observations even if an individual journal write failed.
-    first_events = {e.get("failure_id"): e for e in reversed(journal_failures) if e.get("event") == "stage_failed"}
-    failures = [{**f, **first_events.get(f.get("failure_id"), {})} for f in data.get("stage_failures") or []]
-    saved_ids = {f.get("failure_id") for f in failures if f.get("failure_id")}
-    failures += [e for e in journal_failures if e.get("event") == "failure_observed" or e.get("failure_id") not in saved_ids]
+def _reconstruct_legacy_failures(run_id, events, decisions, failures):
     # Older journals recorded the uncertainty decision but omitted its failure
     # event. Reconstruct a stable identity from that explicit evidence, without
     # rewriting history or guessing the missing execution stage.
@@ -114,6 +94,31 @@ def build_run_summary(run, events=(), *, profile=""):
             "retryable": False, "continued": False, "source_stopped": True,
             "created_at": artifact.get("recorded_at_utc") or artifact.get("created_at"),
             "correlation_origin": "journal_trace_stage"})
+    return legacy_causes, positions
+
+
+def build_run_summary(run, events=(), *, profile=""):
+    """No text-log inference. Missing legacy data remains explicitly unknown."""
+    run_id = run.get("run_id", "")
+    events = [e for e in events if run_id and e.get("run_id") == run_id]
+    started = next((e for e in events if e.get("event") == "search_started"), {})
+    finished = next((e for e in reversed(events) if e.get("event") == "search_finished"), {})
+    data = {**run, **finished}
+    if finished:
+        data["status"] = finished.get("status") or "finished"
+        data["finished_at"] = finished.get("finished_at") or finished.get("created_at")
+    incomplete = data.get("status") == "incomplete" or not finished and not data.get("finished_at") and data.get("ok") is None
+    funnel = data.get("funnel") or {}
+    counters, decisions, observed = _run_counters(data, events, incomplete)
+
+    roots, affected, downstream = {}, {}, {}
+    journal_failures = [e for e in events if e.get("event") in {"stage_failed", "failure_observed"}]
+    # Checkpoints preserve observations even if an individual journal write failed.
+    first_events = {e.get("failure_id"): e for e in reversed(journal_failures) if e.get("event") == "stage_failed"}
+    failures = [{**f, **first_events.get(f.get("failure_id"), {})} for f in data.get("stage_failures") or []]
+    saved_ids = {f.get("failure_id") for f in failures if f.get("failure_id")}
+    failures += [e for e in journal_failures if e.get("event") == "failure_observed" or e.get("failure_id") not in saved_ids]
+    legacy_causes, positions = _reconstruct_legacy_failures(run_id, events, decisions, failures)
     aliases = {f['failure_id']: f['parent_failure_id'] for f in failures
                if f.get('failure_id') and f.get('parent_failure_id')}
     definitions = {f['failure_id']: f for f in reversed(failures)
