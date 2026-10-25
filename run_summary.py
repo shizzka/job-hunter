@@ -97,20 +97,7 @@ def _reconstruct_legacy_failures(run_id, events, decisions, failures):
     return legacy_causes, positions
 
 
-def build_run_summary(run, events=(), *, profile=""):
-    """No text-log inference. Missing legacy data remains explicitly unknown."""
-    run_id = run.get("run_id", "")
-    events = [e for e in events if run_id and e.get("run_id") == run_id]
-    started = next((e for e in events if e.get("event") == "search_started"), {})
-    finished = next((e for e in reversed(events) if e.get("event") == "search_finished"), {})
-    data = {**run, **finished}
-    if finished:
-        data["status"] = finished.get("status") or "finished"
-        data["finished_at"] = finished.get("finished_at") or finished.get("created_at")
-    incomplete = data.get("status") == "incomplete" or not finished and not data.get("finished_at") and data.get("ok") is None
-    funnel = data.get("funnel") or {}
-    counters, decisions, observed = _run_counters(data, events, incomplete)
-
+def _run_failure_summary(run_id, data, events, decisions, observed, counters, incomplete):
     roots, affected, downstream = {}, {}, {}
     journal_failures = [e for e in events if e.get("event") in {"stage_failed", "failure_observed"}]
     # Checkpoints preserve observations even if an individual journal write failed.
@@ -187,6 +174,25 @@ def build_run_summary(run, events=(), *, profile=""):
         return (bool(item[1].get("continued")), timestamp is None,
                 timestamp.timestamp() if timestamp else 0)
     roots = dict(sorted(roots.items(), key=failure_order))
+    return roots, affected, failures, problems, limited
+
+
+def build_run_summary(run, events=(), *, profile=""):
+    """No text-log inference. Missing legacy data remains explicitly unknown."""
+    run_id = run.get("run_id", "")
+    events = [e for e in events if run_id and e.get("run_id") == run_id]
+    started = next((e for e in events if e.get("event") == "search_started"), {})
+    finished = next((e for e in reversed(events) if e.get("event") == "search_finished"), {})
+    data = {**run, **finished}
+    if finished:
+        data["status"] = finished.get("status") or "finished"
+        data["finished_at"] = finished.get("finished_at") or finished.get("created_at")
+    incomplete = data.get("status") == "incomplete" or not finished and not data.get("finished_at") and data.get("ok") is None
+    funnel = data.get("funnel") or {}
+    counters, decisions, observed = _run_counters(data, events, incomplete)
+
+    roots, affected, failures, problems, limited = _run_failure_summary(
+        run_id, data, events, decisions, observed, counters, incomplete)
     progress = sum(counters.get(key) or 0 for key in ("evaluated", "applied", "matcher_pass"))
     if any(root['stage'] == 'collection' for root in roots.values()):
         stats = data.get("source_stats") or {}
