@@ -11,17 +11,7 @@ def _time(value):
         return None
 
 
-def build_run_summary(run, events=(), *, profile=""):
-    """No text-log inference. Missing legacy data remains explicitly unknown."""
-    run_id = run.get("run_id", "")
-    events = [e for e in events if run_id and e.get("run_id") == run_id]
-    started = next((e for e in events if e.get("event") == "search_started"), {})
-    finished = next((e for e in reversed(events) if e.get("event") == "search_finished"), {})
-    data = {**run, **finished}
-    if finished:
-        data["status"] = finished.get("status") or "finished"
-        data["finished_at"] = finished.get("finished_at") or finished.get("created_at")
-    incomplete = data.get("status") == "incomplete" or not finished and not data.get("finished_at") and data.get("ok") is None
+def _run_counters(data, events, incomplete):
     funnel = data.get("funnel") or {}
     counters = {key: funnel.get(key) for key in (
         "fetched", "already_seen", "new", "keyword_pass", "evaluated", "matcher_pass",
@@ -54,6 +44,23 @@ def build_run_summary(run, events=(), *, profile=""):
     for key in ("applied", "skipped", "deferred_unscored", "not_processed", "failed"):
         if observed[key] and (incomplete or counters[key] is None):
             counters[key] = max(counters[key] or 0, observed[key])
+
+    return counters, decisions, observed
+
+
+def build_run_summary(run, events=(), *, profile=""):
+    """No text-log inference. Missing legacy data remains explicitly unknown."""
+    run_id = run.get("run_id", "")
+    events = [e for e in events if run_id and e.get("run_id") == run_id]
+    started = next((e for e in events if e.get("event") == "search_started"), {})
+    finished = next((e for e in reversed(events) if e.get("event") == "search_finished"), {})
+    data = {**run, **finished}
+    if finished:
+        data["status"] = finished.get("status") or "finished"
+        data["finished_at"] = finished.get("finished_at") or finished.get("created_at")
+    incomplete = data.get("status") == "incomplete" or not finished and not data.get("finished_at") and data.get("ok") is None
+    funnel = data.get("funnel") or {}
+    counters, decisions, observed = _run_counters(data, events, incomplete)
 
     roots, affected, downstream = {}, {}, {}
     journal_failures = [e for e in events if e.get("event") in {"stage_failed", "failure_observed"}]
