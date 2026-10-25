@@ -55,6 +55,7 @@ from telegram_app.directions import TelegramDirections
 from telegram_app.chat_ownership import TelegramChatOwnership
 from telegram_app.command_queue import TelegramCommandQueue, profile_command, current_entry
 from telegram_app.updates import TelegramUpdateSupervisor
+from telegram_app.routing import COMMAND_ROUTES, route_for_command
 from telegram_app.guards import read_command
 from telegram_app.subprocesses import (
     ActiveCommandState,
@@ -2566,30 +2567,12 @@ class TelegramBot(
         role = principal.get("role", ROLE_USER)
         profile_name = self._selected_profile(principal)
         active_command = self._active_command(profile_name)
+        route = route_for_command(command)
 
-        if command in {"/act_as", "/act_as_self"} and (role == ROLE_ADMIN or principal.get("impersonating")):
-            target = "" if command == "/act_as_self" else arg.strip()
-            try:
-                if target and target not in self._profile_names():
-                    raise RuntimeError(f"Профиль {target} не найден.")
-                telegram_access.set_impersonation(principal["user_id"], target or None)
-            except RuntimeError as exc:
-                await self._send_text(chat_id, f"❌ {exc}")
-                return
-            fresh = telegram_access.resolve_user(principal["user_id"]) or principal
-            note = (f"👤 Теперь вы видите бота как клиент профиля {target}. Вернуться: /act_as_self"
-                    if target else "👤 Вы снова администратор.")
-            await self._send_text(chat_id, note, reply_markup=self._menu_reply_markup(fresh, menu=MENU_MAIN))
-            return
-        if command == "/busy":
-            await self._send_busy_status(chat_id, principal, profile_name=profile_name)
-            return
-        if command == "/cancel_active":
-            await self._cancel_active_command(chat_id, principal, profile_name=profile_name)
-            return
-        if command == "/back":
-            parent = MENU_PARENTS.get(self._selected_menu(principal), MENU_MAIN)
-            await self._send_menu(chat_id, principal, profile_name=profile_name, menu=parent)
+        if route and route.phase == "impersonation" and not (role == ROLE_ADMIN or principal.get("impersonating")):
+            route = None
+        if route and route.phase in {"early", "impersonation"}:
+            await getattr(self, route.handler)(chat_id, principal, command, arg, profile_name, None)
             return
         if (current_entry() is None and (active_command or self._queue_launching.get(profile_name)
                                          or (self._queue_length(profile_name) and command not in {"/hh_auth", "/client_hh_auth"}))
@@ -2597,35 +2580,19 @@ class TelegramBot(
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
             return
 
-        if command in {"/start", "/menu", "/help"}:
-            if principal.get("impersonating"):
-                await self._send_text(chat_id, f"👤 Режим «смотреть как клиент»: профиль {profile_name}. Вернуться: /act_as_self")
-            await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_MAIN, help_section=command == "/help")
-            if command == "/start":
-                await self._send_getting_started(chat_id, principal, only_if_incomplete=True)
-            return
-
-        if command == "/getting_started":
-            owner_menu = reply_menu_for_command(role, "/getting_started") or MENU_MAIN
-            self._set_selected_menu(principal["user_id"], owner_menu)
-            await self._send_text(chat_id, "🚀 С чего начать — пошаговая настройка.",
-                                  reply_markup=self._menu_reply_markup(principal, menu=owner_menu))
-            await self._send_getting_started(chat_id, principal)
+        if route and route.phase == "public":
+            await getattr(self, route.handler)(chat_id, principal, command, arg, profile_name, None)
             return
 
         if command in ADMIN_ONLY_COMMANDS and role != ROLE_ADMIN:
             await self._send_text(chat_id, "🔒 Нужны права администратора.", reply_markup=self._menu_reply_markup(principal))
             return
 
-        if command.startswith("/direction"):
-            direction_menu = reply_menu_for_command(role, command)
-            if direction_menu is not None:
-                self._set_selected_menu(principal["user_id"], direction_menu)
-            await self._dispatch_direction(chat_id, principal, command, arg)
+        if route and route.phase == "direction":
+            await getattr(self, route.handler)(chat_id, principal, command, arg, profile_name, None)
             return
 
-        if command in {"/search_edit", "/search_resume", "/search_suggest", "/search_use_draft", "/refresh_resume", "/grabresume",
-                       "/search_application_preview", "/search_application_confirm", "/search_application_auto"}:
+        if route and route.direction_command:
             import directions
             pending = self._direction_sessions().get(principal["user_id"])
             if directions.active_direction(self._profile(profile_name).home_dir) or (
@@ -2634,962 +2601,1009 @@ class TelegramBot(
                 direction_menu = reply_menu_for_command(role, command)
                 if direction_menu is not None:
                     self._set_selected_menu(principal["user_id"], direction_menu)
-                direction_command = "/direction_refresh" if command in {"/refresh_resume", "/grabresume"} else command
-                await self._dispatch_direction(chat_id, principal, direction_command, arg)
+                await self._dispatch_direction(chat_id, principal, route.direction_command, arg)
                 return
 
         reply_menu = reply_menu_for_command(role, command)
         if reply_menu is not None:
             self._set_selected_menu(principal["user_id"], reply_menu)
 
-        if command in {"/menu_llm", "/llm_balance", "/llm_test"}:
-            if command == "/menu_llm":
-                self._set_selected_menu(principal["user_id"], MENU_LLM)
-            markup = self._menu_reply_markup(principal)
-            if command == "/menu_llm":
-                message = admin_llm.overview()
-            elif command == "/llm_balance":
-                message = await admin_llm.diagnostic()
-            elif self._llm_test_lock.locked() or time.monotonic() < self._llm_test_next_at:
-                message = "⏳ Тест доступен не чаще раза в минуту. Дождитесь завершения предыдущего."
-            else:
-                async with self._llm_test_lock:
-                    self._llm_test_next_at = time.monotonic() + 60
-                    await self._send_text(chat_id, "🧪 Проверяю DeepSeek…", reply_markup=markup)
-                    message = await admin_llm.diagnostic(test=True)
-            await self._send_text(chat_id, message, reply_markup=markup)
+        handler = route.handler if route else "_route_unknown"
+        await getattr(self, handler)(chat_id, principal, command, arg, profile_name, reply_menu)
+
+    # Search routes.
+
+    async def _route_market_research(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        if arg.strip():
+            await self._start_market_research(chat_id, principal, arg)
+            return
+        self._set_search_settings_state(principal["user_id"], search_input="market")
+        await self._send_text(
+            chat_id,
+            "📈 Рынок вакансий: соберу свежую статистику hh.ru по названиям вакансий.\n\n"
+            "Отправьте названия, по одному в строке (до 20). Например:\n"
+            "QA lead\nРуководитель отдела тестирования\nМенеджер по подбору персонала\n\n"
+            "Ищу по всей России, в названии вакансии. Откликов и изменений не делаю — только чтение. "
+            "Для отмены: Отмена.",
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
+
+    async def _route_cli(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        flag, label, timeout = COMMAND_ROUTES[command].args
+        await self._start_cli_command(chat_id, principal, profile_name, flag, label, timeout)
+        return
+
+    # Review queue routes.
+
+    async def _route_review(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        await self._show_review_queue(chat_id, principal, profile_name=profile_name)
+        return
+
+    # Responses/hh routes.
+
+    async def _route_forms(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        await self._send_text(chat_id, "📝 Анкеты", reply_markup=self._menu_reply_markup(principal))
+        await self._list_forms(chat_id, principal, profile_name)
+        return
+
+    async def _route_hh_responses(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        role = principal.get("role", ROLE_USER)
+        if reply_menu is None:
+            self._set_selected_menu(principal["user_id"], reply_menu_for_command(role, "/hh_responses"))
+        target_profile = self._profile(profile_name)
+        await self._send_chat_action(chat_id)
+        from telegram_app.hh_counter_cache import snapshot as counter_snapshot
+        snapshot, counter_age, counter_error = await counter_snapshot(
+            self, principal["user_id"], profile_name, target_profile,
+            force=arg.strip().lower() in {"refresh", "обновить"})
+        if snapshot is None:
+            text = counter_error
+            if DirectionView(target_profile.home_dir).directions:
+                text = (build_hh_response_count_text({}, home_dir=target_profile.home_dir) +
+                        "\n\n" + counter_error)
+            await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal))
             return
 
-        if command in {"/candidate_upload", "/candidate_upload_save", "/candidate_upload_cancel"}:
-            if command == "/candidate_upload":
-                owner_menu = reply_menu_for_command(role, "/candidate_upload") or MENU_CANDIDATE
-                self._set_selected_menu(principal["user_id"], owner_menu)
-                self._set_candidate_state(principal["user_id"], {"profile_name": profile_name, "kind": "upload", "mode": "upload"})
-                await self._send_text(
-                    chat_id,
-                    "📥 Пришлите файл с фактами о себе (.md или .txt, до 400 КБ) — как документ.\n\n"
-                    "Это может быть ваша «база фактов»: опыт, навыки, проекты, образование. "
-                    "Строки, которые бот НИКОГДА не должен про вас писать, пометьте [DO_NOT_CLAIM].\n"
-                    "Перед сохранением покажу, что прочитал.",
-                    reply_markup=self._menu_reply_markup(principal, menu=owner_menu),
-                )
-            else:
-                await self._finish_facts_upload(chat_id, principal, save=command == "/candidate_upload_save")
-            return
+        self._append_debug_log(
+            "hh_response_counter_updated",
+            profile_name=profile_name,
+            active=snapshot.get("active", 0),
+            archived=snapshot.get("archived", 0),
+            deleted=snapshot.get("deleted", 0),
+            total=snapshot.get("total", 0),
+        )
+        await self._send_text(
+            chat_id,
+            build_hh_response_count_text(snapshot, home_dir=target_profile.home_dir)
+            + f"\n\nобновлено {counter_age} мин назад"
+            + (f"\n{counter_error}" if counter_error else "")
+            + "\nОбновить: /hh_responses refresh",
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
 
-        if command in {"/candidate_profile", "/candidate_facts", "/candidate_add_fact", "/candidate_interview", "/candidate_save", "/candidate_edit", "/candidate_skip"}:
-            if reply_menu is None or command == "/candidate_profile":
-                self._set_selected_menu(principal["user_id"], MENU_CANDIDATE)
-            profile_dir = self._candidate_profile_dir(profile_name)
-            state = self._candidate_state(principal["user_id"], profile_name)
-            if command == "/candidate_profile":
-                await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_CANDIDATE)
-                return
-            if command == "/candidate_facts":
-                message = candidate_interview.render_facts(profile_dir=profile_dir)
-                # Используем тот же профильный knowledge/, что и генератор писем.
-                try:
-                    from prompt_blocks import build_knowledge_base_block
-                    knowledge = build_knowledge_base_block(limit_chars=7000, profile_dir=profile_dir)
-                except Exception as exc:
-                    log.debug("candidate knowledge display failed: %s", exc)
-                    knowledge = ""
-                if knowledge:
-                    message += "\n\n" + knowledge
-                await self._send_text(chat_id, message, reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
-                full = self._full_facts_document(profile_dir)
-                if full:
-                    await self._send_document(chat_id, filename=f"facts_{profile_name}.md", content=full.encode("utf-8"),
-                                              caption="Полная база фактов профиля (на экране выше — сокращённо).")
-                return
-            if command == "/candidate_add_fact":
-                self._set_candidate_state(principal["user_id"], {"profile_name": profile_name, "kind": "add", "mode": "add"})
-                await self._send_text(chat_id, "Напишите один факт о себе. Он будет использован только после вашего подтверждения.\n\nНапример: «Работал с электрощитами до 1000 В; допуск III группы действовал до 2025 года».", reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
-                return
-            if command == "/candidate_interview":
-                if state.get("questions") and state.get("mode") in {"answer", "confirm"}:
-                    if state.get("mode") == "confirm":
-                        await self._send_text(chat_id, "Остался неподтверждённый ответ. Сохраните, измените или пропустите его.", reply_markup=self._candidate_confirm_markup())
-                    else:
-                        await self._send_candidate_question(chat_id, principal, profile_name)
-                    return
-                try:
-                    with open(self._profile(profile_name).resume_file, encoding="utf-8") as handle:
-                        resume_text = handle.read().strip()
-                except OSError:
-                    resume_text = ""
-                client = self._client_record(principal["user_id"]) or {}
-                plan = await candidate_interview.build_plan(resume_text, target_role=str(client.get("target_role") or ""), current_facts=candidate_interview.facts(profile_dir))
-                self._set_candidate_state(principal["user_id"], {"profile_name": profile_name, "kind": "interview", "mode": "answer", "questions": plan.get("questions") or [], "index": 0})
-                hypothesis = str(plan.get("profile_hypothesis") or "").strip()
-                if hypothesis:
-                    await self._send_text(chat_id, f"Собрал вопросы по резюме. Текущее направление: {hypothesis}.", reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
-                await self._send_candidate_question(chat_id, principal, profile_name)
-                return
-            if command == "/candidate_edit" and state.get("mode") == "confirm":
-                state["mode"] = "add" if state.get("kind") == "add" else "answer"
-                state.pop("pending_text", None)
-                state.pop("pending_topic", None)
-                self._set_candidate_state(principal["user_id"], state)
-                if state.get("kind") == "add":
-                    await self._send_text(chat_id, "Отправьте исправленную формулировку факта.", reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
+    async def _route_chat_ai(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        role = principal.get("role", ROLE_USER)
+        if reply_menu is None:
+            self._set_selected_menu(principal["user_id"], reply_menu_for_command(role, "/chat_ai"))
+        hh_chat_id, hh_message_id = _parse_manual_chat_ai_arg(arg)
+        if not hh_chat_id:
+            await self._start_chat_ai_candidate_list(
+                chat_id,
+                principal,
+                profile_name=profile_name,
+            )
+            return
+        self._append_chat_ai_audit_event(
+            "manual_command",
+            action="preview",
+            telegram_chat_id=chat_id,
+            user_id=int(principal.get("user_id") or 0),
+            profile_name=profile_name,
+            hh_chat_id=hh_chat_id,
+            hh_message_id=hh_message_id,
+            allow_any=True,
+        )
+        await self._start_chat_ai_reply(
+            chat_id,
+            principal,
+            profile_name=profile_name,
+            hh_chat_id=hh_chat_id,
+            hh_message_id=hh_message_id,
+            allow_any=True,
+        )
+        return
+
+    # Directions/search settings routes.
+
+    async def _route_direction(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        direction_menu = reply_menu_for_command(principal.get("role", ROLE_USER), command)
+        if direction_menu is not None:
+            self._set_selected_menu(principal["user_id"], direction_menu)
+        await self._dispatch_direction(chat_id, principal, command, arg)
+        return
+
+    async def _route_companies(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        if command == "/companies":
+            self._set_selected_menu(principal["user_id"], MENU_COMPANIES)
+        companies = company_blacklist.list_companies(profile_name)
+        message = "🚫 Чёрный список компаний\n" + ("\n".join("• " + x for x in companies) or "Пока пуст.")
+        if command != "/companies":
+            self._set_search_settings_state(principal["user_id"], search_input=command[1:])
+            message += "\n\nПришлите точное название одной компании. Добавить её можно заранее, до поиска и первого отклика. Для отмены — Назад."
+        await self._send_text(chat_id, message, reply_markup=self._menu_reply_markup(principal))
+        return
+
+    async def _route_search_settings(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        import directions
+        if directions.active_direction(self._profile(profile_name).home_dir):
+            # Keep the «Мой поиск» submenu on the keyboard, then show the active direction card.
+            self._set_selected_menu(principal["user_id"], MENU_SEARCH)
+            await self._send_text(chat_id, "🎯 Направления — условия текущего поиска ниже.",
+                                  reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH))
+            await self._dispatch_direction(chat_id, principal, "/direction_summary", "")
+            return
+        self._set_selected_menu(principal["user_id"], MENU_SEARCH)
+        await self._send_text(
+            chat_id,
+            self._search_settings_text(profile_name, user_id=principal["user_id"]),
+            reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
+        )
+        return
+
+    async def _route_search_conditions(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        self._set_selected_menu(principal["user_id"], MENU_SEARCH_CONDITIONS)
+        await self._send_text(
+            chat_id,
+            self._search_conditions_text(profile_name),
+            reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH_CONDITIONS),
+        )
+        return
+
+    async def _route_search_experience(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        self._set_selected_menu(principal["user_id"], MENU_EXPERIENCE)
+        await self._send_text(
+            chat_id,
+            "👤 Выберите требуемый опыт. Этот фильтр hh.ru применится ко всем вашим запросам.",
+            reply_markup=self._menu_reply_markup(principal, menu=MENU_EXPERIENCE),
+        )
+        return
+
+    async def _route_experience(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        value, label = COMMAND_ROUTES[command].args
+        await self._save_search_setting(
+            chat_id,
+            principal,
+            {"HH_SEARCH_EXPERIENCE": value},
+            f"Фильтр по опыту: {label}.",
+            menu=reply_menu,
+        )
+        return
+
+    async def _route_search_salary(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        self._set_search_settings_state(principal["user_id"], search_input="salary")
+        await self._send_text(
+            chat_id,
+            "💰 Отправьте минимальную зарплату в рублях. Например: 150000.\n"
+            "Ноль отключит этот фильтр. Для отмены: Отмена.",
+            reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
+        )
+        return
+
+    async def _route_search_salary_toggle(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        current = self._profile(profile_name).hh.search_only_with_salary
+        await self._save_search_setting(
+            chat_id,
+            principal,
+            {"HH_SEARCH_ONLY_WITH_SALARY": 0 if current else 1},
+            "Показывать только вакансии с указанной зарплатой."
+            if not current else "Вакансии без указанной зарплаты снова включены.",
+            menu=reply_menu,
+        )
+        return
+
+    async def _route_search_remote_toggle(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        current = self._profile(profile_name).hh.search_remote_only
+        await self._save_search_setting(
+            chat_id,
+            principal,
+            {"HH_SEARCH_REMOTE_ONLY": 0 if current else 1},
+            "Оставлены только удалённые вакансии."
+            if not current else "Снова ищем во всех настроенных форматах работы.",
+            menu=reply_menu,
+        )
+        return
+
+    async def _route_search_application_mode(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        self._set_selected_menu(principal["user_id"], MENU_APPLICATION_MODE)
+        await self._send_text(
+            chat_id,
+            self._application_mode_text(profile_name),
+            reply_markup=self._menu_reply_markup(principal, menu=MENU_APPLICATION_MODE),
+        )
+        return
+
+    async def _route_application_mode(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        await self._request_application_mode(chat_id, principal, COMMAND_ROUTES[command].args[0])
+        return
+
+    async def _route_search_edit(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        self._set_search_settings_state(principal["user_id"], search_input="queries", search_input_profile=profile_name)
+        await self._send_text(
+            chat_id,
+            "✏️ Отправьте новый список: один поисковый запрос в строке.\n"
+            "Например:\nQA engineer\nManual QA Engineer\nТестировщик ПО\n\n"
+            "Список заменит текущий. Для отмены отправьте «Отмена».",
+            reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
+        )
+        return
+
+    async def _route_search_suggest(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        await self._start_search_query_suggestion(chat_id, principal, profile_name=profile_name)
+        return
+
+    async def _route_search_use_draft(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        query_state = self._search_settings_state(principal["user_id"])
+        if query_state.get("search_query_draft_profile", profile_name) != profile_name:
+            self._clear_search_settings_state(principal["user_id"], "search_query_draft", "search_query_draft_profile")
+            await self._send_text(chat_id, "Черновик создан для другого профиля. Запросите предложение заново.")
+            return
+        draft = query_state.get("search_query_draft") or []
+        try:
+            queries = search_query_suggester.normalize_queries(draft)
+            env_file = profile_mod.update_profile_env(
+                profile_name,
+                {"HH_SEARCH_QUERIES": search_query_suggester.queries_to_env_value(queries)},
+            )
+            try:
+                restarted = self._reload_profile_daemon(profile_name)
+                restart_note = "\n🔁 Повтор перезапущен с новыми настройками." if restarted else ""
+            except RuntimeError as exc:
+                restart_note = f"\n⚠️ Запросы сохранены, но повтор не перезапустился: {exc}"
+        except (search_query_suggester.SearchQueryValidationError, ValueError):
+            await self._send_text(
+                chat_id,
+                "ℹ️ Сначала нажмите «Предложить ИИ» или отправьте свой список через «Изменить запросы».",
+                reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
+            )
+            return
+        self._clear_search_settings_state(principal["user_id"], "search_query_draft")
+        await self._send_text(
+            chat_id,
+            "✅ Черновик ИИ сохранён. Следующий поиск будет использовать эти запросы.\n"
+            f"Файл настроек: {env_file}" + restart_note,
+            reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
+        )
+        return
+
+    # Hh & resumes routes.
+
+    async def _route_search_resume(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        self._set_selected_menu(principal["user_id"], reply_menu)
+        catalog = client_hh_auth.load_hh_resume_catalog(profile_name)
+        if not catalog:
+            await self._send_text(
+                chat_id,
+                "🧾 Пока нет списка резюме HH. Сначала нажмите «Вход HH», затем повторите попытку.",
+                reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
+            )
+            return
+        lines = ["🧾 Выберите резюме для поиска. Отправьте его номер:", ""]
+        for index, item in enumerate(catalog, start=1):
+            title = str(item.get("title") or "Резюме без названия")
+            lines.append(f"{index}. {title}")
+        lines.append("\nДля отмены отправьте «Отмена».")
+        self._set_search_settings_state(principal["user_id"], search_input="resume", search_input_profile=profile_name)
+        await self._send_text(
+            chat_id,
+            "\n".join(lines),
+            reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
+        )
+        return
+
+    async def _route_hh_auth(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        role = principal.get("role", ROLE_USER)
+        client = self._client_record(principal["user_id"])
+        if not client and role == ROLE_ADMIN:
+            await self._start_profile_hh_auth_capture(chat_id, principal, profile_name=profile_name)
+            return
+        if not client:
+            await self._send_text(
+                chat_id,
+                "ℹ️ Вход HH доступен только после заполнения клиентской заявки.",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+        if client.get("status") != telegram_clients.STATUS_APPROVED:
+            await self._send_text(
+                chat_id,
+                "🔒 Вход HH станет доступен после одобрения заявки.",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+        await self._request_hh_auth(
+            chat_id,
+            principal["user_id"],
+            client,
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
+
+    async def _route_hh_resumes(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        client = self._client_record(principal["user_id"])
+        target_profile = profile_name
+        if client and client.get("profile_name"):
+            target_profile = client["profile_name"]
+        from hh.session_probe import probe, save_catalog, OK
+        checked = await asyncio.to_thread(probe, self._profile(target_profile).hh.cookies_file)
+        note = ""
+        if checked["status"] == OK:
+            try:
+                save_catalog(client_hh_auth.hh_resume_catalog_path(target_profile), checked["resumes"])
+            except Exception as exc:
+                log.warning("resume catalog cache refresh failed: %s", type(exc).__name__)
+        else:
+            note = "⚠️ " + checked["message"] + "\nНиже — последний сохранённый список.\n\n"
+        resumes = client_hh_auth.load_hh_resume_catalog(target_profile)
+        await self._send_text(
+            chat_id,
+            note + build_hh_resumes_text(target_profile, resumes),
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
+
+    # Candidate facts routes.
+
+    async def _route_candidate_upload(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        role = principal.get("role", ROLE_USER)
+        if command == "/candidate_upload":
+            owner_menu = reply_menu_for_command(role, "/candidate_upload") or MENU_CANDIDATE
+            self._set_selected_menu(principal["user_id"], owner_menu)
+            self._set_candidate_state(principal["user_id"], {"profile_name": profile_name, "kind": "upload", "mode": "upload"})
+            await self._send_text(
+                chat_id,
+                "📥 Пришлите файл с фактами о себе (.md или .txt, до 400 КБ) — как документ.\n\n"
+                "Это может быть ваша «база фактов»: опыт, навыки, проекты, образование. "
+                "Строки, которые бот НИКОГДА не должен про вас писать, пометьте [DO_NOT_CLAIM].\n"
+                "Перед сохранением покажу, что прочитал.",
+                reply_markup=self._menu_reply_markup(principal, menu=owner_menu),
+            )
+        else:
+            await self._finish_facts_upload(chat_id, principal, save=command == "/candidate_upload_save")
+        return
+
+    async def _route_candidate(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        role = principal.get("role", ROLE_USER)
+        if reply_menu is None or command == "/candidate_profile":
+            self._set_selected_menu(principal["user_id"], MENU_CANDIDATE)
+        profile_dir = self._candidate_profile_dir(profile_name)
+        state = self._candidate_state(principal["user_id"], profile_name)
+        if command == "/candidate_profile":
+            await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_CANDIDATE)
+            return
+        if command == "/candidate_facts":
+            message = candidate_interview.render_facts(profile_dir=profile_dir)
+            # Используем тот же профильный knowledge/, что и генератор писем.
+            try:
+                from prompt_blocks import build_knowledge_base_block
+                knowledge = build_knowledge_base_block(limit_chars=7000, profile_dir=profile_dir)
+            except Exception as exc:
+                log.debug("candidate knowledge display failed: %s", exc)
+                knowledge = ""
+            if knowledge:
+                message += "\n\n" + knowledge
+            await self._send_text(chat_id, message, reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
+            full = self._full_facts_document(profile_dir)
+            if full:
+                await self._send_document(chat_id, filename=f"facts_{profile_name}.md", content=full.encode("utf-8"),
+                                          caption="Полная база фактов профиля (на экране выше — сокращённо).")
+            return
+        if command == "/candidate_add_fact":
+            self._set_candidate_state(principal["user_id"], {"profile_name": profile_name, "kind": "add", "mode": "add"})
+            await self._send_text(chat_id, "Напишите один факт о себе. Он будет использован только после вашего подтверждения.\n\nНапример: «Работал с электрощитами до 1000 В; допуск III группы действовал до 2025 года».", reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
+            return
+        if command == "/candidate_interview":
+            if state.get("questions") and state.get("mode") in {"answer", "confirm"}:
+                if state.get("mode") == "confirm":
+                    await self._send_text(chat_id, "Остался неподтверждённый ответ. Сохраните, измените или пропустите его.", reply_markup=self._candidate_confirm_markup())
                 else:
                     await self._send_candidate_question(chat_id, principal, profile_name)
                 return
-            if command == "/candidate_save" and state.get("mode") == "confirm":
-                try:
-                    candidate_interview.add_fact(
-                        state.get("pending_text", ""),
-                        topic=state.get("pending_topic", "общий"),
-                        profile_dir=profile_dir,
-                        max_chars=None if role == ROLE_ADMIN else 1200,
-                    )
-                except ValueError as exc:
-                    await self._send_text(chat_id, f"❌ {exc}", reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
-                    return
-                await self._candidate_advance(chat_id, principal, profile_name)
-                return
-            if command == "/candidate_skip" and state:
-                if state.get("kind") == "add":
-                    self._clear_candidate_state(principal["user_id"])
-                    await self._send_text(chat_id, "Факт не сохранён.", reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
-                else:
-                    await self._candidate_advance(chat_id, principal, profile_name)
-                return
-            await self._send_text(chat_id, "Сначала начните интервью или добавление факта.", reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
-            return
-
-        if command == "/forms":
-            await self._send_text(chat_id, "📝 Анкеты", reply_markup=self._menu_reply_markup(principal))
-            await self._list_forms(chat_id, principal, profile_name)
-            return
-
-        menu_commands = {
-            "/menu_monitor": MENU_MONITOR,
-            "/menu_responses": MENU_RESPONSES,
-            "/menu_hh": MENU_HH,
-            "/menu_logs": MENU_LOGS,
-            "/menu_run": MENU_RUN,
-            "/menu_repeat": MENU_REPEAT,
-            "/menu_admin": MENU_ADMIN,
-        }
-        if command in menu_commands:
-            await self._send_menu(chat_id, principal, profile_name=profile_name, menu=menu_commands[command])
-            return
-
-        if command in {"/companies", "/company_block", "/company_unblock"}:
-            if command == "/companies":
-                self._set_selected_menu(principal["user_id"], MENU_COMPANIES)
-            companies = company_blacklist.list_companies(profile_name)
-            message = "🚫 Чёрный список компаний\n" + ("\n".join("• " + x for x in companies) or "Пока пуст.")
-            if command != "/companies":
-                self._set_search_settings_state(principal["user_id"], search_input=command[1:])
-                message += "\n\nПришлите точное название одной компании. Добавить её можно заранее, до поиска и первого отклика. Для отмены — Назад."
-            await self._send_text(chat_id, message, reply_markup=self._menu_reply_markup(principal))
-            return
-
-        if command == "/search_settings":
-            import directions
-            if directions.active_direction(self._profile(profile_name).home_dir):
-                # Keep the «Мой поиск» submenu on the keyboard, then show the active direction card.
-                self._set_selected_menu(principal["user_id"], MENU_SEARCH)
-                await self._send_text(chat_id, "🎯 Направления — условия текущего поиска ниже.",
-                                      reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH))
-                await self._dispatch_direction(chat_id, principal, "/direction_summary", "")
-                return
-            self._set_selected_menu(principal["user_id"], MENU_SEARCH)
-            await self._send_text(
-                chat_id,
-                self._search_settings_text(profile_name, user_id=principal["user_id"]),
-                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH),
-            )
-            return
-
-        if command == "/review":
-            await self._show_review_queue(chat_id, principal, profile_name=profile_name)
-            return
-
-        if command == "/search_conditions":
-            self._set_selected_menu(principal["user_id"], MENU_SEARCH_CONDITIONS)
-            await self._send_text(
-                chat_id,
-                self._search_conditions_text(profile_name),
-                reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH_CONDITIONS),
-            )
-            return
-
-        if command == "/search_experience":
-            self._set_selected_menu(principal["user_id"], MENU_EXPERIENCE)
-            await self._send_text(
-                chat_id,
-                "👤 Выберите требуемый опыт. Этот фильтр hh.ru применится ко всем вашим запросам.",
-                reply_markup=self._menu_reply_markup(principal, menu=MENU_EXPERIENCE),
-            )
-            return
-
-        experience_commands = {
-            "/search_experience_any": ("", "любой"),
-            "/search_experience_none": ("noExperience", "без опыта"),
-            "/search_experience_1_3": ("between1And3", "1–3 года"),
-            "/search_experience_3_6": ("between3And6", "3–6 лет"),
-            "/search_experience_6_plus": ("moreThan6", "6+ лет"),
-        }
-        if command in experience_commands:
-            value, label = experience_commands[command]
-            await self._save_search_setting(
-                chat_id,
-                principal,
-                {"HH_SEARCH_EXPERIENCE": value},
-                f"Фильтр по опыту: {label}.",
-                menu=reply_menu,
-            )
-            return
-
-        if command == "/search_salary":
-            self._set_search_settings_state(principal["user_id"], search_input="salary")
-            await self._send_text(
-                chat_id,
-                "💰 Отправьте минимальную зарплату в рублях. Например: 150000.\n"
-                "Ноль отключит этот фильтр. Для отмены: Отмена.",
-                reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
-            )
-            return
-
-        if command == "/search_salary_toggle":
-            current = self._profile(profile_name).hh.search_only_with_salary
-            await self._save_search_setting(
-                chat_id,
-                principal,
-                {"HH_SEARCH_ONLY_WITH_SALARY": 0 if current else 1},
-                "Показывать только вакансии с указанной зарплатой."
-                if not current else "Вакансии без указанной зарплаты снова включены.",
-                menu=reply_menu,
-            )
-            return
-
-        if command == "/search_remote_toggle":
-            current = self._profile(profile_name).hh.search_remote_only
-            await self._save_search_setting(
-                chat_id,
-                principal,
-                {"HH_SEARCH_REMOTE_ONLY": 0 if current else 1},
-                "Оставлены только удалённые вакансии."
-                if not current else "Снова ищем во всех настроенных форматах работы.",
-                menu=reply_menu,
-            )
-            return
-
-        if command == "/search_application_mode":
-            self._set_selected_menu(principal["user_id"], MENU_APPLICATION_MODE)
-            await self._send_text(
-                chat_id,
-                self._application_mode_text(profile_name),
-                reply_markup=self._menu_reply_markup(principal, menu=MENU_APPLICATION_MODE),
-            )
-            return
-
-        application_modes = {
-            "/search_application_preview": "preview",
-            "/search_application_confirm": "confirm",
-            "/search_application_auto": "auto",
-        }
-        if command in application_modes:
-            await self._request_application_mode(chat_id, principal, application_modes[command])
-            return
-
-        if command == "/search_edit":
-            self._set_search_settings_state(principal["user_id"], search_input="queries", search_input_profile=profile_name)
-            await self._send_text(
-                chat_id,
-                "✏️ Отправьте новый список: один поисковый запрос в строке.\n"
-                "Например:\nQA engineer\nManual QA Engineer\nТестировщик ПО\n\n"
-                "Список заменит текущий. Для отмены отправьте «Отмена».",
-                reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
-            )
-            return
-
-        if command == "/search_suggest":
-            await self._start_search_query_suggestion(chat_id, principal, profile_name=profile_name)
-            return
-
-        if command == "/search_use_draft":
-            query_state = self._search_settings_state(principal["user_id"])
-            if query_state.get("search_query_draft_profile", profile_name) != profile_name:
-                self._clear_search_settings_state(principal["user_id"], "search_query_draft", "search_query_draft_profile")
-                await self._send_text(chat_id, "Черновик создан для другого профиля. Запросите предложение заново.")
-                return
-            draft = query_state.get("search_query_draft") or []
             try:
-                queries = search_query_suggester.normalize_queries(draft)
-                env_file = profile_mod.update_profile_env(
-                    profile_name,
-                    {"HH_SEARCH_QUERIES": search_query_suggester.queries_to_env_value(queries)},
-                )
-                try:
-                    restarted = self._reload_profile_daemon(profile_name)
-                    restart_note = "\n🔁 Повтор перезапущен с новыми настройками." if restarted else ""
-                except RuntimeError as exc:
-                    restart_note = f"\n⚠️ Запросы сохранены, но повтор не перезапустился: {exc}"
-            except (search_query_suggester.SearchQueryValidationError, ValueError):
-                await self._send_text(
-                    chat_id,
-                    "ℹ️ Сначала нажмите «Предложить ИИ» или отправьте свой список через «Изменить запросы».",
-                    reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
-                )
-                return
-            self._clear_search_settings_state(principal["user_id"], "search_query_draft")
-            await self._send_text(
-                chat_id,
-                "✅ Черновик ИИ сохранён. Следующий поиск будет использовать эти запросы.\n"
-                f"Файл настроек: {env_file}" + restart_note,
-                reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
-            )
+                with open(self._profile(profile_name).resume_file, encoding="utf-8") as handle:
+                    resume_text = handle.read().strip()
+            except OSError:
+                resume_text = ""
+            client = self._client_record(principal["user_id"]) or {}
+            plan = await candidate_interview.build_plan(resume_text, target_role=str(client.get("target_role") or ""), current_facts=candidate_interview.facts(profile_dir))
+            self._set_candidate_state(principal["user_id"], {"profile_name": profile_name, "kind": "interview", "mode": "answer", "questions": plan.get("questions") or [], "index": 0})
+            hypothesis = str(plan.get("profile_hypothesis") or "").strip()
+            if hypothesis:
+                await self._send_text(chat_id, f"Собрал вопросы по резюме. Текущее направление: {hypothesis}.", reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
+            await self._send_candidate_question(chat_id, principal, profile_name)
             return
-
-        if command == "/search_resume":
-            self._set_selected_menu(principal["user_id"], reply_menu)
-            catalog = client_hh_auth.load_hh_resume_catalog(profile_name)
-            if not catalog:
-                await self._send_text(
-                    chat_id,
-                    "🧾 Пока нет списка резюме HH. Сначала нажмите «Вход HH», затем повторите попытку.",
-                    reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
-                )
-                return
-            lines = ["🧾 Выберите резюме для поиска. Отправьте его номер:", ""]
-            for index, item in enumerate(catalog, start=1):
-                title = str(item.get("title") or "Резюме без названия")
-                lines.append(f"{index}. {title}")
-            lines.append("\nДля отмены отправьте «Отмена».")
-            self._set_search_settings_state(principal["user_id"], search_input="resume", search_input_profile=profile_name)
-            await self._send_text(
-                chat_id,
-                "\n".join(lines),
-                reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
-            )
-            return
-
-        if command == "/profiles":
-            profiles = self._profile_names()
-            await self._send_text(
-                chat_id,
-                build_profiles_text(profiles, selected_profile=profile_name),
-                reply_markup=self._menu_reply_markup(principal, profile_buttons=profiles),
-            )
-            return
-
-        if command == "/profile":
-            target = arg.strip()
-            if not target:
-                await self._send_text(chat_id, "ℹ️ Использование: /profile <имя_профиля>", reply_markup=self._menu_reply_markup(principal))
-                return
-            if target not in self._profile_names():
-                await self._send_text(chat_id, f"❌ Неизвестный профиль: {target}", reply_markup=self._menu_reply_markup(principal))
-                return
-            self._direction_sessions().pop(principal["user_id"], None)
-            self._clear_search_settings_state(principal["user_id"], "search_input", "search_query_draft")
-            self._set_selected_profile(principal["user_id"], target)
-            self._set_selected_menu(principal["user_id"], MENU_MAIN)
-            await self._send_text(chat_id, f"✅ Выбран профиль: {target}", reply_markup=self._menu_reply_markup(principal, menu=MENU_MAIN))
-            return
-
-        if command == "/users":
-            await self._send_text(chat_id, _format_users_text(telegram_access.list_users()), reply_markup=self._menu_reply_markup(principal))
-            return
-
-        if command == "/client_status":
-            client = self._client_record(principal["user_id"])
-            if not client:
-                await self._send_text(
-                    chat_id,
-                    "ℹ️ Клиентская заявка для этого Telegram-пользователя пока не заведена.",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-                return
-            await self._send_text(chat_id, build_client_status_text(client), reply_markup=self._menu_reply_markup(principal))
-            return
-
-        if command == "/hh_auth":
-            client = self._client_record(principal["user_id"])
-            if not client and role == ROLE_ADMIN:
-                await self._start_profile_hh_auth_capture(chat_id, principal, profile_name=profile_name)
-                return
-            if not client:
-                await self._send_text(
-                    chat_id,
-                    "ℹ️ Вход HH доступен только после заполнения клиентской заявки.",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-                return
-            if client.get("status") != telegram_clients.STATUS_APPROVED:
-                await self._send_text(
-                    chat_id,
-                    "🔒 Вход HH станет доступен после одобрения заявки.",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-                return
-            await self._request_hh_auth(
-                chat_id,
-                principal["user_id"],
-                client,
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            return
-
-        if command == "/hh_resumes":
-            client = self._client_record(principal["user_id"])
-            target_profile = profile_name
-            if client and client.get("profile_name"):
-                target_profile = client["profile_name"]
-            from hh.session_probe import probe, save_catalog, OK
-            checked = await asyncio.to_thread(probe, self._profile(target_profile).hh.cookies_file)
-            note = ""
-            if checked["status"] == OK:
-                try:
-                    save_catalog(client_hh_auth.hh_resume_catalog_path(target_profile), checked["resumes"])
-                except Exception as exc:
-                    log.warning("resume catalog cache refresh failed: %s", type(exc).__name__)
+        if command == "/candidate_edit" and state.get("mode") == "confirm":
+            state["mode"] = "add" if state.get("kind") == "add" else "answer"
+            state.pop("pending_text", None)
+            state.pop("pending_topic", None)
+            self._set_candidate_state(principal["user_id"], state)
+            if state.get("kind") == "add":
+                await self._send_text(chat_id, "Отправьте исправленную формулировку факта.", reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
             else:
-                note = "⚠️ " + checked["message"] + "\nНиже — последний сохранённый список.\n\n"
-            resumes = client_hh_auth.load_hh_resume_catalog(target_profile)
-            await self._send_text(
-                chat_id,
-                note + build_hh_resumes_text(target_profile, resumes),
-                reply_markup=self._menu_reply_markup(principal),
-            )
+                await self._send_candidate_question(chat_id, principal, profile_name)
             return
-
-        if command == "/clients":
-            clients = telegram_clients.list_clients()
-            actions_markup = build_clients_inline_markup(clients)
-            if actions_markup:
-                await self._send_text(chat_id, "🧑‍💼 Клиенты", reply_markup=self._menu_reply_markup(principal))
-            await self._send_text(
-                chat_id,
-                build_clients_text(clients),
-                reply_markup=actions_markup or self._menu_reply_markup(principal),
-            )
-            return
-
-        if command == "/client_hh_auth":
-            parts = [part for part in arg.split() if part]
-            if not parts:
-                await self._send_text(
-                    chat_id,
-                    "ℹ️ Использование: /client_hh_auth <id_пользователя>",
-                    reply_markup=self._menu_reply_markup(principal),
+        if command == "/candidate_save" and state.get("mode") == "confirm":
+            try:
+                candidate_interview.add_fact(
+                    state.get("pending_text", ""),
+                    topic=state.get("pending_topic", "общий"),
+                    profile_dir=profile_dir,
+                    max_chars=None if role == ROLE_ADMIN else 1200,
                 )
+            except ValueError as exc:
+                await self._send_text(chat_id, f"❌ {exc}", reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
                 return
-            try:
-                target_user_id = int(parts[0])
-            except ValueError:
-                await self._send_text(chat_id, "❌ Некорректный ID пользователя.", reply_markup=self._menu_reply_markup(principal))
-                return
-            client = self._client_record(target_user_id)
-            if not client:
-                await self._send_text(chat_id, f"❌ Клиент не найден: {target_user_id}", reply_markup=self._menu_reply_markup(principal))
-                return
-            if client.get("status") != telegram_clients.STATUS_APPROVED:
-                await self._send_text(
-                    chat_id,
-                    "❌ Вход HH можно запускать только для одобренного клиента.",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-                return
-            await self._start_hh_auth_capture(chat_id, principal, client)
+            await self._candidate_advance(chat_id, principal, profile_name)
             return
-
-        if command == "/client_approve":
-            parts = [part for part in arg.split() if part]
-            if not parts:
-                await self._send_text(
-                    chat_id,
-                    "ℹ️ Использование: /client_approve <id_пользователя> [имя_профиля]",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-                return
-            try:
-                target_user_id = int(parts[0])
-            except ValueError:
-                await self._send_text(chat_id, "❌ Некорректный ID пользователя.", reply_markup=self._menu_reply_markup(principal))
-                return
-            profile_name = parts[1].strip() if len(parts) > 1 else ""
-            await self._approve_client(chat_id, principal, target_user_id, profile_name=profile_name)
+        if command == "/candidate_skip" and state:
+            if state.get("kind") == "add":
+                self._clear_candidate_state(principal["user_id"])
+                await self._send_text(chat_id, "Факт не сохранён.", reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
+            else:
+                await self._candidate_advance(chat_id, principal, profile_name)
             return
+        await self._send_text(chat_id, "Сначала начните интервью или добавление факта.", reply_markup=self._menu_reply_markup(principal, menu=reply_menu))
+        return
 
-        if command == "/client_reject":
-            parts = [part for part in arg.split() if part]
-            if not parts:
-                await self._send_text(
-                    chat_id,
-                    "ℹ️ Использование: /client_reject <id_пользователя> [комментарий]",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-                return
-            try:
-                target_user_id = int(parts[0])
-            except ValueError:
-                await self._send_text(chat_id, "❌ Некорректный ID пользователя.", reply_markup=self._menu_reply_markup(principal))
-                return
-            admin_note = " ".join(parts[1:]).strip()
-            await self._reject_client(chat_id, principal, target_user_id, admin_note=admin_note)
-            return
+    # Stats/logs/monitoring routes.
 
-        if command == "/ai_limits":
-            users = telegram_access.list_users()
-            user_ids = [int(item["user_id"]) for item in users]
-            snapshots = telegram_resume_limits.list_user_snapshots(user_ids)
-            events = telegram_resume_limits.recent_events(limit=8)
-            await self._send_text(
-                chat_id,
-                build_ai_limits_text(users=users, snapshots=snapshots, events=events),
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            return
-
-        if command == "/ai_grant":
-            parts = [part for part in arg.split() if part]
-            if not parts:
-                await self._send_text(
-                    chat_id,
-                    "ℹ️ Использование: /ai_grant <id_пользователя> [количество]",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-                return
-            try:
-                target_user_id = int(parts[0])
-            except ValueError:
-                await self._send_text(chat_id, "❌ Некорректный ID пользователя.", reply_markup=self._menu_reply_markup(principal))
-                return
-            try:
-                amount = int(parts[1]) if len(parts) > 1 else 1
-            except ValueError:
-                await self._send_text(chat_id, "❌ Некорректное количество.", reply_markup=self._menu_reply_markup(principal))
-                return
-            if amount <= 0:
-                await self._send_text(chat_id, "❌ Количество должно быть больше нуля.", reply_markup=self._menu_reply_markup(principal))
-                return
-            snapshot = telegram_resume_limits.grant_bonus(
-                target_user_id,
-                amount=amount,
-                actor_user_id=principal["user_id"],
-            )
-            await self._send_text(
-                chat_id,
-                f"✅ Бонус ИИ добавлен пользователю {target_user_id}: +{amount}\n\n{format_ai_snapshot_text(snapshot)}",
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            return
-
-        if command == "/ai_reset":
-            parts = [part for part in arg.split() if part]
-            if not parts:
-                await self._send_text(
-                    chat_id,
-                    "ℹ️ Использование: /ai_reset <id_пользователя> [новый_бесплатный_лимит]",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-                return
-            try:
-                target_user_id = int(parts[0])
-            except ValueError:
-                await self._send_text(chat_id, "❌ Некорректный ID пользователя.", reply_markup=self._menu_reply_markup(principal))
-                return
-            try:
-                free_total = int(parts[1]) if len(parts) > 1 else None
-            except ValueError:
-                await self._send_text(chat_id, "❌ Некорректный новый бесплатный лимит.", reply_markup=self._menu_reply_markup(principal))
-                return
-            snapshot = telegram_resume_limits.reset_free_limit(
-                target_user_id,
-                actor_user_id=principal["user_id"],
-                free_total=free_total,
-            )
-            await self._send_text(
-                chat_id,
-                f"♻️ Бесплатный лимит сброшен для пользователя {target_user_id}.\n\n{format_ai_snapshot_text(snapshot)}",
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            return
-
-        if command == "/grant":
-            parts = [part for part in arg.split() if part]
-            if len(parts) < 2:
-                await self._send_text(
-                    chat_id,
-                    "ℹ️ Использование: /grant <id_пользователя> <профиль> [admin|user]",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-                return
-            try:
-                target_user_id = int(parts[0])
-            except ValueError:
-                await self._send_text(chat_id, "❌ Некорректный ID пользователя.", reply_markup=self._menu_reply_markup(principal))
-                return
-            target_profile = parts[1]
-            target_role = parts[2].casefold() if len(parts) > 2 else ROLE_USER
-            if target_profile not in self._profile_names():
-                await self._send_text(chat_id, f"❌ Неизвестный профиль: {target_profile}", reply_markup=self._menu_reply_markup(principal))
-                return
-            record = telegram_access.upsert_user(target_user_id, profile=target_profile, role=target_role)
-            await self._send_text(
-                chat_id,
-                f"✅ Доступ выдан: {record['user_id']} -> профиль {record['profile']} ({record['role']})",
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            return
-
-        if command == "/revoke":
-            try:
-                target_user_id = int(arg.strip())
-            except ValueError:
-                await self._send_text(chat_id, "ℹ️ Использование: /revoke <id_пользователя>", reply_markup=self._menu_reply_markup(principal))
-                return
-            removed = telegram_access.remove_user(target_user_id)
-            await self._send_text(
-                chat_id,
-                f"{'✅ Пользователь удалён' if removed else '⚪️ Пользователь не найден'}: {target_user_id}",
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            return
-
-        if command == "/seen_reset":
-            import seen_reset
-            from telegram_app import history
-            parts = arg.split()
-            home = self._profile(profile_name).home_dir
-            if parts and parts[0] == "do" and len(parts) != 4:
-                await self._send_text(chat_id, "Эта кнопка устарела. Откройте сброс заново.")
-                return
-            direction_scope = history.scope_arg(parts[2] if len(parts) > 2 else "")
-            if len(parts) > 3 and parts[3] != history.token(home):
-                await self._send_text(chat_id, "Направление изменилось. Откройте сброс заново.")
-                return
-            if parts and parts[0] == "view":
-                direction_scope = history.scope_arg(parts[1])
-                parts = []
-            direction_label = history.HistoryScope(home, direction_scope).title
-            choice = {"*": "all", "?": "unspecified"}.get(direction_scope, "active")
-            binding = history.token(home)
-            if self._has_active_command(profile_name):
-                await self._send_busy_status(chat_id, principal, profile_name=profile_name)
-                return
-            if not parts:
-                owner_menu = reply_menu_for_command(role, "/seen_reset") or MENU_ADMIN
-                self._set_selected_menu(principal["user_id"], owner_menu)
-                await self._send_text(chat_id, f"🧹 Сброс просмотренных · {direction_label}.\n"
-                                      "Бот забудет пропущенные вакансии и переоценит их в следующем поиске. "
-                                      "Отклики, ручные карточки и неопределённые исходы не трогаются.",
-                                      reply_markup=self._menu_reply_markup(principal, menu=owner_menu))
-                await self._send_text(chat_id, "За какой период?", reply_markup={"inline_keyboard": [[
-                    {"text": label.capitalize(), "callback_data": f"sr:ask:{scope}:{choice}:{binding}"}
-                    for scope, label in seen_reset.SCOPES.items()], [
-                    {"text": label, "callback_data": f"sr:view:{scope}:view:{binding}"}
-                    for label, scope in (("Это направление", "active"), ("Все направления", "all"), ("Направление не указано", "unspecified"))]]})
-                return
-            action, scope = (parts + [""])[:2]
-            if scope not in seen_reset.SCOPES:
-                await self._send_text(chat_id, "Неизвестный период.")
-                return
-            try:
-                if action == "ask":
-                    count = len(seen_reset.plan(home, scope, direction_scope=direction_scope))
-                    await self._send_text(chat_id, f"Снять {count} отметок «пропущено» ({seen_reset.SCOPES[scope]}) "
-                                          f"для «{direction_label}»?", reply_markup={"inline_keyboard": [[
-                                              {"text": "✅ Да, сбросить", "callback_data": f"sr:do:{scope}:{choice}:{binding}"},
-                                              {"text": "❌ Нет", "callback_data": "sr:no:"}]]})
-                elif action == "do":
-                    count = seen_reset.apply(home, scope, direction_scope=direction_scope)
-                    await self._send_text(chat_id, f"✅ Снято {count} отметок ({seen_reset.SCOPES[scope]}). "
-                                          "Следующий поиск переоценит эти вакансии. Копия списка сохранена.",
-                                          reply_markup=self._menu_reply_markup(principal))
-            except (OSError, ValueError) as exc:
-                await self._send_text(chat_id, f"❌ {str(str(exc))}")
-            return
-
-        if command == "/market_research":
-            if arg.strip():
-                await self._start_market_research(chat_id, principal, arg)
-                return
-            self._set_search_settings_state(principal["user_id"], search_input="market")
-            await self._send_text(
-                chat_id,
-                "📈 Рынок вакансий: соберу свежую статистику hh.ru по названиям вакансий.\n\n"
-                "Отправьте названия, по одному в строке (до 20). Например:\n"
-                "QA lead\nРуководитель отдела тестирования\nМенеджер по подбору персонала\n\n"
-                "Ищу по всей России, в названии вакансии. Откликов и изменений не делаю — только чтение. "
-                "Для отмены: Отмена.",
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            return
-
-        if command == "/diagnostics":
-            checks = await self._collect_diagnostics(profile_name)
-            await self._send_text(
-                chat_id,
-                build_diagnostics_text(
-                    profile_name=profile_name,
-                    generated_at=datetime.now().isoformat(timespec="seconds"),
-                    checks=checks,
-                ),
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            return
-
-        if command == "/status":
-            search_interval_min, invite_check_interval_min = self._profile_schedule(profile_name)
-            active_command = self._active_command(profile_name)
-            await self._send_text(
-                chat_id,
-                build_status_text(
-                    profile_name=profile_name,
-                    daemon_state=self._daemon_state(profile_name),
-                    bot_state=self._bot_state(),
-                    search_interval_min=search_interval_min,
-                    invite_check_interval_min=invite_check_interval_min,
-                    runtime_status=self._runtime_status(profile_name),
-                    bot_runtime=runtime_control.read_json_file(self.runtime_paths.bot_runtime_file),
-                    last_run=self._latest_run(profile_name),
-                    active_command=active_command.label if active_command else "",
-                ),
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            return
-
-        if command in {"/hh_responses", "/hh_response_count"}:
-            if reply_menu is None:
-                self._set_selected_menu(principal["user_id"], reply_menu_for_command(role, "/hh_responses"))
-            target_profile = self._profile(profile_name)
-            await self._send_chat_action(chat_id)
-            from telegram_app.hh_counter_cache import snapshot as counter_snapshot
-            snapshot, counter_age, counter_error = await counter_snapshot(
-                self, principal["user_id"], profile_name, target_profile,
-                force=arg.strip().lower() in {"refresh", "обновить"})
-            if snapshot is None:
-                text = counter_error
-                if DirectionView(target_profile.home_dir).directions:
-                    text = (build_hh_response_count_text({}, home_dir=target_profile.home_dir) +
-                            "\n\n" + counter_error)
-                await self._send_text(chat_id, text, reply_markup=self._menu_reply_markup(principal))
-                return
-
-            self._append_debug_log(
-                "hh_response_counter_updated",
+    async def _route_diagnostics(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        checks = await self._collect_diagnostics(profile_name)
+        await self._send_text(
+            chat_id,
+            build_diagnostics_text(
                 profile_name=profile_name,
-                active=snapshot.get("active", 0),
-                archived=snapshot.get("archived", 0),
-                deleted=snapshot.get("deleted", 0),
-                total=snapshot.get("total", 0),
-            )
-            await self._send_text(
-                chat_id,
-                build_hh_response_count_text(snapshot, home_dir=target_profile.home_dir)
-                + f"\n\nобновлено {counter_age} мин назад"
-                + (f"\n{counter_error}" if counter_error else "")
-                + "\nОбновить: /hh_responses refresh",
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            return
+                generated_at=datetime.now().isoformat(timespec="seconds"),
+                checks=checks,
+            ),
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
 
-        if command == "/schedule":
-            self._set_selected_menu(principal["user_id"], MENU_REPEAT)
-            search_interval_min, invite_check_interval_min = self._profile_schedule(profile_name)
-            await self._send_text(
-                chat_id,
-                build_schedule_text(
-                    profile_name=profile_name,
-                    daemon_state=self._daemon_state(profile_name),
-                    search_interval_min=search_interval_min,
-                    invite_check_interval_min=invite_check_interval_min,
-                ),
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            return
+    async def _route_status(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        search_interval_min, invite_check_interval_min = self._profile_schedule(profile_name)
+        active_command = self._active_command(profile_name)
+        await self._send_text(
+            chat_id,
+            build_status_text(
+                profile_name=profile_name,
+                daemon_state=self._daemon_state(profile_name),
+                bot_state=self._bot_state(),
+                search_interval_min=search_interval_min,
+                invite_check_interval_min=invite_check_interval_min,
+                runtime_status=self._runtime_status(profile_name),
+                bot_runtime=runtime_control.read_json_file(self.runtime_paths.bot_runtime_file),
+                last_run=self._latest_run(profile_name),
+                active_command=active_command.label if active_command else "",
+            ),
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
 
+    async def _route_history(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        role = principal.get("role", ROLE_USER)
         from telegram_app import history
-        if command in history.COMMANDS:
-            if reply_menu is None:
-                canonical = {"/hunter_log": "/log", "/hunter_chat_log": "/chat_log"}.get(command, command)
-                owner_menu = reply_menu_for_command(role, canonical)
-                if owner_menu is not None:
-                    self._set_selected_menu(principal["user_id"], owner_menu)
-            await history.show(self, chat_id, principal, profile_name, command, arg)
-            return
+        if reply_menu is None:
+            canonical = {"/hunter_log": "/log", "/hunter_chat_log": "/chat_log"}.get(command, command)
+            owner_menu = reply_menu_for_command(role, canonical)
+            if owner_menu is not None:
+                self._set_selected_menu(principal["user_id"], owner_menu)
+        await history.show(self, chat_id, principal, profile_name, command, arg)
+        return
 
-        if command == "/why_no_apply":
-            def diagnose():  # reads the whole run journal: off the event loop (24.10: 6–8 s froze the bot)
-                runs = self._recent_runs(profile_name, limit=1)
-                run = runs[0] if runs else None
-                return run, (analytics.zero_apply_diagnosis(run) if run else "")
-            from telegram_app.guards import read_thread
-            run, diagnosis = await read_thread(diagnose)
-            await self._send_text(chat_id, diagnosis or (
-                "В последнем поиске есть подтверждённые отклики." if run and (run.get("funnel") or run).get("applied")
-                else "Нет завершённого поиска с точным нулём откликов для диагностики."),
-                reply_markup=self._menu_reply_markup(principal))
-            return
+    async def _route_why_no_apply(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        def diagnose():  # reads the whole run journal: off the event loop (24.10: 6–8 s froze the bot)
+            runs = self._recent_runs(profile_name, limit=1)
+            run = runs[0] if runs else None
+            return run, (analytics.zero_apply_diagnosis(run) if run else "")
+        from telegram_app.guards import read_thread
+        run, diagnosis = await read_thread(diagnose)
+        await self._send_text(chat_id, diagnosis or (
+            "В последнем поиске есть подтверждённые отклики." if run and (run.get("funnel") or run).get("applied")
+            else "Нет завершённого поиска с точным нулём откликов для диагностики."),
+            reply_markup=self._menu_reply_markup(principal))
+        return
 
-        if command == "/raw_log":
-            if role == telegram_access.ROLE_TESTER:
-                await self._send_text(chat_id, "🔒 Сырой лог недоступен. /log — сводка доступного направления.")
-                return
-            if role != telegram_access.ROLE_ADMIN:
-                await self._send_run_summary(chat_id, principal, profile_name=profile_name)
-                return
-            await self._send_log_tail(chat_id, principal, profile_name=profile_name, kind="log")
+    async def _route_raw_log(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        role = principal.get("role", ROLE_USER)
+        if role == telegram_access.ROLE_TESTER:
+            await self._send_text(chat_id, "🔒 Сырой лог недоступен. /log — сводка доступного направления.")
             return
+        if role != telegram_access.ROLE_ADMIN:
+            await self._send_run_summary(chat_id, principal, profile_name=profile_name)
+            return
+        await self._send_log_tail(chat_id, principal, profile_name=profile_name, kind="log")
+        return
 
-        if command in {"/chat_ai", "/ai_chat", "/chat_answer"}:
-            if reply_menu is None:
-                self._set_selected_menu(principal["user_id"], reply_menu_for_command(role, "/chat_ai"))
-            hh_chat_id, hh_message_id = _parse_manual_chat_ai_arg(arg)
-            if not hh_chat_id:
-                await self._start_chat_ai_candidate_list(
-                    chat_id,
-                    principal,
-                    profile_name=profile_name,
-                )
-                return
-            self._append_chat_ai_audit_event(
-                "manual_command",
-                action="preview",
-                telegram_chat_id=chat_id,
-                user_id=int(principal.get("user_id") or 0),
+    # Schedule routes.
+
+    async def _route_schedule(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        self._set_selected_menu(principal["user_id"], MENU_REPEAT)
+        search_interval_min, invite_check_interval_min = self._profile_schedule(profile_name)
+        await self._send_text(
+            chat_id,
+            build_schedule_text(
                 profile_name=profile_name,
-                hh_chat_id=hh_chat_id,
-                hh_message_id=hh_message_id,
-                allow_any=True,
-            )
-            await self._start_chat_ai_reply(
-                chat_id,
-                principal,
-                profile_name=profile_name,
-                hh_chat_id=hh_chat_id,
-                hh_message_id=hh_message_id,
-                allow_any=True,
-            )
-            return
+                daemon_state=self._daemon_state(profile_name),
+                search_interval_min=search_interval_min,
+                invite_check_interval_min=invite_check_interval_min,
+            ),
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
 
-        command_map = {
-            "/search": ("--search", "search", 3600),
-            "/dryrun": ("--dry-run", "dry-run", 3600),
-            "/check": ("--check", "check invitations", 1800),
-            "/digest": ("--digest", "digest", 1800),
-            "/analyze": ("--analyze-resume", "analyze resume", 3600),
-            "/backfill": ("--analytics-backfill", "analytics backfill", 3600),
-            "/grabresume": ("--grab-resume", "grab resume", 1800),
-            "/refresh_resume": ("--refresh-resume", "refresh resume", 1800),
-        }
-        if command in command_map:
-            flag, label, timeout = command_map[command]
-            await self._start_cli_command(chat_id, principal, profile_name, flag, label, timeout)
+    async def _route_daemon_on(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        state = self._daemon_state(profile_name)
+        profile = self._profile(profile_name)
+        result = runtime_control.start_background_process(
+            runtime_control.agent_command_argv(profile_name, "--daemon"),
+            pid_file=profile.daemon_pid_file,
+            log_file=config.LOG_FILE,
+            expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
+            fallback_pid=state.get("pid") or 0,
+        )
+        if result["already_running"]:
+            await self._send_text(chat_id, f"🟢 Демон уже запущен: pid={result['pid']}", reply_markup=self._menu_reply_markup(principal))
             return
-
-        if command == "/daemon_on":
-            state = self._daemon_state(profile_name)
-            profile = self._profile(profile_name)
-            result = runtime_control.start_background_process(
-                runtime_control.agent_command_argv(profile_name, "--daemon"),
-                pid_file=profile.daemon_pid_file,
-                log_file=config.LOG_FILE,
-                expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
-                fallback_pid=state.get("pid") or 0,
-            )
-            if result["already_running"]:
-                await self._send_text(chat_id, f"🟢 Демон уже запущен: pid={result['pid']}", reply_markup=self._menu_reply_markup(principal))
-                return
-            if not result["ok"]:
-                await self._send_text(
-                    chat_id,
-                    f"❌ Не удалось запустить демон. Лог: {result['log_file']}",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-                return
+        if not result["ok"]:
             await self._send_text(
                 chat_id,
-                f"✅ Демон запущен для профиля {profile_name}: pid={result['pid']}",
+                f"❌ Не удалось запустить демон. Лог: {result['log_file']}",
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
+        await self._send_text(
+            chat_id,
+            f"✅ Демон запущен для профиля {profile_name}: pid={result['pid']}",
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
 
-        preset_map = {
-            "/repeat_3day": ("3 раза в день", 480),
-            "/repeat_daily": ("1 раз в день", 1440),
-            "/repeat_weekly": ("1 раз в неделю", 10080),
-        }
-        if command in preset_map:
-            label, minutes = preset_map[command]
-            env_file = self._update_profile_schedule(profile_name, search_interval_min=minutes)
-            state = self._daemon_state(profile_name)
-            profile = self._profile(profile_name)
-            if state["running"]:
-                runtime_control.stop_process(
-                    profile.daemon_pid_file,
-                    expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
-                    fallback_pid=state.get("pid") or 0,
-                )
-            result = runtime_control.start_background_process(
-                runtime_control.agent_command_argv(profile_name, "--daemon"),
-                pid_file=profile.daemon_pid_file,
-                log_file=config.LOG_FILE,
-                expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
-                fallback_pid=0,
-            )
-            if not result["ok"] and not result.get("already_running"):
-                await self._send_text(
-                    chat_id,
-                    f"❌ Не удалось включить повтор для {profile_name}. Лог: {result['log_file']}",
-                    reply_markup=self._menu_reply_markup(principal),
-                )
-                return
-            await self._send_text(
-                chat_id,
-                (
-                    f"✅ Повтор включён для профиля {profile_name}: {label}\n"
-                    f"• profile.env: {env_file}\n"
-                    f"• daemon pid: {result.get('pid', 0)}"
-                ),
-                reply_markup=self._menu_reply_markup(principal),
-            )
-            return
-
-        if command == "/repeat_off":
-            state = self._daemon_state(profile_name)
-            profile = self._profile(profile_name)
-            result = runtime_control.stop_process(
+    async def _route_repeat(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        label, minutes = COMMAND_ROUTES[command].args
+        env_file = self._update_profile_schedule(profile_name, search_interval_min=minutes)
+        state = self._daemon_state(profile_name)
+        profile = self._profile(profile_name)
+        if state["running"]:
+            runtime_control.stop_process(
                 profile.daemon_pid_file,
                 expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
                 fallback_pid=state.get("pid") or 0,
             )
+        result = runtime_control.start_background_process(
+            runtime_control.agent_command_argv(profile_name, "--daemon"),
+            pid_file=profile.daemon_pid_file,
+            log_file=config.LOG_FILE,
+            expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
+            fallback_pid=0,
+        )
+        if not result["ok"] and not result.get("already_running"):
             await self._send_text(
                 chat_id,
-                (
-                    f"{'🛑 Повтор остановлен' if not result.get('already_stopped') else '⚪️ Повтор уже был выключен'} "
-                    f"для профиля {profile_name}.\n"
-                    f"Разовый запуск остаётся доступен через кнопку «Поиск»."
-                ),
+                f"❌ Не удалось включить повтор для {profile_name}. Лог: {result['log_file']}",
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
+        await self._send_text(
+            chat_id,
+            (
+                f"✅ Повтор включён для профиля {profile_name}: {label}\n"
+                f"• profile.env: {env_file}\n"
+                f"• daemon pid: {result.get('pid', 0)}"
+            ),
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
 
-        if command == "/daemon_off":
-            state = self._daemon_state(profile_name)
-            profile = self._profile(profile_name)
-            result = runtime_control.stop_process(
-                profile.daemon_pid_file,
-                expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
-                fallback_pid=state.get("pid") or 0,
-            )
-            if result.get("already_stopped"):
-                await self._send_text(chat_id, "⚪️ Демон уже остановлен.", reply_markup=self._menu_reply_markup(principal))
-                return
+    async def _route_repeat_off(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        state = self._daemon_state(profile_name)
+        profile = self._profile(profile_name)
+        result = runtime_control.stop_process(
+            profile.daemon_pid_file,
+            expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
+            fallback_pid=state.get("pid") or 0,
+        )
+        await self._send_text(
+            chat_id,
+            (
+                f"{'🛑 Повтор остановлен' if not result.get('already_stopped') else '⚪️ Повтор уже был выключен'} "
+                f"для профиля {profile_name}.\n"
+                f"Разовый запуск остаётся доступен через кнопку «Поиск»."
+            ),
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
+
+    async def _route_daemon_off(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        state = self._daemon_state(profile_name)
+        profile = self._profile(profile_name)
+        result = runtime_control.stop_process(
+            profile.daemon_pid_file,
+            expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
+            fallback_pid=state.get("pid") or 0,
+        )
+        if result.get("already_stopped"):
+            await self._send_text(chat_id, "⚪️ Демон уже остановлен.", reply_markup=self._menu_reply_markup(principal))
+            return
+        await self._send_text(
+            chat_id,
+            f"🛑 Остановка демона запрошена для профиля {profile_name}: pid={result['pid']} via {result.get('signal', 'SIGTERM')}",
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
+
+    # Admin routes.
+
+    async def _route_impersonation(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        target = "" if command == "/act_as_self" else arg.strip()
+        try:
+            if target and target not in self._profile_names():
+                raise RuntimeError(f"Профиль {target} не найден.")
+            telegram_access.set_impersonation(principal["user_id"], target or None)
+        except RuntimeError as exc:
+            await self._send_text(chat_id, f"❌ {exc}")
+            return
+        fresh = telegram_access.resolve_user(principal["user_id"]) or principal
+        note = (f"👤 Теперь вы видите бота как клиент профиля {target}. Вернуться: /act_as_self"
+                if target else "👤 Вы снова администратор.")
+        await self._send_text(chat_id, note, reply_markup=self._menu_reply_markup(fresh, menu=MENU_MAIN))
+        return
+
+    async def _route_cancel_active(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        await self._cancel_active_command(chat_id, principal, profile_name=profile_name)
+        return
+
+    async def _route_llm(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        if command == "/menu_llm":
+            self._set_selected_menu(principal["user_id"], MENU_LLM)
+        markup = self._menu_reply_markup(principal)
+        if command == "/menu_llm":
+            message = admin_llm.overview()
+        elif command == "/llm_balance":
+            message = await admin_llm.diagnostic()
+        elif self._llm_test_lock.locked() or time.monotonic() < self._llm_test_next_at:
+            message = "⏳ Тест доступен не чаще раза в минуту. Дождитесь завершения предыдущего."
+        else:
+            async with self._llm_test_lock:
+                self._llm_test_next_at = time.monotonic() + 60
+                await self._send_text(chat_id, "🧪 Проверяю DeepSeek…", reply_markup=markup)
+                message = await admin_llm.diagnostic(test=True)
+        await self._send_text(chat_id, message, reply_markup=markup)
+        return
+
+    async def _route_profiles(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        profiles = self._profile_names()
+        await self._send_text(
+            chat_id,
+            build_profiles_text(profiles, selected_profile=profile_name),
+            reply_markup=self._menu_reply_markup(principal, profile_buttons=profiles),
+        )
+        return
+
+    async def _route_profile(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        target = arg.strip()
+        if not target:
+            await self._send_text(chat_id, "ℹ️ Использование: /profile <имя_профиля>", reply_markup=self._menu_reply_markup(principal))
+            return
+        if target not in self._profile_names():
+            await self._send_text(chat_id, f"❌ Неизвестный профиль: {target}", reply_markup=self._menu_reply_markup(principal))
+            return
+        self._direction_sessions().pop(principal["user_id"], None)
+        self._clear_search_settings_state(principal["user_id"], "search_input", "search_query_draft")
+        self._set_selected_profile(principal["user_id"], target)
+        self._set_selected_menu(principal["user_id"], MENU_MAIN)
+        await self._send_text(chat_id, f"✅ Выбран профиль: {target}", reply_markup=self._menu_reply_markup(principal, menu=MENU_MAIN))
+        return
+
+    async def _route_users(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        await self._send_text(chat_id, _format_users_text(telegram_access.list_users()), reply_markup=self._menu_reply_markup(principal))
+        return
+
+    async def _route_client_status(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        client = self._client_record(principal["user_id"])
+        if not client:
             await self._send_text(
                 chat_id,
-                f"🛑 Остановка демона запрошена для профиля {profile_name}: pid={result['pid']} via {result.get('signal', 'SIGTERM')}",
+                "ℹ️ Клиентская заявка для этого Telegram-пользователя пока не заведена.",
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
+        await self._send_text(chat_id, build_client_status_text(client), reply_markup=self._menu_reply_markup(principal))
+        return
 
+    async def _route_clients(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        clients = telegram_clients.list_clients()
+        actions_markup = build_clients_inline_markup(clients)
+        if actions_markup:
+            await self._send_text(chat_id, "🧑‍💼 Клиенты", reply_markup=self._menu_reply_markup(principal))
+        await self._send_text(
+            chat_id,
+            build_clients_text(clients),
+            reply_markup=actions_markup or self._menu_reply_markup(principal),
+        )
+        return
+
+    async def _route_client_hh_auth(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        parts = [part for part in arg.split() if part]
+        if not parts:
+            await self._send_text(
+                chat_id,
+                "ℹ️ Использование: /client_hh_auth <id_пользователя>",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+        try:
+            target_user_id = int(parts[0])
+        except ValueError:
+            await self._send_text(chat_id, "❌ Некорректный ID пользователя.", reply_markup=self._menu_reply_markup(principal))
+            return
+        client = self._client_record(target_user_id)
+        if not client:
+            await self._send_text(chat_id, f"❌ Клиент не найден: {target_user_id}", reply_markup=self._menu_reply_markup(principal))
+            return
+        if client.get("status") != telegram_clients.STATUS_APPROVED:
+            await self._send_text(
+                chat_id,
+                "❌ Вход HH можно запускать только для одобренного клиента.",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+        await self._start_hh_auth_capture(chat_id, principal, client)
+        return
+
+    async def _route_client_approve(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        parts = [part for part in arg.split() if part]
+        if not parts:
+            await self._send_text(
+                chat_id,
+                "ℹ️ Использование: /client_approve <id_пользователя> [имя_профиля]",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+        try:
+            target_user_id = int(parts[0])
+        except ValueError:
+            await self._send_text(chat_id, "❌ Некорректный ID пользователя.", reply_markup=self._menu_reply_markup(principal))
+            return
+        profile_name = parts[1].strip() if len(parts) > 1 else ""
+        await self._approve_client(chat_id, principal, target_user_id, profile_name=profile_name)
+        return
+
+    async def _route_client_reject(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        parts = [part for part in arg.split() if part]
+        if not parts:
+            await self._send_text(
+                chat_id,
+                "ℹ️ Использование: /client_reject <id_пользователя> [комментарий]",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+        try:
+            target_user_id = int(parts[0])
+        except ValueError:
+            await self._send_text(chat_id, "❌ Некорректный ID пользователя.", reply_markup=self._menu_reply_markup(principal))
+            return
+        admin_note = " ".join(parts[1:]).strip()
+        await self._reject_client(chat_id, principal, target_user_id, admin_note=admin_note)
+        return
+
+    async def _route_ai_limits(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        users = telegram_access.list_users()
+        user_ids = [int(item["user_id"]) for item in users]
+        snapshots = telegram_resume_limits.list_user_snapshots(user_ids)
+        events = telegram_resume_limits.recent_events(limit=8)
+        await self._send_text(
+            chat_id,
+            build_ai_limits_text(users=users, snapshots=snapshots, events=events),
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
+
+    async def _route_ai_grant(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        parts = [part for part in arg.split() if part]
+        if not parts:
+            await self._send_text(
+                chat_id,
+                "ℹ️ Использование: /ai_grant <id_пользователя> [количество]",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+        try:
+            target_user_id = int(parts[0])
+        except ValueError:
+            await self._send_text(chat_id, "❌ Некорректный ID пользователя.", reply_markup=self._menu_reply_markup(principal))
+            return
+        try:
+            amount = int(parts[1]) if len(parts) > 1 else 1
+        except ValueError:
+            await self._send_text(chat_id, "❌ Некорректное количество.", reply_markup=self._menu_reply_markup(principal))
+            return
+        if amount <= 0:
+            await self._send_text(chat_id, "❌ Количество должно быть больше нуля.", reply_markup=self._menu_reply_markup(principal))
+            return
+        snapshot = telegram_resume_limits.grant_bonus(
+            target_user_id,
+            amount=amount,
+            actor_user_id=principal["user_id"],
+        )
+        await self._send_text(
+            chat_id,
+            f"✅ Бонус ИИ добавлен пользователю {target_user_id}: +{amount}\n\n{format_ai_snapshot_text(snapshot)}",
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
+
+    async def _route_ai_reset(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        parts = [part for part in arg.split() if part]
+        if not parts:
+            await self._send_text(
+                chat_id,
+                "ℹ️ Использование: /ai_reset <id_пользователя> [новый_бесплатный_лимит]",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+        try:
+            target_user_id = int(parts[0])
+        except ValueError:
+            await self._send_text(chat_id, "❌ Некорректный ID пользователя.", reply_markup=self._menu_reply_markup(principal))
+            return
+        try:
+            free_total = int(parts[1]) if len(parts) > 1 else None
+        except ValueError:
+            await self._send_text(chat_id, "❌ Некорректный новый бесплатный лимит.", reply_markup=self._menu_reply_markup(principal))
+            return
+        snapshot = telegram_resume_limits.reset_free_limit(
+            target_user_id,
+            actor_user_id=principal["user_id"],
+            free_total=free_total,
+        )
+        await self._send_text(
+            chat_id,
+            f"♻️ Бесплатный лимит сброшен для пользователя {target_user_id}.\n\n{format_ai_snapshot_text(snapshot)}",
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
+
+    async def _route_grant(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        parts = [part for part in arg.split() if part]
+        if len(parts) < 2:
+            await self._send_text(
+                chat_id,
+                "ℹ️ Использование: /grant <id_пользователя> <профиль> [admin|user]",
+                reply_markup=self._menu_reply_markup(principal),
+            )
+            return
+        try:
+            target_user_id = int(parts[0])
+        except ValueError:
+            await self._send_text(chat_id, "❌ Некорректный ID пользователя.", reply_markup=self._menu_reply_markup(principal))
+            return
+        target_profile = parts[1]
+        target_role = parts[2].casefold() if len(parts) > 2 else ROLE_USER
+        if target_profile not in self._profile_names():
+            await self._send_text(chat_id, f"❌ Неизвестный профиль: {target_profile}", reply_markup=self._menu_reply_markup(principal))
+            return
+        record = telegram_access.upsert_user(target_user_id, profile=target_profile, role=target_role)
+        await self._send_text(
+            chat_id,
+            f"✅ Доступ выдан: {record['user_id']} -> профиль {record['profile']} ({record['role']})",
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
+
+    async def _route_revoke(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        try:
+            target_user_id = int(arg.strip())
+        except ValueError:
+            await self._send_text(chat_id, "ℹ️ Использование: /revoke <id_пользователя>", reply_markup=self._menu_reply_markup(principal))
+            return
+        removed = telegram_access.remove_user(target_user_id)
+        await self._send_text(
+            chat_id,
+            f"{'✅ Пользователь удалён' if removed else '⚪️ Пользователь не найден'}: {target_user_id}",
+            reply_markup=self._menu_reply_markup(principal),
+        )
+        return
+
+    async def _route_seen_reset(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        role = principal.get("role", ROLE_USER)
+        import seen_reset
+        from telegram_app import history
+        parts = arg.split()
+        home = self._profile(profile_name).home_dir
+        if parts and parts[0] == "do" and len(parts) != 4:
+            await self._send_text(chat_id, "Эта кнопка устарела. Откройте сброс заново.")
+            return
+        direction_scope = history.scope_arg(parts[2] if len(parts) > 2 else "")
+        if len(parts) > 3 and parts[3] != history.token(home):
+            await self._send_text(chat_id, "Направление изменилось. Откройте сброс заново.")
+            return
+        if parts and parts[0] == "view":
+            direction_scope = history.scope_arg(parts[1])
+            parts = []
+        direction_label = history.HistoryScope(home, direction_scope).title
+        choice = {"*": "all", "?": "unspecified"}.get(direction_scope, "active")
+        binding = history.token(home)
+        if self._has_active_command(profile_name):
+            await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+            return
+        if not parts:
+            owner_menu = reply_menu_for_command(role, "/seen_reset") or MENU_ADMIN
+            self._set_selected_menu(principal["user_id"], owner_menu)
+            await self._send_text(chat_id, f"🧹 Сброс просмотренных · {direction_label}.\n"
+                                  "Бот забудет пропущенные вакансии и переоценит их в следующем поиске. "
+                                  "Отклики, ручные карточки и неопределённые исходы не трогаются.",
+                                  reply_markup=self._menu_reply_markup(principal, menu=owner_menu))
+            await self._send_text(chat_id, "За какой период?", reply_markup={"inline_keyboard": [[
+                {"text": label.capitalize(), "callback_data": f"sr:ask:{scope}:{choice}:{binding}"}
+                for scope, label in seen_reset.SCOPES.items()], [
+                {"text": label, "callback_data": f"sr:view:{scope}:view:{binding}"}
+                for label, scope in (("Это направление", "active"), ("Все направления", "all"), ("Направление не указано", "unspecified"))]]})
+            return
+        action, scope = (parts + [""])[:2]
+        if scope not in seen_reset.SCOPES:
+            await self._send_text(chat_id, "Неизвестный период.")
+            return
+        try:
+            if action == "ask":
+                count = len(seen_reset.plan(home, scope, direction_scope=direction_scope))
+                await self._send_text(chat_id, f"Снять {count} отметок «пропущено» ({seen_reset.SCOPES[scope]}) "
+                                      f"для «{direction_label}»?", reply_markup={"inline_keyboard": [[
+                                          {"text": "✅ Да, сбросить", "callback_data": f"sr:do:{scope}:{choice}:{binding}"},
+                                          {"text": "❌ Нет", "callback_data": "sr:no:"}]]})
+            elif action == "do":
+                count = seen_reset.apply(home, scope, direction_scope=direction_scope)
+                await self._send_text(chat_id, f"✅ Снято {count} отметок ({seen_reset.SCOPES[scope]}). "
+                                      "Следующий поиск переоценит эти вакансии. Копия списка сохранена.",
+                                      reply_markup=self._menu_reply_markup(principal))
+        except (OSError, ValueError) as exc:
+            await self._send_text(chat_id, f"❌ {str(str(exc))}")
+        return
+
+    # Navigation routes.
+
+    async def _route_busy(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+        return
+
+    async def _route_back(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        parent = MENU_PARENTS.get(self._selected_menu(principal), MENU_MAIN)
+        await self._send_menu(chat_id, principal, profile_name=profile_name, menu=parent)
+        return
+
+    async def _route_main(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        if principal.get("impersonating"):
+            await self._send_text(chat_id, f"👤 Режим «смотреть как клиент»: профиль {profile_name}. Вернуться: /act_as_self")
+        await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_MAIN, help_section=command == "/help")
+        if command == "/start":
+            await self._send_getting_started(chat_id, principal, only_if_incomplete=True)
+        return
+
+    async def _route_getting_started(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        role = principal.get("role", ROLE_USER)
+        owner_menu = reply_menu_for_command(role, "/getting_started") or MENU_MAIN
+        self._set_selected_menu(principal["user_id"], owner_menu)
+        await self._send_text(chat_id, "🚀 С чего начать — пошаговая настройка.",
+                              reply_markup=self._menu_reply_markup(principal, menu=owner_menu))
+        await self._send_getting_started(chat_id, principal)
+        return
+
+    async def _route_menu(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        await self._send_menu(chat_id, principal, profile_name=profile_name, menu=COMMAND_ROUTES[command].args[0])
+        return
+
+    async def _route_unknown(self, chat_id, principal, command, arg, profile_name, reply_menu):
         await self._send_text(chat_id, f"❓ Неизвестная команда: {command}", reply_markup=self._menu_reply_markup(principal))
 
     @profile_command

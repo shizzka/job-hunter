@@ -376,8 +376,13 @@ async def test_fresh_direction_catalog_includes_other_professions_without_legacy
 
 
 @run_async
-async def test_real_dispatch_routes_active_search_commands_before_legacy_env_updates(bot, monkeypatch):
+async def test_real_dispatch_routes_active_search_commands_before_legacy_env_updates(tmp_path, monkeypatch):
     from telegram_bot import TelegramBot
+    # The real dispatcher delegates to methods on its bot, so the offline
+    # harness must provide the router as well as the direction implementation.
+    class DispatchHarness(Harness, TelegramBot):
+        pass
+    bot = DispatchHarness(tmp_path)
     home = bot.profiles["client_1"].home_dir
     make_direction(home)
     directions.set_active_direction(home, "qa")
