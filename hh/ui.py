@@ -93,12 +93,15 @@ _INSPECT = r"""() => {
         const options = listboxes.length === 1
             ? [...listboxes[0].querySelectorAll('label[role="option"][data-magritte-select-option]')] : [];
         const pickerControls = [...surface.querySelectorAll('input,textarea,select,button,[role="button"],[contenteditable="true"]')];
-        // Captured Magritte layout/scrollbar nodes in this radio-only portal.
-        const pickerScrollbars = new Set([
-            'magritte-track___8yEer_1-0-36_xhh magritte-vertical-track___WywWv_1-0-36_xhh',
-            'magritte-thumb-limit___1w3VH_1-0-36_xhh',
-            'magritte-thumb___IHLT3_1-0-36_xhh magritte-vertical-thumb___ARK8c_1-0-36_xhh'
-        ]);
+        // Captured Magritte layout/scrollbar nodes in this radio-only portal. HH bumps the
+        // build suffix (1-0-36 -> 1-0-40 on 25.10, B35), so match the class names, not the build.
+        const magritte = name => `magritte-${name}___[A-Za-z0-9_-]+_\\d+-\\d+-\\d+_xhh`;
+        const pickerScrollbarClass = new RegExp('^(?:' + [
+            `${magritte('track')} ${magritte('vertical-track')}`,
+            magritte('thumb-limit'),
+            `${magritte('thumb')} ${magritte('vertical-thumb')}`,
+        ].join('|') + ')$');
+        const pickerScrollbars = {has: cls => pickerScrollbarClass.test(cls || '')};
         const pickerLayoutShape = el => el.tagName === 'DIV' && !norm(el.textContent) &&
             (el.attributes.length === 1 && el.hasAttribute('class') ||
              el.attributes.length === 2 && el.hasAttribute('class') && el.hasAttribute('style') &&

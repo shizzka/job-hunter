@@ -102,3 +102,36 @@ def test_resume_picker_is_not_allowed_in_non_response_context(tmp_path):
         with pytest.raises(HHUnexpectedUI):
             await HHUIGuard(tmp_path, notify=AsyncMock(return_value=True)).ensure(page, 'chat', allowed=('captcha',))
     asyncio.run(browser_case(FORM + PICKER, check))
+
+
+def scrollbar(build):
+    return (f'<div class="magritte-track___8yEer_{build}_xhh magritte-vertical-track___WywWv_{build}_xhh">'
+            f'<div class="magritte-thumb-limit___1w3VH_{build}_xhh">'
+            f'<div class="magritte-thumb___IHLT3_{build}_xhh magritte-vertical-thumb___ARK8c_{build}_xhh" '
+            'style="height: 40px;"></div></div></div>')
+
+
+@pytest.mark.parametrize('build', ['1-0-36', '1-0-40'])
+def test_resume_picker_scrollbar_is_allowed_across_magritte_builds(tmp_path, build):
+    # B35, 25.10: HH bumped Magritte 1-0-36 -> 1-0-40 and every resume switch stopped as unknown UI.
+    async def check(page):
+        notify = AsyncMock()
+        guard = HHUIGuard(tmp_path, notify=notify)
+        assert await guard.ensure(page, 'response_controls', allowed=('response', 'captcha')) is False
+        notify.assert_not_awaited()
+    asyncio.run(browser_case(FORM + PICKER.replace('</div></div>', scrollbar(build) + '</div></div>'), check))
+
+
+@pytest.mark.parametrize('node', [
+    # Visible nodes only: empty zero-size wrappers are not UI and are ignored by the guard anyway.
+    '<div class="magritte-banner___8yEer_1-0-40_xhh" style="height: 10px;"></div>',
+    '<div class="magritte-thumb-limit___1w3VH_1-0-40_xhh extra" style="height: 10px;"></div>',
+    '<div class="magritte-thumb-limit___1w3VH_1-0-40_xhh" data-qa="x" style="height: 10px;"></div>',
+    '<div class="magritte-thumb-limit___1w3VH_1-0-40_xhh" style="height: 10px;">Новые вопросы</div>',
+])
+def test_unknown_layout_nodes_in_resume_picker_still_block(tmp_path, node):
+    async def check(page):
+        with pytest.raises(HHUnexpectedUI):
+            await HHUIGuard(tmp_path, notify=AsyncMock(return_value=True)).ensure(
+                page, 'response_controls', allowed=('response', 'captcha'))
+    asyncio.run(browser_case(FORM + PICKER.replace('</div></div>', node + '</div></div>'), check))
