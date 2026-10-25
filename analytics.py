@@ -1514,6 +1514,10 @@ def _summary_conversion_bucket(mapping: dict, key: str) -> dict:
     )
 
 
+def _summary_status_is_viewed(bucket: str, detail_bucket: str) -> bool:
+    return bucket in {"positive", "rejected"} or detail_bucket == "pending_viewed"
+
+
 def _summarize(
     days: int | None = None,
     *,
@@ -1603,9 +1607,6 @@ def _summarize(
     decision_counter = Counter()
     latest_apply_by_vacancy = {}
     latest_status_by_vacancy = {}
-
-    def status_is_viewed(bucket: str, detail_bucket: str) -> bool:
-        return bucket in {"positive", "rejected"} or detail_bucket == "pending_viewed"
 
     for event in events:
         event_type = event.get("event")
@@ -1768,7 +1769,7 @@ def _summarize(
         cluster = apply_event.get("cluster") or "unknown"
         cover_style = apply_event.get("cover_style") or ""
         retry_reason = apply_event.get("retry_reason") or apply_event.get("retry_outcome") or ""
-        viewed = status_is_viewed(bucket, detail_bucket)
+        viewed = _summary_status_is_viewed(bucket, detail_bucket)
         not_viewed = detail_bucket == "pending_new"
         cluster_bucket = _summary_conversion_bucket(summary["by_cluster"], cluster)
         style_bucket = _summary_conversion_bucket(summary["by_cover_style"], cover_style) if cover_style else None
@@ -1847,7 +1848,7 @@ def _summarize(
             continue
         bucket = status_event.get("status_bucket", "unknown")
         detail_bucket = status_event.get("status_detail_bucket") or _status_detail_bucket(status_event.get("status", ""))
-        if status_is_viewed(bucket, detail_bucket):
+        if _summary_status_is_viewed(bucket, detail_bucket):
             funnel_viewed += 1
         if detail_bucket == "pending_new":
             funnel_not_viewed += 1
@@ -1885,7 +1886,7 @@ def _summarize(
         variant_bucket.setdefault("viewed", 0)
         variant_bucket.setdefault("not_viewed", 0)
         variant_bucket.setdefault("pending", 0)
-        if status_is_viewed(bucket, detail_bucket):
+        if _summary_status_is_viewed(bucket, detail_bucket):
             variant_bucket["viewed"] += 1
         if detail_bucket == "pending_new":
             variant_bucket["not_viewed"] += 1
