@@ -2,7 +2,7 @@
 
 This is the routing source of truth. Groups describe user-facing areas, not
 permissions or menu ownership: existing access checks and reply-menu layouts
-retain those responsibilities. Handler bodies remain on TelegramBot for step B.
+retain those responsibilities. Handler names resolve on the composed TelegramBot mixins.
 
 Phases retain the legacy order: early/impersonation, conflict guard, public,
 admin guard, direction prefix/active direction, menu ownership, normal handler.
