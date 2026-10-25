@@ -2233,7 +2233,310 @@
     "[\"user\", \"queued\", \"/seen_reset\", \"\"]": "9f54b938040a2acc",
     "[\"user\", \"queued\", \"/start\", \"\"]": "ae4b75493d6b0173",
     "[\"user\", \"queued\", \"/status\", \"\"]": "bebc7f20e53eab67",
-    "[\"user\", \"stale_draft\", \"/search_use_draft\", \"\"]": "bea80f28cbc616b0"
+    "[\"user\", \"stale_draft\", \"/search_use_draft\", \"\"]": "bea80f28cbc616b0",
+    "[\"tester\", \"bound_button\", \"1–3 года\", \"\"]": "f0daefedeac1984d",
+    "[\"tester\", \"bound_button\", \"3–6 лет\", \"\"]": "2c0788d5d114ba5c",
+    "[\"tester\", \"bound_button\", \"6+ лет\", \"\"]": "ef9ef56b8c9e9776",
+    "[\"tester\", \"bound_button\", \"AI лимиты\", \"\"]": "ec9103f5400a0c4e",
+    "[\"tester\", \"bound_button\", \"AI ответ в чат\", \"\"]": "6e10bb13e44922c1",
+    "[\"tester\", \"bound_button\", \"Backfill\", \"\"]": "9ae6f7f6c3ec9699",
+    "[\"tester\", \"bound_button\", \"Dry-run\", \"\"]": "88978b20692c8130",
+    "[\"tester\", \"bound_button\", \"HH auth\", \"\"]": "2fb1d997312e1ea9",
+    "[\"tester\", \"bound_button\", \"HH резюме\", \"\"]": "483dd622ea5b49fd",
+    "[\"tester\", \"bound_button\", \"Админ\", \"\"]": "4be28ea2817b315f",
+    "[\"tester\", \"bound_button\", \"Анализ резюме\", \"\"]": "2fc19298ff71b07c",
+    "[\"tester\", \"bound_button\", \"Вход HH\", \"\"]": "2fb1d997312e1ea9",
+    "[\"tester\", \"bound_button\", \"Выбрать резюме\", \"\"]": "28733164910b592e",
+    "[\"tester\", \"bound_button\", \"Выполняется...\", \"\"]": "7cac46658f20d64f",
+    "[\"tester\", \"bound_button\", \"Главное\", \"\"]": "3db197ea97dc8fa8",
+    "[\"tester\", \"bound_button\", \"Дайджест\", \"\"]": "ff931feb82ea34bf",
+    "[\"tester\", \"bound_button\", \"Демон OFF\", \"\"]": "4a1dd4db59ad27ec",
+    "[\"tester\", \"bound_button\", \"Демон ON\", \"\"]": "90bfba62219a4b79",
+    "[\"tester\", \"bound_button\", \"Демон: вкл\", \"\"]": "90bfba62219a4b79",
+    "[\"tester\", \"bound_button\", \"Демон: выкл\", \"\"]": "4a1dd4db59ad27ec",
+    "[\"tester\", \"bound_button\", \"Диагностика\", \"\"]": "459266642765333a",
+    "[\"tester\", \"bound_button\", \"Забрать резюме\", \"\"]": "7762e0bb60760955",
+    "[\"tester\", \"bound_button\", \"Запуск\", \"\"]": "522b888647079072",
+    "[\"tester\", \"bound_button\", \"Зарплата от\", \"\"]": "d7d4ba0dca18bf2c",
+    "[\"tester\", \"bound_button\", \"ИИ ответ в чат\", \"\"]": "6e10bb13e44922c1",
+    "[\"tester\", \"bound_button\", \"Изменить запросы\", \"\"]": "1982a47f7623c633",
+    "[\"tester\", \"bound_button\", \"Инвайты\", \"\"]": "e8d647d4581e6fda",
+    "[\"tester\", \"bound_button\", \"История\", \"\"]": "4ced24c4ebc6fc28",
+    "[\"tester\", \"bound_button\", \"Клиенты\", \"\"]": "77166ab8b81dd3e1",
+    "[\"tester\", \"bound_button\", \"Лимиты ИИ\", \"\"]": "ec9103f5400a0c4e",
+    "[\"tester\", \"bound_button\", \"Лог поиска\", \"\"]": "4705d0faa171f402",
+    "[\"tester\", \"bound_button\", \"Лог чатов\", \"\"]": "43a46e1f15511bf8",
+    "[\"tester\", \"bound_button\", \"Лог\", \"\"]": "4705d0faa171f402",
+    "[\"tester\", \"bound_button\", \"Логи\", \"\"]": "4705d0faa171f402",
+    "[\"tester\", \"bound_button\", \"Меню\", \"\"]": "3db197ea97dc8fa8",
+    "[\"tester\", \"bound_button\", \"Мой поиск\", \"\"]": "d3b2236b41889f44",
+    "[\"tester\", \"bound_button\", \"Мониторинг\", \"\"]": "bf8f97fa4f34f734",
+    "[\"tester\", \"bound_button\", \"Моя заявка\", \"\"]": "f2f7c4c1da3c976f",
+    "[\"tester\", \"bound_button\", \"На рассмотрении\", \"\"]": "6c260e282612ec3c",
+    "[\"tester\", \"bound_button\", \"Назад\", \"\"]": "bfafb9beac4c2042",
+    "[\"tester\", \"bound_button\", \"Опыт\", \"\"]": "9f44c8d02071ffc1",
+    "[\"tester\", \"bound_button\", \"Остановить\", \"\"]": "ebadcfa58759c16d",
+    "[\"tester\", \"bound_button\", \"Ответ ИИ в чат\", \"\"]": "6e10bb13e44922c1",
+    "[\"tester\", \"bound_button\", \"Отклики HH\", \"\"]": "2a13306e9bb47458",
+    "[\"tester\", \"bound_button\", \"Пересчёт аналитики\", \"\"]": "9ae6f7f6c3ec9699",
+    "[\"tester\", \"bound_button\", \"Повтор\", \"\"]": "65a64481e13f79ea",
+    "[\"tester\", \"bound_button\", \"Поиск\", \"\"]": "169e8dcc006ae23d",
+    "[\"tester\", \"bound_button\", \"Пользователи\", \"\"]": "d6840564e6522fa3",
+    "[\"tester\", \"bound_button\", \"Помощь\", \"\"]": "46da2ec80d263089",
+    "[\"tester\", \"bound_button\", \"Предложить ИИ\", \"\"]": "0400d36e2c0bdd65",
+    "[\"tester\", \"bound_button\", \"Прогоны\", \"\"]": "4ced24c4ebc6fc28",
+    "[\"tester\", \"bound_button\", \"Профили\", \"\"]": "675e85cb65c1fc92",
+    "[\"tester\", \"bound_button\", \"Профиль: qa-dev\", \"\"]": "d8a86a06105949bd",
+    "[\"tester\", \"bound_button\", \"Расписание\", \"\"]": "7f6c617651ec0561",
+    "[\"tester\", \"bound_button\", \"Режим откликов\", \"\"]": "17919d019c4674f9",
+    "[\"tester\", \"bound_button\", \"Сохранить предложенное\", \"\"]": "d36a4fc14036318b",
+    "[\"tester\", \"bound_button\", \"Статистика\", \"\"]": "952743e8b0b210f6",
+    "[\"tester\", \"bound_button\", \"Статус\", \"\"]": "4cd0317ca0a06549",
+    "[\"tester\", \"bound_button\", \"Стать клиентом\", \"\"]": "1a93a20ef4cfcd61",
+    "[\"tester\", \"bound_button\", \"Счётчик откликов HH\", \"\"]": "2a13306e9bb47458",
+    "[\"tester\", \"bound_button\", \"Тестовый прогон\", \"\"]": "88978b20692c8130",
+    "[\"tester\", \"bound_button\", \"Только с зарплатой\", \"\"]": "a4b30a8004f7481d",
+    "[\"tester\", \"bound_button\", \"Только удалёнка\", \"\"]": "c60588aec7d64d1f",
+    "[\"tester\", \"bound_button\", \"Условия поиска\", \"\"]": "4303f55dd8de035f",
+    "[\"tester\", \"bound_button\", \"Чат лог\", \"\"]": "43a46e1f15511bf8",
+    "[\"tester\", \"bound_button\", \"лог поиска\", \"\"]": "4705d0faa171f402",
+    "[\"tester\", \"bound_button\", \"лог чатов\", \"\"]": "43a46e1f15511bf8",
+    "[\"tester\", \"bound_button\", \"лог\", \"\"]": "4705d0faa171f402",
+    "[\"tester\", \"bound_button\", \"логи\", \"\"]": "4705d0faa171f402",
+    "[\"tester\", \"bound_button\", \"чат лог\", \"\"]": "43a46e1f15511bf8",
+    "[\"tester\", \"bound_button\", \"⏭ Пропустить\", \"\"]": "76a408d00f3f5932",
+    "[\"tester\", \"bound_button\", \"⏰ Повтор\", \"\"]": "65a64481e13f79ea",
+    "[\"tester\", \"bound_button\", \"⏰ Расписание\", \"\"]": "7f6c617651ec0561",
+    "[\"tester\", \"bound_button\", \"⏳ Выполняется...\", \"\"]": "7cac46658f20d64f",
+    "[\"tester\", \"bound_button\", \"⏹ Остановить\", \"\"]": "ebadcfa58759c16d",
+    "[\"tester\", \"bound_button\", \"◀ Назад\", \"\"]": "bfafb9beac4c2042",
+    "[\"tester\", \"bound_button\", \"◀️ Назад\", \"\"]": "bfafb9beac4c2042",
+    "[\"tester\", \"bound_button\", \"⚙️ Админ\", \"\"]": "a5b2706864b949fc",
+    "[\"tester\", \"bound_button\", \"⚙️ Условия поиска\", \"\"]": "4303f55dd8de035f",
+    "[\"tester\", \"bound_button\", \"⚡ Автоматически\", \"\"]": "0e76636df6e2e3db",
+    "[\"tester\", \"bound_button\", \"⚡ Автоотклик\", \"\"]": "0e76636df6e2e3db",
+    "[\"tester\", \"bound_button\", \"⛔ Демон: выкл\", \"\"]": "4a1dd4db59ad27ec",
+    "[\"tester\", \"bound_button\", \"⛔ Фоновый режим: выкл\", \"\"]": "2e8bad8272ec8f51",
+    "[\"tester\", \"bound_button\", \"✅ Сохранить предложенное\", \"\"]": "d36a4fc14036318b",
+    "[\"tester\", \"bound_button\", \"✅ Сохранить факт\", \"\"]": "c8a2e26555017d13",
+    "[\"tester\", \"bound_button\", \"✅ ⚡ Автоматически\", \"\"]": "0e76636df6e2e3db",
+    "[\"tester\", \"bound_button\", \"✅ ✋ Спрашивать меня\", \"\"]": "024ed9f09714bbd2",
+    "[\"tester\", \"bound_button\", \"✅ 👀 Только показать\", \"\"]": "2f0ff87481f6ed01",
+    "[\"tester\", \"bound_button\", \"✋ Подтверждать\", \"\"]": "024ed9f09714bbd2",
+    "[\"tester\", \"bound_button\", \"✋ Спрашивать меня\", \"\"]": "024ed9f09714bbd2",
+    "[\"tester\", \"bound_button\", \"✏️ Изменить запросы\", \"\"]": "1982a47f7623c633",
+    "[\"tester\", \"bound_button\", \"✏️ Изменить ответ\", \"\"]": "abeb1d99dc9f3003",
+    "[\"tester\", \"bound_button\", \"✨ Предложить ИИ\", \"\"]": "0400d36e2c0bdd65",
+    "[\"tester\", \"bound_button\", \"✨ Уточнить профиль\", \"\"]": "a4bf0c5a43c1e329",
+    "[\"tester\", \"bound_button\", \"❓ Помощь\", \"\"]": "46da2ec80d263089",
+    "[\"tester\", \"bound_button\", \"❓ Почему не было откликов\", \"\"]": "aa07e560de98931a",
+    "[\"tester\", \"bound_button\", \"➕ В чёрный список\", \"\"]": "1fb5a524ec9bef0a",
+    "[\"tester\", \"bound_button\", \"➕ Добавить факт\", \"\"]": "235925987eb0d7bf",
+    "[\"tester\", \"bound_button\", \"➖ Разрешить компанию\", \"\"]": "d1564c84c4944c44",
+    "[\"tester\", \"bound_button\", \"🆕 Стать клиентом\", \"\"]": "6fd45ffb394173d8",
+    "[\"tester\", \"bound_button\", \"🌱 Без опыта\", \"\"]": "077fe4eb80d05439",
+    "[\"tester\", \"bound_button\", \"🎁 Лимиты ИИ\", \"\"]": "bec3d90e9c80c397",
+    "[\"tester\", \"bound_button\", \"🎯 Мой поиск\", \"\"]": "d3b2236b41889f44",
+    "[\"tester\", \"bound_button\", \"🎯 Направления\", \"\"]": "d3b2236b41889f44",
+    "[\"tester\", \"bound_button\", \"🏠 Главное\", \"\"]": "3db197ea97dc8fa8",
+    "[\"tester\", \"bound_button\", \"🏠 Только удалёнка\", \"\"]": "c60588aec7d64d1f",
+    "[\"tester\", \"bound_button\", \"👀 Только показать\", \"\"]": "2f0ff87481f6ed01",
+    "[\"tester\", \"bound_button\", \"👤 Любой опыт\", \"\"]": "56df6bdb98721ab6",
+    "[\"tester\", \"bound_button\", \"👤 Опыт\", \"\"]": "9f44c8d02071ffc1",
+    "[\"tester\", \"bound_button\", \"👥 Пользователи\", \"\"]": "561bcff7f778bda8",
+    "[\"tester\", \"bound_button\", \"💬 Лог чатов\", \"\"]": "43a46e1f15511bf8",
+    "[\"tester\", \"bound_button\", \"💰 Баланс DeepSeek\", \"\"]": "94d268f7d0fb8348",
+    "[\"tester\", \"bound_button\", \"💰 Баланс\", \"\"]": "bd257a9029608c24",
+    "[\"tester\", \"bound_button\", \"💰 Зарплата от\", \"\"]": "d7d4ba0dca18bf2c",
+    "[\"tester\", \"bound_button\", \"💵 Только с зарплатой\", \"\"]": "a4b30a8004f7481d",
+    "[\"tester\", \"bound_button\", \"📁 Профиль: qa-dev\", \"\"]": "d8a86a06105949bd",
+    "[\"tester\", \"bound_button\", \"📄 Забрать резюме\", \"\"]": "7762e0bb60760955",
+    "[\"tester\", \"bound_button\", \"📄 Моя заявка\", \"\"]": "7034f7a7dab9dd53",
+    "[\"tester\", \"bound_button\", \"📅 1 раз/день\", \"\"]": "2f9de048eff09646",
+    "[\"tester\", \"bound_button\", \"📈 Рынок вакансий\", \"\"]": "56a5eb0e6378261a",
+    "[\"tester\", \"bound_button\", \"📈 Статистика\", \"\"]": "952743e8b0b210f6",
+    "[\"tester\", \"bound_button\", \"📊 Мониторинг\", \"\"]": "bf8f97fa4f34f734",
+    "[\"tester\", \"bound_button\", \"📊 Последний запуск\", \"\"]": "4705d0faa171f402",
+    "[\"tester\", \"bound_button\", \"📊 Состояние\", \"\"]": "bf8f97fa4f34f734",
+    "[\"tester\", \"bound_button\", \"📊 Статус\", \"\"]": "4cd0317ca0a06549",
+    "[\"tester\", \"bound_button\", \"📋 Вакансии на проверку\", \"\"]": "6c260e282612ec3c",
+    "[\"tester\", \"bound_button\", \"📋 Мои факты\", \"\"]": "219ae1dbc0b7706a",
+    "[\"tester\", \"bound_button\", \"📋 На рассмотрении\", \"\"]": "6c260e282612ec3c",
+    "[\"tester\", \"bound_button\", \"📋 Отклики\", \"\"]": "382ab4dd5b172972",
+    "[\"tester\", \"bound_button\", \"📜 Журналы\", \"\"]": "de7d0bacd884ce89",
+    "[\"tester\", \"bound_button\", \"📜 Лог поиска\", \"\"]": "4705d0faa171f402",
+    "[\"tester\", \"bound_button\", \"📝 Анкеты\", \"\"]": "ce729ff698b6a8b0",
+    "[\"tester\", \"bound_button\", \"📥 Загрузить базу фактов\", \"\"]": "8a02472a9094af01",
+    "[\"tester\", \"bound_button\", \"📨 Отклики HH\", \"\"]": "2a13306e9bb47458",
+    "[\"tester\", \"bound_button\", \"📨 Отклики на hh.ru\", \"\"]": "2a13306e9bb47458",
+    "[\"tester\", \"bound_button\", \"📬 Инвайты\", \"\"]": "e8d647d4581e6fda",
+    "[\"tester\", \"bound_button\", \"📬 Приглашения\", \"\"]": "e8d647d4581e6fda",
+    "[\"tester\", \"bound_button\", \"📰 Дайджест\", \"\"]": "967b24c786fe445e",
+    "[\"tester\", \"bound_button\", \"🔁 3 раза/день\", \"\"]": "c331447b44ea93c9",
+    "[\"tester\", \"bound_button\", \"🔄 Обновить резюме\", \"\"]": "5d39869610414dcf",
+    "[\"tester\", \"bound_button\", \"🔎 Найти вакансии\", \"\"]": "169e8dcc006ae23d",
+    "[\"tester\", \"bound_button\", \"🔎 Поиск\", \"\"]": "169e8dcc006ae23d",
+    "[\"tester\", \"bound_button\", \"🔐 hh.ru и резюме\", \"\"]": "59be1c404b3785ec",
+    "[\"tester\", \"bound_button\", \"🔐 Вход HH\", \"\"]": "2fb1d997312e1ea9",
+    "[\"tester\", \"bound_button\", \"🔐 Вход в hh.ru\", \"\"]": "2fb1d997312e1ea9",
+    "[\"tester\", \"bound_button\", \"🔐 Мой hh\", \"\"]": "59be1c404b3785ec",
+    "[\"tester\", \"bound_button\", \"🔬 Отказы и конверсии\", \"\"]": "34f49d5041b84555",
+    "[\"tester\", \"bound_button\", \"🕓 Поиски\", \"\"]": "4ced24c4ebc6fc28",
+    "[\"tester\", \"bound_button\", \"🕓 Прогоны\", \"\"]": "4ced24c4ebc6fc28",
+    "[\"tester\", \"bound_button\", \"🗃 Пересчёт аналитики\", \"\"]": "1f1aedb13cb85eb9",
+    "[\"tester\", \"bound_button\", \"🗓 1 раз/нед\", \"\"]": "6b38609a0a514946",
+    "[\"tester\", \"bound_button\", \"🚀 Запуск\", \"\"]": "522b888647079072",
+    "[\"tester\", \"bound_button\", \"🚀 С чего начать\", \"\"]": "e861723421d2593b",
+    "[\"tester\", \"bound_button\", \"🚫 Компании\", \"\"]": "8d833dd2239701ee",
+    "[\"tester\", \"bound_button\", \"🛑 Повтор: выкл\", \"\"]": "66f59d51d2b738c7",
+    "[\"tester\", \"bound_button\", \"🛡 Режим откликов\", \"\"]": "17919d019c4674f9",
+    "[\"tester\", \"bound_button\", \"🟢 Демон: вкл\", \"\"]": "90bfba62219a4b79",
+    "[\"tester\", \"bound_button\", \"🟢 Фоновый режим: вкл\", \"\"]": "42bc57501761b1d7",
+    "[\"tester\", \"bound_button\", \"🤖 Ответ ИИ в чат\", \"\"]": "6e10bb13e44922c1",
+    "[\"tester\", \"bound_button\", \"🧑‍💼 Клиенты\", \"\"]": "94417d28d8b30852",
+    "[\"tester\", \"bound_button\", \"🧠 Анализ резюме\", \"\"]": "2fc19298ff71b07c",
+    "[\"tester\", \"bound_button\", \"🧠 Обо мне\", \"\"]": "e1a9a83a71e03fae",
+    "[\"tester\", \"bound_button\", \"🧠 Платные LLM\", \"\"]": "190ecf4b42192c0d",
+    "[\"tester\", \"bound_button\", \"🧪 Пробный поиск (без откликов)\", \"\"]": "88978b20692c8130",
+    "[\"tester\", \"bound_button\", \"🧪 Проверить LLM\", \"\"]": "092b041bc14f84fd",
+    "[\"tester\", \"bound_button\", \"🧪 Тест DeepSeek\", \"\"]": "755eee9de07cfd86",
+    "[\"tester\", \"bound_button\", \"🧪 Тест\", \"\"]": "755eee9de07cfd86",
+    "[\"tester\", \"bound_button\", \"🧪 Тестовый прогон\", \"\"]": "88978b20692c8130",
+    "[\"tester\", \"bound_button\", \"🧭 Что ищу\", \"\"]": "de04dd3d14ec40f9",
+    "[\"tester\", \"bound_button\", \"🧹 Сброс просмотренных\", \"\"]": "75e755006def9be7",
+    "[\"tester\", \"bound_button\", \"🧾 HH резюме\", \"\"]": "483dd622ea5b49fd",
+    "[\"tester\", \"bound_button\", \"🧾 Raw log\", \"\"]": "cdd742f1d866b98c",
+    "[\"tester\", \"bound_button\", \"🧾 Выбрать резюме\", \"\"]": "28733164910b592e",
+    "[\"tester\", \"bound_button\", \"🧾 Подробный\", \"\"]": "cdd742f1d866b98c",
+    "[\"tester\", \"bound_button\", \"🧾 Профили\", \"\"]": "0ae40c8f7a6c86ac",
+    "[\"tester\", \"bound_button\", \"🧾 Резюме на hh.ru\", \"\"]": "483dd622ea5b49fd",
+    "[\"tester\", \"bound_button\", \"🩺 Диагностика\", \"\"]": "74975a3331746f30",
+    "[\"tester\", \"bound_command\", \"/act_as\", \"\"]": "8ea5b3cc8f17e86b",
+    "[\"tester\", \"bound_command\", \"/act_as_self\", \"\"]": "afad87ab02ba791a",
+    "[\"tester\", \"bound_command\", \"/ai_chat\", \"\"]": "e88920f4171b28e9",
+    "[\"tester\", \"bound_command\", \"/ai_grant\", \"\"]": "acc85021567494e9",
+    "[\"tester\", \"bound_command\", \"/ai_limits\", \"\"]": "ec9103f5400a0c4e",
+    "[\"tester\", \"bound_command\", \"/ai_reset\", \"\"]": "31f6cfbfbb6e3ee2",
+    "[\"tester\", \"bound_command\", \"/analyze\", \"\"]": "2fc19298ff71b07c",
+    "[\"tester\", \"bound_command\", \"/back\", \"\"]": "bfafb9beac4c2042",
+    "[\"tester\", \"bound_command\", \"/backfill\", \"\"]": "9ae6f7f6c3ec9699",
+    "[\"tester\", \"bound_command\", \"/busy\", \"\"]": "7cac46658f20d64f",
+    "[\"tester\", \"bound_command\", \"/cancel_active\", \"\"]": "ebadcfa58759c16d",
+    "[\"tester\", \"bound_command\", \"/candidate_add_fact\", \"\"]": "235925987eb0d7bf",
+    "[\"tester\", \"bound_command\", \"/candidate_edit\", \"\"]": "abeb1d99dc9f3003",
+    "[\"tester\", \"bound_command\", \"/candidate_facts\", \"\"]": "219ae1dbc0b7706a",
+    "[\"tester\", \"bound_command\", \"/candidate_interview\", \"\"]": "a4bf0c5a43c1e329",
+    "[\"tester\", \"bound_command\", \"/candidate_profile\", \"\"]": "e1a9a83a71e03fae",
+    "[\"tester\", \"bound_command\", \"/candidate_save\", \"\"]": "c8a2e26555017d13",
+    "[\"tester\", \"bound_command\", \"/candidate_skip\", \"\"]": "76a408d00f3f5932",
+    "[\"tester\", \"bound_command\", \"/candidate_upload\", \"\"]": "8a02472a9094af01",
+    "[\"tester\", \"bound_command\", \"/candidate_upload_cancel\", \"\"]": "8d1da76029f810e8",
+    "[\"tester\", \"bound_command\", \"/candidate_upload_save\", \"\"]": "f4f091c1a884c6a6",
+    "[\"tester\", \"bound_command\", \"/chat_ai\", \"\"]": "6e10bb13e44922c1",
+    "[\"tester\", \"bound_command\", \"/chat_answer\", \"\"]": "e0f450d3ef21fc4c",
+    "[\"tester\", \"bound_command\", \"/chat_log\", \"\"]": "43a46e1f15511bf8",
+    "[\"tester\", \"bound_command\", \"/check\", \"\"]": "e8d647d4581e6fda",
+    "[\"tester\", \"bound_command\", \"/client_approve\", \"\"]": "5dc80a82d0bf5eb4",
+    "[\"tester\", \"bound_command\", \"/client_hh_auth\", \"\"]": "a7c15744f105e84b",
+    "[\"tester\", \"bound_command\", \"/client_reject\", \"\"]": "04007a1095efd22e",
+    "[\"tester\", \"bound_command\", \"/client_start\", \"\"]": "1a93a20ef4cfcd61",
+    "[\"tester\", \"bound_command\", \"/client_status\", \"\"]": "f2f7c4c1da3c976f",
+    "[\"tester\", \"bound_command\", \"/clients\", \"\"]": "77166ab8b81dd3e1",
+    "[\"tester\", \"bound_command\", \"/companies\", \"\"]": "8d833dd2239701ee",
+    "[\"tester\", \"bound_command\", \"/company_block\", \"\"]": "1fb5a524ec9bef0a",
+    "[\"tester\", \"bound_command\", \"/company_unblock\", \"\"]": "d1564c84c4944c44",
+    "[\"tester\", \"bound_command\", \"/daemon_off\", \"\"]": "4a1dd4db59ad27ec",
+    "[\"tester\", \"bound_command\", \"/daemon_on\", \"\"]": "90bfba62219a4b79",
+    "[\"tester\", \"bound_command\", \"/diagnostics\", \"\"]": "459266642765333a",
+    "[\"tester\", \"bound_command\", \"/digest\", \"\"]": "ff931feb82ea34bf",
+    "[\"tester\", \"bound_command\", \"/direction\", \"\"]": "d9ecced20e20e6eb",
+    "[\"tester\", \"bound_command\", \"/direction_\", \"\"]": "43c7f5e07f41f86d",
+    "[\"tester\", \"bound_command\", \"/direction_ab\", \"\"]": "0cdae8a4130376e6",
+    "[\"tester\", \"bound_command\", \"/direction_add\", \"\"]": "758e9de725c02e51",
+    "[\"tester\", \"bound_command\", \"/direction_cancel\", \"\"]": "d4161a71862e1984",
+    "[\"tester\", \"bound_command\", \"/direction_csv\", \"\"]": "841bff1274ec06b1",
+    "[\"tester\", \"bound_command\", \"/direction_edit\", \"\"]": "a7f97b76c9c5bd4b",
+    "[\"tester\", \"bound_command\", \"/direction_new\", \"\"]": "66d160234f821175",
+    "[\"tester\", \"bound_command\", \"/direction_pause\", \"\"]": "5a598dd654558925",
+    "[\"tester\", \"bound_command\", \"/direction_refresh\", \"\"]": "e6353d4e2bcf608e",
+    "[\"tester\", \"bound_command\", \"/direction_remove\", \"\"]": "b0814c17dfa9ae7b",
+    "[\"tester\", \"bound_command\", \"/direction_resume\", \"\"]": "155d04cd7e830fc8",
+    "[\"tester\", \"bound_command\", \"/direction_save\", \"\"]": "8ff613aca324bf19",
+    "[\"tester\", \"bound_command\", \"/direction_single\", \"\"]": "553690d1c2f26bf3",
+    "[\"tester\", \"bound_command\", \"/direction_stats\", \"\"]": "65ceab054fe0e632",
+    "[\"tester\", \"bound_command\", \"/direction_stats_refresh\", \"\"]": "afbf8994f6ca01aa",
+    "[\"tester\", \"bound_command\", \"/direction_suggest\", \"\"]": "a6c580a8296b6f5b",
+    "[\"tester\", \"bound_command\", \"/direction_summary\", \"\"]": "55c834c2f089792b",
+    "[\"tester\", \"bound_command\", \"/direction_switch\", \"\"]": "1022c1ad30d251f2",
+    "[\"tester\", \"bound_command\", \"/direction_unknown\", \"\"]": "d48147a82726261e",
+    "[\"tester\", \"bound_command\", \"/direction_variants\", \"\"]": "a3a5e5ad3e522f81",
+    "[\"tester\", \"bound_command\", \"/directions\", \"\"]": "de04dd3d14ec40f9",
+    "[\"tester\", \"bound_command\", \"/dryrun\", \"\"]": "88978b20692c8130",
+    "[\"tester\", \"bound_command\", \"/forms\", \"\"]": "ce729ff698b6a8b0",
+    "[\"tester\", \"bound_command\", \"/getting_started\", \"\"]": "e861723421d2593b",
+    "[\"tester\", \"bound_command\", \"/grabresume\", \"\"]": "7762e0bb60760955",
+    "[\"tester\", \"bound_command\", \"/grant\", \"\"]": "2e3e0e259324dd6b",
+    "[\"tester\", \"bound_command\", \"/help\", \"\"]": "46da2ec80d263089",
+    "[\"tester\", \"bound_command\", \"/hh_auth\", \"\"]": "2fb1d997312e1ea9",
+    "[\"tester\", \"bound_command\", \"/hh_response_count\", \"\"]": "732d9a525613fb66",
+    "[\"tester\", \"bound_command\", \"/hh_responses\", \"\"]": "2a13306e9bb47458",
+    "[\"tester\", \"bound_command\", \"/hh_resumes\", \"\"]": "483dd622ea5b49fd",
+    "[\"tester\", \"bound_command\", \"/hunter_chat_log\", \"\"]": "d4fdf3aa3cbea459",
+    "[\"tester\", \"bound_command\", \"/hunter_log\", \"\"]": "f022cbad4bfc5f1e",
+    "[\"tester\", \"bound_command\", \"/llm_balance\", \"\"]": "94d268f7d0fb8348",
+    "[\"tester\", \"bound_command\", \"/llm_test\", \"\"]": "755eee9de07cfd86",
+    "[\"tester\", \"bound_command\", \"/log\", \"\"]": "4705d0faa171f402",
+    "[\"tester\", \"bound_command\", \"/market_research\", \"\"]": "619fb0fc874ea21d",
+    "[\"tester\", \"bound_command\", \"/menu\", \"\"]": "3db197ea97dc8fa8",
+    "[\"tester\", \"bound_command\", \"/menu_admin\", \"\"]": "4be28ea2817b315f",
+    "[\"tester\", \"bound_command\", \"/menu_hh\", \"\"]": "59be1c404b3785ec",
+    "[\"tester\", \"bound_command\", \"/menu_llm\", \"\"]": "4ccfa8aee45fe803",
+    "[\"tester\", \"bound_command\", \"/menu_logs\", \"\"]": "de7d0bacd884ce89",
+    "[\"tester\", \"bound_command\", \"/menu_monitor\", \"\"]": "bf8f97fa4f34f734",
+    "[\"tester\", \"bound_command\", \"/menu_repeat\", \"\"]": "65a64481e13f79ea",
+    "[\"tester\", \"bound_command\", \"/menu_responses\", \"\"]": "382ab4dd5b172972",
+    "[\"tester\", \"bound_command\", \"/menu_run\", \"\"]": "522b888647079072",
+    "[\"tester\", \"bound_command\", \"/profile\", \"\"]": "16dfcf2ca186c4d7",
+    "[\"tester\", \"bound_command\", \"/profiles\", \"\"]": "675e85cb65c1fc92",
+    "[\"tester\", \"bound_command\", \"/raw_log\", \"\"]": "cdd742f1d866b98c",
+    "[\"tester\", \"bound_command\", \"/refresh_resume\", \"\"]": "5d39869610414dcf",
+    "[\"tester\", \"bound_command\", \"/repeat_3day\", \"\"]": "c331447b44ea93c9",
+    "[\"tester\", \"bound_command\", \"/repeat_daily\", \"\"]": "2f9de048eff09646",
+    "[\"tester\", \"bound_command\", \"/repeat_off\", \"\"]": "66f59d51d2b738c7",
+    "[\"tester\", \"bound_command\", \"/repeat_weekly\", \"\"]": "6b38609a0a514946",
+    "[\"tester\", \"bound_command\", \"/research\", \"\"]": "34f49d5041b84555",
+    "[\"tester\", \"bound_command\", \"/review\", \"\"]": "6c260e282612ec3c",
+    "[\"tester\", \"bound_command\", \"/revoke\", \"\"]": "96d586bce5894c95",
+    "[\"tester\", \"bound_command\", \"/runs\", \"\"]": "4ced24c4ebc6fc28",
+    "[\"tester\", \"bound_command\", \"/schedule\", \"\"]": "7f6c617651ec0561",
+    "[\"tester\", \"bound_command\", \"/search\", \"\"]": "169e8dcc006ae23d",
+    "[\"tester\", \"bound_command\", \"/search_application_\", \"\"]": "c3fa5fb00308d8ac",
+    "[\"tester\", \"bound_command\", \"/search_application_auto\", \"\"]": "0e76636df6e2e3db",
+    "[\"tester\", \"bound_command\", \"/search_application_confirm\", \"\"]": "024ed9f09714bbd2",
+    "[\"tester\", \"bound_command\", \"/search_application_mode\", \"\"]": "17919d019c4674f9",
+    "[\"tester\", \"bound_command\", \"/search_application_preview\", \"\"]": "2f0ff87481f6ed01",
+    "[\"tester\", \"bound_command\", \"/search_conditions\", \"\"]": "4303f55dd8de035f",
+    "[\"tester\", \"bound_command\", \"/search_edit\", \"\"]": "1982a47f7623c633",
+    "[\"tester\", \"bound_command\", \"/search_experience\", \"\"]": "9f44c8d02071ffc1",
+    "[\"tester\", \"bound_command\", \"/search_experience_1_3\", \"\"]": "f0daefedeac1984d",
+    "[\"tester\", \"bound_command\", \"/search_experience_3_6\", \"\"]": "2c0788d5d114ba5c",
+    "[\"tester\", \"bound_command\", \"/search_experience_6_plus\", \"\"]": "ef9ef56b8c9e9776",
+    "[\"tester\", \"bound_command\", \"/search_experience_any\", \"\"]": "56df6bdb98721ab6",
+    "[\"tester\", \"bound_command\", \"/search_experience_none\", \"\"]": "077fe4eb80d05439",
+    "[\"tester\", \"bound_command\", \"/search_remote_toggle\", \"\"]": "c60588aec7d64d1f",
+    "[\"tester\", \"bound_command\", \"/search_resume\", \"\"]": "28733164910b592e",
+    "[\"tester\", \"bound_command\", \"/search_salary\", \"\"]": "d7d4ba0dca18bf2c",
+    "[\"tester\", \"bound_command\", \"/search_salary_toggle\", \"\"]": "a4b30a8004f7481d",
+    "[\"tester\", \"bound_command\", \"/search_settings\", \"\"]": "d3b2236b41889f44",
+    "[\"tester\", \"bound_command\", \"/search_suggest\", \"\"]": "0400d36e2c0bdd65",
+    "[\"tester\", \"bound_command\", \"/search_use_draft\", \"\"]": "d36a4fc14036318b",
+    "[\"tester\", \"bound_command\", \"/seen_reset\", \"\"]": "9f54b938040a2acc",
+    "[\"tester\", \"bound_command\", \"/start\", \"\"]": "36bd4b17f3db4074",
+    "[\"tester\", \"bound_command\", \"/stats\", \"\"]": "952743e8b0b210f6",
+    "[\"tester\", \"bound_command\", \"/status\", \"\"]": "4cd0317ca0a06549",
+    "[\"tester\", \"bound_command\", \"/unknown\", \"\"]": "69fd10b052f3a108",
+    "[\"tester\", \"bound_command\", \"/users\", \"\"]": "d6840564e6522fa3",
+    "[\"tester\", \"bound_command\", \"/why_no_apply\", \"\"]": "aa07e560de98931a"
   },
   "outcomes": {
     "002269aeddbe75e4": {
@@ -25309,7 +25612,3688 @@
       "profile_writes": {},
       "direction_sessions": {},
       "queue": []
+    },
+    "0400d36e2c0bdd65": {
+      "resolved": [
+        "/search_suggest",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/search_suggest",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": false,
+      "replies": [
+        {
+          "first_line": "Готовлю направление для проверки. Дождитесь результата; изменения потребуют сохранения.",
+          "text": "Готовлю направление для проверки. Дождитесь результата; изменения потребуют сохранения.",
+          "markup": null
+        },
+        {
+          "first_line": "Не сохранено: откликаться только резюме «QA Engineer»",
+          "text": "Не сохранено: откликаться только резюме «QA Engineer»\nНаправление «QA Engineer». Сейчас: Всегда первое.\nПосле сохранения все отклики пойдут резюме «QA Engineer». Другие резюме останутся в списке, но использоваться не будут.\n\nНаправление «QA Engineer»\nКаким резюме откликаться: Всегда первое.\n\nИщу по словам: Synthetic QA\nДолжности: не указаны\nФормат: любой формат; вахта — нет\nГород и формат — из профиля.\nГорода работы — любые.\nЗарплата: не указана\n\nРезюме:\n• QA Engineer · включено\n\nЗапасное сопроводительное письмо: не задано, отправляется общее короткое письмо.\n\nОписание: не задано\n\nИзменение вступит в силу после кнопки «Сохранить».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✏️ Изменить условия",
+                "🧾 Резюме (1)"
+              ],
+              [
+                "🔀 Каким резюме откликаться",
+                "📊 Статистика резюме"
+              ],
+              [
+                "✅ Сохранить",
+                "Не сохранять"
+              ],
+              [
+                "Все направления"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "search_settings",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "draft",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "Synthetic QA"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                "fetched_at": "<time>",
+                "tags": [],
+                "status": "active"
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {}
+        }
+      },
+      "queue": []
+    },
+    "0cdae8a4130376e6": {
+      "resolved": [
+        "/direction_ab",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_ab",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Не сохранено",
+          "text": "Не сохранено\nНаправление «QA Engineer»\nКаким резюме откликаться: По очереди.\n\nИщу по словам: QA Engineer\nДолжности: не указаны\nФормат: любой формат; вахта — нет\nГород и формат — из профиля.\nГорода работы — любые.\nЗарплата: не указана\n\nРезюме:\n• QA Engineer · включено\n\nЗапасное сопроводительное письмо: не задано, отправляется общее короткое письмо.\n\nОписание: не задано\n\nИзменение вступит в силу после кнопки «Сохранить».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✏️ Изменить условия",
+                "🧾 Резюме (1)"
+              ],
+              [
+                "🔀 Каким резюме откликаться",
+                "📊 Статистика резюме"
+              ],
+              [
+                "✅ Сохранить",
+                "Не сохранять"
+              ],
+              [
+                "Все направления"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "draft",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "ab",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                "fetched_at": "<time>",
+                "tags": [],
+                "status": "active"
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {}
+        }
+      },
+      "queue": []
+    },
+    "1022c1ad30d251f2": {
+      "resolved": [
+        "/direction_switch",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_switch",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "🔒 Tester не может создавать или переключать направление.",
+          "text": "🔒 Tester не может создавать или переключать направление.",
+          "markup": null
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "155d04cd7e830fc8": {
+      "resolved": [
+        "/direction_resume",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_resume",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Резюме направления «QA Engineer»: 1, все включены",
+          "text": "Резюме направления «QA Engineer»: 1, все включены\n1. QA Engineer · включено\n\nКакое резюме включить? Нажмите на него.\nИзменение вступит в силу после кнопки «Сохранить».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "QA Engineer"
+              ],
+              [
+                "Добавить резюме",
+                "Выключить резюме…",
+                "Включить резюме…"
+              ],
+              [
+                "Убрать резюме из направления…",
+                "Обновить резюме с hh.ru"
+              ],
+              [
+                "Назад",
+                "Не сохранять"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "variant",
+          "operation": "resume",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                "fetched_at": "<time>",
+                "tags": [],
+                "status": "active"
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {}
+        }
+      },
+      "queue": []
+    },
+    "169e8dcc006ae23d": {
+      "resolved": [
+        "/search",
+        ""
+      ],
+      "handlers": [
+        [
+          "_start_cli_command",
+          [
+            "qa-dev",
+            "--search",
+            "search",
+            3600
+          ],
+          {}
+        ]
+      ],
+      "return": false,
+      "replies": [
+        {
+          "first_line": "⏳ Поиск вакансий",
+          "text": "⏳ Поиск вакансий\n\n📁 Профиль: qa-dev, ищу «QA Engineer»\n🕓 Прошло: 0 сек\n\nКоманда выполняется.\nКонфликтующие команды этого профиля временно заблокированы.",
+          "markup": {
+            "keyboard": [
+              [
+                "🔎 Найти вакансии",
+                "🧪 Пробный поиск (без откликов)"
+              ],
+              [
+                "📋 Отклики",
+                "🎯 Направления"
+              ],
+              [
+                "🔐 hh.ru и резюме",
+                "🧠 Обо мне"
+              ],
+              [
+                "📊 Состояние"
+              ],
+              [
+                "🚀 С чего начать",
+                "❓ Помощь"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        },
+        {
+          "first_line": "ℹ️ Поиск вакансий: команда завершена; исход отклика указан ниже",
+          "text": "ℹ️ Поиск вакансий: команда завершена; исход отклика указан ниже\n\nℹ️ Команда завершилась без текстового вывода.",
+          "markup": {
+            "keyboard": [
+              [
+                "🔎 Найти вакансии",
+                "🧪 Пробный поиск (без откликов)"
+              ],
+              [
+                "📋 Отклики",
+                "🎯 Направления"
+              ],
+              [
+                "🔐 hh.ru и резюме",
+                "🧠 Обо мне"
+              ],
+              [
+                "📊 Состояние"
+              ],
+              [
+                "🚀 С чего начать",
+                "❓ Помощь"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "main",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "2a13306e9bb47458": {
+      "resolved": [
+        "/hh_responses",
+        ""
+      ],
+      "handlers": [],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "📨 Отклики на hh.ru — QA Engineer",
+          "text": "📨 Отклики на hh.ru — QA Engineer\n\n• Активные: ещё не загружены\n• Архив: ещё не загружены\n\nОтклики до появления направлений: активные — нет данных, архив — нет данных.\n\nВесь аккаунт hh.ru: всего 0, удалённые — 0.\nУдалённые по направлениям не разделены.\n\nобновлено 0 мин назад\nОбновить: /hh_responses refresh",
+          "markup": {
+            "keyboard": [
+              [
+                "📋 Вакансии на проверку",
+                "📨 Отклики на hh.ru"
+              ],
+              [
+                "📝 Анкеты",
+                "🤖 Ответ ИИ в чат"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "review",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "2fc19298ff71b07c": {
+      "resolved": [
+        "/analyze",
+        ""
+      ],
+      "handlers": [
+        [
+          "_start_cli_command",
+          [
+            "qa-dev",
+            "--analyze-resume",
+            "analyze resume",
+            3600
+          ],
+          {}
+        ]
+      ],
+      "return": false,
+      "replies": [
+        {
+          "first_line": "⏳ ИИ-анализ резюме",
+          "text": "⏳ ИИ-анализ резюме\n\n📁 Профиль: qa-dev, ищу «QA Engineer»\n🕓 Прошло: 0 сек\n\nЭто долгий запуск ИИ.\nОбычно занимает 30-90 секунд.\nЕсли ждёте около минуты, это нормально.",
+          "markup": {
+            "keyboard": [
+              [
+                "🔐 Вход в hh.ru",
+                "🧾 Резюме на hh.ru"
+              ],
+              [
+                "🧾 Выбрать резюме",
+                "🔄 Обновить резюме"
+              ],
+              [
+                "🧠 Анализ резюме",
+                "📄 Забрать резюме"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [
+        {
+          "filename": "analysis.md",
+          "content": "synthetic",
+          "caption": "✅ ИИ-анализ резюме готов. Отправляю файл анализа.",
+          "markup": {
+            "keyboard": [
+              [
+                "🔐 Вход в hh.ru",
+                "🧾 Резюме на hh.ru"
+              ],
+              [
+                "🧾 Выбрать резюме",
+                "🔄 Обновить резюме"
+              ],
+              [
+                "🧠 Анализ резюме",
+                "📄 Забрать резюме"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "run",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "34f49d5041b84555": {
+      "resolved": [
+        "/research",
+        ""
+      ],
+      "handlers": [],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "История откликов · QA Engineer",
+          "text": "История откликов · QA Engineer",
+          "markup": {
+            "keyboard": [
+              [
+                "📊 Статус"
+              ],
+              [
+                "❓ Почему не было откликов"
+              ],
+              [
+                "🕓 Поиски",
+                "📈 Статистика"
+              ],
+              [
+                "🔬 Отказы и конверсии",
+                "📬 Приглашения"
+              ],
+              [
+                "📜 Журналы"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        },
+        {
+          "first_line": "🔬 Отказы и конверсии · QA Engineer · 30 календарных дней (МСК)",
+          "text": "🔬 Отказы и конверсии · QA Engineer · 30 календарных дней (МСК)\nПодтверждённых откликов: 0\nТекущий статус: положительный 0, отказ 0, ожидание 0, неизвестно 0.\nМоложе 7 дней: 0. Результаты ещё меняются.\nПовторные отклики с неоднозначной связью исключены: 0.\n\nВремя до отказа (интервал наблюдения):\nПока нет данных.\nОтсутствие замеченного просмотра не означает, что резюме не читали. Скорость отказа не доказывает автоматический отсев.",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✓ Только «QA Engineer»"
+              ]
+            ]
+          }
+        },
+        {
+          "first_line": "Режим отправки · положительный ответ / отклики",
+          "text": "Режим отправки · положительный ответ / отклики\nПока нет данных.\nПоложительный ответ = наблюдался статус приглашения/собеседования/тестового/оффера. Сравнение описательное, не доказательство причинности.",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✓ Только «QA Engineer»"
+              ]
+            ]
+          }
+        },
+        {
+          "first_line": "Доставка сопроводительного · положительный ответ / отклики",
+          "text": "Доставка сопроводительного · положительный ответ / отклики\nПока нет данных.\nПоложительный ответ = наблюдался статус приглашения/собеседования/тестового/оффера. Сравнение описательное, не доказательство причинности.",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✓ Только «QA Engineer»"
+              ]
+            ]
+          }
+        },
+        {
+          "first_line": "Запрошенное резюме HH / версия текста для LLM · положительный ответ / отклики",
+          "text": "Запрошенное резюме HH / версия текста для LLM · положительный ответ / отклики\nПока нет данных.\nПоложительный ответ = наблюдался статус приглашения/собеседования/тестового/оффера. Сравнение описательное, не доказательство причинности.",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✓ Только «QA Engineer»"
+              ]
+            ]
+          }
+        },
+        {
+          "first_line": "Тип скрининга · положительный ответ / отклики",
+          "text": "Тип скрининга · положительный ответ / отклики\nПока нет данных.\nПоложительный ответ = наблюдался статус приглашения/собеседования/тестового/оффера. Сравнение описательное, не доказательство причинности.",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✓ Только «QA Engineer»"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "monitor",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "36bd4b17f3db4074": {
+      "resolved": [
+        "/start",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_menu",
+          [],
+          {
+            "profile_name": "qa-dev",
+            "menu": "main",
+            "help_section": false
+          }
+        ],
+        [
+          "_send_getting_started",
+          [],
+          {
+            "only_if_incomplete": true
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Job Hunter ищет работу на hh.ru и откликается за вас.",
+          "text": "Job Hunter ищет работу на hh.ru и откликается за вас.\nСейчас: профиль qa-dev, ищу «QA Engineer».\n\nКнопки внизу:\n• Найти вакансии — поиск прямо сейчас\n• Пробный поиск (без откликов) — в главном меню\n• Отклики — вакансии на проверку, ваши отклики, анкеты, ответы работодателям\n• Направления — что ищу, резюме, город, зарплата, расписание\n• hh.ru и резюме — вход на hh.ru и ваши резюме\n• Обо мне — что бот знает о вас\n• Состояние — работает ли бот, отклики, приглашения\n• С чего начать — настройка по шагам",
+          "markup": {
+            "keyboard": [
+              [
+                "🔎 Найти вакансии",
+                "🧪 Пробный поиск (без откликов)"
+              ],
+              [
+                "📋 Отклики",
+                "🎯 Направления"
+              ],
+              [
+                "🔐 hh.ru и резюме",
+                "🧠 Обо мне"
+              ],
+              [
+                "📊 Состояние"
+              ],
+              [
+                "🚀 С чего начать",
+                "❓ Помощь"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        },
+        {
+          "first_line": "🚀 С чего начать",
+          "text": "🚀 С чего начать\n\nБот ищет вакансии на hh.ru и откликается вашими резюме. Пройдите шаги по порядку:\n\n⬜️ 1. Войти в hh.ru — Synthetic session absent\n⬜️ 2. Резюме на hh.ru — создайте их на сайте hh.ru (по одному на каждую профессию, которую ищете), затем нажмите «Проверить резюме».\n✅ 3. Направления: QA Engineer\n✅ 4. Отклики по направлению «QA Engineer»: автоматически — бот откликается сам по подходящим вакансиям\n⬜️ 5. Первый поиск — когда шаги 1–4 готовы.\n\nНажмите кнопку под нужным шагом. Вернуться к списку — «🚀 С чего начать».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "🔐 Войти в hh.ru"
+              ],
+              [
+                "🧭 Направления"
+              ],
+              [
+                "✋ Спрашивать меня перед откликом",
+                "✓ 🤖 Откликаться автоматически"
+              ],
+              [
+                "🔄 Проверить шаги заново"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "main",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "382ab4dd5b172972": {
+      "resolved": [
+        "/menu_responses",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_menu",
+          [],
+          {
+            "profile_name": "qa-dev",
+            "menu": "review"
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "📋 Отклики · qa-dev, ищу «QA Engineer»",
+          "text": "📋 Отклики · qa-dev, ищу «QA Engineer»\nВакансии на проверку, отклики на hh.ru, анкеты и ответы работодателям.",
+          "markup": {
+            "keyboard": [
+              [
+                "📋 Вакансии на проверку",
+                "📨 Отклики на hh.ru"
+              ],
+              [
+                "📝 Анкеты",
+                "🤖 Ответ ИИ в чат"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "review",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "3db197ea97dc8fa8": {
+      "resolved": [
+        "/menu",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_menu",
+          [],
+          {
+            "profile_name": "qa-dev",
+            "menu": "main",
+            "help_section": false
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Job Hunter ищет работу на hh.ru и откликается за вас.",
+          "text": "Job Hunter ищет работу на hh.ru и откликается за вас.\nСейчас: профиль qa-dev, ищу «QA Engineer».\n\nКнопки внизу:\n• Найти вакансии — поиск прямо сейчас\n• Пробный поиск (без откликов) — в главном меню\n• Отклики — вакансии на проверку, ваши отклики, анкеты, ответы работодателям\n• Направления — что ищу, резюме, город, зарплата, расписание\n• hh.ru и резюме — вход на hh.ru и ваши резюме\n• Обо мне — что бот знает о вас\n• Состояние — работает ли бот, отклики, приглашения\n• С чего начать — настройка по шагам",
+          "markup": {
+            "keyboard": [
+              [
+                "🔎 Найти вакансии",
+                "🧪 Пробный поиск (без откликов)"
+              ],
+              [
+                "📋 Отклики",
+                "🎯 Направления"
+              ],
+              [
+                "🔐 hh.ru и резюме",
+                "🧠 Обо мне"
+              ],
+              [
+                "📊 Состояние"
+              ],
+              [
+                "🚀 С чего начать",
+                "❓ Помощь"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "main",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "43a46e1f15511bf8": {
+      "resolved": [
+        "/chat_log",
+        ""
+      ],
+      "handlers": [],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "История откликов · QA Engineer",
+          "text": "История откликов · QA Engineer",
+          "markup": {
+            "keyboard": [
+              [
+                "📊 Последний запуск",
+                "🧾 Подробный"
+              ],
+              [
+                "💬 Лог чатов"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        },
+        {
+          "first_line": "💬 Лог чатов · QA Engineer",
+          "text": "💬 Лог чатов · QA Engineer\nЗаписей пока нет. Старые записи без сведений о направлении доступны отдельно.",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✓ Только «QA Engineer»"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "logs",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "46da2ec80d263089": {
+      "resolved": [
+        "/help",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_menu",
+          [],
+          {
+            "profile_name": "qa-dev",
+            "menu": "main",
+            "help_section": true
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Job Hunter ищет работу на hh.ru и откликается за вас.",
+          "text": "Job Hunter ищет работу на hh.ru и откликается за вас.\nСейчас: профиль qa-dev, ищу «QA Engineer».\n\nКнопки внизу:\n• Найти вакансии — поиск прямо сейчас\n• Пробный поиск (без откликов) — в главном меню\n• Отклики — вакансии на проверку, ваши отклики, анкеты, ответы работодателям\n• Направления — что ищу, резюме, город, зарплата, расписание\n• hh.ru и резюме — вход на hh.ru и ваши резюме\n• Обо мне — что бот знает о вас\n• Состояние — работает ли бот, отклики, приглашения\n• С чего начать — настройка по шагам\n\nЕсли что-то не работает:\n• Состояние → Журналы → Последний запуск — что произошло при поиске (/log)\n• Состояние → Журналы → Подробный — история откликов (/raw_log)\n• Отклики → Ответ ИИ в чат — ответы работодателям (/chat_ai)",
+          "markup": {
+            "keyboard": [
+              [
+                "🔎 Найти вакансии",
+                "🧪 Пробный поиск (без откликов)"
+              ],
+              [
+                "📋 Отклики",
+                "🎯 Направления"
+              ],
+              [
+                "🔐 hh.ru и резюме",
+                "🧠 Обо мне"
+              ],
+              [
+                "📊 Состояние"
+              ],
+              [
+                "🚀 С чего начать",
+                "❓ Помощь"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "main",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "483dd622ea5b49fd": {
+      "resolved": [
+        "/hh_resumes",
+        ""
+      ],
+      "handlers": [],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "⚠️ Synthetic session absent",
+          "text": "⚠️ Synthetic session absent\nНиже — последний сохранённый список.\n\n🧾 Резюме на hh.ru профиля qa-dev, ищу «QA Engineer»\n\nПока нет резюме.\nСначала нажмите «Вход в hh.ru».",
+          "markup": {
+            "keyboard": [
+              [
+                "🔐 Вход в hh.ru",
+                "🧾 Резюме на hh.ru"
+              ],
+              [
+                "🧾 Выбрать резюме",
+                "🔄 Обновить резюме"
+              ],
+              [
+                "🧠 Анализ резюме",
+                "📄 Забрать резюме"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "run",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "4cd0317ca0a06549": {
+      "resolved": [
+        "/status",
+        ""
+      ],
+      "handlers": [],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "📊 Статус Job Hunter",
+          "text": "📊 Статус Job Hunter\n\n📁 Профиль: qa-dev, ищу «QA Engineer»\n\n⚙️ Процессы:\n• ⚪️ Демон: остановлен · pid —\n• ⚪️ Бот: остановлен · pid —\n\n⏰ Расписание:\n• Поиск: 3 раза в день\n• Приглашения: каждые 1 ч",
+          "markup": {
+            "keyboard": [
+              [
+                "📊 Статус"
+              ],
+              [
+                "❓ Почему не было откликов"
+              ],
+              [
+                "🕓 Поиски",
+                "📈 Статистика"
+              ],
+              [
+                "🔬 Отказы и конверсии",
+                "📬 Приглашения"
+              ],
+              [
+                "📜 Журналы"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "monitor",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "4ced24c4ebc6fc28": {
+      "resolved": [
+        "/runs",
+        ""
+      ],
+      "handlers": [],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "История откликов · QA Engineer",
+          "text": "История откликов · QA Engineer",
+          "markup": {
+            "keyboard": [
+              [
+                "📊 Статус"
+              ],
+              [
+                "❓ Почему не было откликов"
+              ],
+              [
+                "🕓 Поиски",
+                "📈 Статистика"
+              ],
+              [
+                "🔬 Отказы и конверсии",
+                "📬 Приглашения"
+              ],
+              [
+                "📜 Журналы"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        },
+        {
+          "first_line": "🕓 Поиски · QA Engineer",
+          "text": "🕓 Поиски · QA Engineer\nСохранено откликов за всё время: 0\n\n🕓 История поисков пока пустая.",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✓ Только «QA Engineer»"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "monitor",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "522b888647079072": {
+      "resolved": [
+        "/menu_run",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_menu",
+          [],
+          {
+            "profile_name": "qa-dev",
+            "menu": "run"
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "hh.ru и резюме · профиль qa-dev, ищу «QA Engineer»",
+          "text": "hh.ru и резюме · профиль qa-dev, ищу «QA Engineer»\nЗдесь можно войти в hh.ru, выбрать и обновить резюме, попросить ИИ проверить резюме и сохранить его.",
+          "markup": {
+            "keyboard": [
+              [
+                "🔐 Вход в hh.ru",
+                "🧾 Резюме на hh.ru"
+              ],
+              [
+                "🧾 Выбрать резюме",
+                "🔄 Обновить резюме"
+              ],
+              [
+                "🧠 Анализ резюме",
+                "📄 Забрать резюме"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "run",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "553690d1c2f26bf3": {
+      "resolved": [
+        "/direction_single",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_single",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Не сохранено: откликаться только резюме «QA Engineer»",
+          "text": "Не сохранено: откликаться только резюме «QA Engineer»\nНаправление «QA Engineer». Сейчас: Всегда первое.\nПосле сохранения все отклики пойдут резюме «QA Engineer». Другие резюме останутся в списке, но использоваться не будут.\n\nНаправление «QA Engineer»\nКаким резюме откликаться: Всегда первое.\n\nИщу по словам: QA Engineer\nДолжности: не указаны\nФормат: любой формат; вахта — нет\nГород и формат — из профиля.\nГорода работы — любые.\nЗарплата: не указана\n\nРезюме:\n• QA Engineer · включено\n\nЗапасное сопроводительное письмо: не задано, отправляется общее короткое письмо.\n\nОписание: не задано\n\nИзменение вступит в силу после кнопки «Сохранить».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✏️ Изменить условия",
+                "🧾 Резюме (1)"
+              ],
+              [
+                "🔀 Каким резюме откликаться",
+                "📊 Статистика резюме"
+              ],
+              [
+                "✅ Сохранить",
+                "Не сохранять"
+              ],
+              [
+                "Все направления"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "draft",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                "fetched_at": "<time>",
+                "tags": [],
+                "status": "active"
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {}
+        }
+      },
+      "queue": []
+    },
+    "55c834c2f089792b": {
+      "resolved": [
+        "/direction_summary",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_summary",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Направление «QA Engineer»",
+          "text": "Направление «QA Engineer»\nКаким резюме откликаться: Всегда первое.\n\nИщу по словам: QA Engineer\nДолжности: не указаны\nФормат: любой формат; вахта — нет\nГород и формат — из профиля.\nГорода работы — любые.\nЗарплата: не указана\n\nРезюме:\n• QA Engineer · включено\n\nЗапасное сопроводительное письмо: не задано, отправляется общее короткое письмо.\n\nОписание: не задано",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✏️ Изменить условия",
+                "🧾 Резюме (1)"
+              ],
+              [
+                "🔀 Каким резюме откликаться",
+                "📊 Статистика резюме"
+              ],
+              [
+                "Все направления"
+              ],
+              [
+                "Удалить направление…"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "draft",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                "fetched_at": "<time>",
+                "tags": [],
+                "status": "active"
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {},
+          "summary": true
+        }
+      },
+      "queue": []
+    },
+    "59be1c404b3785ec": {
+      "resolved": [
+        "/menu_hh",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_menu",
+          [],
+          {
+            "profile_name": "qa-dev",
+            "menu": "run"
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "hh.ru и резюме · профиль qa-dev, ищу «QA Engineer»",
+          "text": "hh.ru и резюме · профиль qa-dev, ищу «QA Engineer»\nЗдесь можно войти в hh.ru, выбрать и обновить резюме, попросить ИИ проверить резюме и сохранить его.",
+          "markup": {
+            "keyboard": [
+              [
+                "🔐 Вход в hh.ru",
+                "🧾 Резюме на hh.ru"
+              ],
+              [
+                "🧾 Выбрать резюме",
+                "🔄 Обновить резюме"
+              ],
+              [
+                "🧠 Анализ резюме",
+                "📄 Забрать резюме"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "run",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "5a598dd654558925": {
+      "resolved": [
+        "/direction_pause",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_pause",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Резюме направления «QA Engineer»: 1, все включены",
+          "text": "Резюме направления «QA Engineer»: 1, все включены\n1. QA Engineer · включено\n\nКакое резюме выключить? Нажмите на него.\nИзменение вступит в силу после кнопки «Сохранить».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "QA Engineer"
+              ],
+              [
+                "Добавить резюме",
+                "Выключить резюме…",
+                "Включить резюме…"
+              ],
+              [
+                "Убрать резюме из направления…",
+                "Обновить резюме с hh.ru"
+              ],
+              [
+                "Назад",
+                "Не сохранять"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "variant",
+          "operation": "pause",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                "fetched_at": "<time>",
+                "tags": [],
+                "status": "active"
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {}
+        }
+      },
+      "queue": []
+    },
+    "5d39869610414dcf": {
+      "resolved": [
+        "/refresh_resume",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_refresh",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": false,
+      "replies": [
+        {
+          "first_line": "Готовлю направление для проверки. Дождитесь результата; изменения потребуют сохранения.",
+          "text": "Готовлю направление для проверки. Дождитесь результата; изменения потребуют сохранения.",
+          "markup": null
+        },
+        {
+          "first_line": "Не сохранено: откликаться только резюме «QA Engineer»",
+          "text": "Не сохранено: откликаться только резюме «QA Engineer»\nНаправление «QA Engineer». Сейчас: Всегда первое.\nПосле сохранения все отклики пойдут резюме «QA Engineer». Другие резюме останутся в списке, но использоваться не будут.\n\nНаправление «QA Engineer»\nКаким резюме откликаться: Всегда первое.\n\nИщу по словам: QA Engineer\nДолжности: не указаны\nФормат: любой формат; вахта — нет\nГород и формат — из профиля.\nГорода работы — любые.\nЗарплата: не указана\n\nРезюме:\n• QA Engineer · включено\n\nЗапасное сопроводительное письмо: не задано, отправляется общее короткое письмо.\n\nОписание: не задано\n\nИзменение вступит в силу после кнопки «Сохранить».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✏️ Изменить условия",
+                "🧾 Резюме (1)"
+              ],
+              [
+                "🔀 Каким резюме откликаться",
+                "📊 Статистика резюме"
+              ],
+              [
+                "✅ Сохранить",
+                "Не сохранять"
+              ],
+              [
+                "Все направления"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "run",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "draft",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "status": "active",
+                "tags": []
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {
+            "resume_111": "Synthetic resume 111"
+          }
+        }
+      },
+      "queue": []
+    },
+    "65a64481e13f79ea": {
+      "resolved": [
+        "/menu_repeat",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_menu",
+          [],
+          {
+            "profile_name": "qa-dev",
+            "menu": "repeat"
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "⏰ Расписание · qa-dev, ищу «QA Engineer»",
+          "text": "⏰ Расписание · qa-dev, ищу «QA Engineer»\nПовторные запуски: 3 раза в день, раз в день или раз в неделю.",
+          "markup": {
+            "keyboard": [
+              [
+                "🔁 3 раза/день",
+                "📅 1 раз/день"
+              ],
+              [
+                "🗓 1 раз/нед",
+                "🛑 Повтор: выкл"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "repeat",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "65ceab054fe0e632": {
+      "resolved": [
+        "/direction_stats",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_stats",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "📊 «QA Engineer»: данных пока нет.",
+          "text": "📊 «QA Engineer»: данных пока нет.\nНажмите «Обновить с hh.ru»: бот загрузит ваши отклики. Это займёт пару минут, работодателям ничего не отправится.\nДальше данные обновляются сами после каждого поиска.",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "🔄 Обновить с hh.ru"
+              ],
+              [
+                "Назад к направлениям"
+              ],
+              [
+                "✓ Только «QA Engineer»"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "switch",
+          "choices": []
+        }
+      },
+      "queue": []
+    },
+    "66d160234f821175": {
+      "resolved": [
+        "/direction_new",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_new",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "🔒 Tester не может создавать или переключать направление.",
+          "text": "🔒 Tester не может создавать или переключать направление.",
+          "markup": null
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "6c260e282612ec3c": {
+      "resolved": [
+        "/review",
+        ""
+      ],
+      "handlers": [
+        [
+          "_show_review_queue",
+          [],
+          {
+            "profile_name": "qa-dev"
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "📋 Вакансий на проверку пока нет · QA Engineer. Подходящие вакансии появятся здесь, если выбран режим просмотра или подтверждения.",
+          "text": "📋 Вакансий на проверку пока нет · QA Engineer. Подходящие вакансии появятся здесь, если выбран режим просмотра или подтверждения.",
+          "markup": {
+            "keyboard": [
+              [
+                "📋 Вакансии на проверку",
+                "📨 Отклики на hh.ru"
+              ],
+              [
+                "📝 Анкеты",
+                "🤖 Ответ ИИ в чат"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "review",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "732d9a525613fb66": {
+      "resolved": [
+        "/hh_response_count",
+        ""
+      ],
+      "handlers": [],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "📨 Отклики на hh.ru — QA Engineer",
+          "text": "📨 Отклики на hh.ru — QA Engineer\n\n• Активные: ещё не загружены\n• Архив: ещё не загружены\n\nОтклики до появления направлений: активные — нет данных, архив — нет данных.\n\nВесь аккаунт hh.ru: всего 0, удалённые — 0.\nУдалённые по направлениям не разделены.\n\nобновлено 0 мин назад\nОбновить: /hh_responses refresh",
+          "markup": {
+            "keyboard": [
+              [
+                "📋 Вакансии на проверку",
+                "📨 Отклики на hh.ru"
+              ],
+              [
+                "📝 Анкеты",
+                "🤖 Ответ ИИ в чат"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "review",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "758e9de725c02e51": {
+      "resolved": [
+        "/direction_add",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_add",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Загружаю список ваших резюме с hh.ru…",
+          "text": "Загружаю список ваших резюме с hh.ru…",
+          "markup": null
+        },
+        {
+          "first_line": "Не удалось прочитать резюме: Synthetic session absent Откройте «🔐 hh.ru и резюме» → «Вход в hh.ru», затем повторите.",
+          "text": "Не удалось прочитать резюме: Synthetic session absent Откройте «🔐 hh.ru и резюме» → «Вход в hh.ru», затем повторите.",
+          "markup": null
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "working",
+          "add": true,
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                "fetched_at": "<time>",
+                "tags": [],
+                "status": "active"
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {}
+        }
+      },
+      "queue": []
+    },
+    "7762e0bb60760955": {
+      "resolved": [
+        "/grabresume",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_refresh",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": false,
+      "replies": [
+        {
+          "first_line": "Готовлю направление для проверки. Дождитесь результата; изменения потребуют сохранения.",
+          "text": "Готовлю направление для проверки. Дождитесь результата; изменения потребуют сохранения.",
+          "markup": null
+        },
+        {
+          "first_line": "Не сохранено: откликаться только резюме «QA Engineer»",
+          "text": "Не сохранено: откликаться только резюме «QA Engineer»\nНаправление «QA Engineer». Сейчас: Всегда первое.\nПосле сохранения все отклики пойдут резюме «QA Engineer». Другие резюме останутся в списке, но использоваться не будут.\n\nНаправление «QA Engineer»\nКаким резюме откликаться: Всегда первое.\n\nИщу по словам: QA Engineer\nДолжности: не указаны\nФормат: любой формат; вахта — нет\nГород и формат — из профиля.\nГорода работы — любые.\nЗарплата: не указана\n\nРезюме:\n• QA Engineer · включено\n\nЗапасное сопроводительное письмо: не задано, отправляется общее короткое письмо.\n\nОписание: не задано\n\nИзменение вступит в силу после кнопки «Сохранить».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✏️ Изменить условия",
+                "🧾 Резюме (1)"
+              ],
+              [
+                "🔀 Каким резюме откликаться",
+                "📊 Статистика резюме"
+              ],
+              [
+                "✅ Сохранить",
+                "Не сохранять"
+              ],
+              [
+                "Все направления"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "run",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "draft",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "status": "active",
+                "tags": []
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {
+            "resume_111": "Synthetic resume 111"
+          }
+        }
+      },
+      "queue": []
+    },
+    "7cac46658f20d64f": {
+      "resolved": [
+        "/busy",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_busy_status",
+          [],
+          {
+            "profile_name": "qa-dev"
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "✅ Для профиля qa-dev, ищу «QA Engineer» сейчас нет активной команды.",
+          "text": "✅ Для профиля qa-dev, ищу «QA Engineer» сейчас нет активной команды.\nВ очереди: 0",
+          "markup": {
+            "keyboard": [
+              [
+                "🔎 Найти вакансии",
+                "🧪 Пробный поиск (без откликов)"
+              ],
+              [
+                "📋 Отклики",
+                "🎯 Направления"
+              ],
+              [
+                "🔐 hh.ru и резюме",
+                "🧠 Обо мне"
+              ],
+              [
+                "📊 Состояние"
+              ],
+              [
+                "🚀 С чего начать",
+                "❓ Помощь"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "7f6c617651ec0561": {
+      "resolved": [
+        "/schedule",
+        ""
+      ],
+      "handlers": [],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "⏰ Расписание профиля qa-dev, ищу «QA Engineer»",
+          "text": "⏰ Расписание профиля qa-dev, ищу «QA Engineer»\n\n• Повтор поиска: 3 раза в день\n• Приглашения от работодателей: каждые 1 ч\n• Демон: ⚪️ остановлен\n\n💡 Разовый запуск: кнопка «Поиск».\n💡 Повтор: кнопки 3/день, 1/день, 1/нед или «выкл».",
+          "markup": {
+            "keyboard": [
+              [
+                "🔁 3 раза/день",
+                "📅 1 раз/день"
+              ],
+              [
+                "🗓 1 раз/нед",
+                "🛑 Повтор: выкл"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "repeat",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "88978b20692c8130": {
+      "resolved": [
+        "/dryrun",
+        ""
+      ],
+      "handlers": [
+        [
+          "_start_cli_command",
+          [
+            "qa-dev",
+            "--dry-run",
+            "dry-run",
+            3600
+          ],
+          {}
+        ]
+      ],
+      "return": false,
+      "replies": [
+        {
+          "first_line": "⏳ Пробный поиск (без откликов)",
+          "text": "⏳ Пробный поиск (без откликов)\n\n📁 Профиль: qa-dev, ищу «QA Engineer»\n🕓 Прошло: 0 сек\n\nКоманда выполняется.\nКонфликтующие команды этого профиля временно заблокированы.",
+          "markup": {
+            "keyboard": [
+              [
+                "🔎 Найти вакансии",
+                "🧪 Пробный поиск (без откликов)"
+              ],
+              [
+                "📋 Отклики",
+                "🎯 Направления"
+              ],
+              [
+                "🔐 hh.ru и резюме",
+                "🧠 Обо мне"
+              ],
+              [
+                "📊 Состояние"
+              ],
+              [
+                "🚀 С чего начать",
+                "❓ Помощь"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        },
+        {
+          "first_line": "ℹ️ Пробный поиск (без откликов): команда завершена; исход отклика указан ниже",
+          "text": "ℹ️ Пробный поиск (без откликов): команда завершена; исход отклика указан ниже\n\nℹ️ Команда завершилась без текстового вывода.",
+          "markup": {
+            "keyboard": [
+              [
+                "🔎 Найти вакансии",
+                "🧪 Пробный поиск (без откликов)"
+              ],
+              [
+                "📋 Отклики",
+                "🎯 Направления"
+              ],
+              [
+                "🔐 hh.ru и резюме",
+                "🧠 Обо мне"
+              ],
+              [
+                "📊 Состояние"
+              ],
+              [
+                "🚀 С чего начать",
+                "❓ Помощь"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "main",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "952743e8b0b210f6": {
+      "resolved": [
+        "/stats",
+        ""
+      ],
+      "handlers": [],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "История откликов · QA Engineer",
+          "text": "История откликов · QA Engineer",
+          "markup": {
+            "keyboard": [
+              [
+                "📊 Статус"
+              ],
+              [
+                "❓ Почему не было откликов"
+              ],
+              [
+                "🕓 Поиски",
+                "📈 Статистика"
+              ],
+              [
+                "🔬 Отказы и конверсии",
+                "📬 Приглашения"
+              ],
+              [
+                "📜 Журналы"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        },
+        {
+          "first_line": "✅ Профиль qa-dev, ищу «QA Engineer» · текущий",
+          "text": "✅ Профиль qa-dev, ищу «QA Engineer» · текущий\nQA Engineer\n\nСохранено откликов за всё время: 0\n\n📬 Отклики и исходы:\n• Отправлено: 0\n• Отказы: 0 | Собесы: 0 | Офферы: 0\n• Тестовые: 0 | Приглашения: 0 | В ожидании: 0\n• Анкеты: 0 | успешно 0 | best_guess 0\n• Просмотрено: 0 | Не просмотрено: 0 | Прочий позитив: 0\n\n🗂 Обработка:\n• Всего просмотрено: 0\n• Ручных решений: 0 | Пропущено: 0\n\n🧮 Аналитика:\n• Поисков 0 | событий 0 | решений 0\n\nℹ️ Аналитика этого профиля пока пустая. После поиска или проверки приглашений карточка станет точнее.",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✓ Только «QA Engineer»"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "monitor",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "a3a5e5ad3e522f81": {
+      "resolved": [
+        "/direction_variants",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_variants",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Резюме направления «QA Engineer»: 1, все включены",
+          "text": "Резюме направления «QA Engineer»: 1, все включены\n1. QA Engineer · включено\n\nНажмите на резюме, чтобы откликаться только им.\nИзменение вступит в силу после кнопки «Сохранить».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "Только «QA Engineer»"
+              ],
+              [
+                "Добавить резюме",
+                "Выключить резюме…",
+                "Включить резюме…"
+              ],
+              [
+                "Убрать резюме из направления…",
+                "Обновить резюме с hh.ru"
+              ],
+              [
+                "Назад",
+                "Не сохранять"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "variant",
+          "operation": "select",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                "fetched_at": "<time>",
+                "tags": [],
+                "status": "active"
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {}
+        }
+      },
+      "queue": []
+    },
+    "a6c580a8296b6f5b": {
+      "resolved": [
+        "/direction_suggest",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_suggest",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Готовлю направление для проверки. Дождитесь результата; изменения потребуют сохранения.",
+          "text": "Готовлю направление для проверки. Дождитесь результата; изменения потребуют сохранения.",
+          "markup": null
+        },
+        {
+          "first_line": "Не сохранено: откликаться только резюме «QA Engineer»",
+          "text": "Не сохранено: откликаться только резюме «QA Engineer»\nНаправление «QA Engineer». Сейчас: Всегда первое.\nПосле сохранения все отклики пойдут резюме «QA Engineer». Другие резюме останутся в списке, но использоваться не будут.\n\nНаправление «QA Engineer»\nКаким резюме откликаться: Всегда первое.\n\nИщу по словам: Synthetic QA\nДолжности: не указаны\nФормат: любой формат; вахта — нет\nГород и формат — из профиля.\nГорода работы — любые.\nЗарплата: не указана\n\nРезюме:\n• QA Engineer · включено\n\nЗапасное сопроводительное письмо: не задано, отправляется общее короткое письмо.\n\nОписание: не задано\n\nИзменение вступит в силу после кнопки «Сохранить».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✏️ Изменить условия",
+                "🧾 Резюме (1)"
+              ],
+              [
+                "🔀 Каким резюме откликаться",
+                "📊 Статистика резюме"
+              ],
+              [
+                "✅ Сохранить",
+                "Не сохранять"
+              ],
+              [
+                "Все направления"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "draft",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "Synthetic QA"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                "fetched_at": "<time>",
+                "tags": [],
+                "status": "active"
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {}
+        }
+      },
+      "queue": []
+    },
+    "a7f97b76c9c5bd4b": {
+      "resolved": [
+        "/direction_edit",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_edit",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Что изменить?",
+          "text": "Что изменить?",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "Название"
+              ],
+              [
+                "Описание"
+              ],
+              [
+                "Должности"
+              ],
+              [
+                "Ищу по словам"
+              ],
+              [
+                "Город"
+              ],
+              [
+                "Фильтр формата на hh.ru"
+              ],
+              [
+                "Сочетания города и фильтра hh.ru"
+              ],
+              [
+                "Где и как работать"
+              ],
+              [
+                "Разрешена ли вахта"
+              ],
+              [
+                "Города места работы"
+              ],
+              [
+                "Запасное сопроводительное письмо"
+              ],
+              [
+                "Зарплата"
+              ],
+              [
+                "Подходящие слова"
+              ],
+              [
+                "Исключения"
+              ],
+              [
+                "Назад",
+                "Отмена"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                "fetched_at": "<time>",
+                "tags": [],
+                "status": "active"
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {}
+        }
+      },
+      "queue": []
+    },
+    "afbf8994f6ca01aa": {
+      "resolved": [
+        "/direction_stats_refresh",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_stats_refresh",
+            ""
+          ],
+          {}
+        ],
+        [
+          "_dispatch_direction",
+          [
+            "/direction_stats",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "🔄 Загружаю отклики с hh.ru. Это займёт пару минут, работодателям ничего не отправится…",
+          "text": "🔄 Загружаю отклики с hh.ru. Это займёт пару минут, работодателям ничего не отправится…",
+          "markup": null
+        },
+        {
+          "first_line": "✅ Данные обновлены.",
+          "text": "✅ Данные обновлены.",
+          "markup": null
+        },
+        {
+          "first_line": "📊 «QA Engineer»: данных пока нет.",
+          "text": "📊 «QA Engineer»: данных пока нет.\nНажмите «Обновить с hh.ru»: бот загрузит ваши отклики. Это займёт пару минут, работодателям ничего не отправится.\nДальше данные обновляются сами после каждого поиска.",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "🔄 Обновить с hh.ru"
+              ],
+              [
+                "Назад к направлениям"
+              ],
+              [
+                "✓ Только «QA Engineer»"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {
+        "negotiation_refresh_state.json": {
+          "schema_version": 1,
+          "attempted_at": {
+            "active": "<epoch>",
+            "archived": "<epoch>"
+          }
+        }
+      },
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "switch",
+          "choices": []
+        }
+      },
+      "queue": []
+    },
+    "b0814c17dfa9ae7b": {
+      "resolved": [
+        "/direction_remove",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_remove",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Резюме направления «QA Engineer»: 1, все включены",
+          "text": "Резюме направления «QA Engineer»: 1, все включены\n1. QA Engineer · включено\n\nКакое резюме убрать из направления? Нажмите на него.\nИзменение вступит в силу после кнопки «Сохранить».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "QA Engineer"
+              ],
+              [
+                "Добавить резюме",
+                "Выключить резюме…",
+                "Включить резюме…"
+              ],
+              [
+                "Убрать резюме из направления…",
+                "Обновить резюме с hh.ru"
+              ],
+              [
+                "Назад",
+                "Не сохранять"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "variant",
+          "operation": "remove",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                "fetched_at": "<time>",
+                "tags": [],
+                "status": "active"
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {}
+        }
+      },
+      "queue": []
+    },
+    "bf8f97fa4f34f734": {
+      "resolved": [
+        "/menu_monitor",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_menu",
+          [],
+          {
+            "profile_name": "qa-dev",
+            "menu": "monitor"
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Состояние · профиль qa-dev, ищу «QA Engineer»",
+          "text": "Состояние · профиль qa-dev, ищу «QA Engineer»\n\n• Работает ли бот и когда следующий поиск\n• Сколько откликов и поисков\n• Приглашения от работодателей\n• Почему нет откликов и подробный журнал",
+          "markup": {
+            "keyboard": [
+              [
+                "📊 Статус"
+              ],
+              [
+                "❓ Почему не было откликов"
+              ],
+              [
+                "🕓 Поиски",
+                "📈 Статистика"
+              ],
+              [
+                "🔬 Отказы и конверсии",
+                "📬 Приглашения"
+              ],
+              [
+                "📜 Журналы"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "monitor",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "bfafb9beac4c2042": {
+      "resolved": [
+        "/back",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_menu",
+          [],
+          {
+            "profile_name": "qa-dev",
+            "menu": "main"
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Job Hunter ищет работу на hh.ru и откликается за вас.",
+          "text": "Job Hunter ищет работу на hh.ru и откликается за вас.\nСейчас: профиль qa-dev, ищу «QA Engineer».\n\nКнопки внизу:\n• Найти вакансии — поиск прямо сейчас\n• Пробный поиск (без откликов) — в главном меню\n• Отклики — вакансии на проверку, ваши отклики, анкеты, ответы работодателям\n• Направления — что ищу, резюме, город, зарплата, расписание\n• hh.ru и резюме — вход на hh.ru и ваши резюме\n• Обо мне — что бот знает о вас\n• Состояние — работает ли бот, отклики, приглашения\n• С чего начать — настройка по шагам",
+          "markup": {
+            "keyboard": [
+              [
+                "🔎 Найти вакансии",
+                "🧪 Пробный поиск (без откликов)"
+              ],
+              [
+                "📋 Отклики",
+                "🎯 Направления"
+              ],
+              [
+                "🔐 hh.ru и резюме",
+                "🧠 Обо мне"
+              ],
+              [
+                "📊 Состояние"
+              ],
+              [
+                "🚀 С чего начать",
+                "❓ Помощь"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "main",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "cdd742f1d866b98c": {
+      "resolved": [
+        "/raw_log",
+        ""
+      ],
+      "handlers": [],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "🔒 Сырой лог недоступен. /log — сводка доступного направления.",
+          "text": "🔒 Сырой лог недоступен. /log — сводка доступного направления.",
+          "markup": null
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "logs",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "ce729ff698b6a8b0": {
+      "resolved": [
+        "/forms",
+        ""
+      ],
+      "handlers": [
+        [
+          "_list_forms",
+          [
+            "qa-dev"
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "📝 Анкеты",
+          "text": "📝 Анкеты",
+          "markup": {
+            "keyboard": [
+              [
+                "📋 Вакансии на проверку",
+                "📨 Отклики на hh.ru"
+              ],
+              [
+                "📝 Анкеты",
+                "🤖 Ответ ИИ в чат"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        },
+        {
+          "first_line": "📝 Анкеты · QA Engineer",
+          "text": "📝 Анкеты · QA Engineer\n\nЧерновиков с доступными полями пока нет.",
+          "markup": {
+            "inline_keyboard": []
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "review",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "d4161a71862e1984": {
+      "resolved": [
+        "/direction_cancel",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_cancel",
+            ""
+          ],
+          {}
+        ],
+        [
+          "_dispatch_direction",
+          [
+            "/direction_summary",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Изменения не сохранены. Настройки направления не менялись.",
+          "text": "Изменения не сохранены. Настройки направления не менялись.",
+          "markup": {
+            "keyboard": [
+              [
+                "🧭 Направления",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true
+          }
+        },
+        {
+          "first_line": "Направление «QA Engineer»",
+          "text": "Направление «QA Engineer»\nКаким резюме откликаться: Всегда первое.\n\nИщу по словам: QA Engineer\nДолжности: не указаны\nФормат: любой формат; вахта — нет\nГород и формат — из профиля.\nГорода работы — любые.\nЗарплата: не указана\n\nРезюме:\n• QA Engineer · включено\n\nЗапасное сопроводительное письмо: не задано, отправляется общее короткое письмо.\n\nОписание: не задано",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✏️ Изменить условия",
+                "🧾 Резюме (1)"
+              ],
+              [
+                "🔀 Каким резюме откликаться",
+                "📊 Статистика резюме"
+              ],
+              [
+                "Все направления"
+              ],
+              [
+                "Удалить направление…"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "draft",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                "fetched_at": "<time>",
+                "tags": [],
+                "status": "active"
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {},
+          "summary": true
+        }
+      },
+      "queue": []
+    },
+    "d4fdf3aa3cbea459": {
+      "resolved": [
+        "/hunter_chat_log",
+        ""
+      ],
+      "handlers": [],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "История откликов · QA Engineer",
+          "text": "История откликов · QA Engineer",
+          "markup": {
+            "keyboard": [
+              [
+                "📊 Последний запуск",
+                "🧾 Подробный"
+              ],
+              [
+                "💬 Лог чатов"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        },
+        {
+          "first_line": "💬 Лог чатов · QA Engineer",
+          "text": "💬 Лог чатов · QA Engineer\nЗаписей пока нет. Старые записи без сведений о направлении доступны отдельно.",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✓ Только «QA Engineer»"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "logs",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "de04dd3d14ec40f9": {
+      "resolved": [
+        "/directions",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/directions",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "🧭 Направления — выберите кнопкой ниже.",
+          "text": "🧭 Направления — выберите кнопкой ниже.",
+          "markup": {
+            "keyboard": [
+              [
+                "🧭 Направления",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true
+          }
+        },
+        {
+          "first_line": "Ваши направления · профиль qa-dev",
+          "text": "Ваши направления · профиль qa-dev\nСейчас бот ищет по направлению «QA Engineer».\nНажмите на него, чтобы открыть настройки, или на другое, чтобы переключиться.",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✓ QA Engineer (сейчас)"
+              ],
+              [
+                "📊 Статистика резюме"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "search_settings",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "switch",
+          "choices": [
+            {
+              "name": "qa",
+              "title": "QA Engineer",
+              "filter_policy": "generic",
+              "search_queries": [
+                "QA Engineer"
+              ],
+              "relevant_keywords": [],
+              "exclude_keywords": [],
+              "selection_strategy": "single",
+              "variants": [
+                {
+                  "hh_resume_hash": "resume_111",
+                  "hh_resume_numeric_id": 111,
+                  "title": "QA Engineer",
+                  "text_file": "<profile>/directions/qa/08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1.md",
+                  "text_sha256": "08077b67b9422905c0e417e8bc2d62ea7f04c2efad9403348ee5606f747fa7f1",
+                  "fetched_at": "<time>",
+                  "tags": [],
+                  "status": "active"
+                }
+              ],
+              "work_conditions": {
+                "allowed_formats": [
+                  "remote",
+                  "hybrid",
+                  "on_site",
+                  "field"
+                ],
+                "allow_fly_in_fly_out": false,
+                "allowed_cities": []
+              }
+            }
+          ]
+        }
+      },
+      "queue": []
+    },
+    "de7d0bacd884ce89": {
+      "resolved": [
+        "/menu_logs",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_menu",
+          [],
+          {
+            "profile_name": "qa-dev",
+            "menu": "logs"
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "📜 Журналы · qa-dev, ищу «QA Engineer»",
+          "text": "📜 Журналы · qa-dev, ищу «QA Engineer»\nСводка последнего запуска, подробный журнал и лог чатов.",
+          "markup": {
+            "keyboard": [
+              [
+                "📊 Последний запуск",
+                "🧾 Подробный"
+              ],
+              [
+                "💬 Лог чатов"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "logs",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "e1a9a83a71e03fae": {
+      "resolved": [
+        "/candidate_profile",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_menu",
+          [],
+          {
+            "profile_name": "qa-dev",
+            "menu": "candidate_profile"
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Что бот знает о вас · профиль qa-dev, ищу «QA Engineer»",
+          "text": "Что бот знает о вас · профиль qa-dev, ищу «QA Engineer»\n\n• То, что вы подтвердили, важнее догадок ИИ\nБот задаёт вопросы по вашему резюме и запоминает ответы.\n• Новый факт сохраняется, только если вы подтвердите",
+          "markup": {
+            "keyboard": [
+              [
+                "📋 Мои факты",
+                "✨ Уточнить профиль"
+              ],
+              [
+                "➕ Добавить факт",
+                "📥 Загрузить базу фактов"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "candidate_profile",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "e6353d4e2bcf608e": {
+      "resolved": [
+        "/direction_refresh",
+        ""
+      ],
+      "handlers": [
+        [
+          "_dispatch_direction",
+          [
+            "/direction_refresh",
+            ""
+          ],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "Готовлю направление для проверки. Дождитесь результата; изменения потребуют сохранения.",
+          "text": "Готовлю направление для проверки. Дождитесь результата; изменения потребуют сохранения.",
+          "markup": null
+        },
+        {
+          "first_line": "Не сохранено: откликаться только резюме «QA Engineer»",
+          "text": "Не сохранено: откликаться только резюме «QA Engineer»\nНаправление «QA Engineer». Сейчас: Всегда первое.\nПосле сохранения все отклики пойдут резюме «QA Engineer». Другие резюме останутся в списке, но использоваться не будут.\n\nНаправление «QA Engineer»\nКаким резюме откликаться: Всегда первое.\n\nИщу по словам: QA Engineer\nДолжности: не указаны\nФормат: любой формат; вахта — нет\nГород и формат — из профиля.\nГорода работы — любые.\nЗарплата: не указана\n\nРезюме:\n• QA Engineer · включено\n\nЗапасное сопроводительное письмо: не задано, отправляется общее короткое письмо.\n\nОписание: не задано\n\nИзменение вступит в силу после кнопки «Сохранить».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "✏️ Изменить условия",
+                "🧾 Резюме (1)"
+              ],
+              [
+                "🔀 Каким резюме откликаться",
+                "📊 Статистика резюме"
+              ],
+              [
+                "✅ Сохранить",
+                "Не сохранять"
+              ],
+              [
+                "Все направления"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {
+        "42": {
+          "profile_name": "qa-dev",
+          "home_dir": "<profile>",
+          "base": "<fingerprint>",
+          "token": "0123456789ab",
+          "mode": "draft",
+          "draft": {
+            "name": "qa",
+            "title": "QA Engineer",
+            "filter_policy": "generic",
+            "search_queries": [
+              "QA Engineer"
+            ],
+            "relevant_keywords": [],
+            "exclude_keywords": [],
+            "selection_strategy": "single",
+            "variants": [
+              {
+                "hh_resume_hash": "resume_111",
+                "hh_resume_numeric_id": 111,
+                "title": "QA Engineer",
+                "status": "active",
+                "tags": []
+              }
+            ],
+            "work_conditions": {
+              "allowed_formats": [
+                "remote",
+                "hybrid",
+                "on_site",
+                "field"
+              ],
+              "allow_fly_in_fly_out": false,
+              "allowed_cities": []
+            }
+          },
+          "texts": {
+            "resume_111": "Synthetic resume 111"
+          }
+        }
+      },
+      "queue": []
+    },
+    "e861723421d2593b": {
+      "resolved": [
+        "/getting_started",
+        ""
+      ],
+      "handlers": [
+        [
+          "_send_getting_started",
+          [],
+          {}
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "🚀 С чего начать — пошаговая настройка.",
+          "text": "🚀 С чего начать — пошаговая настройка.",
+          "markup": {
+            "keyboard": [
+              [
+                "🔎 Найти вакансии",
+                "🧪 Пробный поиск (без откликов)"
+              ],
+              [
+                "📋 Отклики",
+                "🎯 Направления"
+              ],
+              [
+                "🔐 hh.ru и резюме",
+                "🧠 Обо мне"
+              ],
+              [
+                "📊 Состояние"
+              ],
+              [
+                "🚀 С чего начать",
+                "❓ Помощь"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        },
+        {
+          "first_line": "🚀 С чего начать",
+          "text": "🚀 С чего начать\n\nБот ищет вакансии на hh.ru и откликается вашими резюме. Пройдите шаги по порядку:\n\n⬜️ 1. Войти в hh.ru — Synthetic session absent\n⬜️ 2. Резюме на hh.ru — создайте их на сайте hh.ru (по одному на каждую профессию, которую ищете), затем нажмите «Проверить резюме».\n✅ 3. Направления: QA Engineer\n✅ 4. Отклики по направлению «QA Engineer»: автоматически — бот откликается сам по подходящим вакансиям\n⬜️ 5. Первый поиск — когда шаги 1–4 готовы.\n\nНажмите кнопку под нужным шагом. Вернуться к списку — «🚀 С чего начать».",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "🔐 Войти в hh.ru"
+              ],
+              [
+                "🧭 Направления"
+              ],
+              [
+                "✋ Спрашивать меня перед откликом",
+                "✓ 🤖 Откликаться автоматически"
+              ],
+              [
+                "🔄 Проверить шаги заново"
+              ]
+            ]
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "main",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "e8d647d4581e6fda": {
+      "resolved": [
+        "/check",
+        ""
+      ],
+      "handlers": [
+        [
+          "_start_cli_command",
+          [
+            "qa-dev",
+            "--check",
+            "check invitations",
+            1800
+          ],
+          {}
+        ]
+      ],
+      "return": false,
+      "replies": [
+        {
+          "first_line": "⏳ Проверка инвайтов",
+          "text": "⏳ Проверка инвайтов\n\n📁 Профиль: qa-dev, ищу «QA Engineer»\n🕓 Прошло: 0 сек\n\nКоманда выполняется.\nКонфликтующие команды этого профиля временно заблокированы.",
+          "markup": {
+            "keyboard": [
+              [
+                "📊 Статус"
+              ],
+              [
+                "❓ Почему не было откликов"
+              ],
+              [
+                "🕓 Поиски",
+                "📈 Статистика"
+              ],
+              [
+                "🔬 Отказы и конверсии",
+                "📬 Приглашения"
+              ],
+              [
+                "📜 Журналы"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        },
+        {
+          "first_line": "✅ Проверка инвайтов завершён",
+          "text": "✅ Проверка инвайтов завершён\n\nℹ️ Команда завершилась без текстового вывода.",
+          "markup": {
+            "keyboard": [
+              [
+                "📊 Статус"
+              ],
+              [
+                "❓ Почему не было откликов"
+              ],
+              [
+                "🕓 Поиски",
+                "📈 Статистика"
+              ],
+              [
+                "🔬 Отказы и конверсии",
+                "📬 Приглашения"
+              ],
+              [
+                "📜 Журналы"
+              ],
+              [
+                "◀ Назад",
+                "🏠 Главное"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {
+        "user_state": {
+          "42": {
+            "menu": "monitor",
+            "updated_at": "<time>"
+          }
+        }
+      },
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
+    },
+    "ebadcfa58759c16d": {
+      "resolved": [
+        "/cancel_active",
+        ""
+      ],
+      "handlers": [
+        [
+          "_cancel_active_command",
+          [],
+          {
+            "profile_name": "qa-dev"
+          }
+        ]
+      ],
+      "return": null,
+      "replies": [
+        {
+          "first_line": "✅ Для профиля qa-dev, ищу «QA Engineer» сейчас нет активной команды.",
+          "text": "✅ Для профиля qa-dev, ищу «QA Engineer» сейчас нет активной команды.",
+          "markup": {
+            "keyboard": [
+              [
+                "🔎 Найти вакансии",
+                "🧪 Пробный поиск (без откликов)"
+              ],
+              [
+                "📋 Отклики",
+                "🎯 Направления"
+              ],
+              [
+                "🔐 hh.ru и резюме",
+                "🧠 Обо мне"
+              ],
+              [
+                "📊 Состояние"
+              ],
+              [
+                "🚀 С чего начать",
+                "❓ Помощь"
+              ]
+            ],
+            "resize_keyboard": true,
+            "is_persistent": true
+          }
+        }
+      ],
+      "documents": [],
+      "state": {},
+      "settings_writes": [],
+      "profile_writes": {},
+      "direction_sessions": {},
+      "queue": []
     }
   },
-  "recorded_from": "99fa528 (untouched telegram_bot._dispatch)"
+  "recorded_from": "99fa528 (untouched telegram_bot._dispatch)",
+  "prepared_tester_recorded_from": "99fa528 (untouched telegram_bot._dispatch; bound qa direction active)"
 }

@@ -1,4 +1,4 @@
-"""Frozen dispatch outcomes, recorded before split-22a on synthetic profiles.
+"""Frozen pre-split dispatch outcomes on synthetic profiles.
 
 The inventory includes slash aliases, legacy/guest keyboard labels (including
 labels unavailable to a role), and generated profile buttons. Real dispatch and
@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import re
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -35,6 +36,7 @@ INVENTORY = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
 RECORDED_CHECKOUT = "/mnt/work/jh-stab"
 CURRENT_CHECKOUT = str(Path(telegram_bot.__file__).resolve().parent)
 ROLES = ("admin", "user", "tester")
+BOUND_TESTER_SCENARIOS = {"bound_command", "bound_button"}
 HANDLERS = (
     "_send_menu", "_send_getting_started", "_send_busy_status", "_cancel_active_command",
     "_dispatch_direction", "_show_review_queue", "_finish_facts_upload",
@@ -54,6 +56,11 @@ def cases():
             yield role, "button", label, ""
         for scenario, command, arg in INVENTORY["branches"]:
             yield role, scenario, command, arg
+    # Keep the original unprepared-tester rejections as separate coverage.
+    for command in INVENTORY["commands"]:
+        yield "tester", "bound_command", command, ""
+    for label in INVENTORY["labels"]:
+        yield "tester", "bound_button", label, ""
 
 
 def case_key(role, scenario, text, arg):
@@ -152,10 +159,29 @@ def test_dispatch_outcome(dispatch_bot, monkeypatch, role, scenario, text, arg):
     principal = {"user_id": 42, "role": role, "profile": "qa-dev", "direction": "qa"}
     monkeypatch.setattr(telegram_access, "resolve_user", lambda uid: principal)
     command = text
-    if scenario == "button":
+    is_button = scenario in {"button", "bound_button"}
+    if is_button:
         command, arg = ui._resolve_message_command(text, role)
-    if scenario in {"active_direction", "active_busy"}:
+    if scenario in {"active_direction", "active_busy"} | BOUND_TESTER_SCENARIOS:
         directions.set_active_direction(profile.home_dir, "qa")
+    if scenario in BOUND_TESTER_SCENARIOS:
+        # Exercise the actual tester admission checks before recording outcomes.
+        # A bad fixture must fail here rather than freeze another refusal matrix.
+        with telegram_bot.profile_access.principal_scope(principal):
+            assert profiles.load_profile("qa-dev").direction_name == "qa"
+        # Only external HH/AI boundaries are replaced; routing and access guards
+        # remain real. These paths were unreachable in the unprepared matrix.
+        monkeypatch.setattr(bot, "_direction_download", AsyncMock(return_value=[{
+            "hh_resume_hash": "resume_111", "hh_resume_numeric_id": 111,
+            "title": "QA Engineer", "raw": "Synthetic resume 111",
+        }]))
+        monkeypatch.setattr(telegram_bot.search_query_suggester, "suggest_direction",
+                            AsyncMock(return_value={"search_queries": ["Synthetic QA"]}))
+        from hh import negotiation_snapshot
+        monkeypatch.setattr(negotiation_snapshot, "collect", lambda **kw: {
+            "filter": "archived" if kw.get("archived") else "active",
+            "complete": True, "pages_read": 0, "stop_reason": None,
+        })
     if scenario == "pending_direction":
         bot._direction_sessions()[42] = {"profile_name": "qa-dev"}
     if scenario == "impersonating":
@@ -227,6 +253,9 @@ def test_dispatch_outcome(dispatch_bot, monkeypatch, role, scenario, text, arg):
                         "settings_writes": writes, "profile_writes": profile_writes,
                         "direction_sessions": bot._direction_sessions(), "queue": queue}, profile.home_dir)
     # Outcomes shared by slash commands and buttons are stored only once.
-    key = case_key(role, scenario, text, arg if scenario != "button" else "")
+    if scenario in BOUND_TESTER_SCENARIOS:
+        assert all(reply["first_line"] != "🔒 Профиль tester или привязанное направление не подготовлены."
+                   for reply in actual["replies"])
+    key = case_key(role, scenario, text, "" if is_button else arg)
     expected = normalize(INVENTORY["outcomes"][INVENTORY["cases"][key]], profile.home_dir)
     assert actual == expected
