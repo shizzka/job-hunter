@@ -2102,6 +2102,12 @@ def format_command_result(label: str, result: dict, *, role: str = ROLE_ADMIN) -
     return "\n".join(lines)
 
 
+def _is_menu_button_text(text: str) -> bool:
+    # Profile buttons are generated per profile («📁 Профиль: qa») and are menu buttons too.
+    return (text in ADMIN_BUTTON_MAP or text in USER_BUTTON_MAP or text in LEGACY_BUTTON_MAP
+            or str(text or "").startswith(BUTTON_PROFILE_PREFIX))
+
+
 def _resolve_message_command(text: str, role: str) -> tuple[str, str]:
     raw = (text or "").strip()
     if not raw:
