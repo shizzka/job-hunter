@@ -1518,92 +1518,7 @@ def _summary_status_is_viewed(bucket: str, detail_bucket: str) -> bool:
     return bucket in {"positive", "rejected"} or detail_bucket == "pending_viewed"
 
 
-def _summarize(
-    days: int | None = None,
-    *,
-    events_file: str | None = None,
-    all_time: bool = False,
-    start_at: datetime | None = None,
-    end_at: datetime | None = None,
-    scope="active",
-    _events=None,
-    _view=None,
-) -> dict:
-    days = days if days is not None else config.ANALYTICS_RECENT_DAYS
-    cutoff = start_at if start_at is not None else (
-        None if all_time else (_now() - timedelta(days=max(0, days)))
-    )
-    events = []
-    view = _view or direction_history.for_events(events_file, scope)
-    for event in (_events if _events is not None else history_events(events_file, scope=scope)):
-        created_at = _parse_dt(event.get("created_at"))
-        if created_at is None:
-            continue
-        if cutoff is not None and created_at < cutoff:
-            continue
-        if end_at is not None and created_at >= end_at:
-            continue
-        events.append(event)
-
-    # A late owned receipt may promote a decision already recorded by this
-    # run. Preserve the journal, but report only its sticky uncertainty for
-    # that vacancy/run rather than counting an obsolete failed/sent decision.
-    def decision_key(event):
-        return (event.get("run_id"), _vacancy_key(event))
-
-    uncertain_decisions = {
-        decision_key(event): index for index, event in enumerate(events)
-        if event.get("event") == "decision" and event.get("decision") == "apply_uncertain"
-        and event.get("run_id") and event.get("vacancy_id")
-    }
-    events = [event for index, event in enumerate(events)
-              if event.get("event") != "decision" or decision_key(event) not in uncertain_decisions
-              or uncertain_decisions[decision_key(event)] == index]
-
-    summary = {
-        "days": days,
-        "direction_title": view.title,
-        "all_time": all_time,
-        "events": len(events),
-        "search_runs": 0,
-        "decisions": 0,
-        "auto_applied": 0,
-        "uncertain": 0,
-        "dry_run_matched": 0,
-        "manual": 0,
-        "keyword_filtered": 0,
-        "red_flagged": 0,
-        "low_score": 0,
-        "deferred_unscored": 0,
-        "invitations": 0,
-        "questionnaires": 0,
-        "questionnaire_successes": 0,
-        "questionnaire_failures": 0,
-        "questionnaire_questions": 0,
-        "questionnaire_best_guess": 0,
-        "questionnaire_required": 0,
-        "positive_statuses": 0,
-        "rejected_statuses": 0,
-        "pending_statuses": 0,
-        "interview_statuses": 0,
-        "offer_statuses": 0,
-        "test_task_statuses": 0,
-        "positive_other_statuses": 0,
-        "pending_new_statuses": 0,
-        "pending_viewed_statuses": 0,
-        "by_source": {},
-        "by_query": {},
-        "by_resume_variant": {},
-        "by_cluster": {},
-        "by_cover_style": {},
-        "by_retry_reason": {},
-        "top_decisions": [],
-        "reason_breakdown": {},
-        "reason_groups": {},
-        "search_funnel": {},
-        "by_direction": {},
-    }
-
+def _summarize_events(summary, events, view):
     decision_counter = Counter()
     latest_apply_by_vacancy = {}
     latest_status_by_vacancy = {}
@@ -1725,6 +1640,98 @@ def _summarize(
 
         elif event_type == "negotiation_status":
             latest_status_by_vacancy[_vacancy_key(event)] = event
+
+    return decision_counter, latest_apply_by_vacancy, latest_status_by_vacancy
+
+
+def _summarize(
+    days: int | None = None,
+    *,
+    events_file: str | None = None,
+    all_time: bool = False,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    scope="active",
+    _events=None,
+    _view=None,
+) -> dict:
+    days = days if days is not None else config.ANALYTICS_RECENT_DAYS
+    cutoff = start_at if start_at is not None else (
+        None if all_time else (_now() - timedelta(days=max(0, days)))
+    )
+    events = []
+    view = _view or direction_history.for_events(events_file, scope)
+    for event in (_events if _events is not None else history_events(events_file, scope=scope)):
+        created_at = _parse_dt(event.get("created_at"))
+        if created_at is None:
+            continue
+        if cutoff is not None and created_at < cutoff:
+            continue
+        if end_at is not None and created_at >= end_at:
+            continue
+        events.append(event)
+
+    # A late owned receipt may promote a decision already recorded by this
+    # run. Preserve the journal, but report only its sticky uncertainty for
+    # that vacancy/run rather than counting an obsolete failed/sent decision.
+    def decision_key(event):
+        return (event.get("run_id"), _vacancy_key(event))
+
+    uncertain_decisions = {
+        decision_key(event): index for index, event in enumerate(events)
+        if event.get("event") == "decision" and event.get("decision") == "apply_uncertain"
+        and event.get("run_id") and event.get("vacancy_id")
+    }
+    events = [event for index, event in enumerate(events)
+              if event.get("event") != "decision" or decision_key(event) not in uncertain_decisions
+              or uncertain_decisions[decision_key(event)] == index]
+
+    summary = {
+        "days": days,
+        "direction_title": view.title,
+        "all_time": all_time,
+        "events": len(events),
+        "search_runs": 0,
+        "decisions": 0,
+        "auto_applied": 0,
+        "uncertain": 0,
+        "dry_run_matched": 0,
+        "manual": 0,
+        "keyword_filtered": 0,
+        "red_flagged": 0,
+        "low_score": 0,
+        "deferred_unscored": 0,
+        "invitations": 0,
+        "questionnaires": 0,
+        "questionnaire_successes": 0,
+        "questionnaire_failures": 0,
+        "questionnaire_questions": 0,
+        "questionnaire_best_guess": 0,
+        "questionnaire_required": 0,
+        "positive_statuses": 0,
+        "rejected_statuses": 0,
+        "pending_statuses": 0,
+        "interview_statuses": 0,
+        "offer_statuses": 0,
+        "test_task_statuses": 0,
+        "positive_other_statuses": 0,
+        "pending_new_statuses": 0,
+        "pending_viewed_statuses": 0,
+        "by_source": {},
+        "by_query": {},
+        "by_resume_variant": {},
+        "by_cluster": {},
+        "by_cover_style": {},
+        "by_retry_reason": {},
+        "top_decisions": [],
+        "reason_breakdown": {},
+        "reason_groups": {},
+        "search_funnel": {},
+        "by_direction": {},
+    }
+
+    decision_counter, latest_apply_by_vacancy, latest_status_by_vacancy = _summarize_events(
+        summary, events, view)
 
     for vacancy_key, status_event in latest_status_by_vacancy.items():
         bucket = status_event.get("status_bucket", "unknown")
