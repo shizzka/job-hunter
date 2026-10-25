@@ -827,211 +827,249 @@ class TelegramDirections:
                 await self._send_text(chat_id, "Профиль или направление изменились. Устаревшие изменения не сохранены.")
                 return
         if command in {"/directions", "/direction_switch"}:
-            choices = directions.list_directions(profile.home_dir)
-            state = self._direction_bind(principal, mode="switch", choices=choices)
-            rows = [[(("✓ " if active and item["name"] == active["name"] else "") + item["title"] + (" (сейчас)" if active and item["name"] == active["name"] else ""), f"choose:{i}")]
-                    for i, item in enumerate(choices)]
-            if not profile_access.current_scope()[1]:
-                rows += [[("➕ Новое направление", "new")]]
-            rows += [[("📊 Статистика резюме", "stats")]]
-            await self._send_text(chat_id, "🧭 Направления — выберите кнопкой ниже.",
-                                  reply_markup=self._direction_markup())
-            await self._send_text(chat_id, (f"Ваши направления · профиль {profile_name}\n" +
-                                  (f"Сейчас бот ищет по направлению «{active['title']}»." if active else "Направление для поиска пока не выбрано.") +
-                                  "\nНажмите на него, чтобы открыть настройки, или на другое, чтобы переключиться."),
-                                  reply_markup=self._direction_inline(state, rows))
+            return await self._direction_command_list(chat_id, principal, profile_name, profile, active, state)
         elif command == "/direction_summary":
-            if not active:
-                await self._dispatch_direction(chat_id, principal, "/directions", "")
-                return
-            state = self._direction_bind(principal, mode="draft", draft=copy.deepcopy(active), texts={}, summary=True)
-            await self._direction_show_draft(chat_id, principal, state)
+            return await self._direction_command_summary(chat_id, principal, active, state)
         elif command == "/direction_cancel":
-            self._direction_sessions().pop(principal["user_id"], None)
-            await self._send_text(chat_id, "Изменения не сохранены. Настройки направления не менялись.", reply_markup=self._direction_markup())
-            if active:
-                await self._dispatch_direction(chat_id, principal, "/direction_summary", "")
+            return await self._direction_command_cancel(chat_id, principal, active)
         elif command in {"/direction_save", "/search_use_draft"}:
-            if self._has_active_command(profile_name):
-                await self._send_busy_status(chat_id, principal, profile_name=profile_name)
-                return False
-            if not state or state.get("mode") != "draft":
-                await self._send_text(chat_id, "Нет несохранённых изменений. Откройте «Направления».")
-                return False
-            committed = False
-            try:
-                if state.get("activate"):
-                    # Reject a target edited since the switch prompt as well.
-                    if directions.load_direction(profile.home_dir, state["draft"]["name"]) != state["draft"]:
-                        raise ValueError("Выбранное направление изменилось; выберите его заново.")
-                    directions.set_active_direction(profile.home_dir, state["draft"]["name"])
-                else:
-                    saved = directions.save_direction(profile.home_dir, state["draft"], texts=state.get("texts") or {})
-                    if not active:
-                        directions.set_active_direction(profile.home_dir, saved["name"])
-                committed = True
-                self._direction_sessions().pop(principal["user_id"], None)
-                note = ""
-                try:
-                    if self._reload_profile_daemon(profile_name):
-                        note = " Повтор перезапущен."
-                except RuntimeError:
-                    note = " Повтор не удалось перезапустить; проверьте статус."
-                await self._send_text(chat_id, "Направление сохранено." + note, reply_markup=self._direction_markup())
-            except (ValueError, OSError) as exc:
-                await self._send_text(chat_id, str(str(exc)), reply_markup=self._direction_markup(draft=True))
-                return False if isinstance(exc, ValueError) and not committed else None
+            return await self._direction_command_save(chat_id, principal, profile_name, profile, active, state)
         elif command in {"/direction_new", "/direction_add"}:
-            return await self._direction_catalog(chat_id, principal, add=command == "/direction_add")
+            return await self._direction_command_catalog(chat_id, principal, command)
         elif command in {"/direction_variants", "/search_resume", "/direction_pause", "/direction_resume", "/direction_remove"}:
-            operation = {"/direction_pause": "pause", "/direction_resume": "resume", "/direction_remove": "remove"}.get(command, "select")
-            await self._direction_prompt_variants(chat_id, principal, operation)
+            return await self._direction_command_variants(chat_id, principal, command)
         elif command.startswith("/search_application_"):
-            await self._request_application_mode(chat_id, principal, command.removeprefix("/search_application_"))
+            return await self._direction_command_application_mode(chat_id, principal, command)
         elif command in {"/direction_single", "/direction_ab"}:
-            if not active:
-                await self._ask_choose_direction(chat_id, principal, "Сначала выберите направление:")
-                return
-            state = self._direction_bind(principal, mode="draft", draft=copy.deepcopy(active), texts={})
-            state["draft"]["selection_strategy"] = "ab" if command == "/direction_ab" else "single"
-            await self._direction_show_draft(chat_id, principal, state)
+            return await self._direction_command_strategy(chat_id, principal, command, active, state)
         elif command in {"/direction_edit", "/search_edit"}:
-            if not state or not state.get("draft") or state.get("activate"):
-                if not active:
-                    await self._send_text(chat_id, "Сначала создайте новое направление: /direction_new.")
-                    return
-                state = self._direction_bind(principal, draft=copy.deepcopy(active), texts={})
-            if not arg.strip() and command == "/direction_edit":
-                await self._direction_edit_menu(chat_id, state)
-                return
-            state["summary"] = False
-            field = arg.strip() or "search_queries"
-            aliases = {"queries": "search_queries", "filter": "filter_policy", "relevant": "relevant_keywords", "exclude": "exclude_keywords", "salary": "salary_baseline"}
-            field = aliases.get(field, field)
-            if field not in {"title", "search_queries", "relevant_keywords", "exclude_keywords", "filter_policy", "positioning", "goal", "city", "format", "search_profiles", "salary_baseline", "work_formats", "fly_allowed", "work_cities", "cover_letter_fallback"}:
-                await self._send_text(chat_id, "Поля: /direction_edit title|queries|relevant|exclude|filter")
-                return
-            state.update(mode="edit", field=field)
-            if field == "cover_letter_fallback":
-                from fallback_letter import legacy_offer
-                rows = []
-                if state["draft"].get(field):
-                    rows.append([("Убрать письмо", "letterclear")])
-                if not state["draft"].get(field) and legacy_offer(profile.home_dir):
-                    rows.append([("Посмотреть прежнее письмо", "letteroffer")])
-                rows.append([("Назад", "back"), ("Отмена", "cancel")])
-                await self._send_text(chat_id,
-                    f"Запасное сопроводительное письмо · {state['draft']['title']}\n\n" +
-                    (state["draft"].get(field) or "Пока не задано.") +
-                    "\n\nОтправьте новый текст — до 1500 символов. Он используется, если не удалось подготовить письмо для вакансии. "
-                    "Изменения вступят в силу после сохранения направления.",
-                    reply_markup=self._direction_inline(state, rows))
-                return
-            if field == "work_cities":
-                await self._send_text(chat_id,
-                    "В каких городах допустима работа с выездом к работодателю? Укажите полные названия через запятую, например: Санкт-Петербург.\n"
-                    "«Любой» — убрать ограничение. На полностью удалённую работу это ограничение не влияет.",
-                    reply_markup=self._direction_inline(state, [[("Назад", "back"), ("Отмена", "cancel")]]))
-                return
-            if field in {"work_formats", "fly_allowed"}:
-                await self._direction_show_work_conditions(chat_id, state)
-                return
-            if field in {"city", "format", "search_profiles"}:
-                choices = ({"Москва": "moscow", "Санкт-Петербург": "spb", "Россия": "russia"} if field == "city" else
-                           {"Удалённо": "remote", "Офис": "office", "Вахта": "fly", "Любой": "any"})
-                rows = [[(label, "preset:" + value)] for label, value in choices.items()] if field != "search_profiles" else []
-                rows += [[("Добавить СПб · любой", "pair:spb")], [("Добавить РФ · вахта", "pair:fly")], [("Назад", "back"), ("Отмена", "cancel")]]
-                await self._send_text(chat_id, "Выберите значение или отправьте текст. Город: ID HH через запятую. Формат: remote, fullDay, flyInFlyOut.\n"
-                    "Для независимых сочетаний выберите «Сочетания города и фильтра hh.ru»: каждая строка содержит ID города и формат, например:\n2\n113 flyInFlyOut", reply_markup=self._direction_inline(state, rows))
-                return
-            label = {"title": "названия", "search_queries": "запросов", "positioning": "описания", "goal": "должностей",
-                     "salary_baseline": "зарплаты от", "relevant_keywords": "подходящих слов", "exclude_keywords": "исключений", "filter_policy": "фильтра"}[field]
-            await self._send_text(chat_id, f"Отправьте новое значение {label}. Поисковые слова и должности — по одному в строке; ключевые слова — через запятую.\n"
-                                  "Зарплата — сумма в рублях, 0 убирает ориентир. Назад — вернуться к несохранённым изменениям.",
-                                  reply_markup=self._direction_inline(state, [[("Назад", "back"), ("Отмена", "cancel")]]))
+            return await self._direction_command_edit(chat_id, principal, command, arg, profile, active, state)
         elif command in {"/direction_suggest", "/search_suggest", "/direction_refresh"}:
+            return await self._direction_command_suggest(chat_id, principal, command, active, state)
+        elif command == "/direction_stats_refresh":
+            return await self._direction_command_stats_refresh(chat_id, principal, profile_name, profile)
+        elif command in {"/direction_stats", "/direction_csv"}:
+            return await self._direction_command_stats(chat_id, principal, command, arg, profile_name, profile, state)
+
+    async def _direction_command_list(self, chat_id, principal, profile_name, profile, active, state):
+        import directions
+        choices = directions.list_directions(profile.home_dir)
+        state = self._direction_bind(principal, mode="switch", choices=choices)
+        rows = [[(("✓ " if active and item["name"] == active["name"] else "") + item["title"] + (" (сейчас)" if active and item["name"] == active["name"] else ""), f"choose:{i}")]
+                for i, item in enumerate(choices)]
+        if not profile_access.current_scope()[1]:
+            rows += [[("➕ Новое направление", "new")]]
+        rows += [[("📊 Статистика резюме", "stats")]]
+        await self._send_text(chat_id, "🧭 Направления — выберите кнопкой ниже.",
+                              reply_markup=self._direction_markup())
+        await self._send_text(chat_id, (f"Ваши направления · профиль {profile_name}\n" +
+                              (f"Сейчас бот ищет по направлению «{active['title']}»." if active else "Направление для поиска пока не выбрано.") +
+                              "\nНажмите на него, чтобы открыть настройки, или на другое, чтобы переключиться."),
+                              reply_markup=self._direction_inline(state, rows))
+
+    async def _direction_command_summary(self, chat_id, principal, active, state):
+        if not active:
+            await self._dispatch_direction(chat_id, principal, "/directions", "")
+            return
+        state = self._direction_bind(principal, mode="draft", draft=copy.deepcopy(active), texts={}, summary=True)
+        await self._direction_show_draft(chat_id, principal, state)
+
+    async def _direction_command_cancel(self, chat_id, principal, active):
+        self._direction_sessions().pop(principal["user_id"], None)
+        await self._send_text(chat_id, "Изменения не сохранены. Настройки направления не менялись.", reply_markup=self._direction_markup())
+        if active:
+            await self._dispatch_direction(chat_id, principal, "/direction_summary", "")
+
+    async def _direction_command_save(self, chat_id, principal, profile_name, profile, active, state):
+        import directions
+        if self._has_active_command(profile_name):
+            await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+            return False
+        if not state or state.get("mode") != "draft":
+            await self._send_text(chat_id, "Нет несохранённых изменений. Откройте «Направления».")
+            return False
+        committed = False
+        try:
+            if state.get("activate"):
+                # Reject a target edited since the switch prompt as well.
+                if directions.load_direction(profile.home_dir, state["draft"]["name"]) != state["draft"]:
+                    raise ValueError("Выбранное направление изменилось; выберите его заново.")
+                directions.set_active_direction(profile.home_dir, state["draft"]["name"])
+            else:
+                saved = directions.save_direction(profile.home_dir, state["draft"], texts=state.get("texts") or {})
+                if not active:
+                    directions.set_active_direction(profile.home_dir, saved["name"])
+            committed = True
+            self._direction_sessions().pop(principal["user_id"], None)
+            note = ""
+            try:
+                if self._reload_profile_daemon(profile_name):
+                    note = " Повтор перезапущен."
+            except RuntimeError:
+                note = " Повтор не удалось перезапустить; проверьте статус."
+            await self._send_text(chat_id, "Направление сохранено." + note, reply_markup=self._direction_markup())
+        except (ValueError, OSError) as exc:
+            await self._send_text(chat_id, str(str(exc)), reply_markup=self._direction_markup(draft=True))
+            return False if isinstance(exc, ValueError) and not committed else None
+
+    async def _direction_command_catalog(self, chat_id, principal, command):
+        return await self._direction_catalog(chat_id, principal, add=command == "/direction_add")
+
+    async def _direction_command_variants(self, chat_id, principal, command):
+        operation = {"/direction_pause": "pause", "/direction_resume": "resume", "/direction_remove": "remove"}.get(command, "select")
+        await self._direction_prompt_variants(chat_id, principal, operation)
+
+    async def _direction_command_application_mode(self, chat_id, principal, command):
+        await self._request_application_mode(chat_id, principal, command.removeprefix("/search_application_"))
+
+    async def _direction_command_strategy(self, chat_id, principal, command, active, state):
+        if not active:
+            await self._ask_choose_direction(chat_id, principal, "Сначала выберите направление:")
+            return
+        state = self._direction_bind(principal, mode="draft", draft=copy.deepcopy(active), texts={})
+        state["draft"]["selection_strategy"] = "ab" if command == "/direction_ab" else "single"
+        await self._direction_show_draft(chat_id, principal, state)
+
+    async def _direction_command_edit(self, chat_id, principal, command, arg, profile, active, state):
+        if not state or not state.get("draft") or state.get("activate"):
             if not active:
                 await self._send_text(chat_id, "Сначала создайте новое направление: /direction_new.")
                 return
-            state = self._direction_bind(principal, mode="working", draft=copy.deepcopy(active), texts={})
-            await self._direction_job(chat_id, principal, state, "refresh" if command == "/direction_refresh" else "suggest", active["variants"])
-        elif command == "/direction_stats_refresh":
-            if self._has_active_command(profile_name):
-                await self._send_busy_status(chat_id, principal, profile_name=profile_name)
-                return False
-            job = self._mark_active_command(principal=principal, label="negotiation snapshot", profile_name=profile_name)
-            await self._send_text(chat_id, "🔄 Загружаю отклики с hh.ru. Это займёт пару минут, работодателям ничего не отправится…")
+            state = self._direction_bind(principal, draft=copy.deepcopy(active), texts={})
+        if not arg.strip() and command == "/direction_edit":
+            await self._direction_edit_menu(chat_id, state)
+            return
+        state["summary"] = False
+        field = arg.strip() or "search_queries"
+        aliases = {"queries": "search_queries", "filter": "filter_policy", "relevant": "relevant_keywords", "exclude": "exclude_keywords", "salary": "salary_baseline"}
+        field = aliases.get(field, field)
+        if field not in {"title", "search_queries", "relevant_keywords", "exclude_keywords", "filter_policy", "positioning", "goal", "city", "format", "search_profiles", "salary_baseline", "work_formats", "fly_allowed", "work_cities", "cover_letter_fallback"}:
+            await self._send_text(chat_id, "Поля: /direction_edit title|queries|relevant|exclude|filter")
+            return
+        state.update(mode="edit", field=field)
+        if field == "cover_letter_fallback":
+            from fallback_letter import legacy_offer
+            rows = []
+            if state["draft"].get(field):
+                rows.append([("Убрать письмо", "letterclear")])
+            if not state["draft"].get(field) and legacy_offer(profile.home_dir):
+                rows.append([("Посмотреть прежнее письмо", "letteroffer")])
+            rows.append([("Назад", "back"), ("Отмена", "cancel")])
+            await self._send_text(chat_id,
+                f"Запасное сопроводительное письмо · {state['draft']['title']}\n\n" +
+                (state["draft"].get(field) or "Пока не задано.") +
+                "\n\nОтправьте новый текст — до 1500 символов. Он используется, если не удалось подготовить письмо для вакансии. "
+                "Изменения вступят в силу после сохранения направления.",
+                reply_markup=self._direction_inline(state, rows))
+            return
+        if field == "work_cities":
+            await self._send_text(chat_id,
+                "В каких городах допустима работа с выездом к работодателю? Укажите полные названия через запятую, например: Санкт-Петербург.\n"
+                "«Любой» — убрать ограничение. На полностью удалённую работу это ограничение не влияет.",
+                reply_markup=self._direction_inline(state, [[("Назад", "back"), ("Отмена", "cancel")]]))
+            return
+        if field in {"work_formats", "fly_allowed"}:
+            await self._direction_show_work_conditions(chat_id, state)
+            return
+        if field in {"city", "format", "search_profiles"}:
+            choices = ({"Москва": "moscow", "Санкт-Петербург": "spb", "Россия": "russia"} if field == "city" else
+                       {"Удалённо": "remote", "Офис": "office", "Вахта": "fly", "Любой": "any"})
+            rows = [[(label, "preset:" + value)] for label, value in choices.items()] if field != "search_profiles" else []
+            rows += [[("Добавить СПб · любой", "pair:spb")], [("Добавить РФ · вахта", "pair:fly")], [("Назад", "back"), ("Отмена", "cancel")]]
+            await self._send_text(chat_id, "Выберите значение или отправьте текст. Город: ID HH через запятую. Формат: remote, fullDay, flyInFlyOut.\n"
+                "Для независимых сочетаний выберите «Сочетания города и фильтра hh.ru»: каждая строка содержит ID города и формат, например:\n2\n113 flyInFlyOut", reply_markup=self._direction_inline(state, rows))
+            return
+        label = {"title": "названия", "search_queries": "запросов", "positioning": "описания", "goal": "должностей",
+                 "salary_baseline": "зарплаты от", "relevant_keywords": "подходящих слов", "exclude_keywords": "исключений", "filter_policy": "фильтра"}[field]
+        await self._send_text(chat_id, f"Отправьте новое значение {label}. Поисковые слова и должности — по одному в строке; ключевые слова — через запятую.\n"
+                              "Зарплата — сумма в рублях, 0 убирает ориентир. Назад — вернуться к несохранённым изменениям.",
+                              reply_markup=self._direction_inline(state, [[("Назад", "back"), ("Отмена", "cancel")]]))
 
-            async def runner():
-                from hh import negotiation_snapshot
-                try:
-                    results = await asyncio.to_thread(negotiation_snapshot.refresh_for_chats,
-                                                      profile.home_dir, profile.hh.cookies_file)
-                    done = all(item.get("complete") for item in results)
-                    throttled = all(item.get("complete") or item.get("stop_reason") == "refresh_throttled"
-                                    for item in results)
-                    note = ("✅ Данные обновлены." if done else
-                            "Данные недавно запрашивались. Покажу сохранённую статистику." if throttled else
-                            "⚠️ Собрал не всё (" + ", ".join(str(item.get("stop_reason")) for item in results
-                                                         if not item.get("complete")) + ") — покажу, что есть.")
-                    await self._send_text(chat_id, note)
-                finally:
-                    self._clear_active_command(profile_name)
-                await self._dispatch_direction(chat_id, principal, "/direction_stats", "")
-            job.task = self._create_active_task(job, runner)
-        elif command in {"/direction_stats", "/direction_csv"}:
-            if command == "/direction_csv" and principal.get("role") != "admin":
-                await self._send_text(chat_id, "Нужны права администратора.")
-                return
-            import direction_stats
-            summary = await read_thread(direction_stats.summarize, profile.home_dir)
-            from telegram_app import history
-            scope = history.scope_arg(arg)
-            summary = direction_stats.scoped(summary, profile.home_dir, scope)
-            if command == "/direction_csv":
-                await self._send_document(chat_id, filename=f"{profile_name}_directions.csv", content=direction_stats.export_csv(summary).encode("utf-8-sig"))
-            else:
-                rows = summary.get("rows", [])
-                owner = f" · профиль {profile_name}" if principal.get("role") == "admin" else ""
-                invited_total = sum(int(row.get("next_stage", 0) or 0) for row in rows) + sum(int(summary.get(bucket, {}).get("next_stage", 0) or 0) for bucket in ("unmatched", "ambiguous"))
-                heading = ("Все направления" if scope == "*" else history.LEGACY_TITLE if scope == "?" else f"«{summary['direction_title']}»")
-                lines = [f"📊 {heading}: {counted(summary.get('total_topics'), ('отклик', 'отклика', 'откликов'))}, {counted(invited_total, ('приглашение', 'приглашения', 'приглашений'))}{owner}", ""]
-                previous_direction = None
-                for row in rows[:12]:
-                    title = str(row.get("direction_title") or "Направление без названия")
-                    if scope == "*" and title != previous_direction:
-                        lines += [title]
-                        previous_direction = title
-                    variant = str(row.get("variant_title") or "Резюме без названия")
-                    applied = int(row.get("applied", 0) or 0)
-                    invited = int(row.get("next_stage", 0) or 0)
-                    share = f" ({invited / applied * 100:.1f}%)".replace(".", ",") if applied else ""
-                    lines += [f"«{variant}»",
-                              f"{counted(applied, ('отклик', 'отклика', 'откликов'))} · просмотрели {row.get('viewed', 0)} · "
-                              f"отказов {row.get('rejected', 0)} · приглашений {invited}{share} · "
-                              f"ждут {row.get('no_response', 0)}", ""]
-                other = (summary.get('unmatched', {}).get('topics', 0) +
-                         summary.get("ambiguous", {}).get("topics", 0))
-                if other:
-                    lines.append(f"{history.LEGACY_TITLE}: {other}")
-                mismatches = await read_thread(direction_stats.resume_mismatches, profile.home_dir)
-                view = history.HistoryScope(profile.home_dir, scope)
-                mismatches = [m for m in mismatches if view.matches({"requested_resume_id": m.get("requested_resume_hash")})]
-                if mismatches:
-                    lines += ["", f"⚠️ Ушли НЕ тем резюме: {len(mismatches)}"]
-                    for item in mismatches[:5]:
-                        lines.append(f"• {item['title'][:60]} ({item['company'][:40]}): ушло «{item['actual_title'] or 'резюме без названия'}» "
-                                     f"вместо «{item['requested_title'] or 'резюме без названия'}»")
-                lines.append("")
-                lines.append("Приглашение — работодатель позвал дальше: на собеседование, тестовое или предложил работу.")
-                lines.append("Данные с hh.ru.")
-                if principal.get("role") == "admin":
-                    lines.append("Скачайте полный список: /direction_csv; /direction_csv all — все направления")
-                if not summary.get("total_topics"):
-                    lines = [f"📊 {heading}: данных пока нет.",
-                             "Нажмите «Обновить с hh.ru»: бот загрузит ваши отклики. Это займёт пару минут, работодателям ничего не отправится.",
-                             "Дальше данные обновляются сами после каждого поиска."]
-                state = state or self._direction_bind(principal, mode="switch", choices=[])
-                buttons = self._direction_inline(state, [[("🔄 Обновить с hh.ru", "statsrefresh")], [("Назад к направлениям", "list")]])
-                buttons["inline_keyboard"] += history.markup(profile.home_dir, "/direction_stats", scope=scope)["inline_keyboard"]
-                await self._send_text(chat_id, str("\n".join(lines)), reply_markup=buttons)
+    async def _direction_command_suggest(self, chat_id, principal, command, active, state):
+        if not active:
+            await self._send_text(chat_id, "Сначала создайте новое направление: /direction_new.")
+            return
+        state = self._direction_bind(principal, mode="working", draft=copy.deepcopy(active), texts={})
+        await self._direction_job(chat_id, principal, state, "refresh" if command == "/direction_refresh" else "suggest", active["variants"])
+
+    async def _direction_command_stats_refresh(self, chat_id, principal, profile_name, profile):
+        if self._has_active_command(profile_name):
+            await self._send_busy_status(chat_id, principal, profile_name=profile_name)
+            return False
+        job = self._mark_active_command(principal=principal, label="negotiation snapshot", profile_name=profile_name)
+        await self._send_text(chat_id, "🔄 Загружаю отклики с hh.ru. Это займёт пару минут, работодателям ничего не отправится…")
+
+        async def runner():
+            from hh import negotiation_snapshot
+            try:
+                results = await asyncio.to_thread(negotiation_snapshot.refresh_for_chats,
+                                                  profile.home_dir, profile.hh.cookies_file)
+                done = all(item.get("complete") for item in results)
+                throttled = all(item.get("complete") or item.get("stop_reason") == "refresh_throttled"
+                                for item in results)
+                note = ("✅ Данные обновлены." if done else
+                        "Данные недавно запрашивались. Покажу сохранённую статистику." if throttled else
+                        "⚠️ Собрал не всё (" + ", ".join(str(item.get("stop_reason")) for item in results
+                                                     if not item.get("complete")) + ") — покажу, что есть.")
+                await self._send_text(chat_id, note)
+            finally:
+                self._clear_active_command(profile_name)
+            await self._dispatch_direction(chat_id, principal, "/direction_stats", "")
+        job.task = self._create_active_task(job, runner)
+
+    async def _direction_command_stats(self, chat_id, principal, command, arg, profile_name, profile, state):
+        if command == "/direction_csv" and principal.get("role") != "admin":
+            await self._send_text(chat_id, "Нужны права администратора.")
+            return
+        import direction_stats
+        summary = await read_thread(direction_stats.summarize, profile.home_dir)
+        from telegram_app import history
+        scope = history.scope_arg(arg)
+        summary = direction_stats.scoped(summary, profile.home_dir, scope)
+        if command == "/direction_csv":
+            await self._send_document(chat_id, filename=f"{profile_name}_directions.csv", content=direction_stats.export_csv(summary).encode("utf-8-sig"))
+        else:
+            rows = summary.get("rows", [])
+            owner = f" · профиль {profile_name}" if principal.get("role") == "admin" else ""
+            invited_total = sum(int(row.get("next_stage", 0) or 0) for row in rows) + sum(int(summary.get(bucket, {}).get("next_stage", 0) or 0) for bucket in ("unmatched", "ambiguous"))
+            heading = ("Все направления" if scope == "*" else history.LEGACY_TITLE if scope == "?" else f"«{summary['direction_title']}»")
+            lines = [f"📊 {heading}: {counted(summary.get('total_topics'), ('отклик', 'отклика', 'откликов'))}, {counted(invited_total, ('приглашение', 'приглашения', 'приглашений'))}{owner}", ""]
+            previous_direction = None
+            for row in rows[:12]:
+                title = str(row.get("direction_title") or "Направление без названия")
+                if scope == "*" and title != previous_direction:
+                    lines += [title]
+                    previous_direction = title
+                variant = str(row.get("variant_title") or "Резюме без названия")
+                applied = int(row.get("applied", 0) or 0)
+                invited = int(row.get("next_stage", 0) or 0)
+                share = f" ({invited / applied * 100:.1f}%)".replace(".", ",") if applied else ""
+                lines += [f"«{variant}»",
+                          f"{counted(applied, ('отклик', 'отклика', 'откликов'))} · просмотрели {row.get('viewed', 0)} · "
+                          f"отказов {row.get('rejected', 0)} · приглашений {invited}{share} · "
+                          f"ждут {row.get('no_response', 0)}", ""]
+            other = (summary.get('unmatched', {}).get('topics', 0) +
+                     summary.get("ambiguous", {}).get("topics", 0))
+            if other:
+                lines.append(f"{history.LEGACY_TITLE}: {other}")
+            mismatches = await read_thread(direction_stats.resume_mismatches, profile.home_dir)
+            view = history.HistoryScope(profile.home_dir, scope)
+            mismatches = [m for m in mismatches if view.matches({"requested_resume_id": m.get("requested_resume_hash")})]
+            if mismatches:
+                lines += ["", f"⚠️ Ушли НЕ тем резюме: {len(mismatches)}"]
+                for item in mismatches[:5]:
+                    lines.append(f"• {item['title'][:60]} ({item['company'][:40]}): ушло «{item['actual_title'] or 'резюме без названия'}» "
+                                 f"вместо «{item['requested_title'] or 'резюме без названия'}»")
+            lines.append("")
+            lines.append("Приглашение — работодатель позвал дальше: на собеседование, тестовое или предложил работу.")
+            lines.append("Данные с hh.ru.")
+            if principal.get("role") == "admin":
+                lines.append("Скачайте полный список: /direction_csv; /direction_csv all — все направления")
+            if not summary.get("total_topics"):
+                lines = [f"📊 {heading}: данных пока нет.",
+                         "Нажмите «Обновить с hh.ru»: бот загрузит ваши отклики. Это займёт пару минут, работодателям ничего не отправится.",
+                         "Дальше данные обновляются сами после каждого поиска."]
+            state = state or self._direction_bind(principal, mode="switch", choices=[])
+            buttons = self._direction_inline(state, [[("🔄 Обновить с hh.ru", "statsrefresh")], [("Назад к направлениям", "list")]])
+            buttons["inline_keyboard"] += history.markup(profile.home_dir, "/direction_stats", scope=scope)["inline_keyboard"]
+            await self._send_text(chat_id, str("\n".join(lines)), reply_markup=buttons)
