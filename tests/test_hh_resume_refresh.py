@@ -250,7 +250,10 @@ def test_telegram_refresh_button_and_command_route_to_selected_profile(tmp_path,
     assert calls == [(42, principal, "selected-profile", "--refresh-resume", "refresh resume", 1800)]
     assert bot._selected_menu(principal) == ui.MENU_HH
     keyboard = bot._menu_reply_markup(principal)["keyboard"]
-    assert [{"text": ui.BUTTON_SEARCH_RESUME}, {"text": ui.BUTTON_REFRESH_RESUME}] in keyboard
+    assert keyboard == ui.build_reply_markup(role)["keyboard"]
+    actions = ui.build_menu_inline_markup(role, ui.MENU_HH, token="synthetic")["inline_keyboard"]
+    assert [ui.BUTTON_SEARCH_RESUME, ui.BUTTON_REFRESH_RESUME] in [
+        [button["text"] for button in row] for row in actions]
     assert ui._command_conflicts_with_active(command)
 
 

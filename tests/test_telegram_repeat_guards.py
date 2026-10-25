@@ -199,6 +199,7 @@ def test_action_claim_is_atomic_and_survives_stale_message_restart(menu_bot, mon
     principal = {'user_id': 42, 'role': 'user', 'profile': 'qa'}
     monkeypatch.setattr(telegram_bot.telegram_access, 'resolve_user', lambda uid: {**principal, 'user_id': uid})
     answered, actions = [], []
+    done_reply = "Карточка: не ждёт решения." if data.startswith("manual_apply:") else guards.DONE
     async def answer(callback_id, text='', **kwargs):
         answered.append(text)
     monkeypatch.setattr(bot, '_answer_callback_query', answer)
@@ -216,13 +217,14 @@ def test_action_claim_is_atomic_and_survives_stale_message_restart(menu_bot, mon
         first = asyncio.create_task(act(bot, callback))
         await entered.wait()
         await act(bot, {**callback, 'id': 'b'})
-        assert actions == [42] and answered == [guards.DONE]
+        assert actions == [42] and answered == [done_reply]
         finish.set()
         await first
         restarted = telegram_bot.TelegramBot('qa', runtime_paths=bot.runtime_paths)
         monkeypatch.setattr(restarted, '_answer_callback_query', answer)
+        monkeypatch.setattr(restarted, '_profile_names', bot._profile_names)
         await act(restarted, {**callback, 'id': 'stale'})
-        assert actions == [42] and answered == [guards.DONE] * 2
+        assert actions == [42] and answered == [done_reply] * 2
         other = deepcopy(callback)
         other['from']['id'] = 43
         await act(bot, other)
@@ -302,9 +304,12 @@ def test_hh_age_visible_in_real_dispatch(menu_bot, monkeypatch):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('data,done_reply', [('manual_apply:qa:token', guards.DONE),
+@pytest.mark.parametrize('data,done_reply', [('manual_apply:qa:token', 'Карточка: ждёт решения.'),
                                            ('chat_ai_any:qa:123:456', guards.BUSY)])
 def test_real_callback_double_tap_only_one_queue_entry_and_capture(monkeypatch, tmp_path, data, done_reply):
+    from tests.test_telegram_command_queue import pending_card_lookup
+    if data.startswith('manual_apply:'):
+        pending_card_lookup(monkeypatch)
     import runtime_control
     import chat_context
     monkeypatch.setattr(chat_context, 'safe_resolve', lambda *args: SimpleNamespace(

@@ -179,7 +179,7 @@ def test_spent_apply_button_shows_uncertainty_without_dispatch(homes, monkeypatc
     monkeypatch.setattr(bot, "_start_manual_ai_apply", launch)
     callback = _callback(f"{prefix}:qa:{item['token']}", chat_type="private")
     asyncio.run(bot._handle_callback_query(callback))
-    expected_launches = 0 if prefix == "stub" else 1  # live applying cannot accept a template approval
+    expected_launches = 0 if prefix in {"stub", "manual_apply"} else 1  # F27 refuses applying cards before launch
     assert launch.await_count == expected_launches
     queue._store().update(lambda data: data["items"][item["token"]].update(owner_pid=None))
     asyncio.run(bot._handle_callback_query(callback))
