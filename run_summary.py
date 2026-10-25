@@ -177,22 +177,7 @@ def _run_failure_summary(run_id, data, events, decisions, observed, counters, in
     return roots, affected, failures, problems, limited
 
 
-def build_run_summary(run, events=(), *, profile=""):
-    """No text-log inference. Missing legacy data remains explicitly unknown."""
-    run_id = run.get("run_id", "")
-    events = [e for e in events if run_id and e.get("run_id") == run_id]
-    started = next((e for e in events if e.get("event") == "search_started"), {})
-    finished = next((e for e in reversed(events) if e.get("event") == "search_finished"), {})
-    data = {**run, **finished}
-    if finished:
-        data["status"] = finished.get("status") or "finished"
-        data["finished_at"] = finished.get("finished_at") or finished.get("created_at")
-    incomplete = data.get("status") == "incomplete" or not finished and not data.get("finished_at") and data.get("ok") is None
-    funnel = data.get("funnel") or {}
-    counters, decisions, observed = _run_counters(data, events, incomplete)
-
-    roots, affected, failures, problems, limited = _run_failure_summary(
-        run_id, data, events, decisions, observed, counters, incomplete)
+def _run_status(data, counters, roots, incomplete, problems, limited):
     progress = sum(counters.get(key) or 0 for key in ("evaluated", "applied", "matcher_pass"))
     if any(root['stage'] == 'collection' for root in roots.values()):
         stats = data.get("source_stats") or {}
@@ -211,6 +196,26 @@ def build_run_summary(run, events=(), *, profile=""):
         status = "success"
     else:
         status = "unknown"
+    return status
+
+
+def build_run_summary(run, events=(), *, profile=""):
+    """No text-log inference. Missing legacy data remains explicitly unknown."""
+    run_id = run.get("run_id", "")
+    events = [e for e in events if run_id and e.get("run_id") == run_id]
+    started = next((e for e in events if e.get("event") == "search_started"), {})
+    finished = next((e for e in reversed(events) if e.get("event") == "search_finished"), {})
+    data = {**run, **finished}
+    if finished:
+        data["status"] = finished.get("status") or "finished"
+        data["finished_at"] = finished.get("finished_at") or finished.get("created_at")
+    incomplete = data.get("status") == "incomplete" or not finished and not data.get("finished_at") and data.get("ok") is None
+    funnel = data.get("funnel") or {}
+    counters, decisions, observed = _run_counters(data, events, incomplete)
+
+    roots, affected, failures, problems, limited = _run_failure_summary(
+        run_id, data, events, decisions, observed, counters, incomplete)
+    status = _run_status(data, counters, roots, incomplete, problems, limited)
     start_at = data.get("started_at") or started.get("created_at")
     finish_at = data.get("finished_at")
     start_time, finish_time = _time(start_at), _time(finish_at)
