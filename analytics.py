@@ -1496,6 +1496,24 @@ def _coerce_int(value, default: int = 0) -> int:
         return default
 
 
+def _summary_conversion_bucket(mapping: dict, key: str) -> dict:
+    return mapping.setdefault(
+        key or "unknown",
+        {
+            "decisions": 0,
+            "auto_applied": 0,
+            "manual": 0,
+            "viewed": 0,
+            "not_viewed": 0,
+            "pending": 0,
+            "positive": 0,
+            "rejected": 0,
+            "response_rate": 0,
+            "positive_rate": 0,
+        },
+    )
+
+
 def _summarize(
     days: int | None = None,
     *,
@@ -1586,23 +1604,6 @@ def _summarize(
     latest_apply_by_vacancy = {}
     latest_status_by_vacancy = {}
 
-    def conversion_bucket(mapping: dict, key: str) -> dict:
-        return mapping.setdefault(
-            key or "unknown",
-            {
-                "decisions": 0,
-                "auto_applied": 0,
-                "manual": 0,
-                "viewed": 0,
-                "not_viewed": 0,
-                "pending": 0,
-                "positive": 0,
-                "rejected": 0,
-                "response_rate": 0,
-                "positive_rate": 0,
-            },
-        )
-
     def status_is_viewed(bucket: str, detail_bucket: str) -> bool:
         return bucket in {"positive", "rejected"} or detail_bucket == "pending_viewed"
 
@@ -1642,11 +1643,11 @@ def _summarize(
                 },
             )
             source_bucket["decisions"] += 1
-            cluster_bucket = conversion_bucket(summary["by_cluster"], cluster)
+            cluster_bucket = _summary_conversion_bucket(summary["by_cluster"], cluster)
             cluster_bucket["decisions"] += 1
             retry_bucket = None
             if retry_reason:
-                retry_bucket = conversion_bucket(summary["by_retry_reason"], retry_reason)
+                retry_bucket = _summary_conversion_bucket(summary["by_retry_reason"], retry_reason)
                 retry_bucket["decisions"] += 1
 
             if decision == "skipped_keyword_filter":
@@ -1668,7 +1669,7 @@ def _summarize(
                 if retry_bucket is not None:
                     retry_bucket["auto_applied"] += 1
                 if cover_style:
-                    style_bucket = conversion_bucket(summary["by_cover_style"], cover_style)
+                    style_bucket = _summary_conversion_bucket(summary["by_cover_style"], cover_style)
                     style_bucket["auto_applied"] += 1
                 latest_apply_by_vacancy[_vacancy_key(event)] = event
             elif decision == "already_applied":
@@ -1769,9 +1770,9 @@ def _summarize(
         retry_reason = apply_event.get("retry_reason") or apply_event.get("retry_outcome") or ""
         viewed = status_is_viewed(bucket, detail_bucket)
         not_viewed = detail_bucket == "pending_new"
-        cluster_bucket = conversion_bucket(summary["by_cluster"], cluster)
-        style_bucket = conversion_bucket(summary["by_cover_style"], cover_style) if cover_style else None
-        retry_bucket = conversion_bucket(summary["by_retry_reason"], retry_reason) if retry_reason else None
+        cluster_bucket = _summary_conversion_bucket(summary["by_cluster"], cluster)
+        style_bucket = _summary_conversion_bucket(summary["by_cover_style"], cover_style) if cover_style else None
+        retry_bucket = _summary_conversion_bucket(summary["by_retry_reason"], retry_reason) if retry_reason else None
 
         if viewed:
             cluster_bucket["viewed"] += 1
