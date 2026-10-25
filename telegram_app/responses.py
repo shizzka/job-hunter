@@ -578,8 +578,8 @@ class TelegramResponses:
             try:
                 # B13: answer with the facts of the resume this application was sent with.
                 import chat_context
-                owner = await self._chat_reply_owner(
-                    chat_id, principal, profile_name, hh_chat_id, hh_message_id, reply_markup, home)
+                owner = await _chat_reply_owner(
+                    self, chat_id, principal, profile_name, hh_chat_id, hh_message_id, reply_markup, home)
                 if owner is None:
                     return
                 current = directions_mod.active_direction(home)
@@ -741,33 +741,34 @@ class TelegramResponses:
 
         active_command.task = self._create_active_task(active_command, runner)
 
-    async def _chat_reply_owner(self, chat_id, principal, profile_name, hh_chat_id, hh_message_id, reply_markup, home):
-        import chat_context
-        owner = chat_context.safe_resolve(home, hh_chat_id)
-        if owner.status == chat_context.OTHER:
-            markup = reply_markup
-            target = owner.owner_profile
-            if (target and target in self._profile_names()
-                    and (principal.get("role") == ROLE_ADMIN or self._selected_profile(principal) == target)):
-                callback = f"cop:{target}:{hh_chat_id}:{hh_message_id.partition('~')[0]}"
-                if len(callback.encode("utf-8")) <= 64:
-                    # One tap: switch to the owning profile and answer this very chat there.
-                    markup = {"inline_keyboard": [[{"text": f"▶ Ответить из профиля {target}",
-                                                    "callback_data": callback}]]}
-            await self._send_text(chat_id, chat_context.refusal_text(owner, profile_name),
-                                  reply_markup=markup)
-            return
-        if owner.status != chat_context.OWN or not owner.resume_id:
-            import chat_owner_review
-            token = chat_owner_review.create_review(
-                home, hh_chat_id, hh_message_id.partition('~')[0], profile_name)
-            callback = f"cbo:{profile_name}:{token}"
-            markup = reply_markup
+
+async def _chat_reply_owner(self, chat_id, principal, profile_name, hh_chat_id, hh_message_id, reply_markup, home):
+    import chat_context
+    owner = chat_context.safe_resolve(home, hh_chat_id)
+    if owner.status == chat_context.OTHER:
+        markup = reply_markup
+        target = owner.owner_profile
+        if (target and target in self._profile_names()
+                and (principal.get("role") == ROLE_ADMIN or self._selected_profile(principal) == target)):
+            callback = f"cop:{target}:{hh_chat_id}:{hh_message_id.partition('~')[0]}"
             if len(callback.encode("utf-8")) <= 64:
-                markup = {"inline_keyboard": [[{"text": "Выбрать владельца отклика",
-                                               "callback_data": callback}]]}
-            reason = (chat_context.CONFLICT_TEXT if owner.status == chat_context.CONFLICT
-                      else chat_context.UNKNOWN_TEXT)
-            await self._send_text(chat_id, reason, reply_markup=markup)
-            return
-        return owner
+                # One tap: switch to the owning profile and answer this very chat there.
+                markup = {"inline_keyboard": [[{"text": f"▶ Ответить из профиля {target}",
+                                                "callback_data": callback}]]}
+        await self._send_text(chat_id, chat_context.refusal_text(owner, profile_name),
+                              reply_markup=markup)
+        return
+    if owner.status != chat_context.OWN or not owner.resume_id:
+        import chat_owner_review
+        token = chat_owner_review.create_review(
+            home, hh_chat_id, hh_message_id.partition('~')[0], profile_name)
+        callback = f"cbo:{profile_name}:{token}"
+        markup = reply_markup
+        if len(callback.encode("utf-8")) <= 64:
+            markup = {"inline_keyboard": [[{"text": "Выбрать владельца отклика",
+                                           "callback_data": callback}]]}
+        reason = (chat_context.CONFLICT_TEXT if owner.status == chat_context.CONFLICT
+                  else chat_context.UNKNOWN_TEXT)
+        await self._send_text(chat_id, reason, reply_markup=markup)
+        return
+    return owner
