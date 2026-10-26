@@ -1322,6 +1322,9 @@ def _get_run_summary(run_id=None, *, events_file=None, history_file=None, profil
         for event in rows:
             if run_id and event.get("run_id") != run_id:
                 continue
+            if (event.get("event") not in {"search_started", "search_finished"}
+                    and not (view.directions and event.get("event") == "decision")):
+                continue
             if event.get("event") in {"search_started", "search_finished"}:
                 lifecycle.append(event)
             yield event

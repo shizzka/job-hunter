@@ -128,6 +128,9 @@ def test_t13_summary_does_not_resolve_ownership_for_unrelated_old_events(tmp_pat
         append_json(events, {"event": "decision", "run_id": f"unrelated-{index}", "vacancy_id": str(index)})
     append_json(events, {"event": "search_started", "run_id": "run-a"})
     append_json(events, {"event": "decision", "run_id": "run-a", "vacancy_id": "1", "decision": "applied_auto", "outcome": "applied"})
+    # The compact journal now parses once for all reports. A run lookup must
+    # reuse that index and still avoid ownership work on unrelated decisions.
+    analytics.read_cache.journal(events).read(events)
     original_decode = analytics.json.loads
     def decode(value, *args, **kwargs):
         assert b"unrelated-" not in (value.encode() if isinstance(value, str) else value)
@@ -138,6 +141,11 @@ def test_t13_summary_does_not_resolve_ownership_for_unrelated_old_events(tmp_pat
         assert all(not row.get("run_id", "").startswith("unrelated-") for row in rows)
         return original(self, rows)
     monkeypatch.setattr(HistoryScope, "events", scoped)
+    original_owner = HistoryScope.owner
+    def owner(self, row):
+        assert not row.get("run_id", "").startswith("unrelated-")
+        return original_owner(self, row)
+    monkeypatch.setattr(HistoryScope, "owner", owner)
     assert analytics.get_run_summary(history_file=str(history), events_file=str(events))["counters"]["applied"] == 1
 
 

@@ -92,6 +92,14 @@ def test_reads_are_single_flight_cool_down_and_are_per_user_command(monkeypatch,
         assert bot.messages == [guards.BUSY]
         bot.finish.set()
         await first
+        if command in {'/applications', '/applications_invitations', '/applications_rejections'}:
+            # Local history filters and page controls reopen immediately.
+            # The in-flight, per-user and per-command assertions above still
+            # apply; existing expensive reads retain their five-second limit.
+            await bot.read(1, {'user_id': 1}, command, '')
+            assert bot.messages == [guards.BUSY]
+            assert bot.calls == [(1, command), (2, command), (1, '/start'), (1, command)]
+            return
         clock[0] += 4.999
         await bot.read(1, {'user_id': 1}, command, '')
         assert bot.messages == [guards.BUSY] * 2
