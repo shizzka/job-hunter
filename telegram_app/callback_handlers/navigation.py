@@ -49,6 +49,21 @@ async def handle_candidate_upload(self, context: CallbackContext):
     return
 
 
+async def handle_application_page(self, context: CallbackContext):
+    from telegram_app import history
+    parts = str(context.raw_data).split(":")
+    profile = self._selected_profile(context.principal)
+    command = next((route for route, (selected, _) in history.APPLICATION_FILTERS.items()
+                    if len(parts) == 4 and selected == parts[2]), None)
+    if ((context.message.get("chat") or {}).get("type") != "private"
+            or not context.can_access_profile(profile) or len(parts) != 4 or not parts[3].isdigit()
+            or command is None or parts[1] != history.token(self._profile(profile).home_dir)):
+        await self._answer_callback_query(context.callback_id, "Экран изменился или недоступен. Откройте отклики заново.")
+        return
+    await self._answer_callback_query(context.callback_id)
+    await self._dispatch(context.chat_id, context.principal, command, parts[3])
+
+
 async def handle_getting_started(self, context: CallbackContext):
     callback_id = context.callback_id
     principal = context.principal
@@ -77,7 +92,7 @@ async def handle_direction(self, context: CallbackContext):
 
 async def handle_navigation(self, context: CallbackContext):
     """Bound, read-only navigation delegates actions through all command guards."""
-    from telegram_bot_ui import ADMIN_BUTTON_MAP, USER_BUTTON_MAP, ADMIN_ONLY_COMMANDS
+    from telegram_bot_ui import ADMIN_BUTTON_MAP, USER_BUTTON_MAP, ADMIN_ONLY_COMMANDS, RESPONSE_FILTER_COMMANDS
     from telegram_app import history
     if (context.message.get("chat") or {}).get("type") != "private":
         await self._answer_callback_query(context.callback_id, "Откройте личный чат с ботом.", show_alert=True)
@@ -100,7 +115,7 @@ async def handle_navigation(self, context: CallbackContext):
         return
     role = context.principal.get("role")
     mapping = ADMIN_BUTTON_MAP if role == ROLE_ADMIN else USER_BUTTON_MAP
-    allowed = set(mapping.values()) | {"/directions"}
+    allowed = set(mapping.values()) | set(RESPONSE_FILTER_COMMANDS.values()) | {"/directions"}
     command = "/" + parts[2] if len(parts) == 3 else ""
     if (len(parts) != 3 or parts[1] != history.token(self._profile(profile_name).home_dir)
             or command not in allowed or (command in ADMIN_ONLY_COMMANDS and role != ROLE_ADMIN)):

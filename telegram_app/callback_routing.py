@@ -20,6 +20,8 @@ class CallbackRoute:
 CALLBACK_ROUTE_GROUPS = {
     'navigation': {
         'nav:': CallbackRoute(navigation.handle_navigation, phase='navigation'),
+        'apps:': CallbackRoute(navigation.handle_application_page, phase='navigation'),
+        'qd:': CallbackRoute(search.handle_query_draft, phase='navigation'),
         'cf:': CallbackRoute(candidate.handle_confirmation, phase='navigation'),
         'fs:': CallbackRoute(search.handle_search, phase='navigation'),
         'sr:': CallbackRoute(navigation.handle_seen_reset, phase='navigation'),

@@ -33,6 +33,9 @@ ROUTE_GROUPS = {
     'responses/hh': {
         '/forms': CommandRoute('_route_forms'),
         '/menu_responses': CommandRoute('_route_menu', args=('review',)),
+        '/applications': CommandRoute('_route_applications'),
+        '/applications_invitations': CommandRoute('_route_applications'),
+        '/applications_rejections': CommandRoute('_route_applications'),
         '/hh_response_count': CommandRoute('_route_hh_responses'),
         '/hh_responses': CommandRoute('_route_hh_responses'),
         '/ai_chat': CommandRoute('_route_chat_ai'),

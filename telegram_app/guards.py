@@ -29,7 +29,9 @@ async def read_thread(fn, *args, **kwargs):
 BUSY = "Уже считаю, подождите пару секунд"
 DONE = "Уже сделано"
 ALIASES = {"/hunter_log": "/log", "/hunter_chat_log": "/chat_log"}
+APPLICATION_READS = {"/applications", "/applications_invitations", "/applications_rejections"}
 READS = {"/stats", "/runs", "/log", "/raw_log", "/chat_log", "/digest", "/research",
+         "/applications", "/applications_invitations", "/applications_rejections",
          "/directions", "/direction_summary", "/direction_stats", "/direction_csv",
          "/why_no_apply"}  # 24.10: five quick presses held every other command for ~40 s
 AI_LABELS = {"analyze resume", "chat AI reply", "chat AI alternative", "chat AI list",
@@ -72,6 +74,9 @@ def read_command(fn):
         if canonical not in READS:
             return await fn(self, chat_id, principal, command, arg)
         key = (int(principal["user_id"]), "read", canonical)
+        # Cached application filters and pagination can reopen immediately;
+        # overlapping reads still share the same in-flight admission slot.
+        cooldown = 0 if canonical in APPLICATION_READS else 5
         if not reserve(self, key):
             await self._send_text(chat_id, BUSY)
             return
@@ -88,12 +93,12 @@ def read_command(fn):
                     task.exception()
                 pending.discard(task)
                 if not pending:
-                    release(self, key, 5)
+                    release(self, key, cooldown)
             if pending:
                 for task in pending.copy():
                     task.add_done_callback(finished)
             else:
-                release(self, key, 5)
+                release(self, key, cooldown)
     return wrapped
 
 
@@ -102,10 +107,12 @@ def read_callback(data):
     return (parts[0] == "nav" and len(parts) == 3 and (parts[2].startswith("menu_") or parts[2] in {
                 "back", "find", "review", "directions", "companies", "candidate_profile", "candidate_facts",
                 "schedule", "help", "getting_started", "hh_responses", "stats", "runs", "research",
-                "why_no_apply", "search_settings", "search_conditions", "search_experience",
+                "why_no_apply", "applications", "applications_invitations", "applications_rejections",
+                "search_settings", "search_conditions", "search_experience",
                 "search_application_mode", "hh_resumes", "status", "diagnostics", "profiles", "users",
                 "clients", "ai_limits", "log", "raw_log", "chat_log"})
             or parts[0] == "hist"
+            or parts[0] == "apps"
             or parts[0] == "fs" and len(parts) > 1 and parts[1] in {"pick", "open"}
             or parts[0] == "gs" and len(parts) > 1 and parts[1] in {"auto", "dirs", "resumes", "check"}
             or parts[0] == "dir" and len(parts) > 2 and parts[2] in {

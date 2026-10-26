@@ -7,6 +7,40 @@ def stop_token(profile_name, active):
     return hashlib.sha256(f"{profile_name}:{active.started_at}".encode()).hexdigest()[:12]
 
 
+async def handle_query_draft(self, context):
+    import profile_access
+    import telegram_access
+    from telegram_app import history
+    parts = str(context.raw_data).split(":")
+
+    def current(principal):
+        if not principal or len(parts) != 3 or parts[2] not in {"save", "edit"}:
+            return False
+        state = self._search_settings_state(context.user_id)
+        profile = self._selected_profile(principal)
+        return ((context.message.get("chat") or {}).get("type") == "private"
+                and state.get("search_query_draft") and parts[1] == state.get("search_query_draft_token")
+                and profile == state.get("search_query_draft_profile")
+                and state.get("search_query_draft_binding") == history.token(self._profile(profile).home_dir))
+
+    error = "Черновик изменился или недоступен. Запросите предложение заново."
+    if not current(context.principal):
+        await self._answer_callback_query(context.callback_id, error)
+        return
+    await self._answer_callback_query(context.callback_id)
+    # The acknowledgement yields: a new draft, binding or revocation must win.
+    fresh = telegram_access.resolve_user(context.user_id)
+    with profile_access.principal_scope(fresh):
+        if not current(fresh):
+            await self._send_text(context.chat_id, error)
+            return
+        self._clear_search_settings_state(context.user_id, "search_query_draft_token")
+        if parts[2] == "edit":
+            self._clear_search_settings_state(context.user_id, "search_query_draft")
+        await self._dispatch(context.chat_id, fresh,
+                             "/search_use_draft" if parts[2] == "save" else "/search_edit", "")
+
+
 async def handle_search(self, context):
     parts = str(context.raw_data).split(":")
     if parts == ["fs", "open"]:

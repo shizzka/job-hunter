@@ -690,8 +690,17 @@ def reply_menu_layouts(role: str) -> dict[str, list[list[str]]]:
     return layouts
 
 
+RESPONSE_FILTER_COMMANDS = {
+    BUTTON_HH_RESPONSES: "/applications",
+    BUTTON_CHECK: "/applications_invitations",
+    BUTTON_RESEARCH: "/applications_rejections",
+}
+
+
 def reply_menu_for_command(role: str, command: str) -> str | None:
     """Find the owning screen using the same layouts that render the keyboard."""
+    if command in RESPONSE_FILTER_COMMANDS.values():
+        return MENU_RESPONSES
     button_map = ADMIN_BUTTON_MAP if role == ROLE_ADMIN else USER_BUTTON_MAP
     for menu, rows in reply_menu_layouts(role).items():
         for row in rows:
@@ -739,6 +748,8 @@ def build_menu_inline_markup(role: str, menu: str, *, token: str, application_mo
             command = mapping.get(label)
             if not command:
                 continue
+            if menu == MENU_RESPONSES:
+                command = RESPONSE_FILTER_COMMANDS.get(label, command)
             if menu == MENU_SETTINGS and label == BUTTON_SEARCH_SETTINGS:
                 command = "/directions"
             visible = "✓ " + label if menu == MENU_APPLICATION_MODE and label == selected else label

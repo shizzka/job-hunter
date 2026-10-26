@@ -310,6 +310,10 @@ class TelegramMonitoring:
         )
         return
 
+    async def _route_applications(self, chat_id, principal, command, arg, profile_name, reply_menu):
+        from telegram_app import history
+        await history.show_applications(self, chat_id, principal, profile_name, command, arg)
+
     async def _route_history(self, chat_id, principal, command, arg, profile_name, reply_menu):
         role = principal.get("role", ROLE_USER)
         from telegram_app import history

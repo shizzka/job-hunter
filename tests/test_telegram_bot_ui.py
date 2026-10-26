@@ -149,7 +149,7 @@ def test_legacy_and_current_screen_builders_preserve_membership(role):
         for row in markup["inline_keyboard"]:
             for button in row:
                 command = "/" + button["callback_data"].split(":")[-1]
-                assert command in ui.ADMIN_BUTTON_MAP.values() or command == "/directions"
+                assert command in ui.ADMIN_BUTTON_MAP.values() or command in {"/directions", "/applications", "/applications_invitations", "/applications_rejections"}
                 if role == ui.ROLE_USER:
                     assert command not in ui.ADMIN_ONLY_COMMANDS
     assert labels(role, ui.MENU_MAIN) == COMMON_SCREENS[ui.MENU_MAIN]

@@ -14,6 +14,12 @@ from direction_history import ALL, UNSPECIFIED, LEGACY_TITLE, HistoryScope
 from state_store.private_journal import read_json_records
 
 RUN_SUMMARY_TIMEOUT_SECONDS = 10.0
+APPLICATION_FILTERS = {
+    "/applications": ("all", "📨 Все отклики"),
+    "/applications_invitations": ("positive", "📬 Приглашения"),
+    "/applications_rejections": ("rejected", "❌ Отказы"),
+}
+APPLICATION_PAGE_SIZE = 5
 
 COMMANDS = {"/stats", "/digest", "/research", "/runs", "/log", "/hunter_log", "/chat_log", "/hunter_chat_log"}
 
@@ -199,11 +205,8 @@ async def show(bot, chat_id, principal, profile_name, command, arg):
         await bot._send_text(chat_id, text, reply_markup=controls)
 
 
-def responses_snapshot(profile, *, days=30):
-    """Local saved-send totals and observed outcomes; never refresh hh.ru here."""
+def _saved_response_data(profile, *, days=30):
     import application_history
-    from direction_history import vacancy_key
-    from outcome import status_bucket, status_detail_bucket
     sends = application_history.summarize(profile.home_dir, events_file=profile.analytics_events_file,
         seen_file=profile.seen_file, days=days, recent_limit=None)
     view = HistoryScope(profile.home_dir)
@@ -214,6 +217,14 @@ def responses_snapshot(profile, *, days=30):
     except (OSError, ValueError):
         latest = {}
         sends["incomplete"] = True
+    return sends, view, latest
+
+
+def responses_snapshot(profile, *, days=30):
+    """Local saved-send totals and observed outcomes; never refresh hh.ru here."""
+    from direction_history import vacancy_key
+    from outcome import status_bucket, status_detail_bucket
+    sends, view, latest = _saved_response_data(profile, days=days)
     viewed = invitations = rejected = 0
     for row in sends["recent"]:
         event = latest.get((view.owner(row), vacancy_key(row)), {})
@@ -225,6 +236,51 @@ def responses_snapshot(profile, *, days=30):
     return {"sent": sends["count"], "viewed": viewed,
             "invitations": invitations, "rejected": rejected,
             "waiting": max(0, sends["count"] - invitations - rejected), "incomplete": sends["incomplete"]}
+
+
+def _applications_report(profile, command, page):
+    from direction_history import vacancy_key
+    from outcome import status_bucket
+    sends, view, latest = _saved_response_data(profile)
+    selected, title = APPLICATION_FILTERS[command]
+    rows = []
+    for row in sends["recent"]:
+        event = latest.get((view.owner(row), vacancy_key(row)), {})
+        bucket = event.get("status_bucket") or status_bucket(event.get("status", ""))
+        if selected == "all" or bucket == selected:
+            rows.append((row, bucket))
+    pages = max(1, (len(rows) + APPLICATION_PAGE_SIZE - 1) // APPLICATION_PAGE_SIZE)
+    page = min(page, pages - 1)
+    lines = [f"{title} · за 30 дней · {view.title}", f"Сохранено: {len(rows)}"]
+    if sends["incomplete"]:
+        lines.append("Часть сохранённой истории недоступна. Повторите позже.")
+    if not rows:
+        lines.append("Здесь пока нет откликов.")
+    labels = {"positive": "Приглашение", "rejected": "Отказ"}
+    for row, bucket in rows[page * APPLICATION_PAGE_SIZE:(page + 1) * APPLICATION_PAGE_SIZE]:
+        lines.extend(["", str(row.get("title") or "Вакансия")[:180],
+                      str(row.get("company") or "Компания не указана")[:100],
+                      str(row.get("created_at") or "")[:10] + " · " +
+                      labels.get(bucket, "Работодатель ещё не ответил")])
+    binding = token(profile.home_dir)
+    controls = []
+    paging = []
+    for label, target in (("◀", page - 1), ("▶", page + 1)):
+        if 0 <= target < pages:
+            paging.append({"text": label, "callback_data": f"apps:{binding}:{selected}:{target}"})
+    if paging:
+        lines.append(f"\nСтраница {page + 1} из {pages}")
+        controls.append(paging)
+    controls.extend([[{"text": name, "callback_data": f"nav:{binding}:{route[1:]}"}]
+                     for route, (_, name) in APPLICATION_FILTERS.items()])
+    controls.append([{"text": "◀ К сводке", "callback_data": f"nav:{binding}:menu_responses"}])
+    return "\n".join(lines), {"inline_keyboard": controls}
+
+
+async def show_applications(bot, chat_id, principal, profile_name, command, arg):
+    page = int(arg) if str(arg).isdigit() else 0
+    text, controls = await read_thread(_applications_report, bot._profile(profile_name), command, page)
+    await bot._send_text(chat_id, text, reply_markup=controls)
 
 
 def _response_outcomes(profile, view):

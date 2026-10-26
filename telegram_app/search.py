@@ -350,14 +350,21 @@ class TelegramSearch:
                 if self._selected_profile(principal) != profile_name or directions.active_direction(profile.home_dir):
                     await self._send_text(chat_id, "Профиль или направление изменились; предложение отменено.")
                     return
-                self._set_search_settings_state(principal["user_id"], search_query_draft=queries, search_query_draft_profile=profile_name)
+                import uuid
+                from telegram_app import history
+                draft_token = uuid.uuid4().hex[:12]
+                self._set_search_settings_state(principal["user_id"], search_query_draft=queries,
+                    search_query_draft_profile=profile_name, search_query_draft_token=draft_token,
+                    search_query_draft_binding=history.token(profile.home_dir))
                 rendered = "\n".join(f"{index}. {query}" for index, query in enumerate(queries, start=1))
                 await self._send_text(
                     chat_id,
                     "✨ ИИ предложил черновик:\n" + rendered +
                     "\n\nЧтобы применить его, нажмите «✅ Сохранить предложенное». "
                     "Или нажмите «✏️ Изменить запросы» и отправьте свой список.",
-                    reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
+                    reply_markup={"inline_keyboard": [
+                        [{"text": "✅ Сохранить предложенное", "callback_data": f"qd:{draft_token}:save"}],
+                        [{"text": "✏️ Изменить запросы", "callback_data": f"qd:{draft_token}:edit"}]]},
                 )
             except Exception as exc:
                 log.warning("Search query suggestion failed for %s: %s", profile_name, exc)

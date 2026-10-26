@@ -1015,6 +1015,62 @@
           }
         }
       ]
+    ],
+    "critic_query_draft_binding": [
+      [
+        "state",
+        "user_state",
+        "42"
+      ],
+      {
+        "menu": "search_settings",
+        "updated_at": "<time>",
+        "search_query_draft": [
+          "QA engineer"
+        ],
+        "search_query_draft_profile": "qa-dev"
+      },
+      {
+        "menu": "search_settings",
+        "updated_at": "<time>",
+        "search_query_draft": [
+          "QA engineer"
+        ],
+        "search_query_draft_profile": "qa-dev",
+        "search_query_draft_token": "0123456789ab",
+        "search_query_draft_binding": "synthetic-token"
+      }
+    ],
+    "critic_query_draft_actions": [
+      [
+        "replies",
+        1,
+        "markup"
+      ],
+      {
+        "keyboard": [
+          [
+            "🔎 Найти вакансии",
+            "📋 Ждут решения"
+          ],
+          [
+            "📨 Отклики",
+            "⚙️ Настройки"
+          ]
+        ],
+        "resize_keyboard": true,
+        "is_persistent": true
+      },
+      {
+        "inline_keyboard": [
+          [
+            "✅ Сохранить предложенное"
+          ],
+          [
+            "✏️ Изменить запросы"
+          ]
+        ]
+      }
     ]
   },
   "dispatch": {
@@ -2356,6 +2412,30 @@
     ],
     "[\"admin\", \"llm_cooldown\", \"/llm_test\", \"\"]": [
       "critic_llm_actions_1"
+    ],
+    "[\"admin\", \"command\", \"/search_suggest\", \"\"]": [
+      "critic_query_draft_binding",
+      "critic_query_draft_actions"
+    ],
+    "[\"admin\", \"button\", \"Предложить ИИ\", \"\"]": [
+      "critic_query_draft_binding",
+      "critic_query_draft_actions"
+    ],
+    "[\"admin\", \"button\", \"✨ Предложить ИИ\", \"\"]": [
+      "critic_query_draft_binding",
+      "critic_query_draft_actions"
+    ],
+    "[\"user\", \"command\", \"/search_suggest\", \"\"]": [
+      "critic_query_draft_binding",
+      "critic_query_draft_actions"
+    ],
+    "[\"user\", \"button\", \"Предложить ИИ\", \"\"]": [
+      "critic_query_draft_binding",
+      "critic_query_draft_actions"
+    ],
+    "[\"user\", \"button\", \"✨ Предложить ИИ\", \"\"]": [
+      "critic_query_draft_binding",
+      "critic_query_draft_actions"
     ]
   },
   "handlers": {

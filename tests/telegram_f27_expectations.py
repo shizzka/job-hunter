@@ -94,10 +94,11 @@ def presentation(value):
 
 
 def _without_navigation(state):
-    """Only the selected screen and read-only search draft may change."""
+    """Allow screen state and draft button binding; retain the draft's contents."""
     state = deepcopy(state)
     for user in state.get("user_state", {}).values():
-        for name in ("menu", "updated_at", "find_launch"):
+        for name in ("menu", "updated_at", "find_launch", "search_query_draft_token",
+                     "search_query_draft_binding"):
             user.pop(name, None)
     if "user_state" in state:
         state["user_state"] = {key: value for key, value in state["user_state"].items() if value}

@@ -9,10 +9,56 @@ import config
 import profile as profile_mod
 import telegram_bot
 import telegram_bot_ui as ui
-from telegram_app.routing import route_for_command
 from runtime_context import TelegramRuntimePaths
 from tests.test_telegram_bot_ui import ADMIN_SCREENS, COMMON_SCREENS, MENU_COMMANDS
 from tests.test_f27_critic_navigation import assert_actions
+
+
+
+# Reviewed destinations are independent of routing flags and production layouts.
+EXPECTED_DESTINATION_GROUPS = {
+    ui.MENU_MAIN: "/find /help /review",
+    ui.MENU_RESPONSES: "/check /hh_responses /menu_responses /research /runs /stats /why_no_apply",
+    ui.MENU_SETTINGS: "/directions /menu_settings",
+    ui.MENU_HH: "/analyze /grabresume /hh_auth /hh_resumes /menu_hh /refresh_resume /search_resume",
+    ui.MENU_CANDIDATE: "/candidate_add_fact /candidate_facts /candidate_interview /candidate_profile /candidate_upload",
+    ui.MENU_REPEAT: "/repeat_3day /repeat_daily /repeat_off /repeat_weekly /schedule",
+    ui.MENU_COMPANIES: "/companies /company_block /company_unblock",
+    ui.MENU_SEARCH: "/search_settings /search_edit /search_suggest /search_use_draft",
+    ui.MENU_SEARCH_CONDITIONS: "/search_conditions /search_remote_toggle /search_salary /search_salary_toggle",
+    ui.MENU_APPLICATION_MODE: "/search_application_auto /search_application_confirm /search_application_mode /search_application_preview",
+    ui.MENU_EXPERIENCE: "/search_experience /search_experience_1_3 /search_experience_3_6 /search_experience_6_plus /search_experience_any /search_experience_none",
+    ui.MENU_MONITOR: "/status",
+    ui.MENU_LOGS: "/chat_log /log /menu_logs /raw_log",
+    ui.MENU_ADMIN: "/backfill /clients /daemon_off /daemon_on /diagnostics /digest /market_research /menu_admin /profiles /seen_reset /users",
+    ui.MENU_LLM: "/ai_limits /llm_balance /llm_test /menu_llm",
+}
+EXPECTED_DESTINATIONS = {command: menu for menu, commands in EXPECTED_DESTINATION_GROUPS.items()
+                         for command in commands.split()}
+SECTION_ACTION_COMMANDS = set(MENU_COMMANDS) | set("""
+    /company_block /company_unblock /search_experience_any /search_experience_none
+    /search_experience_1_3 /search_experience_3_6 /search_experience_6_plus /search_salary
+    /search_salary_toggle /search_remote_toggle /search_application_preview
+    /search_application_confirm /search_edit /search_use_draft /llm_balance /llm_test /ai_limits
+""".split())
+SPECIAL_ACTIONS = {
+    "/search_suggest": ["✅ Сохранить предложенное", "✏️ Изменить запросы"],
+    "/search_application_auto": ["Да, включить", "Нет"],
+    "/directions": ["➕ Новое направление", "📊 Статистика резюме"],
+    "/find": ["🔎 Начать поиск", "🧪 Только показать результаты"],
+    "/review": ["🔎 Найти вакансии"],
+}
+
+
+def required_actions(command, role, destination):
+    if command in SPECIAL_ACTIONS:
+        return SPECIAL_ACTIONS[command]
+    if command not in SECTION_ACTION_COMMANDS:
+        return []  # A terminal result or text-entry prompt in this fixture.
+    expected = list({**COMMON_SCREENS, **ADMIN_SCREENS}[destination])
+    if destination == ui.MENU_SETTINGS and role == ui.ROLE_ADMIN:
+        expected.append("🛠 Для админа")
+    return expected
 
 
 def button_cases():
@@ -93,14 +139,15 @@ def test_every_button_returns_its_owner_or_target_submenu(menu_bot, role, menu, 
     principal = {"user_id": 42, "role": role, "profile": "qa"}
     bot._set_selected_menu(42, menu)
     command, arg = ui._resolve_message_command(label, role)
+    if command == "/search_application_auto":
+        bot._profile("qa").hh.application_mode = "confirm"
     async def run():
         await bot._dispatch(42, principal, command, arg)
         for worker in workers:
             if worker.task:
                 await worker.task
     asyncio.run(run())
-    expected = (ui.MENU_MAIN if command == "/help" else
-                MENU_COMMANDS.get(command, ui.reply_menu_for_command(role, command) or menu))
+    expected = EXPECTED_DESTINATIONS[command]
     assert bot._selected_menu(principal) == expected
     # Global destinations and screen actions share the same four persistent buttons.
     keyboards = [call.kwargs["reply_markup"] for call in bot._send_text.call_args_list + bot._send_document.call_args_list
@@ -108,15 +155,9 @@ def test_every_button_returns_its_owner_or_target_submenu(menu_bot, role, menu, 
     assert keyboards or any(call.kwargs.get("reply_markup", {}).get("inline_keyboard")
                             for call in bot._send_text.call_args_list), command
     assert all(markup == ui.build_reply_markup(role) for markup in keyboards)
-    route = route_for_command(command)
-    if expected != ui.MENU_MAIN and (command in MENU_COMMANDS or (route and route.actions)):
-        # Inspect the actual dispatch output: a correct global keyboard alone
-        # cannot prove that any section action is reachable.
-        expected_actions = ui.build_menu_inline_markup(role, expected, token="unused")
-        assert_actions(bot._send_text.call_args_list,
-                       [button["text"].removeprefix("✓ ")
-                        for row in expected_actions["inline_keyboard"] for button in row
-                        if button["text"] != ui.BUTTON_BACK])
+    expected_actions = required_actions(command, role, expected)
+    if expected_actions:
+        assert_actions(bot._send_text.call_args_list, expected_actions)
 
 
 @pytest.mark.parametrize("role,menu,label", list(button_cases()))
@@ -132,8 +173,7 @@ def test_direct_command_recovers_owner_from_another_selected_menu(menu_bot, role
             if worker.task:
                 await worker.task
     asyncio.run(run())
-    expected = (ui.MENU_MAIN if command == "/help" else
-                MENU_COMMANDS.get(command, ui.reply_menu_for_command(role, command) or menu))
+    expected = EXPECTED_DESTINATIONS[command]
     assert bot._selected_menu(principal) == expected
 
 
@@ -200,22 +240,36 @@ def test_busy_ai_commands_do_not_reserve_a_credit(menu_bot, monkeypatch, command
     assert limits.get_user_snapshot(42) == before
 
 
-@pytest.mark.parametrize("role,menu,label", [
-    case for case in button_cases()
-    if ui._resolve_message_command(case[2], case[0])[0] not in {*MENU_COMMANDS, "/help"}
-])
-def test_moving_any_leaf_button_changes_its_dispatch_menu(menu_bot, monkeypatch, role, menu, label):
+@pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN])
+@pytest.mark.parametrize("label", ["✨ Предложить ИИ", "✏️ Изменить запросы"])
+def test_contract_detects_missing_actions_even_without_routing_action_flags(menu_bot, monkeypatch, role, label):
+    bot, _ = menu_bot
+    send = bot._send_text
+    async def lose_actions(chat_id, text, **kwargs):
+        if "inline_keyboard" in (kwargs.get("reply_markup") or {}):
+            kwargs.pop("reply_markup")
+        await send(chat_id, text, **kwargs)
+    lose_actions.call_args_list = send.call_args_list
+    monkeypatch.setattr(bot, "_send_text", lose_actions)
+    with pytest.raises(AssertionError):
+        test_every_button_returns_its_owner_or_target_submenu(menu_bot, role, ui.MENU_SEARCH, label)
+
+
+@pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN])
+def test_contract_detects_a_leaf_moved_to_the_wrong_destination(menu_bot, monkeypatch, role):
     original = ui.reply_menu_layouts
-    target = ui.MENU_HH if menu != ui.MENU_HH else ui.MENU_SEARCH
-    def rearranged(role):
-        layouts = original(role)
-        for row in layouts[menu]:
-            if label in row:
-                row.remove(label)
-        layouts[target].append([label])
+    def wrong_destination(current_role):
+        layouts = original(current_role)
+        for rows in layouts.values():
+            for row in rows:
+                if "✨ Предложить ИИ" in row:
+                    row.remove("✨ Предложить ИИ")
+        layouts[ui.MENU_HH].append(["✨ Предложить ИИ"])
         return layouts
-    monkeypatch.setattr(ui, "reply_menu_layouts", rearranged)
-    test_every_button_returns_its_owner_or_target_submenu(menu_bot, role, target, label)
+    monkeypatch.setattr(ui, "reply_menu_layouts", wrong_destination)
+    with pytest.raises(AssertionError):
+        test_every_button_returns_its_owner_or_target_submenu(
+            menu_bot, role, ui.MENU_HH, "✨ Предложить ИИ")
 
 
 def test_previous_llm_button_label_still_routes_to_the_same_command():

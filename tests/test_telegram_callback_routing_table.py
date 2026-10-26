@@ -19,6 +19,8 @@ from tests.test_telegram_callbacks import _callback, _configured_bot
 # F27 additions supplement the immutable split-22 callback inventory. Each
 # payload is exercised with real routing/admission in the focused F27 suites.
 F27_CALLBACK_CASES = {
+    "apps:": ("apps:synthetic-token:all:1", "tests/test_f27_application_filters.py"),
+    "qd:": ("qd:synthetic-token:save", "tests/test_f27_query_draft_actions.py"),
     "nav:": ("nav:synthetic-token:directions", "tests/test_f27_navigation.py"),
     "cf:": ("cf:42:abcdef123456:save", "tests/test_f27_critic_facts.py"),
     "fs:": ("fs:go:synthetic-token", "tests/test_f27_search.py"),
