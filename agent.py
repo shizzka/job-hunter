@@ -3124,6 +3124,7 @@ async def do_fresh_search() -> dict:
 
 async def do_daemon():
     """Основной цикл демона: поиск + проверка приглашений."""
+    import daemon_schedule
     log.info("Starting daemon mode")
     log.info("  Search interval: %d min", config.SEARCH_INTERVAL_MIN)
     log.info("  Fresh HH interval: %d min", getattr(config, "HH_FRESH_SEARCH_INTERVAL_MIN", 0))
@@ -3132,6 +3133,7 @@ async def do_daemon():
         config.DAEMON_PID_FILE,
         expected_tokens=runtime_control.AGENT_DAEMON_TOKENS,
     )
+    schedule_home = Path(config.DAEMON_PID_FILE).parent
     try:
         _write_runtime_status("daemon_start", "Job Hunter запущен в режиме демона", "idle", "daemon")
         await office_log("daemon_start", "Job Hunter запущен в режиме демона", "idle")
@@ -3145,6 +3147,17 @@ async def do_daemon():
         last_invite_check = 0
         last_audit_day = None
 
+        def publish_schedule(status="waiting"):
+            remaining = max(0, last_search + search_interval - asyncio.get_event_loop().time())
+            if (fresh_interval > 0 and config.HH_ENABLED
+                    and getattr(config, "HH_FRESH_SEARCH_ENABLED", True)):
+                remaining = min(remaining, max(0, last_fresh_search + fresh_interval
+                                              - asyncio.get_event_loop().time()))
+            daemon_schedule.publish(schedule_home, pid=os.getpid(),
+                interval_min=config.SEARCH_INTERVAL_MIN,
+                delay=remaining if status == "waiting" else None, status=status)
+
+        publish_schedule("starting")
         stop_event = asyncio.Event()
 
         def _signal_handler(*_):
@@ -3169,6 +3182,7 @@ async def do_daemon():
             # Полный поиск
             if now - last_search >= search_interval:
                 log.info("Running search cycle...")
+                publish_schedule("searching")
                 try:
                     await do_search()
                 except Exception as e:
@@ -3179,6 +3193,7 @@ async def do_daemon():
             # Легкий HH fresh-поиск между полными циклами
             elif fresh_interval > 0 and now - last_fresh_search >= fresh_interval:
                 log.info("Running fresh HH search cycle...")
+                publish_schedule("searching")
                 try:
                     await do_fresh_search()
                 except Exception as e:
@@ -3194,6 +3209,7 @@ async def do_daemon():
                     log.error("Invite check failed: %s", e)
                 last_invite_check = asyncio.get_event_loop().time()
 
+            publish_schedule()
             # Ждём 60 секунд или до сигнала остановки
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=60)
@@ -3204,6 +3220,8 @@ async def do_daemon():
         await office_log("daemon_stop", "Job Hunter остановлен", "offline")
         log.info("Daemon stopped")
     finally:
+        daemon_schedule.publish(schedule_home, pid=os.getpid(), interval_min=config.SEARCH_INTERVAL_MIN,
+                                status="stopped")
         runtime_control.unregister_current_process(config.DAEMON_PID_FILE)
 
 

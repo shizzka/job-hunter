@@ -296,7 +296,7 @@ def test_f27_new_destinations_are_read_only(dispatch_bot, monkeypatch, role, lab
         launch = bot._load_state()["user_state"]["42"]["find_launch"]
         assert launch["profile"] == "qa-dev"
         assert launch["choices"] == launch["selected"] == ["qa"]
-        assert launch["auto"] is False
+        assert launch["auto"] is True
     elif command == "/review":
         assert events == [["_show_review_queue", [], {"profile_name": "qa-dev", "reset": True}]]
     else:

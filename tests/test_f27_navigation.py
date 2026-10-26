@@ -98,6 +98,7 @@ def test_start_uses_local_configuration_and_restores_context(tmp_path, monkeypat
         str(number): {"status": "pending", "profile_name": "qa", "direction": "qa"} for number in range(pending)}}))
     profile = SimpleNamespace(home_dir=str(tmp_path), analytics_events_file="synthetic", seen_file="synthetic", hh=SimpleNamespace(cookies_file=str(cookies), application_mode="confirm"))
     bot = SimpleNamespace(_profile=lambda name: profile, _daemon_state=lambda name: {"running": True},
+        _review_accessible_items=lambda name: [dict(token=str(i)) for i in range(pending)],
         _profile_schedule=lambda name: (480, 60), _set_selected_menu=lambda *a: None,
         _menu_reply_markup=lambda *a, **k: ui.build_reply_markup(ui.ROLE_USER), _send_text=AsyncMock())
     result = asyncio.run(TelegramNavigation._send_start_summary(bot, 42, {"user_id": 42}, "qa"))

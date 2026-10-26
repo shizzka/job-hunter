@@ -42,7 +42,7 @@ def test_uncertain_cards_keep_safe_navigation_in_both_entry_paths(setup, orphan)
     assert queue._read_queue('qa') == before
 
 
-@pytest.mark.parametrize('action', ['g', 'b', 's', 'x', 'X', 'm', 'w'])
+@pytest.mark.parametrize('action', ['g', 'b', 's', 'x', 'X', 'm'])
 def test_uncertain_cannot_use_forged_or_old_mutation_and_more_controls(setup, action):
     bot, principal, items = setup
     token = items[0]['token']

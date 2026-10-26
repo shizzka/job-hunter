@@ -13,11 +13,12 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import analytics_read_cache as read_cache
 import config
 import company_blacklist
+import profile_access
 import seen
 from direction_history import runtime_metadata
-from state_store.private_journal import iter_json_records
 from state_store.protected import ProtectedJsonStore
 from state_store.process_owner import current_process_owner, owner_alive as _owner_alive
 
@@ -226,7 +227,8 @@ def mark_candidate(token: str, status: str, message: str = "", *, profile_name: 
             if item.get("status") == "applying":
                 item["revoked"] = True
                 return
-            if item.get("external_started") or item.get("status") == "uncertain" or item.get("orphan_recovered"):
+            if (item.get("external_started") or item.get("status") == "uncertain"
+                    or item.get("orphan_recovered") or item.get("resolution")):
                 return  # Generic UI updates cannot reopen or erase an external attempt.
             item["status"] = status
             item["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -338,11 +340,17 @@ def resolve_orphaned_apply(token: str, *, profile_name: str, user_id: int,
         nonlocal resolved
         _recover_applying(data, time.time(), token)
         item = data["items"].get(token)
-        if not item or item.get("status") != "uncertain" or not item.get("orphan_recovered"):
+        if (not item or item.get("status") != "uncertain"
+                or _safe_profile(item.get("profile_name")) != _safe_profile(profile_name)):
             return
         retry_token = uuid.uuid4().hex[:12]
         if confirmed_not_sent:
             if _owner_alive(item):
+                return
+            vacancy = item.get("vacancy") or {}
+            if ((vacancy.get("source") or "hh") != "hh"
+                    or _local_application_outcomes(store.path.parent).get(
+                        str(vacancy.get("id") or "").removeprefix("hh:")) not in {None, "apply_uncertain"}):
                 return
             from state_store.native_apply import NativeApplyRepository
             binding = item.get("native_attempt") or {}
@@ -351,6 +359,18 @@ def resolve_orphaned_apply(token: str, *, profile_name: str, user_id: int,
                 raise ValueError("Invalid manual native attempt binding")
             repository = NativeApplyRepository(path.with_name("hh_cookies.json"), "hh")
             url = binding.get("url") or (item.get("vacancy") or {}).get("url")
+            try:
+                identity = repository.key(url)
+            except (TypeError, ValueError):
+                return
+            for other in data["items"].values():
+                if other is item or other.get("status") != "applying" or not _owner_alive(other):
+                    continue
+                try:
+                    if repository.key((other.get("vacancy") or {}).get("url")) == identity:
+                        return
+                except (TypeError, ValueError):
+                    continue
             if not repository.authorize_manual_retry(
                     url, token, item.get("owner"), binding.get("owner"), retry_token, int(user_id),
                     grace_seconds=ORPHAN_APPLY_GRACE_SECONDS,
@@ -405,7 +425,7 @@ def build_orphaned_apply_markup(item: dict, profile_name: str) -> dict:
     if url:
         rows.append([{"text": "🔗 Проверить на hh.ru", "url": url}])
     rows.extend([
-        [{"text": "Проверил — разобрано", "callback_data": f"mar:{profile_name}:{token}:handled"}],
+        [{"text": "Проверил — отклик есть", "callback_data": f"mar:{profile_name}:{token}:handled"}],
         [{"text": "Проверил — отклика нет", "callback_data": f"mar:{profile_name}:{token}:retry"}],
     ])
     return {"inline_keyboard": rows}
@@ -479,9 +499,16 @@ def _append_feedback_log(item: dict, profile_name: str | None) -> None:
 
 def _local_application_outcomes(home: Path) -> dict:
     """Saved evidence only: rendering must never collect/refresh HH data."""
+    paths = [home / name for name in ("seen_vacancies.json", "negotiation_snapshots.jsonl", "analytics_events.jsonl")]
+    key = ("queue_outcomes", tuple(read_cache.stamp(path) for path in paths),
+           profile_access.current_scope())
+    return read_cache.memo(key, lambda: (_read_local_application_outcomes(home), None))
+
+
+def _read_local_application_outcomes(home: Path) -> dict:
     outcomes = seen.application_outcomes_from_file(str(home / "seen_vacancies.json"))
     for filename in ("negotiation_snapshots.jsonl", "analytics_events.jsonl"):
-        for row in iter_json_records(home / filename):
+        for row in read_cache.journal(home / filename).read(home / filename)[0]:
             if filename == "negotiation_snapshots.jsonl":
                 if row.get("kind"):
                     continue  # summaries are not vacancy observations
@@ -520,6 +547,12 @@ def _reconcile_pending(store, data: dict, profile_name: str) -> dict:
             action = outcomes.get(str(vacancy.get("id") or "").removeprefix("hh:"))
             if not action:
                 continue
+            previous = current["items"].get(item.get("retry_of"), {})
+            if (action == "apply_uncertain" and previous.get("resolution") == "confirmed_not_sent"
+                    and previous.get("retry_token") == item.get("token")
+                    and previous.get("profile_name") == item.get("profile_name")
+                    and (previous.get("vacancy") or {}).get("id") == vacancy.get("id")):
+                continue  # An attested successor still needs its own explicit approval.
             uncertain = action == "apply_uncertain" or item.get("external_started")
             item.update(status="uncertain" if uncertain else "already_applied",
                         message="Нужна сверка: результат отклика не подтверждён."
@@ -798,11 +831,8 @@ def build_review_card_markup(item: dict, profile_name: str) -> dict:
     rows = []
     if item.get("status") == "uncertain":
         # Recovery choices only attest a manual check; they never send an apply.
-        if item.get("orphan_recovered"):
-            rows.extend(build_orphaned_apply_markup(item, profile_name)["inline_keyboard"])
-        elif vacancy.get("url"):
-            rows.append([{"text": "🔗 Проверить на hh.ru", "url": vacancy["url"]}])
-        rows.extend([[button("◀", "h"), button("▶", "v")],
+        rows.extend(build_orphaned_apply_markup(item, profile_name)["inline_keyboard"])
+        rows.extend([[button("❓ Почему", "w")], [button("◀", "h"), button("▶", "v")],
                      [{"text": "☰ Вся очередь", "callback_data": f"rq:l:{profile_name}:0"}]])
         return {"inline_keyboard": rows}
     if item.get("allow_ai_apply", True) and (vacancy.get("source") or "hh") == "hh":

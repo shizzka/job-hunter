@@ -50,6 +50,7 @@ def test_second_unchanged_home_render_does_not_resummarize(tmp_path, monkeypatch
     profile = SimpleNamespace(home_dir=tmp_path, analytics_events_file=tmp_path / "analytics_events.jsonl",
         seen_file=tmp_path / "seen_vacancies.json", hh=SimpleNamespace(cookies_file=cookies, application_mode="confirm"))
     bot = SimpleNamespace(_profile=lambda name: profile, _daemon_state=lambda name: {"running": False},
+        _review_accessible_items=lambda name: [],
         _profile_schedule=lambda name: (0, 0), _set_selected_menu=lambda *args: None,
         _menu_reply_markup=lambda *args, **kwargs: {}, _send_text=AsyncMock())
     spy = spy_summary(monkeypatch)

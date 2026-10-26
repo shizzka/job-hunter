@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 import analytics
+import analytics_read_cache as cache
 import profile_access
 from telegram_app.guards import read_thread
 from direction_history import ALL, UNSPECIFIED, LEGACY_TITLE, HistoryScope
@@ -206,13 +207,13 @@ def responses_snapshot(profile, *, days=30):
     sends = application_history.summarize(profile.home_dir, events_file=profile.analytics_events_file,
         seen_file=profile.seen_file, days=days, recent_limit=None)
     view = HistoryScope(profile.home_dir)
-    latest = {}
-    for event in analytics.history_events(profile.analytics_events_file):
-        if event.get("event") == "negotiation_status":
-            key = view.owner(event), vacancy_key(event)
-            prior = latest.get(key, {})
-            if str(event.get("created_at") or "") >= str(prior.get("created_at") or ""):
-                latest[key] = event
+    key = ("response_outcomes", cache.stamp(profile.analytics_events_file),
+           cache.ownership_key(view), profile_access.current_scope())
+    try:
+        latest = cache.memo(key, lambda: (_response_outcomes(profile, view), None))
+    except (OSError, ValueError):
+        latest = {}
+        sends["incomplete"] = True
     viewed = invitations = rejected = 0
     for row in sends["recent"]:
         event = latest.get((view.owner(row), vacancy_key(row)), {})
@@ -224,3 +225,15 @@ def responses_snapshot(profile, *, days=30):
     return {"sent": sends["count"], "viewed": viewed,
             "invitations": invitations, "rejected": rejected,
             "waiting": max(0, sends["count"] - invitations - rejected), "incomplete": sends["incomplete"]}
+
+
+def _response_outcomes(profile, view):
+    from direction_history import vacancy_key
+    latest = {}
+    for event in analytics.history_events(profile.analytics_events_file, compact=True):
+        if event.get("event") == "negotiation_status":
+            key = view.owner(event), vacancy_key(event)
+            prior = latest.get(key, {})
+            if str(event.get("created_at") or "") >= str(prior.get("created_at") or ""):
+                latest[key] = event
+    return latest

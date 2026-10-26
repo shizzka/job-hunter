@@ -371,15 +371,25 @@ class TelegramSearch:
 
         active_command.task = self._create_active_task(active_command, runner)
 
+    @staticmethod
+    def _find_effective_mode(profile, direction):
+        # _profile() already has the active direction overlaid. Other choices
+        # must inherit the underlying profile, exactly as overlay_profile does.
+        base = getattr(profile, "_direction_base", profile)
+        return direction["application_mode"] if "application_mode" in direction else base.hh.application_mode
+
     def _find_snapshot(self, profile_name):
         import directions
         import hashlib
         import json
         profile = self._profile(profile_name)
+        base_profile = getattr(profile, "_direction_base", profile)
         items = directions.list_directions(profile.home_dir)
         active = directions.active_direction(profile.home_dir)
         base = {"home": profile.home_dir, "items": items, "active": active,
-                "mode": profile.hh.application_mode, "queries": profile.hh.search_queries}
+                "hh": vars(profile.hh), "base_hh": vars(base_profile.hh),
+                "effective_modes": {item["name"]: self._find_effective_mode(profile, item)
+                                    for item in items}}
         return hashlib.sha256(json.dumps(base, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def _find_launch_current(self, state):
@@ -414,12 +424,12 @@ class TelegramSearch:
                 await self._send_text(chat_id, "Поиск изменился. Откройте «Найти вакансии» заново.")
                 return
             state["selected"] = selected
-            state["auto"] = any(item.get("application_mode", "confirm") == "auto" for item in chosen) if chosen else profile.hh.application_mode == "auto"
+            state["auto"] = any(self._find_effective_mode(profile, item) == "auto" for item in chosen) if chosen else profile.hh.application_mode == "auto"
             lines = ["🔎 Найти вакансии сейчас", ""]
             if chosen:
                 for item in chosen:
                     lines.extend([f"Поиск: {item['title']}",
-                                  f"Режим: {self._application_mode_label(item.get('application_mode', 'confirm'))}"])
+                                  f"Режим: {self._application_mode_label(self._find_effective_mode(profile, item))}"])
             else:
                 lines.extend(["Поиск: " + ", ".join(profile.hh.search_queries),
                               f"Режим: {self._application_mode_label(profile.hh.application_mode)}"])

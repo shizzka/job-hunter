@@ -142,10 +142,7 @@ class TelegramNavigation:
         """Restore context from local state; opening /start never probes hh.ru."""
         import directions
         import application_history
-        import json
-        import time
-        import company_blacklist
-        from direction_views import DirectionView
+        import daemon_schedule
         from telegram_app import history
         from telegram_app.guards import read_thread
         profile = self._profile(profile_name)
@@ -158,26 +155,13 @@ class TelegramNavigation:
         if not (active and resumes and Path(profile.hh.cookies_file).is_file()
                 and mode in {"preview", "confirm", "auto"}):
             return False
-        # Scope the count exactly like the decision inbox, including tester restrictions.
-        view = DirectionView(profile.home_dir)
-        try:
-            queue = json.loads((Path(profile.home_dir) / "manual_apply_queue.json").read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            queue = {"items": {}}
-        candidates = [item for item in queue.get("items", {}).values()
-                      if isinstance(item, dict) and item.get("status") in {"pending", "uncertain"}
-                      and item.get("profile_name", profile_name) == profile_name
-                      and (item.get("status") == "uncertain" or (
-                          float(item.get("snoozed_until") or 0) <= time.time()
-                          and (not item.get("created_ts") or time.time() - float(item["created_ts"]) <= 7 * 24 * 60 * 60)
-                          and not company_blacklist.is_blocked((item.get("vacancy") or {}).get("company", ""), profile_name)))]
-        pending = len(view.review_items(candidates))
+        # Reconcile and count the same accessible groups as the decision inbox.
+        pending = len(await read_thread(self._review_accessible_items, profile_name))
         applications = await read_thread(application_history.summarize, profile.home_dir,
             events_file=profile.analytics_events_file, seen_file=profile.seen_file, days=7)
         daemon = self._daemon_state(profile_name)
         interval, _ = self._profile_schedule(profile_name)
-        next_search = (f"в течение {interval} мин (по расписанию)" if daemon.get("running") and interval > 0
-                       else "расписание выключено")
+        next_search = daemon_schedule.describe(profile.home_dir, daemon, interval)
         labels = {"preview": "👀 Только показать", "confirm": "✋ Подтверждать отклик", "auto": "⚡ Автоматически"}
         prefix = "не меньше " if applications.get("incomplete") else ""
         text = (f"Job Hunter работает\n\n📋 Ждут решения: {pending}\n"

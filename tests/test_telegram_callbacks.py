@@ -509,50 +509,46 @@ def test_callback_router_shows_manual_reason(monkeypatch):
 
 def test_callback_router_blocks_company(monkeypatch, tmp_path):
     import company_blacklist
-    monkeypatch.setattr(company_blacklist, "_path", lambda profile_name=None: tmp_path / str(profile_name) / "company_blacklist.json")
-    bot, calls = _configured_bot(monkeypatch)
-    marks = []
-    monkeypatch.setattr(
-        telegram_bot.manual_apply_queue,
-        "get_candidate",
-        lambda token, *, profile_name=None: {
-            "status": "pending", "token": "token-1", "vacancy": {"company": "Example"}
-        },
-    )
-    monkeypatch.setattr(
-        telegram_bot.manual_apply_queue,
-        "mark_candidate",
-        lambda token, status, reason, *, profile_name=None: marks.append(
-            (token, status, reason)
-        ),
-    )
-
-    async def run_command_capture(argv, *, timeout):
-        return {"ok": True}
-
-    monkeypatch.setattr(
-        telegram_bot.runtime_control,
-        "run_command_capture",
-        run_command_capture,
-    )
-
+    import manual_apply_queue
     from types import SimpleNamespace
-    monkeypatch.setattr(bot, "_profile", lambda name: SimpleNamespace(home_dir=str(tmp_path)))
+    homes = {name: tmp_path / name for name in ('qa', 'other')}
+    monkeypatch.setattr(company_blacklist, '_path', lambda profile_name=None:
+                        homes[profile_name] / 'company_blacklist.json')
+    monkeypatch.setattr(manual_apply_queue, '_queue_path', lambda profile_name=None:
+                        homes[profile_name] / 'manual_apply_queue.json')
+    bot, calls = _configured_bot(monkeypatch)
+    monkeypatch.setattr(bot, '_profile_names', lambda: ['qa', 'other'])
+    monkeypatch.setattr(bot, '_profile', lambda name: SimpleNamespace(home_dir=str(homes[name])))
+    own = manual_apply_queue.create_candidate({'id': 'one', 'company': 'Example'},
+                                              {'score': 80}, profile_name='qa')
+    other = manual_apply_queue.create_candidate({'id': 'two', 'company': 'Example'},
+                                                {'score': 80}, profile_name='other')
+    other_queue = manual_apply_queue._queue_path('other').read_bytes()
+    other_blacklist = company_blacklist._path('other')
     async def edit(chat_id, message_id, text, **kwargs):
-        calls["messages"].append((chat_id, text, kwargs.get("reply_markup")))
-    monkeypatch.setattr(bot, "_edit_text", edit)
-    asyncio.run(
-        bot._handle_callback_query(
-            _callback(
-                "manual_block_company:qa:token-1"
-            )
-        )
-    )
+        calls['messages'].append((chat_id, text, kwargs.get('reply_markup')))
+    monkeypatch.setattr(bot, '_edit_text', edit)
 
-    assert not company_blacklist.is_blocked("Example", "qa")
-    assert marks == []
-    assert "Заблокировать Example?" in calls["messages"][0][1]
-    assert calls["messages"][0][2]["inline_keyboard"][0][0]["callback_data"] == "rq:X:qa:token-1"
+    async def scenario():
+        await bot._handle_callback_query(_callback(
+            f'manual_block_company:qa:{own["token"]}', chat_type='private'))
+        assert not company_blacklist.is_blocked('Example', 'qa')
+        assert manual_apply_queue.get_candidate(own['token'], profile_name='qa')['status'] == 'pending'
+        assert 'Заблокировать Example?' in calls['messages'][-1][1]
+        confirm = calls['messages'][-1][2]['inline_keyboard'][0][0]['callback_data']
+        assert confirm == f'rq:X:qa:{own["token"]}'
+        await bot._handle_callback_query(_callback(confirm, chat_type='private'))
+        assert company_blacklist.is_blocked('Example', 'qa')
+        assert manual_apply_queue.get_candidate(own['token'], profile_name='qa')['status'] == 'company_blocked'
+        paths = [manual_apply_queue._queue_path('qa'), company_blacklist._path('qa')]
+        written = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
+        await bot._handle_callback_query(_callback(confirm, chat_type='private'))
+        assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == written
+        assert not company_blacklist.is_blocked('Example', 'other')
+        assert manual_apply_queue.get_candidate(other['token'], profile_name='other')['status'] == 'pending'
+        assert manual_apply_queue._queue_path('other').read_bytes() == other_queue
+        assert not other_blacklist.exists()
+    asyncio.run(scenario())
 
 
 def test_callback_router_retries_captcha_search(monkeypatch):

@@ -7,6 +7,7 @@ import logging
 
 from direction_views import DirectionView
 from telegram_app.command_queue import profile_command
+from telegram_app.guards import read_thread
 from telegram_bot_ui import (
     ROLE_ADMIN,
     ROLE_USER,
@@ -52,13 +53,19 @@ class TelegramReview:
         return sorted(items, key=lambda item: (self._review_score(item) is None,
                                                -(self._review_score(item) or 0)))
 
+    def _review_accessible_items(self, profile_name: str) -> list[dict]:
+        """The selected direction plus the permitted unspecified group, once per token."""
+        items = self._review_visible_items(profile_name)
+        items += self._review_visible_items(profile_name, unspecified=True)
+        return list({item["token"]: item for item in items}.values())
+
     async def _show_review_queue(self, chat_id: int, principal: dict, *, profile_name: str,
                                  page=0, message_id=0, sort="score", unspecified=False,
                                  token=None, advance_from=None, hint=False, reset=False) -> None:
         """One pending decision at a time; snapshot positions survive decisions in this session."""
         reply_menu = reply_menu_for_command(principal.get("role", ROLE_USER), "/review")
         self._set_selected_menu(principal["user_id"], reply_menu)
-        items = self._review_visible_items(profile_name, unspecified=unspecified)
+        items = await read_thread(self._review_visible_items, profile_name, unspecified=unspecified)
         view = DirectionView(self._profile(profile_name).home_dir)
         key = (int(principal["user_id"]), profile_name, view.callback_scope, unspecified)
         sessions = self.__dict__.setdefault("_review_sessions", {})
@@ -71,7 +78,8 @@ class TelegramReview:
         tokens = session["tokens"]
         available = {item["token"]: item for item in items}
         if not items:
-            unknown = self._review_visible_items(profile_name, unspecified=True) if not unspecified else []
+            unknown = (await read_thread(self._review_visible_items, profile_name, unspecified=True)
+                       if not unspecified else [])
             if unknown:
                 text = (f"📋 В выбранном направлении нет карточек. Ещё ждут решения или сверки: {len(unknown)}"
                         " · направление не указано.")
@@ -111,7 +119,7 @@ class TelegramReview:
         reply_menu = reply_menu_for_command(principal.get("role", ROLE_USER), "/review")
         self._set_selected_menu(principal["user_id"], reply_menu)
         view = DirectionView(self._profile(profile_name).home_dir)
-        items = manual_apply_queue.list_candidates(profile_name, limit=250)
+        items = await read_thread(manual_apply_queue.list_candidates, profile_name, limit=250)
         unknown = view.review_items(items, unspecified=True)
         all_items = view.review_items(items, unspecified=unspecified)
         scope = " · направление не указано" if unspecified else (f" · {view.title}" if view.title else "")
@@ -190,7 +198,8 @@ class TelegramReview:
         if expected_scope is not None and expected_scope != view.callback_scope:
             await self._send_text(chat_id, "Выбрано другое направление. Откройте «📋 Ждут решения» заново.")
             return
-        targets = [item for item in view.review_items(manual_apply_queue.list_candidates(profile_name, limit=250))
+        targets = [item for item in view.review_items(
+            await read_thread(manual_apply_queue.list_candidates, profile_name, limit=250))
                    if (score := self._review_score(item)) is not None and score < limit]
         if not targets:
             await self._send_text(chat_id, f"Вакансий с баллом ниже {limit} нет.")
@@ -225,7 +234,8 @@ class TelegramReview:
             await self._send_text(chat_id, "Выбрано другое направление. Откройте «📋 Ждут решения» заново.")
             return
         principal = {"user_id": chat_id, "role": ROLE_USER, "profile": profile_name}
-        unspecified = owner is None and token not in {i["token"] for i in self._review_visible_items(profile_name)}
+        visible = await read_thread(self._review_visible_items, profile_name) if owner is None else []
+        unspecified = owner is None and token not in {i["token"] for i in visible}
         await self._show_review_queue(chat_id, principal, profile_name=profile_name, token=token,
                                       unspecified=unspecified)
 

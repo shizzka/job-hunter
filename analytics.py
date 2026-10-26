@@ -1259,9 +1259,20 @@ def _report_events(events_file=None):
         return []
 
 
-def history_events(events_file=None, *, scope="active"):
+def history_events(events_file=None, *, scope="active", compact=False):
+    """Incremental history; full public records unless a compact report is requested."""
     view = direction_history.for_events(events_file, scope)
-    return view.records(view.events(_iter_events(events_file)))
+    path = events_file or _destination()[0]
+    try:
+        reader = (read_cache.journal(path) if compact else
+                  read_cache.journal(path, tag="history_full", projection=dict))
+        events = reader.read(path)[0]
+    except Exception as exc:
+        log.warning("Failed to read analytics events: %s", type(exc).__name__)
+        if compact:
+            raise  # A failed report must not memoize missing outcome evidence.
+        events = []
+    return view.records(view.events(events))
 
 
 def scoped_runs(records, *, events_file=None, scope="active"):

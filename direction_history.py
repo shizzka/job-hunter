@@ -185,9 +185,10 @@ class HistoryScope:
                 if metadata["hh_resume_hash"] or metadata["hh_resume_numeric_id"]:
                     application_resumes.setdefault(key, set()).add((metadata["hh_resume_hash"], metadata["hh_resume_numeric_id"]))
         # A saved application resume is stronger evidence than the active search.
-        from state_store.private_journal import read_json_records
+        import analytics_read_cache as cache
         try:
-            snapshots = read_json_records(self.home / "negotiation_snapshots.jsonl")
+            path = self.home / "negotiation_snapshots.jsonl"
+            snapshots = cache.journal(path).read(path)[0] if path.exists() else []
         except FileNotFoundError:
             snapshots = []
         snapshot_owners, snapshot_resumes = {}, {}

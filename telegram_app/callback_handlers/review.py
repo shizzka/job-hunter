@@ -12,6 +12,7 @@ from telegram_bot_ui import (
     _parse_manual_snooze_callback_data,
 )
 from telegram_app.callback_handlers import CallbackContext
+from telegram_app.guards import read_thread
 
 
 def _current_card_state(item):
@@ -110,7 +111,7 @@ async def handle_manual_recovery(self, context: CallbackContext):
         return
     _, profile_name, token, action = parts
     item = manual_apply_queue.get_candidate(token, profile_name=profile_name)
-    if not item or item.get("status") != "uncertain" or not item.get("orphan_recovered"):
+    if not item or item.get("status") != "uncertain":
         await self._answer_callback_query(callback_id, "Карточка уже разобрана.")
         return
     await self._answer_callback_query(callback_id)
@@ -121,7 +122,7 @@ async def handle_manual_recovery(self, context: CallbackContext):
                                   {"text": "Подтверждаю: отклик не отправлен",
                                    "callback_data": f"mar:{profile_name}:{token}:confirm"}]]})
         return
-    resolved = manual_apply_queue.resolve_orphaned_apply(
+    resolved = await read_thread(manual_apply_queue.resolve_orphaned_apply,
         token, profile_name=profile_name, user_id=user_id, confirmed_not_sent=action == "confirm")
     if resolved:
         if message_id > 0:
@@ -289,15 +290,25 @@ async def handle_review_card(self, context: CallbackContext):
     if view.item_direction(item) not in (None, view.name):
         await self._answer_callback_query(context.callback_id, "Выбрано другое направление. Обновите список.", show_alert=True)
         return
+    if action == "w" and status == "uncertain":
+        await self._answer_callback_query(context.callback_id)
+        text = manual_apply_queue.build_manual_why_text(item)
+        markup = {"inline_keyboard": [[{"text": "◀ Назад",
+                   "callback_data": f"rq:c:{profile_name}:{token}"}]]}
+        if context.message_id:
+            await self._edit_text(context.chat_id, context.message_id, text, reply_markup=markup)
+        else:
+            await self._send_text(context.chat_id, text, reply_markup=markup)
+        return
     unspecified = (view.item_direction(item) is None and token not in {
-        i["token"] for i in self._review_visible_items(profile_name)})
+        i["token"] for i in await read_thread(self._review_visible_items, profile_name)})
     show = dict(profile_name=profile_name, message_id=context.message_id, unspecified=unspecified)
     confirmation_key = f"{context.user_id}:{profile_name}:{token}:{context.message_id}"
     confirmations = self.__dict__.setdefault("_review_block_confirmations", set())
     if action in {"c", "m", "h", "v"}:
         confirmations.discard(confirmation_key)
     if action in {"h", "v", "c"} and status in {"pending", "uncertain"}:
-        items = self._review_visible_items(profile_name, unspecified=unspecified)
+        items = await read_thread(self._review_visible_items, profile_name, unspecified=unspecified)
         tokens = [i['token'] for i in items]
         if token not in tokens:
             await self._answer_callback_query(context.callback_id, "Карточка уже не ждёт решения.")
@@ -359,7 +370,7 @@ async def handle_review_card(self, context: CallbackContext):
         text = manual_apply_queue.build_manual_why_text(item)
         markup = {"inline_keyboard": [back]}
     else:
-        items = self._review_visible_items(profile_name, unspecified=unspecified)
+        items = await read_thread(self._review_visible_items, profile_name, unspecified=unspecified)
         key = (int(context.principal["user_id"]), profile_name, view.callback_scope, unspecified)
         session = self.__dict__.get("_review_sessions", {}).get(key, {})
         tokens = session.get("tokens") or [i["token"] for i in items]
