@@ -177,10 +177,22 @@ def f27_review_contract(case, expected):
 
     Preserve the original inventory verbatim. Every phase still compares exact
     claims, admission, access scopes and operations; only the named review
-    outcomes change to the F27 pending-only contract.
+    outcomes change to the F27 pending-only and owner recovery contracts.
     """
     expected = [deepcopy(outcome) for outcome in expected]
     name = case["name"]
+    if name == "orphan_retry_user":
+        # Manual recovery is now available to the owning user. Pin its exact
+        # operations to the original admin-confirmation recording, including
+        # every replay claim; no retry or external submit happens here.
+        assert case["role"] == "user" and case["data"] == "mar:qa-dev:token:retry"
+        reviewed = [{"phase": phase, **deepcopy(INVENTORY["traces"][index])}
+                    for phase, index in zip(("first", "repeat", "copied", "restart"),
+                        INVENTORY["outcomes"]["orphan_retry"], strict=True)]
+        for original, allowed in zip(expected, reviewed, strict=True):
+            assert original["state"] == allowed["state"]
+            assert original["return"] == allowed["return"]
+        expected = reviewed
     applies = {"apply", "apply_user", "apply_tester", "apply_group_admin",
                "admission_stopping", "apply_no_message"}
     feedbacks = {"feedback_good", "feedback_bad", "feedback_good_user",
@@ -188,7 +200,14 @@ def f27_review_contract(case, expected):
     blocks = {"block", "block_user", "block_failed", "block_no_company"}
     for outcome in expected:
         events = outcome["events"]
-        if name == "review_unknown":
+        if name == "orphan_retry_foreign":
+            # The manual route still refuses a foreign profile before reading
+            # or mutating any candidate; only its denial message changes.
+            for event in events:
+                if event[0] == "_answer_callback_query" and event[1][1:] == ["🔒 Нужны права администратора."]:
+                    assert event[2] == {"show_alert": True}
+                    event[1][1] = "Вакансия недоступна."
+        elif name == "review_unknown":
             outcome["state"] = {}
             outcome["events"] = [
                 ["get_candidate", ["2"], {"profile_name": "qa-dev"}],

@@ -338,6 +338,14 @@ def resolve_orphaned_apply(token: str, *, profile_name: str, user_id: int,
 
     def mutate(data):
         nonlocal resolved
+        bound_direction = profile_access.current_scope()[1]
+        if bound_direction:
+            from direction_history import HistoryScope
+            current = data["items"].get(token)
+            # The router's read predates an await; reject reassigned cards
+            # before recovery or native retry authorization can write state.
+            if not current or HistoryScope(store.path.parent).owner(current) != bound_direction:
+                return
         _recover_applying(data, time.time(), token)
         item = data["items"].get(token)
         if (not item or item.get("status") != "uncertain"
@@ -597,6 +605,7 @@ def list_candidates(profile_name: str, *, limit: int = 8, include_snoozed: bool 
 
 def snooze_candidate(token: str, *, profile_name: str, hours: int = 24) -> dict | None:
     item = None
+    store = _store(profile_name)
 
     def mutate(data):
         nonlocal item
@@ -605,13 +614,20 @@ def snooze_candidate(token: str, *, profile_name: str, hours: int = 24) -> dict 
                 or float(current.get("snoozed_until") or 0) > time.time()
                 or _safe_profile(current.get("profile_name")) != _safe_profile(profile_name)):
             return
+        bound_direction = profile_access.current_scope()[1]
+        if bound_direction:
+            from direction_history import HistoryScope
+            # Legacy keyboards reach this mutation directly. Check the card
+            # read under this lock, including ownership changed by a writer.
+            if HistoryScope(store.path.parent).owner(current) != bound_direction:
+                return
         item = current
         until = time.time() + max(1, int(hours)) * 3600
         item["snoozed_until"] = until
         item["snoozed_until_at"] = datetime.fromtimestamp(until).isoformat(timespec="seconds")
         item["updated_at"] = datetime.now().isoformat(timespec="seconds")
 
-    _store(profile_name).update(mutate)
+    store.update(mutate)
     return item
 
 

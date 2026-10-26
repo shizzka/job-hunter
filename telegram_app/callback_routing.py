@@ -33,7 +33,7 @@ CALLBACK_ROUTE_GROUPS = {
         'stub:': CallbackRoute(review.handle_stub_cover, phase='profile'),
         'rq:': CallbackRoute(review.handle_review_queue, phase='profile'),
         'mad:': CallbackRoute(review.handle_manual_direction, phase='profile'),
-        'mar:': CallbackRoute(review.handle_manual_recovery),
+        'mar:': CallbackRoute(review.handle_manual_recovery, user_access='manual'),
         'manual_apply:': CallbackRoute(review.handle_manual_apply, user_access='manual'),
         'manual_fb:': CallbackRoute(review.handle_manual_feedback, user_access='manual'),
         'manual_why:': CallbackRoute(review.handle_manual_why, user_access='manual'),
