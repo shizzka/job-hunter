@@ -143,14 +143,6 @@ def _summarize(events_file, *, now=None, days=30, scope="active", _events=None, 
     return report
 
 
-_RESEARCH_FIELDS = {"observed_at_utc", "recorded_at_utc", "url", "historical", "screening_type",
-                    "submission_mode", "cover_letter_status", "verdict"}
-
-
-def _research_projection(row):
-    return {**read_cache.project(row), **{k: row[k] for k in _RESEARCH_FIELDS if k in row}}
-
-
 def summarize(events_file, *, now=None, days=30, scope="active"):
     explicit_now = now
     now = now or datetime.now(timezone.utc)
@@ -161,7 +153,7 @@ def summarize(events_file, *, now=None, days=30, scope="active"):
     key = ("research", read_cache.stamp(path), read_cache.ownership_key(view), days, explicit_now)
     def compute():
         try:
-            rows, _ = read_cache.journal(path, tag="research", projection=_research_projection).read(path)
+            rows, _ = read_cache.journal(path).read(path)
         except Exception as exc:
             # Match the diagnostic reader's unavailable-journal behavior.
             analytics.log.warning("Failed to read analytics events: %s", type(exc).__name__)

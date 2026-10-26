@@ -1314,13 +1314,12 @@ def _get_run_summary(run_id=None, *, events_file=None, history_file=None, profil
         records = []
     event_path = events_file or _destination()[0]
     view = direction_history.for_events(events_file, scope)
-    # Resolve every candidate from compact evidence in one journal pass. The
-    # second pass loads the selected run in full, including its late receipts.
+    # Reports and every run identity share one compact journal and append offset.
+    # Separate ownership/per-run readers evicted this 110k-row index on each press.
+    rows = read_cache.journal(event_path).read(event_path)[0]
     lifecycle = []
     def ownership_events():
-        for event in read_cache.journal(event_path, tag=("ownership", bool(view.directions)),
-                line_filter=lambda line: b"search_started" in line or b"search_finished" in line
-                or bool(view.directions) and b'"decision"' in line).read(event_path)[0]:
+        for event in rows:
             if run_id and event.get("run_id") != run_id:
                 continue
             if event.get("event") in {"search_started", "search_finished"}:
@@ -1331,9 +1330,6 @@ def _get_run_summary(run_id=None, *, events_file=None, history_file=None, profil
     marker_owners = {e.get("run_id"): view.owner(e) for e in lifecycle if view.owner(e) is not None}
 
     def run_events(identity):
-        spellings = {json.dumps(identity, ensure_ascii=ascii_only).encode("utf-8") for ascii_only in (True, False)}
-        rows = read_cache.journal(event_path, tag=("run", identity), projection=dict,
-            line_filter=lambda line: any(value in line for value in spellings)).read(event_path)[0]
         return view.events([e for e in rows if e.get("run_id") == identity])
 
     def owned(record):

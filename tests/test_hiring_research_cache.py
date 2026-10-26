@@ -32,7 +32,7 @@ def test_research_cache_reads_zero_unchanged_bytes_and_only_append_afterwards(tm
     compute = Mock(wraps=research._summarize)
     monkeypatch.setattr(research, '_summarize', compute)
     first = research.summarize(str(path), now=now)
-    index = cache.journal(path, tag='research')
+    index = cache.journal(path)  # Cohorts now share the report journal and its offset.
     assert first == baseline
     before = index.bytes_read
     assert before == path.stat().st_size

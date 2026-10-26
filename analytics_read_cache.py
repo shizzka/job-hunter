@@ -20,7 +20,9 @@ hh_resume_numeric_id requested_resume_id resume_id resumeId resume_variant varia
 matcher_resume_sha256 cover_letter_resume_sha256 _resume_input_versions _direction_selection
 search_query _search_query query reason_code reason_group note score cluster cover_style
 retry_reason retry_outcome funnel applied mode dry_run title company fetched_at kind vacancyId
-questions_count best_guess_count required_count success'''.split())
+questions_count best_guess_count required_count success
+observed_at_utc recorded_at_utc url historical screening_type submission_mode cover_letter_status verdict
+failure_id'''.split())
 _IDENTITY = set('''direction hh_resume_hash hh_resume_numeric_id requested_resume_id resume_id
 resumeId variant_text_sha256 text_sha256 matcher_resume_sha256 cover_letter_resume_sha256
 _resume_input_versions _direction_selection search_query _search_query query'''.split())
@@ -63,7 +65,8 @@ def ownership_key(view):
 
 
 def project(row):
-    if row.get("event") in {"search_started", "search_finished"}:
+    if row.get("event") in {"search_started", "search_finished", "stage_failed", "failure_observed",
+                            "debug_artifact", "hh_ui_isolation"}:
         return dict(row)
     result = {k: v for k, v in row.items() if k in _FIELDS}
     if isinstance(row.get('vacancy'), dict):
