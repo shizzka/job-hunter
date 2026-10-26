@@ -8,6 +8,7 @@ import logging
 from telegram_app.command_queue import profile_command
 from telegram_bot_ui import (
     ROLE_USER,
+    build_active_stop_markup,
     build_progress_text,
     format_command_result,
     format_run_summary,
@@ -53,9 +54,7 @@ class TelegramCommands:
             return
 
         active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
-        from telegram_app.callback_handlers.search import stop_token
-        progress_markup = ({"inline_keyboard": [[{"text": "⏹ Остановить",
-                            "callback_data": f"fs:stop:{stop_token(profile_name, active_command)}"}]]}
+        progress_markup = (build_active_stop_markup(profile_name, active_command)
                            if flag in {"--search", "--dry-run"} else self._menu_reply_markup(principal))
         progress_message = await self._send_text(
             chat_id,
@@ -200,5 +199,5 @@ class TelegramCommands:
         if flag in {"--search", "--dry-run"}:
             last_run = self._latest_run(profile_name)
             if last_run:
-                message = f"{message}\n\n🕓 Последний поиск:\n{format_run_summary(last_run)}"
+                message = f"{message}\n\n🕓 Последний поиск:\n{format_run_summary(last_run, role=role)}"
         return message, send_as_document, document_name, document_content

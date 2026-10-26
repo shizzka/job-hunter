@@ -7,6 +7,7 @@ import pytest
 import admin_llm
 import telegram_bot
 import telegram_bot_ui as ui
+from tests.test_f27_critic_navigation import navigation_bot, register, assert_actions
 
 
 @pytest.mark.parametrize('command', ['/menu_llm', '/llm_balance', '/llm_test'])
@@ -60,23 +61,22 @@ def test_errors_do_not_leak_secrets(monkeypatch):
     assert 'secret' not in result and 'RuntimeError' in result
 
 
-def test_admin_cooldown_and_back(monkeypatch):
-    bot = telegram_bot.TelegramBot('qa')
-    principal = {'user_id': 1, 'role': ui.ROLE_ADMIN}
-    monkeypatch.setattr(bot, '_selected_profile', lambda p: 'qa')
-    monkeypatch.setattr(bot, '_active_command', lambda p: None)
-    monkeypatch.setattr(bot, '_selected_menu', lambda p: ui.MENU_LLM)
-    monkeypatch.setattr(bot, '_set_selected_menu', lambda *a: None)
-    monkeypatch.setattr(bot, '_menu_reply_markup', lambda *a, **k: {})
-    monkeypatch.setattr(bot, '_send_text', AsyncMock())
-    menu = AsyncMock()
+def test_admin_cooldown_and_back(navigation_bot, monkeypatch):
+    bot = navigation_bot
+    principal = register(ui.ROLE_ADMIN)
+    menu = AsyncMock(wraps=bot._send_menu)
     monkeypatch.setattr(bot, '_send_menu', menu)
     diagnostic = AsyncMock(return_value='OK')
     monkeypatch.setattr(admin_llm, 'diagnostic', diagnostic)
     async def run():
-        await bot._dispatch(1, principal, '/llm_test', '')
-        await bot._dispatch(1, principal, '/llm_test', '')
-        await bot._dispatch(1, principal, '/back', '')
+        await bot._dispatch(42, principal, '/llm_test', '')
+        start = bot._send_text.call_count
+        await bot._dispatch(42, principal, '/llm_test', '')
+        calls = bot._send_text.call_args_list[start:]
+        assert any('не чаще раза в минуту' in item.args[1] for item in calls)
+        assert_actions(calls, [ui.BUTTON_LLM_BALANCE, ui.BUTTON_LLM_TEST, ui.BUTTON_AI_LIMITS])
+        await bot._dispatch(42, principal, '/back', '')
     asyncio.run(run())
     diagnostic.assert_awaited_once_with(test=True)
     assert menu.call_args.kwargs['menu'] == ui.MENU_ADMIN
+    assert bot._selected_menu(principal) == ui.MENU_ADMIN

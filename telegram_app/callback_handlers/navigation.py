@@ -106,4 +106,8 @@ async def handle_navigation(self, context: CallbackContext):
             or command not in allowed or (command in ADMIN_ONLY_COMMANDS and role != ROLE_ADMIN)):
         await self._send_text(context.chat_id, "Экран изменился или недоступен. Откройте раздел заново.")
         return
+    if command in {"/candidate_save", "/candidate_edit", "/candidate_skip"}:
+        # Old navigation payloads contain no draft identity and cannot confirm it.
+        await self._send_text(context.chat_id, "Ответ изменился. Откройте подтверждение заново.")
+        return
     await self._dispatch(context.chat_id, context.principal, command, "")

@@ -971,6 +971,12 @@ def build_progress_text(label: str, *, profile_name: str, elapsed_sec: int = 0, 
     return "\n".join(lines)
 
 
+def build_active_stop_markup(profile_name, active_command) -> dict:
+    from telegram_app.callback_handlers.search import stop_token
+    return {"inline_keyboard": [[{"text": BUTTON_CANCEL_ACTIVE,
+        "callback_data": f"fs:stop:{stop_token(profile_name, active_command)}"}]]}
+
+
 def build_busy_status_text(
     *,
     active_command: str,
@@ -979,6 +985,7 @@ def build_busy_status_text(
     pid: int = 0,
     can_cancel: bool = False,
     queue_length: int = 0,
+    role: str = ROLE_ADMIN,
 ) -> str:
     lines = [
         "⏳ Сейчас выполняется команда",
@@ -988,7 +995,7 @@ def build_busy_status_text(
         f"• Прошло: {_format_elapsed(elapsed_sec)}",
         f"• В очереди: {queue_length}",
     ]
-    if pid > 0:
+    if pid > 0 and role == ROLE_ADMIN:
         lines.append(f"• PID: {pid}")
     lines.extend([
         "",
@@ -1015,14 +1022,14 @@ def build_help_text(role: str = ROLE_ADMIN, *, profile_name: str = "default", he
     ]
     if help_section:
         lines += ["", "Если что-то не работает:",
-                  "• Состояние → Журналы → Последний запуск — что произошло при поиске (/log)",
-                  "• Состояние → Журналы → Подробный — история откликов (/raw_log)",
-                  "• Отклики → Ответ ИИ в чат — ответы работодателям (/chat_ai)"]
+                  "• /log — что произошло при последнем поиске",
+                  "• /raw_log — подробная история откликов",
+                  "• /chat_ai — ответить работодателю с помощью ИИ"]
         if role == ROLE_ADMIN:
             lines += ["• Подробный журнал: /raw_log; сводка поиска: /log или /log run_id",
                       "• Ответ в конкретный чат: /chat_ai ссылка_на_чат или chat_id"]
     if role == ROLE_ADMIN:
-        lines += ["", f"Роль: {_role_title(role)}", "Раздел «Админ»: профили, пользователи, клиенты и лимиты ИИ."]
+        lines += ["", f"Роль: {_role_title(role)}", f"Раздел «{BUTTON_MENU_ADMIN}»: профили, пользователи, клиенты и лимиты ИИ."]
     return "\n".join(lines)
 
 
@@ -1087,7 +1094,7 @@ def build_guest_welcome_text(client: dict | None = None) -> str:
         "👋 Добро пожаловать в Job Hunter",
         "",
         "Если хотите стать клиентом, начните короткую заявку прямо здесь.",
-        "Кнопка: «Стать клиентом».",
+        f"Кнопка: «{BUTTON_CLIENT_START}».",
         "Нужно будет ответить на 4 коротких вопроса.",
         "",
         "После проверки администратор создаст профиль и переведёт вас на шаг авторизации.",
@@ -1101,7 +1108,7 @@ def build_hh_resumes_text(profile_name: str, resumes: list[dict]) -> str:
             f"🧾 Резюме на hh.ru профиля {title}",
             "",
             "Пока нет резюме.",
-            "Сначала нажмите «Вход в hh.ru».",
+            f"Сначала нажмите «{BUTTON_HH_AUTH}».",
         ])
     lines = [f"🧾 Резюме на hh.ru профиля {title}"]
     for idx, item in enumerate(resumes, start=1):
@@ -1402,7 +1409,7 @@ def build_ai_limits_text(*, users: list[dict], snapshots: list[dict], events: li
                 f"запусков {snapshot.get('analysis_total', 0)}"
             )
 
-    lines.extend(["", "⚙️ Управление: «Админ» → «Платные LLM» → «Лимиты ИИ»."])
+    lines.extend(["", f"⚙️ Управление: «{BUTTON_MENU_ADMIN}» → «{BUTTON_LLM}» → «{BUTTON_AI_LIMITS}»."])
     if events:
         lines.extend(["", "🕓 Последние события:"])
         for item in events:
@@ -1430,8 +1437,8 @@ def build_schedule_text(
         f"• Приглашения от работодателей: {_format_interval_label(invite_check_interval_min)}",
         f"• Демон: {_status_icon(daemon_state)} {_status_label(daemon_state)}",
         "",
-        "💡 Разовый запуск: кнопка «Поиск».",
-        "💡 Повтор: кнопки 3/день, 1/день, 1/нед или «выкл».",
+        f"💡 Разовый запуск: кнопка «{BUTTON_SEARCH}».",
+        "💡 Выберите частоту повтора кнопками ниже.",
     ])
 
 
@@ -1736,7 +1743,7 @@ def build_stats_text(
     return "\n".join(lines)
 
 
-def format_run_summary(run: dict) -> str:
+def format_run_summary(run: dict, *, role: str = ROLE_ADMIN) -> str:
     status = "не завершён" if run.get("status") == "incomplete" else ("успешно" if run.get("ok") else "с ошибкой")
     funnel = run.get("funnel") or {}
     losses = format_run_losses(run)
@@ -1751,9 +1758,9 @@ def format_run_summary(run: dict) -> str:
     icon = "⚠" if has_losses or fields["application_outcome"] == "uncertain" else (
         "✅" if fields["execution_status"] == "completed" and fields["application_outcome"] == "sent"
         else "❌" if fields["execution_status"] == "failed" else "ℹ️")
-    lines = [
-        f"{icon} {run.get('run_id') or (_counter_updated_at(run['created_at']) if run.get('created_at') else '—')} | {_pretty_runtime_mode(run.get('mode', 'search'))} | {status}",
-    ]
+    identity = (run.get('run_id') if role == ROLE_ADMIN else None) or (
+        _counter_updated_at(run['created_at']) if run.get('created_at') else '—')
+    lines = [f"{icon} {identity} | {_pretty_runtime_mode(run.get('mode', 'search'))} | {status}"]
     lines.extend([format_run_observation(run), *losses])
     if funnel:
         lines.extend([
@@ -1782,12 +1789,12 @@ def format_run_summary(run: dict) -> str:
     return "\n".join(lines)
 
 
-def build_runs_text(recent_runs: list[dict]) -> str:
+def build_runs_text(recent_runs: list[dict], *, role: str = ROLE_ADMIN) -> str:
     if not recent_runs:
         return "🕓 История поисков пока пустая."
     lines = ["🕓 Последние поиски"]
     for idx, run in enumerate(recent_runs, start=1):
-        summary_lines = format_run_summary(run).splitlines()
+        summary_lines = format_run_summary(run, role=role).splitlines()
         if run.get("direction_title"):
             summary_lines[0] += " · " + str(run["direction_title"])
         lines.extend(["", f"{idx}. {summary_lines[0]}"])
@@ -1858,7 +1865,7 @@ def _local_time(value):
     return moment.strftime("%d.%m %H:%M")
 
 
-def build_run_summary_text(summary, *, profile_name):
+def build_run_summary_text(summary, *, profile_name, role=ROLE_ADMIN):
     if summary is None:
         return "Запусков пока не было."
     def safe(value):
@@ -1869,7 +1876,7 @@ def build_run_summary_text(summary, *, profile_name):
         states["success"] = "штатно; откликов нет" if summary["application_outcome"] == "no_applications" else "штатно; dry-run"
     if summary.get("application_outcome") == "uncertain" and summary.get("execution_status") == "completed":
         states.update({key: "❔ требуется ручная сверка" for key in ("success", "partial", "failed")})
-    lines = ["📊 Последний / выбранный запуск", f"Run: {safe(summary['run_id'])}",
+    lines = ["📊 Последний / выбранный запуск", *([f"Run: {safe(summary['run_id'])}"] if role == ROLE_ADMIN else []),
              f"Профиль: {safe(_pretty_profile_name(profile_name))}",
              f"Источники: {safe(', '.join(summary['sources']) or None)}",
              f"Итог: {states.get(summary['status'], '❔ неизвестно')}"]
@@ -1913,7 +1920,8 @@ def build_run_summary_text(summary, *, profile_name):
     if summary.get('artifacts'):
         lines += ["", "Debug artifacts:"]
         lines.extend(f"• {safe(ref['artifact_type'])}: {safe(ref['artifact_ref'])}" for ref in summary['artifacts'][:2])
-    lines += ["", "🧾 /raw_log · другой запуск: /log run_id"]
+    if role == ROLE_ADMIN:
+        lines += ["", "🧾 /raw_log · другой запуск: /log run_id"]
     return "\n".join(lines)
 
 

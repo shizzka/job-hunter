@@ -89,7 +89,7 @@ class TestFormatting:
         text = telegram_bot.build_help_text()
         assert "Job Hunter ищет работу на hh.ru и откликается за вас." in text
         assert "Кнопки внизу:" in text
-        assert "Раздел «Админ»: профили, пользователи, клиенты и лимиты ИИ." in text
+        assert "Раздел «🛠 Для админа»: профили, пользователи, клиенты и лимиты ИИ." in text
 
     def test_build_help_text_user_mentions_schedule_button(self):
         text = telegram_bot.build_help_text(role=telegram_bot.ROLE_USER, profile_name="qa")

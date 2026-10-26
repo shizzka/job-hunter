@@ -62,7 +62,7 @@ def _build_chat_ai_candidates_text(summary: dict) -> str:
     if summary.get("ok") is False:
         url = str(summary.get("url") or "")
         if "account/login" in url:
-            return "HH просит заново войти в аккаунт, поэтому список чатов сейчас недоступен. Нажми `Вход HH`, обнови сессию и повтори `Ответ ИИ в чат`."
+            return "hh.ru просит заново войти в аккаунт, поэтому список чатов сейчас недоступен. Откройте «⚙️ Настройки» → «🔐 hh.ru и резюме» → «🔐 Вход в hh.ru», обновите сессию и повторите /chat_ai."
         message = str(summary.get("message") or "не удалось открыть chatik")
         return f"Не удалось получить список HH-чатов: {message}"
     candidates = list(summary.get("candidates") or [])

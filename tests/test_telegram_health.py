@@ -7,7 +7,7 @@ import telegram_bot
 from tests.direction_view_fakes import make_direction
 
 
-def test_health_alert_does_not_grant_admin_menu_to_unknown_recipient(monkeypatch, tmp_path):
+def test_health_alert_does_not_deliver_to_unknown_recipient(monkeypatch, tmp_path):
     monkeypatch.setattr(telegram_bot.config, "TELEGRAM_BOT_STATE_FILE", str(tmp_path / "bot-state.json"))
     bot = telegram_bot.TelegramBot(profile_name="qa")
     sent_messages = []
@@ -37,9 +37,8 @@ def test_health_alert_does_not_grant_admin_menu_to_unknown_recipient(monkeypatch
     asyncio.run(bot._maybe_send_health_alert())
 
     assert menu_calls == []
-    assert sent_messages[0][0] == 123
-    assert sent_messages[0][2] is None
-    assert bot._load_state()["health_check"]["last_alert_signature"] == "HH auth"
+    assert sent_messages == []
+    assert not bot._load_state()["health_check"].get("last_alert_signature")
 
 
 @pytest.mark.parametrize("direction_state", ["missing", "invalid", "valid"])
@@ -78,7 +77,7 @@ def test_health_alert_skips_tester_and_reaches_following_admin(monkeypatch, tmp_
     monkeypatch.setattr(bot, "_menu_reply_markup", Mock(return_value={"admin": True}))
     monkeypatch.setattr(bot, "_send_text_safely", AsyncMock(return_value={"ok": True}))
     monkeypatch.setattr(bot, "_append_debug_log", lambda *args, **kwargs: None)
-    assert bot._profile_recipient_ids("synthetic-dev") == [101, 202]
+    assert bot._profile_recipient_ids("synthetic-dev") == [202]
 
     asyncio.run(bot._maybe_send_health_alert())
 

@@ -958,6 +958,60 @@
       ],
       "📋 Отклики · qa-dev, ищу «QA Engineer»\nВакансии на проверку, отклики на hh.ru, анкеты и ответы работодателям.",
       "📨 Отклики за 30 дней: 0\n\n👀 Просмотрено работодателем: 0\n📬 Приглашения: 0\n❌ Отказы: 0\n⏳ Работодатель ещё не ответил: 0"
+    ],
+    "critic_llm_actions_1": [
+      [
+        "replies",
+        "<append>"
+      ],
+      1,
+      [
+        {
+          "first_line": "Выберите действие:",
+          "text": "Выберите действие:",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "💰 Баланс",
+                "🧪 Проверить LLM"
+              ],
+              [
+                "🎁 Лимиты ИИ"
+              ],
+              [
+                "◀ Назад"
+              ]
+            ]
+          }
+        }
+      ]
+    ],
+    "critic_llm_actions_2": [
+      [
+        "replies",
+        "<append>"
+      ],
+      2,
+      [
+        {
+          "first_line": "Выберите действие:",
+          "text": "Выберите действие:",
+          "markup": {
+            "inline_keyboard": [
+              [
+                "💰 Баланс",
+                "🧪 Проверить LLM"
+              ],
+              [
+                "🎁 Лимиты ИИ"
+              ],
+              [
+                "◀ Назад"
+              ]
+            ]
+          }
+        }
+      ]
     ]
   },
   "dispatch": {
@@ -2257,6 +2311,48 @@
     "[\"tester\", \"queued\", \"/start\", \"\"]": [
       "p003",
       "p041"
+    ],
+    "[\"admin\", \"button\", \"AI лимиты\", \"\"]": [
+      "critic_llm_actions_1"
+    ],
+    "[\"admin\", \"button\", \"Лимиты ИИ\", \"\"]": [
+      "critic_llm_actions_1"
+    ],
+    "[\"admin\", \"button\", \"🎁 Лимиты ИИ\", \"\"]": [
+      "critic_llm_actions_1"
+    ],
+    "[\"admin\", \"button\", \"💰 Баланс DeepSeek\", \"\"]": [
+      "critic_llm_actions_1"
+    ],
+    "[\"admin\", \"button\", \"💰 Баланс\", \"\"]": [
+      "critic_llm_actions_1"
+    ],
+    "[\"admin\", \"button\", \"🧠 Платные LLM\", \"\"]": [
+      "critic_llm_actions_1"
+    ],
+    "[\"admin\", \"button\", \"🧪 Проверить LLM\", \"\"]": [
+      "critic_llm_actions_2"
+    ],
+    "[\"admin\", \"button\", \"🧪 Тест DeepSeek\", \"\"]": [
+      "critic_llm_actions_2"
+    ],
+    "[\"admin\", \"button\", \"🧪 Тест\", \"\"]": [
+      "critic_llm_actions_2"
+    ],
+    "[\"admin\", \"command\", \"/ai_limits\", \"\"]": [
+      "critic_llm_actions_1"
+    ],
+    "[\"admin\", \"command\", \"/llm_balance\", \"\"]": [
+      "critic_llm_actions_1"
+    ],
+    "[\"admin\", \"command\", \"/llm_test\", \"\"]": [
+      "critic_llm_actions_2"
+    ],
+    "[\"admin\", \"command\", \"/menu_llm\", \"\"]": [
+      "critic_llm_actions_1"
+    ],
+    "[\"admin\", \"llm_cooldown\", \"/llm_test\", \"\"]": [
+      "critic_llm_actions_1"
     ]
   },
   "handlers": {

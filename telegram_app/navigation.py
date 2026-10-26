@@ -60,6 +60,8 @@ class TelegramNavigation:
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
+        can_cancel = self._can_cancel_active(principal, command)
+        from telegram_bot_ui import build_active_stop_markup
         await self._send_text(
             chat_id,
             build_busy_status_text(
@@ -68,9 +70,11 @@ class TelegramNavigation:
                 profile_name=command.profile_name,
                 elapsed_sec=self._active_elapsed_sec(command),
                 pid=command.subprocess_pid,
-                can_cancel=self._can_cancel_active(principal, command),
+                can_cancel=can_cancel,
+                role=principal.get("role", ROLE_USER),
             ),
-            reply_markup=self._menu_reply_markup(principal),
+            reply_markup=(build_active_stop_markup(target_profile, command) if can_cancel
+                          else self._menu_reply_markup(principal)),
         )
 
     async def _send_getting_started(self, chat_id: int, principal: dict, *, only_if_incomplete: bool = False, cached: bool = False) -> None:

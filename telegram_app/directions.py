@@ -126,7 +126,7 @@ class TelegramDirections:
             scope = f" для направления «{active['title']}»" if active else ""
             await self._send_text(chat_id,
                 f"✅ Автоматические отклики{scope} уже включены. Чтобы бот спрашивал перед откликом, "
-                "выберите «Подтверждать отклик».", reply_markup=self._menu_reply_markup(principal, menu=menu))
+                "выберите «✋ Подтверждать отклик».", reply_markup=self._menu_reply_markup(principal, menu=menu))
             return
         if mode == "auto":
             state = self._direction_bind(principal, mode="application_auto",
@@ -286,7 +286,7 @@ class TelegramDirections:
         parts = str(data).split(":")
         state = self._direction_sessions().get(principal["user_id"])
         if len(parts) < 3 or not state or parts[1] != state.get("token") or not self._direction_current(principal, state):
-            await self._send_text(chat_id, "Эта кнопка устарела. Откройте «Мои поиски» заново.")
+            await self._send_text(chat_id, "Эта кнопка устарела. Откройте «⚙️ Настройки» → «🎯 Мои поиски» заново.")
             return False
         action = parts[2]
         started = False
@@ -520,7 +520,7 @@ class TelegramDirections:
                 from hh.session_probe import probe, OK
                 checked = await asyncio.to_thread(probe, profile.hh.cookies_file)
                 if checked["status"] != OK:
-                    raise ValueError(checked["message"] + " Откройте «🔐 hh.ru и резюме» → «Вход в hh.ru», затем повторите.")
+                    raise ValueError(checked["message"] + " Откройте «⚙️ Настройки» → «🔐 hh.ru и резюме» → «🔐 Вход в hh.ru», затем повторите.")
                 catalog = await self._direction_load_catalog(profile, chat_id=chat_id)
                 if not self._direction_current(principal, state):
                     raise ValueError("Профиль, направление или ваши изменения уже другие; загрузка отменена.")
@@ -883,7 +883,7 @@ class TelegramDirections:
             await self._send_busy_status(chat_id, principal, profile_name=profile_name)
             return False
         if not state or state.get("mode") != "draft":
-            await self._send_text(chat_id, "Нет несохранённых изменений. Откройте «Мои поиски».")
+            await self._send_text(chat_id, "Нет несохранённых изменений. Откройте «⚙️ Настройки» → «🎯 Мои поиски».")
             return False
         committed = False
         try:

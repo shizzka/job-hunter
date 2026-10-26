@@ -89,6 +89,7 @@ class TelegramAdmin:
                     elapsed_sec=self._active_elapsed_sec(command),
                     pid=command.subprocess_pid,
                     can_cancel=False,
+                    role=principal.get("role", ROLE_USER),
                 ),
                 reply_markup=build_reply_markup(
                     principal.get("role", ROLE_USER),

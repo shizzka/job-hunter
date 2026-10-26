@@ -164,6 +164,9 @@ def markup_layout(markup):
 def test_dispatch_outcome(dispatch_bot, monkeypatch, role, scenario, text, arg):
     bot, workers, profile, events, writes = dispatch_bot
     principal = {"user_id": 42, "role": role, "profile": "qa-dev", "direction": "qa"}
+    # Deferred output now authorizes the real registry, not just resolve_user.
+    # Match the synthetic request without bypassing either delivery guard.
+    telegram_access.save_registry({"users": [principal]})
     monkeypatch.setattr(telegram_access, "resolve_user", lambda uid: principal)
     command = text
     is_button = scenario in {"button", "bound_button"}
@@ -195,12 +198,12 @@ def test_dispatch_outcome(dispatch_bot, monkeypatch, role, scenario, text, arg):
         principal["impersonating"] = True
     if scenario in {"busy", "active_busy", "core_busy"}:
         active = SimpleNamespace(label="synthetic busy", owner_user_id=42,
-                                 profile_name="qa-dev", subprocess_pid=0, task=None)
+                                 profile_name="qa-dev", subprocess_pid=0, task=None, started_at=123.0)
         monkeypatch.setattr(bot, "_active_command", lambda name: active)
         monkeypatch.setattr(bot, "_has_active_command", lambda name: True)
     if scenario == "launching":
         bot._queue_launching["qa-dev"] = SimpleNamespace(profile="qa-dev", label="synthetic launching",
-                                                       chat_id=42, request_key=None, source=None)
+                                                       chat_id=42, request_key=None, source=None, direction="qa")
     if scenario == "queued":
         monkeypatch.setattr(bot, "_queue_length", lambda name: 1)
     if scenario == "llm_cooldown":

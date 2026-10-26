@@ -9,6 +9,16 @@ from telegram_app import command_queue as queue
 from telegram_app.callbacks import TelegramCallbackRouter
 
 
+@pytest.fixture(autouse=True)
+def registered_notification_chats(monkeypatch):
+    # Command actors and private delivery chats are separate in this harness.
+    # Prepare real registry bindings; production delivery checks remain active.
+    monkeypatch.setattr(queue.telegram_access, "load_registry", lambda: {"users": [
+        {"user_id": uid, "profile": "qa", "role": "user", "enabled": True}
+        for uid in (1, 2, 42, 84, 99)
+    ]})
+
+
 class Bot(queue.TelegramCommandQueue):
     def __init__(self):
         self._init_command_queue()
@@ -25,7 +35,7 @@ class Bot(queue.TelegramCommandQueue):
     def _queue_guard_reason(self, profile):
         return self.guard
 
-    def _profile_recipient_ids(self, profile):
+    def _profile_recipient_ids(self, profile, **kwargs):
         return []
 
     def _profile_names(self):
@@ -367,7 +377,7 @@ def real_bot(monkeypatch, tmp_path):
         log_file=str(tmp_path / "hunter.log"), error_log_file=str(tmp_path / "error.log"))
     monkeypatch.setattr(bot, "_profile", lambda name: profile)
     monkeypatch.setattr(bot, "_profile_names", lambda: ["qa"])
-    monkeypatch.setattr(bot, "_profile_recipient_ids", lambda name: [])
+    monkeypatch.setattr(bot, "_profile_recipient_ids", lambda name, **kwargs: [])
     monkeypatch.setattr(bot, "_selected_profile", lambda principal: principal.get("profile", "qa"))
     monkeypatch.setattr(bot, "_menu_reply_markup", lambda *args, **kwargs: {})
     monkeypatch.setattr(bot, "_sync_active_runtime", lambda: None)

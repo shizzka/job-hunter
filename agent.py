@@ -976,9 +976,8 @@ async def do_manual_apply_token(token: str) -> dict:
             vacancy["_hh_salary_warning"] = salary_warning
             candidate = manual_apply_queue.create_candidate(
                 vacancy, evaluation, details, profile_name=item.get("profile_name"), allow_ai_apply=True)
-            markup = manual_apply_queue.build_manual_apply_markup(
-                vacancy, item.get("profile_name"), candidate.get("token", ""), allow_ai_apply=True)
-            await notify_needs_manual(vacancy, score, reason, note=message, reply_markup=markup)
+            markup = manual_apply_queue.build_review_card_markup(candidate, item.get("profile_name"))
+            await notify_needs_manual(vacancy, score, reason, note=message, reply_markup=markup, review_item=candidate)
             return {"ok": False, "requires_salary_confirmation": True, "message": message}
 
         if apply_result.get("ok"):
@@ -1261,6 +1260,7 @@ async def _mark_manual(
     resume_variant: dict | None = None,
     analytics_note: str = "",
     reply_markup: dict | None = None,
+    review_item: dict | None = None,
     before_notify=None,
     receipt=None,
     receipt_classification="manual",
@@ -1310,7 +1310,8 @@ async def _mark_manual(
         "medium",
     )
     await wait(notify_needs_manual(v, score, reason, note=owner_note, reply_markup=reply_markup,
-                                 **({"uncertain": True} if decision == DECISION_APPLY_UNCERTAIN else {})))
+                                 **({"uncertain": True} if decision == DECISION_APPLY_UNCERTAIN else {}),
+                                 **({"review_item": review_item} if review_item is not None else {})))
 
 
 def _build_hh_retry_cover_letter(v: dict, resume_variant: dict | None = None) -> str:
@@ -2090,12 +2091,11 @@ async def do_search(dry_run: bool = False) -> dict:
                         profile_name=profile_name,
                         allow_ai_apply=allow_ai_apply,
                     )
-                    token = candidate.get("token", "")
-                    reply_markup = manual_apply_queue.build_manual_apply_markup(v, profile_name, token, allow_ai_apply=allow_ai_apply)
+                    reply_markup = manual_apply_queue.build_review_card_markup(candidate, profile_name)
                     if source == "hh":
                         note = (
                             "Бот не уверен, что вакансия вам подходит, поэтому не откликнулся сам. Посмотрите и решите. "
-                            + ("Можно открыть вакансию или нажать «Откликнуться с ИИ»." if allow_ai_apply else "Включён режим просмотра: можно открыть самому.")
+                            + ("Можно открыть вакансию или нажать «Откликнуться»." if allow_ai_apply else "Включён режим просмотра: можно открыть самому.")
                         )
                     else:
                         note = (
@@ -2118,7 +2118,7 @@ async def do_search(dry_run: bool = False) -> dict:
                         bucket,
                         run_id,
                         set_hunter_status,
-                        reply_markup=reply_markup,
+                        reply_markup=reply_markup, review_item=candidate,
                         analytics_note="yellow_zone",
                         observe=observe_hh_receipts,
                     ))
@@ -2198,16 +2198,10 @@ async def do_search(dry_run: bool = False) -> dict:
                     profile_name=profile_name,
                     allow_ai_apply=is_confirmation,
                 )
-                token = candidate.get("token", "")
-                reply_markup = manual_apply_queue.build_manual_apply_markup(
-                    v,
-                    profile_name,
-                    token,
-                    allow_ai_apply=is_confirmation,
-                )
+                reply_markup = manual_apply_queue.build_review_card_markup(candidate, profile_name)
                 mode_label = "подтверждение" if is_confirmation else "просмотр"
                 action_note = (
-                    "Нажмите «Откликнуться с ИИ», чтобы отправить отклик."
+                    "Нажмите «Откликнуться», чтобы отправить отклик."
                     if is_confirmation
                     else "Отклик не отправляется в режиме просмотра. Откройте вакансию сами."
                 )
@@ -2219,7 +2213,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     v, vid, score, reason, evaluation, details,
                     result, bucket, run_id, set_hunter_status,
                     resume_variant=hh_resume_variant,
-                    reply_markup=reply_markup,
+                    reply_markup=reply_markup, review_item=candidate,
                     analytics_note=f"hh_application_mode:{hh_application_mode}",
                     observe=observe_hh_receipts,
                 ))
@@ -2439,9 +2433,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     v, cover_evaluation, details, profile_name=profile_name,
                     allow_ai_apply=source == "hh",
                 )
-                reply_markup = manual_apply_queue.build_manual_apply_markup(
-                    v, profile_name, candidate.get("token", ""), allow_ai_apply=source == "hh",
-                )
+                reply_markup = manual_apply_queue.build_review_card_markup(candidate, profile_name)
                 await observe_hh_receipts(_mark_manual(
                     f"Ручной {short_label}: проверь письмо",
                     f"manual_{source}_stub_cover", f"manual_{source}_stub_cover",
@@ -2450,7 +2442,7 @@ async def do_search(dry_run: bool = False) -> dict:
                     result, bucket, run_id, set_hunter_status,
                     resume_variant=hh_resume_variant,
                     analytics_note=f"{source}:stub_cover_letter", observe=observe_hh_receipts,
-                    reply_markup=reply_markup,
+                    reply_markup=reply_markup, review_item=candidate,
                 ))
                 continue
             log.info("  %s cover prepared: vacancy=%s chars=%d", source_label, vid, len(cover or ""))
@@ -2775,15 +2767,14 @@ async def do_search(dry_run: bool = False) -> dict:
                     profile_name = profile_mod.active().name
                     candidate = manual_apply_queue.create_candidate(
                         v, evaluation, details, profile_name=profile_name, allow_ai_apply=True)
-                    markup = manual_apply_queue.build_manual_apply_markup(
-                        v, profile_name, candidate.get("token", ""), allow_ai_apply=True)
+                    markup = manual_apply_queue.build_review_card_markup(candidate, profile_name)
                     await receipt.wait(_mark_manual(
                         "HH: подтвердите зарплатные условия", "manual_hh_salary_confirmation",
                         DECISION_MANUAL_REVIEW,
-                        f"Предупреждение HH: {salary_warning} Подтвердите отклик кнопкой «Откликнуться с ИИ».",
+                        f"Предупреждение HH: {salary_warning} Подтвердите отклик кнопкой «Откликнуться».",
                         v, vid, score, reason, cover_evaluation, details,
                         result, bucket, run_id, set_hunter_status,
-                        resume_variant=hh_resume_variant, reply_markup=markup,
+                        resume_variant=hh_resume_variant, reply_markup=markup, review_item=candidate,
                         analytics_note="hh_salary_confirmation", receipt=receipt))
                     continue
 

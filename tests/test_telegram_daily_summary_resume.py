@@ -20,8 +20,10 @@ def test_daily_summary_timeout_checkpoints_recipients_and_resumes(bot, monkeypat
     monkeypatch.setattr(telegram_bot.config, 'TELEGRAM_DAILY_SUMMARY_ENABLED', True)
     monkeypatch.setattr(telegram_bot.config, 'TELEGRAM_DAILY_SUMMARY_HOUR', 0)
     monkeypatch.setattr(bot, '_profile_names', lambda: ['synthetic'])
-    monkeypatch.setattr(telegram_bot.telegram_access, 'list_users', lambda: [
-        {'user_id': uid, 'role': 'admin', 'profile': 'synthetic'} for uid in [1, 2, 3]])
+    recipients = [{'user_id': uid, 'role': 'admin', 'profile': 'synthetic', 'enabled': True}
+                  for uid in [1, 2, 3]]
+    monkeypatch.setattr(telegram_bot.telegram_access, 'list_users', lambda: recipients)
+    monkeypatch.setattr(telegram_bot.telegram_access, 'load_registry', lambda: {'users': recipients})
     monkeypatch.setattr(bot, '_daily_summary_snapshot', lambda *a, **k: {
         'analytics_summary': {}, 'recent_runs': [], 'period_label': 'today'})
     monkeypatch.setattr(telegram_bot, 'build_daily_summary_text', lambda **k: 'summary')

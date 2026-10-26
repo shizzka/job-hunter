@@ -7,7 +7,7 @@ check. Claim and queue policies stay in guards.py and command_queue.py.
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from telegram_app.callback_handlers import auth, chats, forms, navigation, review, search
+from telegram_app.callback_handlers import auth, candidate, chats, forms, navigation, review, search
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ class CallbackRoute:
 CALLBACK_ROUTE_GROUPS = {
     'navigation': {
         'nav:': CallbackRoute(navigation.handle_navigation, phase='navigation'),
+        'cf:': CallbackRoute(candidate.handle_confirmation, phase='navigation'),
         'fs:': CallbackRoute(search.handle_search, phase='navigation'),
         'sr:': CallbackRoute(navigation.handle_seen_reset, phase='navigation'),
         'hist:': CallbackRoute(navigation.handle_history_scope, phase='navigation'),

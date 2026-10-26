@@ -42,39 +42,8 @@ class TelegramReview:
         except PermissionError:
             return False
 
-    @staticmethod
-    def _review_item_text(item: dict, index: int) -> str:
-        vacancy = item.get("vacancy") or {}
-        evaluation = item.get("evaluation") or {}
-        title = str(str(vacancy.get("title") or "Вакансия"))
-        company = str(str(vacancy.get("company") or "Компания не указана"))
-        source = str(str(vacancy.get("source_label") or vacancy.get("source") or "hh.ru"))
-        salary = str(str(vacancy.get("salary") or "зарплата не указана"))
-        score = evaluation.get("score")
-        reason = " ".join(str(evaluation.get("reason") or "").split())
-        if len(reason) > 380:
-            reason = reason[:377].rstrip() + "..."
-        lines = [
-            f"{index}. {title}" if index != "•" else f"📌 {title}",
-            f"{company} · {source}",
-            f"💰 {salary}",
-            (f"{score}/100 · {TelegramReview._review_score_label(score)}" if score not in (None, "") else ""),
-        ]
-        if item.get("status") == "uncertain":
-            lines.append("❔ " + (manual_apply_queue.ORPHAN_APPLY_MESSAGE if item.get("orphan_recovered")
-                                  else "Нужна сверка: результат отклика не подтверждён."))
-        if reason:
-            lines.append(str(reason))
-        return "\n".join(lines)
-
-    @staticmethod
-    def _review_score_label(score) -> str:
-        try:
-            score = int(score)
-        except (ValueError, TypeError):
-            return "Оценка не определена"
-        return ("Очень хорошо подходит" if score >= 85 else "Скорее подходит" if score >= 70 else
-                "Есть совпадения" if score >= 50 else "Подходит частично — решать вам")
+    _review_item_text = staticmethod(manual_apply_queue.build_review_item_text)
+    _review_score_label = staticmethod(manual_apply_queue.review_score_label)
 
     def _review_visible_items(self, profile_name: str, *, unspecified=False) -> list[dict]:
         view = DirectionView(self._profile(profile_name).home_dir)
@@ -102,23 +71,23 @@ class TelegramReview:
         tokens = session["tokens"]
         available = {item["token"]: item for item in items}
         if not items:
-            text = "✅ Всё разобрано. Сейчас от вас ничего не требуется."
-            markup = {"inline_keyboard": [[{"text": "🔎 Найти вакансии", "callback_data": "fs:open"}]]}
+            unknown = self._review_visible_items(profile_name, unspecified=True) if not unspecified else []
+            if unknown:
+                text = (f"📋 В выбранном направлении нет карточек. Ещё ждут решения или сверки: {len(unknown)}"
+                        " · направление не указано.")
+                markup = {"inline_keyboard": [[{
+                    "text": f"Направление не указано: {len(unknown)}", "callback_data": f"rq:U:{profile_name}:0:s"}]]}
+            else:
+                text = "✅ Всё разобрано. Сейчас от вас ничего не требуется."
+                markup = {"inline_keyboard": [[{"text": "🔎 Найти вакансии", "callback_data": "fs:open"}]]}
         else:
             if token not in available:
                 start = tokens.index(advance_from) + 1 if advance_from in tokens else 0
                 token = next((t for t in tokens[start:] + tokens[:start] if t in available), items[0]["token"])
             item = available[token]
-            if item.get("status") == "uncertain":
-                markup = (manual_apply_queue.build_orphaned_apply_markup(item, profile_name)
-                          if item.get("orphan_recovered") else manual_apply_queue.build_manual_apply_markup(
-                              item.get("vacancy") or {}, profile_name, token, include_feedback=False,
-                              allow_ai_apply=False))
-            else:
-                markup = manual_apply_queue.build_review_card_markup(item, profile_name)
-            text = (f"📋 Ждут решения · {tokens.index(token) + 1} из {len(tokens)}\n\n"
-                    + self._review_item_text(item, "•")
-                    + ("\n\nБез вашего «Откликнуться» ничего не отправится." if item.get("status") != "uncertain" else ""))
+            markup = manual_apply_queue.build_review_card_markup(item, profile_name)
+            text = manual_apply_queue.build_review_card_text(
+                item, position=tokens.index(token) + 1, total=len(tokens))
         if hint:
             text += "\n\n👍 — хорошая, но откликаться не буду; 👎 — мимо."
         if message_id:
@@ -171,7 +140,7 @@ class TelegramReview:
         pages = (len(all_items) + size - 1) // size
         page = max(0, min(int(page), pages - 1))
         chunk = all_items[page * size:(page + 1) * size]
-        lines = [f"📋 Вакансии на проверку: {len(all_items)}" + scope + (f" · стр. {page + 1}/{pages}" if pages > 1 else ""),
+        lines = [f"📋 Ждут решения: {len(all_items)}" + scope + (f" · стр. {page + 1}/{pages}" if pages > 1 else ""),
                  ("Сверху лучшие по баллу." if sort == "score" else "Сверху новые.")
                  + " Нажмите номер — откроется карточка с кнопками.", ""]
         buttons = []
@@ -219,7 +188,7 @@ class TelegramReview:
         """«👎 < N»: every pending card scored below N becomes «Мимо» (kept in the feedback log)."""
         view = DirectionView(self._profile(profile_name).home_dir)
         if expected_scope is not None and expected_scope != view.callback_scope:
-            await self._send_text(chat_id, "Выбрано другое направление. Обновите список «Вакансии на проверку».")
+            await self._send_text(chat_id, "Выбрано другое направление. Откройте «📋 Ждут решения» заново.")
             return
         targets = [item for item in view.review_items(manual_apply_queue.list_candidates(profile_name, limit=250))
                    if (score := self._review_score(item)) is not None and score < limit]
@@ -253,22 +222,12 @@ class TelegramReview:
         view = DirectionView(self._profile(profile_name).home_dir)
         owner = view.item_direction(item)
         if owner is not None and owner != view.name:
-            await self._send_text(chat_id, "Выбрано другое направление. Обновите список «Вакансии на проверку».")
+            await self._send_text(chat_id, "Выбрано другое направление. Откройте «📋 Ждут решения» заново.")
             return
-        if item.get("status") == "pending":
-            principal = {"user_id": chat_id, "role": ROLE_USER, "profile": profile_name}
-            unspecified = owner is None and token not in {i["token"] for i in self._review_visible_items(profile_name)}
-            await self._show_review_queue(chat_id, principal, profile_name=profile_name, token=token,
-                                          unspecified=unspecified)
-            return
-        markup = manual_apply_queue.build_manual_apply_markup(
-            item.get("vacancy") or {}, profile_name, token,
-            include_feedback=item.get("status") != "uncertain",
-            allow_ai_apply=item.get("status") == "pending" and bool(item.get("allow_ai_apply", True)))
-        if item.get("status") == "uncertain" and item.get("orphan_recovered"):
-            markup = manual_apply_queue.build_orphaned_apply_markup(item, profile_name)
-        label = "Направление не указано.\n\n" if owner is None else (f"{view.title}\n\n" if view.title else "")
-        await self._send_text(chat_id, label + self._review_item_text(item, "•"), reply_markup=markup)
+        principal = {"user_id": chat_id, "role": ROLE_USER, "profile": profile_name}
+        unspecified = owner is None and token not in {i["token"] for i in self._review_visible_items(profile_name)}
+        await self._show_review_queue(chat_id, principal, profile_name=profile_name, token=token,
+                                      unspecified=unspecified)
 
     async def _route_review(self, chat_id, principal, command, arg, profile_name, reply_menu):
         await self._show_review_queue(chat_id, principal, profile_name=profile_name, reset=True)

@@ -103,9 +103,9 @@ class TelegramSearch:
             "🛡 Режим откликов",
             "",
             f"Сейчас: {self._application_mode_label(mode)}{scope}.",
-            "Чтобы включить режим «Автоматически», нужно ваше подтверждение. Остальные режимы сохраняются сразу.",
+            "Чтобы включить режим «⚡ Автоматически», нужно ваше подтверждение. Остальные режимы сохраняются сразу.",
             "👀 Только показать — пришлёт подходящие вакансии, без отправки.",
-            "✋ Подтверждать отклик — бот присылает вакансию и откликается только после нажатия «Откликнуться».",
+            "✋ Подтверждать отклик — бот присылает вакансию и откликается только после вашего подтверждения на карточке.",
             "⚡ Автоматически — бот откликается сам на подходящие вакансии в пределах лимитов.",
         ])
 
@@ -355,8 +355,8 @@ class TelegramSearch:
                 await self._send_text(
                     chat_id,
                     "✨ ИИ предложил черновик:\n" + rendered +
-                    "\n\nЧтобы применить его, нажмите «Сохранить предложенное». "
-                    "Или нажмите «Изменить запросы» и отправьте свой список.",
+                    "\n\nЧтобы применить его, нажмите «✅ Сохранить предложенное». "
+                    "Или нажмите «✏️ Изменить запросы» и отправьте свой список.",
                     reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
                 )
             except Exception as exc:
@@ -475,7 +475,7 @@ class TelegramSearch:
     async def _route_search_settings(self, chat_id, principal, command, arg, profile_name, reply_menu):
         import directions
         if directions.active_direction(self._profile(profile_name).home_dir):
-            # Keep the «Мой поиск» submenu on the keyboard, then show the active direction card.
+            # Show the global keyboard before the active direction card.
             self._set_selected_menu(principal["user_id"], MENU_SEARCH)
             await self._send_text(chat_id, "🎯 Мои поиски — условия текущего поиска ниже.",
                                   reply_markup=self._menu_reply_markup(principal, menu=MENU_SEARCH))
@@ -601,7 +601,7 @@ class TelegramSearch:
         except (search_query_suggester.SearchQueryValidationError, ValueError):
             await self._send_text(
                 chat_id,
-                "ℹ️ Сначала нажмите «Предложить ИИ» или отправьте свой список через «Изменить запросы».",
+                "ℹ️ Сначала нажмите «✨ Предложить ИИ» или отправьте свой список через «✏️ Изменить запросы».",
                 reply_markup=self._menu_reply_markup(principal, menu=reply_menu),
             )
             return

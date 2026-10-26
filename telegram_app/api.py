@@ -145,6 +145,8 @@ class TelegramAPIClient:
         timeout: int,
     ) -> dict | list:
         session = await self._get_session(use_proxy, timeout=timeout)
+        if "chat_id" in payload:
+            self._check_delivery(payload["chat_id"])
         url = (
             f"https://api.telegram.org/"
             f"bot{config.TELEGRAM_CONTROL_BOT_TOKEN}/{method}"
@@ -156,6 +158,10 @@ class TelegramAPIClient:
             if response.status != 200 or not data.get("ok", False):
                 raise TelegramAPIError(method, response.status, data)
             return data.get("result", {})
+
+    def _check_delivery(self, chat_id):
+        """Standalone API clients have no profile notification scope."""
+        return
 
     async def _download_file(self, file_id: str) -> bytes:
         """Download a Telegram file referenced by file_id."""
@@ -236,6 +242,7 @@ class TelegramAPIClient:
         use_proxy: bool,
     ) -> dict:
         session = await self._get_session(use_proxy, timeout=120)
+        self._check_delivery(chat_id)
         url = (
             f"https://api.telegram.org/"
             f"bot{config.TELEGRAM_CONTROL_BOT_TOKEN}/sendDocument"

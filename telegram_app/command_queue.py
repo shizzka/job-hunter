@@ -22,6 +22,27 @@ from telegram_app.guards import AI_LABELS, BUSY, reserve, release_entry, release
 
 log = logging.getLogger(__name__)
 _invocation = contextvars.ContextVar("bot_queue_invocation", default=None)
+_notification_delivery = contextvars.ContextVar("bot_notification_delivery", default=None)
+
+
+@contextlib.contextmanager
+def notification_delivery(profile, directions=()):
+    """Opt-in event boundary; ordinary direct replies keep their own access rules."""
+    token = _notification_delivery.set((profile, tuple(directions) or (None,)))
+    try:
+        yield
+    finally:
+        _notification_delivery.reset(token)
+
+
+def notification_delivery_allowed(chat_id):
+    event = _notification_delivery.get()
+    if event is None:
+        return True
+    profile, directions = event
+    return all(telegram_access.notification_allowed(
+        chat_id, profile_name=profile, direction=direction) for direction in directions)
+
 
 # Button commands and their direct starter equivalents share these keys.
 PERIODIC = {
@@ -61,6 +82,7 @@ class QueueEntry:
     ready: bool = False
     recovery: bool = False
     request_key: tuple | None = None
+    direction: str = ""
 
 
 def current_entry():
@@ -77,7 +99,7 @@ def profile_command(fn):
         if current_entry() is not None:
             if self._commands_stopping():
                 entry = current_entry()
-                await self._queue_notice(entry.chat_id, "Очередь сброшена при перезапуске, нажмите снова.")
+                await self._queue_entry_notice(entry, "Очередь сброшена при перезапуске, нажмите снова.")
                 return False
             return await fn(self, *args, **kwargs)
         bound = signature.bind(self, *args, **kwargs)
@@ -140,7 +162,10 @@ def profile_command(fn):
                     if revalidate:
                         if (not fresh or profile not in self._profile_names()
                                 or (fresh.get("role") != "admin" and self._selected_profile(fresh) != profile)
-                                or (fn.__name__ == "_dispatch" and self._selected_profile(fresh) != profile)):
+                                or (fn.__name__ == "_dispatch" and self._selected_profile(fresh) != profile)
+                                or (principal.get("role") == telegram_access.ROLE_TESTER
+                                    and (fresh.get("role") != telegram_access.ROLE_TESTER
+                                         or fresh.get("direction") != entry.direction))):
                             await self._send_text(chat_id, "Пропуск: профиль или доступ изменились.")
                             return
                         if "principal" in values:
@@ -149,6 +174,12 @@ def profile_command(fn):
 
         entry = QueueEntry(profile, chat_id, int(principal["user_id"]), label, invoke, key, source=source,
                            recovery=fn.__name__ in {"_start_profile_hh_auth_capture", "_start_hh_auth_capture"})
+        # Keep the execution direction, never infer it from a later selection.
+        if principal.get("role") == telegram_access.ROLE_TESTER:
+            entry.direction = principal.get("direction") or ""
+        elif values.get("search_directions") is not None:
+            selected = values["search_directions"]
+            entry.direction = selected[0] if len(selected) == 1 else ""
         if label in AI_LABELS:
             identity = source.get("data") if source else tuple(
                 (name, values[name]) for name in ("arg", "token", "hh_chat_id", "hh_message_id") if name in values)
@@ -188,6 +219,7 @@ class TelegramCommandQueue:
         self._queue_drainers = {}
         self._queue_paused = {}
         self._queue_stop_reasons = {}
+        self._queue_stop_directions = {}
         self._queue_resume_profiles = {}
         self._queue_history = {}
         self._queue_stopping = False
@@ -198,9 +230,32 @@ class TelegramCommandQueue:
     def _queue_length(self, profile):
         return len(self._command_queues.get(profile, []))
 
-    async def _queue_notice(self, chat_id, text, **kwargs):
+    def _queue_event_entries(self, profile):
+        entries = list(self._command_queues.get(profile, []))
+        active = self._active_commands.get(profile)
+        executing = self._queue_launching.get(profile) or getattr(active, "queue_entry", None)
+        if executing and executing not in entries:
+            entries.append(executing)
+        return entries, bool(active and not executing)
+
+    def _queue_event_directions(self, profile):
+        entries, unknown_execution = self._queue_event_entries(profile)
+        directions = tuple(entry.direction for entry in entries) + (("",) if unknown_execution else ())
+        if profile in self._queue_stop_reasons:
+            directions += (self._queue_stop_directions.get(profile, ""),)
+        return directions
+
+    async def _queue_entry_notice(self, entry, text, *, shared=False, **kwargs):
+        directions = self._queue_event_directions(entry.profile) if shared else (entry.direction,)
+        return await self._queue_notice(entry.chat_id, text, profile=entry.profile,
+                                        directions=directions, **kwargs)
+
+    async def _queue_notice(self, chat_id, text, *, profile, directions=(), **kwargs):
         try:
-            return await self._send_text(chat_id, text, **kwargs)
+            with notification_delivery(profile, directions):
+                if not notification_delivery_allowed(chat_id):
+                    return None
+                return await self._send_text(chat_id, text, **kwargs)
         except Exception:
             log.warning("Queue notification failed for chat %s", chat_id, exc_info=True)
 
@@ -216,7 +271,9 @@ class TelegramCommandQueue:
             markup = {"inline_keyboard": [[{"text": "Откликнуться с ИИ" if entry.label == "manual AI apply" else entry.label,
                                             "callback_data": entry.source["data"]}]]}
         try:
-            await self._edit_reply_markup(entry.chat_id, message_id, reply_markup=markup if restore else None)
+            with notification_delivery(entry.profile, (entry.direction,)):
+                if notification_delivery_allowed(entry.chat_id):
+                    await self._edit_reply_markup(entry.chat_id, message_id, reply_markup=markup if restore else None)
         except Exception:
             log.warning("Queue button update failed", exc_info=True)
 
@@ -227,12 +284,12 @@ class TelegramCommandQueue:
         launching = self._queue_launching.get(profile)
         waiting = self._command_queues.setdefault(profile, [])
         if self._commands_stopping():
-            await self._queue_notice(entry.chat_id, "Очередь сброшена при перезапуске, нажмите снова.")
+            await self._queue_entry_notice(entry, "Очередь сброшена при перезапуске, нажмите снова.")
             return False
         if entry.key and (any(item.key == entry.key for item in waiting)
                           or launching and launching.key == entry.key
                           or active and active.label == entry.key):
-            await self._queue_notice(entry.chat_id, f"{entry.label}: уже идёт/в очереди.")
+            await self._queue_entry_notice(entry, f"{entry.label}: уже идёт/в очереди.")
             return False
         if entry.recovery:
             # Explicit session repair is outside FIFO, so a paused queue can be repaired.
@@ -246,7 +303,7 @@ class TelegramCommandQueue:
         if active or launching or waiting or profile in self._queue_paused:
             limit = max(0, int(os.environ.get("BOT_COMMAND_QUEUE_MAX", "10")))
             if len(waiting) >= limit:
-                await self._queue_notice(entry.chat_id, "Очередь полна. Нажмите снова позже.")
+                await self._queue_entry_notice(entry, "Очередь полна. Нажмите снова позже.")
                 return False
             # No awaits between checking admission and appending: one event-loop owner.
             entry.queued = True
@@ -270,7 +327,7 @@ class TelegramCommandQueue:
                 if self._commands_stopping():
                     await self._queue_markup(entry, restore=True)
                     return False
-                await self._queue_notice(entry.chat_id, notice, reply_markup=markup)
+                await self._queue_entry_notice(entry, notice, shared=True, reply_markup=markup)
                 if entry.source:
                     with contextlib.suppress(Exception):
                         await self._answer_callback_query(entry.source.get("id", ""))
@@ -297,7 +354,9 @@ class TelegramCommandQueue:
     async def _invoke_queue_entry(self, entry, *, revalidate):
         token = _invocation.set((asyncio.current_task(), entry))
         try:
-            await entry.invoke(revalidate)
+            # Child runners inherit this scope across capture/progress awaits.
+            with notification_delivery(entry.profile, (entry.direction,)):
+                await entry.invoke(revalidate)
             active = self._active_commands.get(entry.profile)
             if active:
                 await self._queue_markup(entry)
@@ -318,7 +377,7 @@ class TelegramCommandQueue:
             if active and active.task is None:
                 self._active_commands.pop(entry.profile, None)
             await self._queue_markup(entry, restore=True)
-            await self._queue_notice(entry.chat_id, STATE_BUSY if isinstance(exc, StateLockBusy)
+            await self._queue_entry_notice(entry, STATE_BUSY if isinstance(exc, StateLockBusy)
                                      else entry.outcome + ". Нажмите снова.")
             if isinstance(exc, StateLockBusy) and entry.source:
                 await self._answer_callback_query(str(entry.source.get("id") or ""), STATE_BUSY)
@@ -375,15 +434,18 @@ class TelegramCommandQueue:
             return
         self._queue_paused[profile] = reason
         resume_token = self._queue_resume_token(profile)
-        entries = self._command_queues.get(profile, [])
+        entries, _ = self._queue_event_entries(profile)
+        directions = self._queue_event_directions(profile)
+        common_direction = directions[0] if directions and all(
+            name and name == directions[0] for name in directions) else None
         chats = {entry.chat_id for entry in entries}
         try:
-            chats.update(self._profile_recipient_ids(profile))
+            chats.update(self._profile_recipient_ids(profile, direction=common_direction))
         except Exception:
             log.warning("Queue owner lookup failed for %s", profile, exc_info=True)
-        for chat in chats:
+        for chat in sorted(chats):
             await self._queue_notice(chat, f"⏸ Очередь профиля {profile} на паузе: {human_pause_reason(reason)}",
-                                     reply_markup={"inline_keyboard": [[{"text": "Продолжить очередь", "callback_data": f"queue:resume:{resume_token}"}]]})
+                                     profile=profile, directions=directions, reply_markup={"inline_keyboard": [[{"text": "Продолжить очередь", "callback_data": f"queue:resume:{resume_token}"}]]})
 
     @nonblocking_state_locks
     async def _drain_queue(self, profile):
@@ -410,7 +472,7 @@ class TelegramCommandQueue:
                     release_entry(self, entry)
                     release_callback_soon(self, entry.source)
                     entry.outcome = "снята по TTL"
-                    await self._queue_notice(entry.chat_id, f"{entry.label}: срок ожидания истёк (TTL), нажмите снова.")
+                    await self._queue_entry_notice(entry, f"{entry.label}: срок ожидания истёк (TTL), нажмите снова.")
                     await self._queue_markup(entry, restore=True)
                     continue
                 reason = await asyncio.to_thread(self._queue_guard_reason, profile)
@@ -436,9 +498,13 @@ class TelegramCommandQueue:
         self._queue_resume_profiles = {token: name for token, name in self._queue_resume_profiles.items() if name != profile}
         history = self._queue_history.pop(profile, [])
         for chat_id in dict.fromkeys(entry.chat_id for entry in history):
-            own = [entry for entry in history if entry.chat_id == chat_id]
+            own = [entry for entry in history if entry.chat_id == chat_id
+                   and telegram_access.notification_allowed(chat_id, profile_name=profile, direction=entry.direction)]
+            if not own:
+                continue
             await self._queue_notice(chat_id, f"✅ Очередь выполнена · {profile} · задач: {len(own)}\n" +
-                                     "\n".join(f"• {entry.label}: {entry.outcome or 'завершена'}" for entry in own))
+                                     "\n".join(f"• {entry.label}: {entry.outcome or 'завершена'}" for entry in own),
+                                     profile=profile, directions=tuple(entry.direction for entry in own))
 
     async def _queue_callback(self, callback):
         principal = telegram_access.resolve_user(int((callback.get("from") or {}).get("id") or 0))
@@ -472,6 +538,7 @@ class TelegramCommandQueue:
                 return
             self._queue_paused.pop(profile, None)
             self._queue_stop_reasons.pop(profile, None)
+            self._queue_stop_directions.pop(profile, None)
             self._queue_resume_profiles = {token: name for token, name in self._queue_resume_profiles.items() if name != profile}
             await self._answer_callback_query(callback.get("id", ""), "Продолжаю очередь.")
         else:
@@ -499,7 +566,7 @@ class TelegramCommandQueue:
         for entry in waiting:
             release_entry(self, entry)
             release_callback_soon(self, entry.source)
-            await self._queue_notice(entry.chat_id, f"{entry.label}: очередь сброшена при перезапуске, нажмите снова.")
+            await self._queue_entry_notice(entry, f"{entry.label}: очередь сброшена при перезапуске, нажмите снова.")
             await self._queue_markup(entry, restore=True)
 
     def _queue_capture_evidence(self, profile):
@@ -607,8 +674,10 @@ class TelegramCommandQueue:
                     entry.outcome = "остановлена пользователем" if command.cancel_requested else "ошибка выполнения (см. сообщение задачи)"
             if command.pause_reason:
                 self._queue_stop_reasons[profile] = command.pause_reason
+                self._queue_stop_directions[profile] = entry.direction if entry else ""
             elif getattr(command, "hh_proven", False) and self._queue_stop_reasons.pop(profile, None):
                 # 19.10: a stop from a 14:22 login glitch paused the queue at 15:37 although a
                 # search at 15:27 had worked with hh. A later healthy hh run clears it.
+                self._queue_stop_directions.pop(profile, None)
                 log.info("Queue stop reason for %s cleared by a healthy hh run", profile)
         self._schedule_queue(profile)

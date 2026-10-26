@@ -188,7 +188,7 @@ def test_snooze_copy_does_not_extend_and_profile_token_cannot_cross(setup):
 def test_entire_queue_pages_remain_reusable_in_place(setup):
     bot, principal, _ = setup
     tap(bot, principal, 'l', '0')
-    assert bot.events[-1][0] == 'edit' and 'Вакансии на проверку: 3' in bot.events[-1][1]
+    assert bot.events[-1][0] == 'edit' and 'Ждут решения: 3' in bot.events[-1][1]
     context = CallbackContext('cb', 42, principal, 'rq:L:qa:0:n',
         {'message_id': 7, 'chat': {'type': 'private'}}, 42, 7, lambda name: name == 'qa')
     asyncio.run(handle_review_queue(bot, context))

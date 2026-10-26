@@ -40,7 +40,7 @@ def test_t13_log_selects_last_or_requested_run(menu_bot, tmp_path, run_id, expec
     profile = bot._profile("qa")
     for name in ("older", "latest"):
         append_json(profile.run_history_file, finished_run(run_id=name))
-    texts = dispatch(bot, "/log", run_id)
+    texts = dispatch(bot, "/log", run_id, role="admin")
     assert f"Run: {expected}" in texts[-1]
 
 
@@ -60,7 +60,8 @@ def test_t14_user_raw_log_shows_summary_without_reading_raw_journal(menu_bot, mo
     texts = dispatch(bot, "/raw_log")
     tail.assert_not_called()
     if has_run:
-        assert "Run: run-a" in texts[-1]
+        assert "📊 Последний / выбранный запуск" in texts[-1]
+        assert "run-a" not in texts[-1] and "/log run_id" not in texts[-1]
         assert "RAW-PRIVATE-JOURNAL" not in "\n".join(texts)
     else:
         assert texts == ["Запусков пока не было."]
@@ -99,7 +100,7 @@ def test_b32_unavailable_counter_gives_action_without_technical_details(menu_bot
     monkeypatch.setattr(counter, "refresh", Mock(side_effect=error("private /srv/counter.json")))
     text = dispatch(bot, "/hh_responses")[-1]
     assert "Общее число откликов с hh.ru сейчас не загрузилось" in text
-    assert "Попробуйте позже: нажмите «Отклики на hh.ru»" in text
+    assert "Попробуйте позже: нажмите «📨 Отклики»" in text
     assert "Вход в hh.ru" in text
     assert "private" not in text and "/srv" not in text
 
@@ -146,7 +147,8 @@ def test_t14_user_summary_hides_artifact_paths(menu_bot, monkeypatch):
         "artifact_type": "trace", "artifact_ref": "/srv/private/trace.json"}])
     monkeypatch.setattr(analytics, "get_run_summary", Mock(return_value=summary))
     text = "\n".join(dispatch(bot, "/raw_log"))
-    assert "Run: run-a" in text and "/srv/private" not in text
+    assert "📊 Последний / выбранный запуск" in text
+    assert "run-a" not in text and "/log run_id" not in text and "/srv/private" not in text
     assert summary["artifacts"]  # Rendering must not mutate stored diagnostics.
 
 
@@ -181,7 +183,7 @@ def test_b32_profile_conflict_hint_requires_admin_repair(menu_bot, monkeypatch):
     bot, _ = menu_bot
     monkeypatch.setattr(counter, "refresh", Mock(side_effect=counter.HHResponseCounterProfileError("private /srv/state.json")))
     text = dispatch(bot, "/hh_responses")[-1]
-    assert "другому профилю" in text and "администратора" in text and "Отклики на hh.ru" in text
+    assert "другому профилю" in text and "администратора" in text and "📨 Отклики" in text
     assert "Вход в hh.ru" not in text and "/srv" not in text
 
 

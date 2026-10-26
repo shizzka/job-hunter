@@ -9,6 +9,7 @@ import notifier
 import reporting
 import telegram_bot_ui as ui
 from run_summary import build_run_summary
+from tests.test_f27_critic_navigation import navigation_bot, register, traverse_menu_callbacks
 
 
 def stopped_run():
@@ -119,9 +120,23 @@ def labels(role, menu):
 
 
 @pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN])
-def test_agreed_tree_is_reachable_and_every_button_occurs_once(role):
-    # Global destinations persist; section actions are inline and keep their
-    # existing command handlers. Phase 1 deliberately preserves legacy screens.
+def test_agreed_tree_is_reachable_and_every_button_occurs_once(navigation_bot, role):
+    # The monitor remains slash-compatible. Logs remain slash-compatible for
+    # users and are a real Admin submenu. They are not new global destinations.
+    screens = {**COMMON_SCREENS}
+    screens.pop(ui.MENU_MONITOR)
+    if role == ui.ROLE_USER:
+        screens.pop(ui.MENU_LOGS)
+    if role == ui.ROLE_ADMIN:
+        screens.update(ADMIN_SCREENS)
+        screens[ui.MENU_SETTINGS] = [*screens[ui.MENU_SETTINGS], ui.BUTTON_MENU_ADMIN]
+    principal = register(role)
+    asyncio.run(traverse_menu_callbacks(navigation_bot, principal, screens, MENU_COMMANDS))
+
+
+@pytest.mark.parametrize("role", [ui.ROLE_USER, ui.ROLE_ADMIN])
+def test_legacy_and_current_screen_builders_preserve_membership(role):
+    # Compatibility coverage is additional to real callback reachability.
     screens = {**COMMON_SCREENS}
     if role == ui.ROLE_ADMIN:
         screens.update(ADMIN_SCREENS)

@@ -697,49 +697,38 @@ def build_manual_why_text(item: dict | None) -> str:
     title = vacancy.get("title") or "вакансия"
     company = vacancy.get("company") or "компания не указана"
     lines = [
-        "<b>Почему ручное решение</b>",
-        f"{html.escape(_shorten(title, 100))} @ {html.escape(_shorten(company, 80))}",
+        "Почему ручное решение",
+        f"{_shorten(title, 100)} @ {_shorten(company, 80)}",
     ]
 
     source = vacancy.get("source_label") or vacancy.get("source")
     if source:
-        lines.append(f"Источник: {html.escape(str(source))}")
+        lines.append(f"Источник: {source}")
 
     score = evaluation.get("score")
     response_score = evaluation.get("response_probability_score")
-    score_parts = []
     if score not in (None, ""):
-        score_parts.append(f"match {score}/100")
+        lines.append(f"Подходит на {score}/100 · {review_score_label(score)}")
     if response_score not in (None, ""):
-        score_parts.append(f"response {response_score}/100")
-    if score_parts:
-        lines.append("Score: " + html.escape(" | ".join(score_parts)))
+        lines.append(f"Оценка шанса ответа: {response_score}/100")
 
     for label, key in (
-        ("Кластер", "cluster"),
-        ("Резюме", "resume_variant"),
-        ("Сопровод", "cover_style"),
-    ):
-        value = evaluation.get(key)
-        if value:
-            lines.append(f"{label}: {html.escape(_shorten(value, 80))}")
-
-    for label, key in (
-        ("Красные флаги", "red_flags"),
-        ("Guard flags", "guard_flags"),
-        ("Мягкие флаги", "soft_flags"),
+        ("Обратите внимание", "red_flags"),
+        ("Дополнительные замечания", "soft_flags"),
     ):
         value = _format_list_value(evaluation.get(key))
         if value:
-            lines.append(f"{label}: {html.escape(_shorten(value, 220))}")
+            lines.append(f"{label}: {_shorten(value, 220)}")
+    if evaluation.get("guard_flags"):
+        lines.append("Перед откликом нужна ваша проверка.")
 
     reason = evaluation.get("reason") or item.get("details") or ""
     if reason:
-        lines.extend(["", html.escape(_shorten(reason, 1200))])
+        lines.extend(["", _shorten(reason, 1200)])
 
     url = vacancy.get("url")
     if url:
-        lines.extend(["", html.escape(str(url))])
+        lines.extend(["", str(url)])
 
     return "\n".join(lines)
 
@@ -807,9 +796,60 @@ def build_review_card_markup(item: dict, profile_name: str) -> dict:
     def button(text, action):
         return {"text": text, "callback_data": f"rq:{action}:{profile_name}:{token}"}
     rows = []
+    if item.get("status") == "uncertain":
+        # Recovery choices only attest a manual check; they never send an apply.
+        if item.get("orphan_recovered"):
+            rows.extend(build_orphaned_apply_markup(item, profile_name)["inline_keyboard"])
+        elif vacancy.get("url"):
+            rows.append([{"text": "🔗 Проверить на hh.ru", "url": vacancy["url"]}])
+        rows.extend([[button("◀", "h"), button("▶", "v")],
+                     [{"text": "☰ Вся очередь", "callback_data": f"rq:l:{profile_name}:0"}]])
+        return {"inline_keyboard": rows}
     if item.get("allow_ai_apply", True) and (vacancy.get("source") or "hh") == "hh":
         rows.append([{"text": "✅ Откликнуться", "callback_data": manual_apply_callback_data(profile_name, token)}])
     rows.extend([[button("◀", "h"), button("👍", "g"), button("👎", "b"), button("▶", "v")],
                  [button("❓ Почему", "w"), button("⋯ Ещё", "m")]])
     return {"inline_keyboard": [[b for b in row if len(b["callback_data"].encode()) <= 64]
                                 for row in rows if row]}
+
+
+def review_score_label(score) -> str:
+    try:
+        score = int(score)
+    except (ValueError, TypeError):
+        return "Оценка не определена"
+    return ("Очень хорошо подходит" if score >= 85 else "Скорее подходит" if score >= 70 else
+            "Есть совпадения" if score >= 50 else "Подходит частично — решать вам")
+
+
+def build_review_item_text(item: dict, index="•") -> str:
+    vacancy = item.get("vacancy") or {}
+    evaluation = item.get("evaluation") or {}
+    title = str(vacancy.get("title") or "Вакансия")
+    company = str(vacancy.get("company") or "Компания не указана")
+    source = str(vacancy.get("source_label") or vacancy.get("source") or "hh.ru")
+    salary = str(vacancy.get("salary") or "").strip()
+    if salary.casefold() in {"", "не указана", "не указан", "не указано", "зарплата не указана"}:
+        salary = "Зарплата не указана"
+    score = evaluation.get("score")
+    lines = [f"{index}. {title}" if index != "•" else f"📌 {title}",
+             f"{company} · {source}", f"💰 {salary}"]
+    if score not in (None, ""):
+        lines.append(f"{score}/100 · {review_score_label(score)}")
+    if item.get("status") == "uncertain":
+        lines.append("❔ " + (ORPHAN_APPLY_MESSAGE if item.get("orphan_recovered") else
+                              "Нужна сверка: результат отклика не подтверждён."))
+    reason = _shorten(evaluation.get("reason"), 380)
+    if reason:
+        lines.append(reason)
+    return "\n".join(lines)
+
+
+def build_review_card_text(item: dict, *, position=None, total=None) -> str:
+    heading = "📋 Ждут решения"
+    if position is not None and total is not None:
+        heading += f" · {position} из {total}"
+    text = heading + "\n\n" + build_review_item_text(item)
+    if item.get("status") != "uncertain":
+        text += "\n\nБез вашего «Откликнуться» ничего не отправится."
+    return text

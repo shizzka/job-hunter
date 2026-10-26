@@ -20,6 +20,7 @@ from tests.test_telegram_callbacks import _callback, _configured_bot
 # payload is exercised with real routing/admission in the focused F27 suites.
 F27_CALLBACK_CASES = {
     "nav:": ("nav:synthetic-token:directions", "tests/test_f27_navigation.py"),
+    "cf:": ("cf:42:abcdef123456:save", "tests/test_f27_critic_facts.py"),
     "fs:": ("fs:go:synthetic-token", "tests/test_f27_search.py"),
     "manual_snooze:": ("manual_snooze:qa:abcdef123456", "tests/test_f27_review.py"),
 }
@@ -53,6 +54,8 @@ def test_groups_have_unique_prefixes_and_characterized_handlers():
     ("unknown:42", "*"),
     ("nav:synthetic-token:directions", "nav:"),
     ("nav", "*"),
+    ("cf:42:abcdef123456:save", "cf:"),
+    ("cf", "*"),
     ("fs:go:synthetic-token", "fs:"),
     ("fs", "*"),
     ("manual_snooze:qa:abcdef123456", "manual_snooze:"),

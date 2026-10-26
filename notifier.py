@@ -24,6 +24,7 @@ _session: aiohttp.ClientSession | None = None
 _session_uses_proxy = False
 _session_proxy_url = ""
 _delivery_direction = ContextVar("notification_event_direction", default=None)
+_delivery_check = ContextVar("notification_recipient_check", default=None)
 
 
 class _DeliveryTarget(tuple):
@@ -147,6 +148,9 @@ async def _get_session(use_proxy: bool = True, proxy_url: str = "") -> aiohttp.C
 async def _deliver(url: str, payload: dict, use_proxy: bool, proxy_url: str) -> bool:
     """Прямой POST с JSON-телом. Используется для sendMessage и т.п."""
     session = await _get_session(use_proxy=use_proxy, proxy_url=proxy_url)
+    check = _delivery_check.get()
+    if check is not None and not check():
+        return False
     async with session.post(url, json=payload) as resp:
         if resp.status != 200:
             data = await resp.text()
@@ -159,6 +163,9 @@ async def _deliver(url: str, payload: dict, use_proxy: bool, proxy_url: str) -> 
 async def _deliver_multipart(url: str, form: "aiohttp.FormData", use_proxy: bool, proxy_url: str) -> bool:
     """POST с multipart/form-data — для sendPhoto/sendDocument."""
     session = await _get_session(use_proxy=use_proxy, proxy_url=proxy_url)
+    check = _delivery_check.get()
+    if check is not None and not check():
+        return False
     async with session.post(url, data=form) as resp:
         if resp.status != 200:
             data = await resp.text()
@@ -213,16 +220,18 @@ async def _send_to_chats(method: str, build_request, *, multipart: bool = False,
     url = f"https://api.telegram.org/bot{bot_token}/{method}"
     use_proxy = bool(proxy_url)
     delivered = False
-    for chat_id in chat_ids:
+    def allowed(chat_id):
         if owner_only:
-            allowed = isinstance(target, _OwnerDeliveryTarget) and telegram_access.owner_notification_allowed(chat_id)
-        elif isinstance(target, _DeliveryTarget):
-            allowed = telegram_access.notification_allowed(chat_id, profile_name=target.profile_name,
-                                                           direction=target.direction)
-        else:
-            allowed = _delivery_allowed(chat_id)
-        if not allowed:
+            return isinstance(target, _OwnerDeliveryTarget) and telegram_access.owner_notification_allowed(chat_id)
+        if isinstance(target, _DeliveryTarget):
+            return telegram_access.notification_allowed(chat_id, profile_name=target.profile_name,
+                                                         direction=target.direction)
+        return _delivery_allowed(chat_id)
+
+    for chat_id in chat_ids:
+        if not allowed(chat_id):
             continue
+        token = _delivery_check.set(lambda: allowed(chat_id))
         try:
             payload = build_request(chat_id)
             if multipart:
@@ -233,6 +242,8 @@ async def _send_to_chats(method: str, build_request, *, multipart: bool = False,
             log.warning("Telegram %s delivery unconfirmed (use_proxy=%s): %s",
                         method, use_proxy, type(exc).__name__)
             return False
+        finally:
+            _delivery_check.reset(token)
         if ok is not True:
             return False
         delivered = True
@@ -631,9 +642,16 @@ async def notify_needs_manual(
     note: str | None = None,
     reply_markup: dict | None = None,
     screenshot_path: str | None = None,
-    *, uncertain: bool = False,
+    *, uncertain: bool = False, review_item: dict | None = None,
 ):
     """Уведомить о подходящей вакансии, где нужен ручной отклик."""
+    if review_item is not None and not uncertain and review_item.get("status") == "pending":
+        import manual_apply_queue
+        text = html.escape(manual_apply_queue.build_review_card_text(review_item))
+        if note:
+            text += "\n\n" + _html(note, 600)
+        markup = manual_apply_queue.build_review_card_markup(review_item, review_item["profile_name"])
+        return await send_message_with_markup(text, reply_markup=markup)
     extra_note = note or "Работодатель требует ответить на вопросы"
     title = _html(vacancy.get("title", "—"), 300)
     source = _html(vacancy.get("source_label", vacancy.get("source", "—")), 100)

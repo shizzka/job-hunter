@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 
 from telegram_bot_ui import (
     BUTTON_BACK,
@@ -29,18 +30,42 @@ class TelegramCandidate:
         return dict(state) if state.get("profile_name") == profile_name else {}
 
     def _set_candidate_state(self, user_id: int, state: dict) -> None:
+        self.__dict__.get("_candidate_confirmations", {}).pop(user_id, None)
         self._set_search_settings_state(user_id, candidate_interview=state)
 
     def _clear_candidate_state(self, user_id: int) -> None:
+        self.__dict__.get("_candidate_confirmations", {}).pop(user_id, None)
         self._clear_search_settings_state(user_id, "candidate_interview")
+
+    def _candidate_confirmation_current(self, principal, revision: str) -> bool:
+        from telegram_app.history import token
+        profile_name = self._selected_profile(principal)
+        proof = self.__dict__.get("_candidate_confirmations", {}).get(principal["user_id"])
+        state = self._candidate_state(principal["user_id"], profile_name)
+        return bool(proof and state.get("mode") == "confirm"
+                    and proof["revision"] == revision and proof["profile_name"] == profile_name
+                    and proof["binding"] == token(self._profile(profile_name).home_dir)
+                    and proof["state"] == state)
 
     def _candidate_confirm_markup(self, principal) -> dict:
         from telegram_app.history import token
-        home = self._profile(self._selected_profile(principal)).home_dir
-        rows = [[(BUTTON_CANDIDATE_SAVE, "candidate_save"), (BUTTON_CANDIDATE_EDIT, "candidate_edit")],
-                [(BUTTON_CANDIDATE_SKIP, "candidate_skip"), (BUTTON_BACK, "back")]]
-        return {"inline_keyboard": [[{"text": label, "callback_data": f"nav:{token(home)}:{command}"}
-                                    for label, command in row] for row in rows]}
+        user_id = principal["user_id"]
+        profile_name = self._selected_profile(principal)
+        home = self._profile(profile_name).home_dir
+        proofs = self.__dict__.setdefault("_candidate_confirmations", {})
+        proof = proofs.get(user_id, {})
+        if not self._candidate_confirmation_current(principal, proof.get("revision", "")):
+            # A fresh draft gets a fresh capability even if its text is identical.
+            proof = {"revision": secrets.token_hex(6), "profile_name": profile_name,
+                     "binding": token(home), "state": self._candidate_state(user_id, profile_name)}
+            proofs[user_id] = proof
+        prefix = f"cf:{user_id}:{proof['revision']}"
+        return {"inline_keyboard": [
+            [{"text": BUTTON_CANDIDATE_SAVE, "callback_data": f"{prefix}:save"},
+             {"text": BUTTON_CANDIDATE_EDIT, "callback_data": f"{prefix}:edit"}],
+            [{"text": BUTTON_CANDIDATE_SKIP, "callback_data": f"{prefix}:skip"},
+             {"text": BUTTON_BACK, "callback_data": f"nav:{token(home)}:back"}],
+        ]}
 
     async def _send_candidate_question(self, chat_id: int, principal: dict, profile_name: str) -> None:
         reply_menu = reply_menu_for_command(principal.get("role", ROLE_USER), "/candidate_interview")
@@ -247,6 +272,9 @@ class TelegramCandidate:
             self._set_selected_menu(principal["user_id"], MENU_CANDIDATE)
         profile_dir = self._candidate_profile_dir(profile_name)
         state = self._candidate_state(principal["user_id"], profile_name)
+        if arg.startswith("cf:") and not self._candidate_confirmation_current(principal, arg[3:]):
+            await self._send_text(chat_id, "Ответ изменился. Откройте подтверждение заново.")
+            return
         if command == "/candidate_profile":
             await self._send_menu(chat_id, principal, profile_name=profile_name, menu=MENU_CANDIDATE)
             return

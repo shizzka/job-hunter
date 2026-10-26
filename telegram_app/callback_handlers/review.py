@@ -289,6 +289,23 @@ async def handle_review_card(self, context: CallbackContext):
     if view.item_direction(item) not in (None, view.name):
         await self._answer_callback_query(context.callback_id, "Выбрано другое направление. Обновите список.", show_alert=True)
         return
+    unspecified = (view.item_direction(item) is None and token not in {
+        i["token"] for i in self._review_visible_items(profile_name)})
+    show = dict(profile_name=profile_name, message_id=context.message_id, unspecified=unspecified)
+    confirmation_key = f"{context.user_id}:{profile_name}:{token}:{context.message_id}"
+    confirmations = self.__dict__.setdefault("_review_block_confirmations", set())
+    if action in {"c", "m", "h", "v"}:
+        confirmations.discard(confirmation_key)
+    if action in {"h", "v", "c"} and status in {"pending", "uncertain"}:
+        items = self._review_visible_items(profile_name, unspecified=unspecified)
+        tokens = [i['token'] for i in items]
+        if token not in tokens:
+            await self._answer_callback_query(context.callback_id, "Карточка уже не ждёт решения.")
+            return
+        target = token if action == 'c' else tokens[(tokens.index(token) + (1 if action == 'v' else -1)) % len(tokens)]
+        await self._answer_callback_query(context.callback_id)
+        await self._show_review_queue(context.chat_id, context.principal, token=target, **show)
+        return
     if (status != "pending" or float(item.get("snoozed_until") or 0) > time.time()
             or manual_apply_queue.company_blacklist.is_blocked((item.get("vacancy") or {}).get("company", ""), profile_name)):
         labels = {"applied": "отклик отправлен", "already_applied": "уже откликались",
@@ -297,28 +314,11 @@ async def handle_review_card(self, context: CallbackContext):
         await self._answer_callback_query(context.callback_id,
             "Карточка уже обработана: " + labels.get(status, "не ждёт решения") + ".")
         return
-    unspecified = (view.item_direction(item) is None and token not in {
-        i["token"] for i in self._review_visible_items(profile_name)})
-    show = dict(profile_name=profile_name, message_id=context.message_id, unspecified=unspecified)
-    confirmation_key = f"{context.user_id}:{profile_name}:{token}:{context.message_id}"
-    confirmations = self.__dict__.setdefault("_review_block_confirmations", set())
-    if action in {"c", "m", "h", "v"}:
-        confirmations.discard(confirmation_key)
     if action == "X":
         if confirmation_key not in confirmations:
             await self._answer_callback_query(context.callback_id, "Подтверждение устарело. Откройте «Заблокировать компанию» снова.", show_alert=True)
             return False
         confirmations.discard(confirmation_key)
-    if action in {"h", "v"}:
-        items = self._review_visible_items(profile_name, unspecified=unspecified)
-        tokens = [i['token'] for i in items]
-        if token not in tokens:
-            await self._answer_callback_query(context.callback_id, "Карточка уже не ждёт решения.")
-            return
-        target = tokens[(tokens.index(token) + (1 if action == 'v' else -1)) % len(tokens)]
-        await self._answer_callback_query(context.callback_id)
-        await self._show_review_queue(context.chat_id, context.principal, token=target, **show)
-        return
     if action in {"g", "b", "s", "X"}:
         if action in {"g", "b"}:
             result = manual_apply_queue.record_feedback(token, "good" if action == "g" else "bad",
@@ -356,9 +356,7 @@ async def handle_review_card(self, context: CallbackContext):
         text = f"Заблокировать {company}? Новые отклики в эту компанию будут запрещены."
         markup = {"inline_keyboard": [[button("🚫 Заблокировать", "X")], [button("◀ Назад", "m")]]}
     elif action == "w":
-        import html
-        import re
-        text = html.unescape(re.sub(r"</?b>", "", manual_apply_queue.build_manual_why_text(item)))
+        text = manual_apply_queue.build_manual_why_text(item)
         markup = {"inline_keyboard": [back]}
     else:
         items = self._review_visible_items(profile_name, unspecified=unspecified)
@@ -366,8 +364,7 @@ async def handle_review_card(self, context: CallbackContext):
         session = self.__dict__.get("_review_sessions", {}).get(key, {})
         tokens = session.get("tokens") or [i["token"] for i in items]
         position = tokens.index(token) + 1 if token in tokens else 1
-        text = (f"📋 Ждут решения · {position} из {len(tokens)}\n\n" + self._review_item_text(item, "•")
-                + "\n\nБез вашего «Откликнуться» ничего не отправится.")
+        text = manual_apply_queue.build_review_card_text(item, position=position, total=len(tokens))
         rows = []
         url = (item.get("vacancy") or {}).get("url")
         if url:

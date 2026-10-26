@@ -239,9 +239,10 @@ def test_manual_why_text_contains_decision_context():
 
     assert "Почему ручное решение" in text
     assert "Junior QA Engineer @ Acme" in text
-    assert "match 62/100 | response 78/100" in text
-    assert "Кластер: api_qa" in text
-    assert "Красные флаги: middle wording" in text
+    assert "Подходит на 62/100" in text
+    assert "Оценка шанса ответа: 78/100" in text
+    assert "api_qa" not in text
+    assert "Обратите внимание: middle wording" in text
     assert "Хороший API-матч" in text
 
 
@@ -475,7 +476,9 @@ def test_help_has_troubleshooting_and_start_uses_buttons():
     assert "Если что-то не работает" in help_text
     assert "Роль:" not in start and "Роль:" not in help_text
     assert "/" not in start.replace("hh.ru", "")
-    assert "Состояние → Журналы → Подробный" in help_text
+    assert "/log — что произошло при последнем поиске" in help_text
+    assert "/raw_log — подробная история откликов" in help_text
+    assert "/chat_ai — ответить работодателю с помощью ИИ" in help_text
 
 
 def test_trial_search_label_in_search_section_and_command_messages():

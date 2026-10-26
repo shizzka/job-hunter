@@ -9,8 +9,10 @@ import config
 import profile as profile_mod
 import telegram_bot
 import telegram_bot_ui as ui
+from telegram_app.routing import route_for_command
 from runtime_context import TelegramRuntimePaths
 from tests.test_telegram_bot_ui import ADMIN_SCREENS, COMMON_SCREENS, MENU_COMMANDS
+from tests.test_f27_critic_navigation import assert_actions
 
 
 def button_cases():
@@ -37,6 +39,8 @@ def menu_bot(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(config, "TELEGRAM_AI_LIMITS_FILE", str(tmp_path / "ai.json"))
     monkeypatch.setattr(config, "TELEGRAM_AI_FREE_ANALYSES", 100)
+    # A real temporary binding also authorizes queued notices to this user.
+    telegram_bot.telegram_access.upsert_user(42, profile="qa", role=ui.ROLE_USER)
     bot = telegram_bot.TelegramBot("qa", runtime_paths=paths)
     monkeypatch.setattr(bot, "_profile", lambda name: profile)
     monkeypatch.setattr(bot, "_profile_names", lambda: ["qa"])
@@ -95,13 +99,24 @@ def test_every_button_returns_its_owner_or_target_submenu(menu_bot, role, menu, 
             if worker.task:
                 await worker.task
     asyncio.run(run())
-    expected = MENU_COMMANDS.get(command, ui.reply_menu_for_command(role, command) or menu)
+    expected = (ui.MENU_MAIN if command == "/help" else
+                MENU_COMMANDS.get(command, ui.reply_menu_for_command(role, command) or menu))
+    assert bot._selected_menu(principal) == expected
     # Global destinations and screen actions share the same four persistent buttons.
     keyboards = [call.kwargs["reply_markup"] for call in bot._send_text.call_args_list + bot._send_document.call_args_list
                  if "keyboard" in (call.kwargs.get("reply_markup") or {})]
     assert keyboards or any(call.kwargs.get("reply_markup", {}).get("inline_keyboard")
                             for call in bot._send_text.call_args_list), command
     assert all(markup == ui.build_reply_markup(role) for markup in keyboards)
+    route = route_for_command(command)
+    if expected != ui.MENU_MAIN and (command in MENU_COMMANDS or (route and route.actions)):
+        # Inspect the actual dispatch output: a correct global keyboard alone
+        # cannot prove that any section action is reachable.
+        expected_actions = ui.build_menu_inline_markup(role, expected, token="unused")
+        assert_actions(bot._send_text.call_args_list,
+                       [button["text"].removeprefix("✓ ")
+                        for row in expected_actions["inline_keyboard"] for button in row
+                        if button["text"] != ui.BUTTON_BACK])
 
 
 @pytest.mark.parametrize("role,menu,label", list(button_cases()))

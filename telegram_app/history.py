@@ -103,7 +103,8 @@ def _run_report(bot, principal, profile_name, command, arg):
                 else "Запусков пока не было.")
         return text, None, None
     visible = summary if principal.get("role") == "admin" else {**summary, "artifacts": []}
-    text = f"📊 Последний запуск · {view.title}\n" + build_run_summary_text(visible, profile_name=profile_name)
+    text = f"📊 Последний запуск · {view.title}\n" + build_run_summary_text(
+        visible, profile_name=profile_name, role=principal.get("role", "user"))
     if scope == ALL:
         text = f"Направление: {summary['direction_title']}\n" + text
     return text, view.title, markup(profile.home_dir, command, scope=scope)
@@ -167,7 +168,7 @@ def _history_report(bot, principal, profile_name, command, arg):
         elif not runs and applications["profile_total"]:
             text += "\nВ этом направлении записей поисков пока нет. Сохранённые отклики доступны в других разделах ниже."
         else:
-            text += "\n\n" + build_runs_text(runs)
+            text += "\n\n" + build_runs_text(runs, role=principal.get("role", "user"))
         if applications["recent"]:
             text += "\n\nПоследние сохранённые отклики:"
             for row in applications["recent"]:

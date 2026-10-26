@@ -5,6 +5,7 @@ the seen mark for one vacancy/direction describe the same saved application.
 This is a local all-time history, not HH's current active/archived topic count.
 """
 import json
+from datetime import datetime, time, timedelta
 from pathlib import Path
 
 import analytics_read_cache as cache
@@ -18,11 +19,12 @@ def summarize(home, *, scope="active", events_file=None, seen_file=None, days=No
     view = HistoryScope(home, scope)
     events_path = Path(events_file) if events_file else view.home / "analytics_events.jsonl"
     seen_path = Path(seen_file) if seen_file else view.home / "seen_vacancies.json"
-    key = ("applications", cache.ownership_key(view), cache.stamp(events_path), cache.stamp(seen_path),
-           profile_access.current_scope(), days, recent_limit, now.date().isoformat() if days is not None else None)
-    # Period reads must expire as a saved send crosses the rolling cutoff.
-    return cache.memo(key, lambda: (_summarize(view, events_path, seen_path, days=days, now=now, recent_limit=recent_limit),
-                                    now.timestamp() + 1 if days is not None else None), now=now.timestamp())
+    inputs = (cache.ownership_key(view), cache.stamp(events_path), cache.stamp(seen_path),
+              profile_access.current_scope())
+    key = ("applications", inputs, days, recent_limit,
+           now.date().isoformat() if days is not None else None)
+    return cache.memo(key, lambda: _summarize(view, events_path, seen_path, days=days, now=now,
+                                            recent_limit=recent_limit, inputs=inputs), now=now.timestamp())
 
 
 RUN_IDENTITY = ("direction", "resume_id", "resumeId", "requested_resume_id", "hh_resume_hash", "hh_resume_numeric_id")
@@ -42,7 +44,8 @@ def _relevant(events):
         e.get("run_id") in runs and e.get("event") in {"decision", "search_started", "search_finished"})]
 
 
-def _summarize(view, events_path, seen_path, *, days=None, now=None, recent_limit=10):
+def _applications(view, events_path, seen_path):
+    """Recover saved applications once per input version, independently of the window."""
     incomplete = False
     try:
         events, _ = cache.journal(events_path).read(events_path)
@@ -103,21 +106,49 @@ def _summarize(view, events_path, seen_path, *, days=None, now=None, recent_limi
                 continue
             if (owner, identity) not in covered_vacancies:
                 applications[(owner, None, identity)] = row
+    return applications, incomplete
+
+
+def _summarize(view, events_path, seen_path, *, days=None, now=None, recent_limit=10, inputs=None):
+    # A window boundary only filters saved applications. It must not repeat the
+    # ownership/deduplication pass over the entire analytics journal.
+    if inputs is None:
+        inputs = (cache.ownership_key(view), cache.stamp(events_path), cache.stamp(seen_path),
+                  profile_access.current_scope())
+    import analytics
+    now = now or analytics._now()
+    def load_rows():
+        rows = _applications(view, events_path, seen_path)
+        return rows, now.timestamp() + 1 if rows[1] else None
+    applications, incomplete = cache.memo(("application_rows", inputs), load_rows, now=now.timestamp())
+    expiry = now + timedelta(seconds=1) if incomplete else None
     if days is not None:
-        import analytics
-        from datetime import timedelta
-        cutoff = now - timedelta(days=max(0, days))
-        applications = {key: row for key, row in applications.items()
-                        if (date := analytics._parse_dt(row.get("created_at"))) is not None
-                        and cutoff <= date <= now}
+        window = timedelta(days=max(0, days))
+        cutoff = now - window
+        midnight = datetime.combine(now.date() + timedelta(days=1), time.min, tzinfo=now.tzinfo)
+        expiry = min(expiry, midnight) if expiry is not None else midnight
+        period = {}
+        for key, row in applications.items():
+            date = analytics._parse_dt(row.get("created_at"))
+            if date is None:
+                continue
+            if cutoff <= date <= now:
+                period[key] = row
+                # The existing rolling cutoff includes equality: the row leaves
+                # one datetime tick after date + window, not at that instant.
+                expiry = min(expiry, date + window + timedelta(microseconds=1))
+            elif date > now:
+                expiry = min(expiry, date)
+        applications = period
     selected = [row for row in applications.values() if view.matches(row)]
     restricted = bool(profile_access.current_scope()[1])
     totals = selected if restricted else list(applications.values())
     legacy = [row for row in totals if view.owner(row) in {None, ""}]
-    return {"count": len(selected), "profile_total": len(totals), "legacy_total": len(legacy),
+    summary = {"count": len(selected), "profile_total": len(totals), "legacy_total": len(legacy),
             "scope": view.name, "direction_title": view.title,
             "recent": sorted(selected, key=lambda row: str(row.get("created_at") or ""), reverse=True)[:recent_limit],
             "restricted": restricted, "incomplete": incomplete}
+    return summary, expiry.timestamp() if expiry is not None else None
 
 
 def totals_text(summary):

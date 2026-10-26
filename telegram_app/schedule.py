@@ -5,7 +5,9 @@ import profile as profile_mod
 
 from telegram_app.routing import COMMAND_ROUTES
 from telegram_bot_ui import (
+    BUTTON_SEARCH,
     MENU_REPEAT,
+    ROLE_ADMIN,
     build_schedule_text,
 )
 import config
@@ -49,18 +51,21 @@ class TelegramSchedule:
             fallback_pid=state.get("pid") or 0,
         )
         if result["already_running"]:
-            await self._send_text(chat_id, f"🟢 Демон уже запущен: pid={result['pid']}", reply_markup=self._menu_reply_markup(principal))
+            detail = f": pid={result['pid']}" if principal.get("role") == ROLE_ADMIN else "."
+            await self._send_text(chat_id, "🟢 Фоновый поиск уже запущен" + detail, reply_markup=self._menu_reply_markup(principal))
             return
         if not result["ok"]:
             await self._send_text(
                 chat_id,
-                f"❌ Не удалось запустить демон. Лог: {result['log_file']}",
+                (f"❌ Не удалось запустить демон. Лог: {result['log_file']}" if principal.get("role") == ROLE_ADMIN
+                 else "❌ Не удалось запустить фоновый поиск. Сообщите администратору."),
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
         await self._send_text(
             chat_id,
-            f"✅ Демон запущен для профиля {profile_name}: pid={result['pid']}",
+            (f"✅ Демон запущен для профиля {profile_name}: pid={result['pid']}" if principal.get("role") == ROLE_ADMIN
+             else f"✅ Фоновый поиск запущен для профиля {profile_name}."),
             reply_markup=self._menu_reply_markup(principal),
         )
         return
@@ -86,16 +91,17 @@ class TelegramSchedule:
         if not result["ok"] and not result.get("already_running"):
             await self._send_text(
                 chat_id,
-                f"❌ Не удалось включить повтор для {profile_name}. Лог: {result['log_file']}",
+                (f"❌ Не удалось включить повтор для {profile_name}. Лог: {result['log_file']}" if principal.get("role") == ROLE_ADMIN
+                 else "❌ Не удалось включить повтор. Сообщите администратору."),
                 reply_markup=self._menu_reply_markup(principal),
             )
             return
         await self._send_text(
             chat_id,
             (
-                f"✅ Повтор включён для профиля {profile_name}: {label}\n"
-                f"• profile.env: {env_file}\n"
-                f"• daemon pid: {result.get('pid', 0)}"
+                f"✅ Повтор включён для профиля {profile_name}: {label}"
+                + (f"\n• profile.env: {env_file}\n• daemon pid: {result.get('pid', 0)}"
+                   if principal.get("role") == ROLE_ADMIN else "")
             ),
             reply_markup=self._menu_reply_markup(principal),
         )
@@ -114,7 +120,7 @@ class TelegramSchedule:
             (
                 f"{'🛑 Повтор остановлен' if not result.get('already_stopped') else '⚪️ Повтор уже был выключен'} "
                 f"для профиля {profile_name}.\n"
-                f"Разовый запуск остаётся доступен через кнопку «Поиск»."
+                f"Разовый запуск остаётся доступен через кнопку «{BUTTON_SEARCH}»."
             ),
             reply_markup=self._menu_reply_markup(principal),
         )
@@ -133,7 +139,8 @@ class TelegramSchedule:
             return
         await self._send_text(
             chat_id,
-            f"🛑 Остановка демона запрошена для профиля {profile_name}: pid={result['pid']} via {result.get('signal', 'SIGTERM')}",
+            (f"🛑 Остановка демона запрошена для профиля {profile_name}: pid={result['pid']} via {result.get('signal', 'SIGTERM')}"
+             if principal.get("role") == ROLE_ADMIN else f"🛑 Остановка фонового поиска запрошена для профиля {profile_name}."),
             reply_markup=self._menu_reply_markup(principal),
         )
         return

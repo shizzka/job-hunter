@@ -43,7 +43,7 @@ def test_review_screen_sends_profile_queue_with_actions(monkeypatch):
     asyncio.run(bot._show_review_list(42, principal, profile_name="client_42"))
 
     # One compact list message; a number opens the full card.
-    assert len(messages) == 1 and messages[0][1].startswith("📋 Вакансии на проверку: 1")
+    assert len(messages) == 1 and messages[0][1].startswith("📋 Ждут решения: 1")
     assert "1. QA Engineer" in messages[0][1] and "Acme · 📊 77" in messages[0][1] and "<b>" not in messages[0][1]
     assert messages[0][2]["inline_keyboard"][0][0] == {"text": "1", "callback_data": "rq:o:client_42:token-1"}
     monkeypatch.setattr(manual_apply_queue, "get_candidate", lambda token, profile_name=None: dict(item, status="pending"))
@@ -133,20 +133,20 @@ def test_review_direction_filter_paging_legacy_and_switch(tmp_path, monkeypatch)
     monkeypatch.setattr(bot, "_edit_text", lambda chat, message, text, **kw: send(chat, text, **kw))
     asyncio.run(bot._show_review_list(42, principal, profile_name="qa", page=1, sort="new"))
     text, markup = sent[-1]
-    assert "Вакансии на проверку: 8 · QA Engineer · стр. 2/2" in text
+    assert "Ждут решения: 8 · QA Engineer · стр. 2/2" in text
     assert "7. QA 6" in text and "8. Old query" in text
     assert "Electric" not in text and "Unknown" not in text
     assert markup['inline_keyboard'][0] == [
         {"text": "7", "callback_data": "rq:o:qa:qa6"}, {"text": "8", "callback_data": "rq:o:qa:query"}]
     assert any(b['callback_data'] == 'rq:U:qa:0:s' for r in markup['inline_keyboard'] for b in r)
     asyncio.run(bot._show_review_list(42, principal, profile_name="qa", unspecified=True))
-    assert "Вакансии на проверку: 1 · направление не указано" in sent[-1][0]
+    assert "Ждут решения: 1 · направление не указано" in sent[-1][0]
     assert "Unknown" in sent[-1][0] and "Old query" not in sent[-1][0]
     asyncio.run(bot._review_dismiss_below(42, principal, "qa", 30, confirmed=True))
     assert feedback == [f"qa{i}" for i in range(7)]
     directions.set_active_direction(str(tmp_path), "electric")
     asyncio.run(bot._show_review_list(42, principal, profile_name="qa", page=1, message_id=5))
-    assert "Вакансии на проверку: 2 · Электромонтажник" in sent[-1][0]
+    assert "Ждут решения: 2 · Электромонтажник" in sent[-1][0]
     assert "Electric" in sent[-1][0] and "Old resume" in sent[-1][0] and "QA 0" not in sent[-1][0]
     asyncio.run(bot._open_review_card(42, "qa", "qa0"))
     assert "Выбрано другое направление" in sent[-1][0]

@@ -63,7 +63,10 @@ from telegram_app.callbacks import TelegramCallbackRouter
 from telegram_app.forms import TelegramFormEditor
 from telegram_app.directions import TelegramDirections
 from telegram_app.chat_ownership import TelegramChatOwnership
-from telegram_app.command_queue import TelegramCommandQueue, profile_command, current_entry
+from telegram_app.command_queue import (
+    TelegramCommandQueue, profile_command, current_entry,
+    notification_delivery, notification_delivery_allowed,
+)
 from telegram_app.updates import TelegramUpdateSupervisor
 from telegram_app.routing import COMMAND_ROUTES, route_for_command
 from telegram_app.guards import read_command
@@ -504,7 +507,7 @@ class TelegramBot(
             raise RuntimeError("Не удалось заново запустить повтор поиска.")
         return True
 
-    def _profile_recipient_ids(self, profile_name: str) -> list[int]:
+    def _profile_recipient_ids(self, profile_name: str, *, direction: str | None = None) -> list[int]:
         recipients = []
         for item in telegram_access.list_users():
             try:
@@ -513,14 +516,15 @@ class TelegramBot(
                 continue
             if user_id <= 0 or not item.get("enabled", True):
                 continue
-            if str(item.get("profile") or "").strip() == profile_name:
+            if telegram_access.notification_allowed(user_id, profile_name=profile_name, direction=direction):
                 recipients.append(user_id)
         if recipients:
             return sorted(set(recipients))
         profile = self._profile(profile_name)
         configured = int(getattr(getattr(profile, "notify", None), "chat_id", 0) or 0)
         fallback = int(config.NOTIFY_CHAT_ID or 0)
-        return sorted({item for item in (configured, fallback) if item > 0})
+        return sorted({item for item in (configured, fallback) if item > 0
+                       and telegram_access.notification_allowed(item, profile_name=profile_name, direction=direction)})
 
     @staticmethod
     def _format_age(seconds: float) -> str:
@@ -666,11 +670,15 @@ class TelegramBot(
                     self._daily_summary_report_task = report
                     report.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
                     text = await asyncio.shield(report)
-                    result = await self._send_text_safely(
-                        user_id,
-                        text,
-                        reply_markup=self._menu_reply_markup(principal),
-                    )
+                    direction = principal.get("direction") if principal.get("role") == telegram_access.ROLE_TESTER else None
+                    with notification_delivery(profile_name, (direction,)):
+                        if not notification_delivery_allowed(user_id):
+                            continue
+                        result = await self._send_text_safely(
+                            user_id,
+                            text,
+                            reply_markup=self._menu_reply_markup(principal),
+                        )
                 if result is not None:
                     self._update_state(lambda state: checkpoint(state, user_id, profile_name))
                     delivered[str(user_id)] = profile_name
@@ -778,12 +786,30 @@ class TelegramBot(
             self._offset_unsaved = True
             log.warning("Telegram offset checkpoint deferred: bot state lock is busy")
 
+    def _check_delivery(self, chat_id):
+        if not notification_delivery_allowed(chat_id):
+            raise PermissionError("Notification recipient access changed.")
+
+    async def _api_request_once(self, method, payload, *, use_proxy, timeout):
+        # Retry sleeps and proxy fallback can outlive a registry binding.
+        if "chat_id" in payload:
+            self._check_delivery(payload["chat_id"])
+        return await super()._api_request_once(method, payload, use_proxy=use_proxy, timeout=timeout)
+
+    async def _send_document_once(self, chat_id, *, filename, content, caption, reply_markup, use_proxy):
+        # Multipart uploads have their own transport and retry path.
+        self._check_delivery(chat_id)
+        return await super()._send_document_once(chat_id, filename=filename, content=content,
+            caption=caption, reply_markup=reply_markup, use_proxy=use_proxy)
+
     async def _send_text(self, chat_id: int, text: str, *, reply_markup: dict | None = None) -> dict | None:
         entry = current_entry()
         if entry is not None:
             entry.last_message = text
         first_result: dict | None = None
         for idx, part in enumerate(split_message(text)):
+            if not notification_delivery_allowed(chat_id):
+                return None
             payload = {
                 "chat_id": chat_id,
                 "text": part[:4096],

@@ -36,6 +36,42 @@ RENAMES = (
      "• Настройки — Мои поиски, hh.ru, Факты для ИИ и расписание"),
 )
 
+# Critic 9: instructions name the actions actually emitted by F27. Apply after
+# the original F27 patches so their checked preconditions stay immutable.
+CRITIC_RENAMES = (
+    ("«Поиск»", "«🔎 Найти вакансии»"),
+    ("«Вход в hh.ru»", "«🔐 Вход в hh.ru»"),
+    ("«Сохранить предложенное»", "«✅ Сохранить предложенное»"),
+    ("«Изменить запросы»", "«✏️ Изменить запросы»"),
+    ("«Предложить ИИ»", "«✨ Предложить ИИ»"),
+    ("«Подтверждать отклик»", "«✋ Подтверждать отклик»"),
+    ("«Автоматически»", "«⚡ Автоматически»"),
+    ("Раздел «Админ»", "Раздел «🛠 Для админа»"),
+    ("«Админ» → «Платные LLM» → «Лимиты ИИ»", "«🛠 Для админа» → «🧠 Платные LLM» → «🎁 Лимиты ИИ»"),
+    ("Откройте «🔐 hh.ru и резюме»", "Откройте «⚙️ Настройки» → «🔐 hh.ru и резюме»"),
+    ("Откройте «Мои поиски»", "Откройте «⚙️ Настройки» → «🎯 Мои поиски»"),
+    ("💡 Повтор: кнопки 3/день, 1/день, 1/нед или «выкл».", "💡 Выберите частоту повтора кнопками ниже."),
+    ("✋ Подтверждать отклик — бот присылает вакансию и откликается только после нажатия «Откликнуться».",
+     "✋ Подтверждать отклик — бот присылает вакансию и откликается только после вашего подтверждения на карточке."),
+    ("• Состояние → Журналы → Последний запуск — что произошло при поиске (/log)\n"
+     "• Состояние → Журналы → Подробный — история откликов (/raw_log)\n"
+     "• Отклики → Ответ ИИ в чат — ответы работодателям (/chat_ai)",
+     "• /log — что произошло при последнем поиске\n"
+     "• /raw_log — подробная история откликов\n"
+     "• /chat_ai — ответить работодателю с помощью ИИ"),
+)
+
+
+def _critic_text(value):
+    if isinstance(value, dict):
+        return {key: _critic_text(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_critic_text(item) for item in value]
+    if isinstance(value, str):
+        for old, new in CRITIC_RENAMES:
+            value = value.replace(old, new)
+    return value
+
 
 def presentation(value):
     """Apply only the menu vocabulary and global reply-keyboard requirements."""
@@ -138,4 +174,18 @@ def f27_expected(kind, key, baseline):
             assert _without_markup(expected[name]) == _without_markup(baseline[name]), (key, name)
         elif name in baseline:
             assert expected[name] == baseline[name], (key, name)
+    # Only presentation changes; the original checks above continue to pin
+    # authorization, process calls, queue admission, documents and state writes.
+    for name in ("replies", "texts", "sent"):
+        if name in expected:
+            expected[name] = _critic_text(expected[name])
+    if kind == "dispatch":
+        for reply in expected["replies"]:
+            if (reply["first_line"] == "⏳ Сейчас выполняется команда"
+                    and "«⏹ Остановить»" in reply["text"]):
+                reply["markup"] = {"inline_keyboard": [["⏹ Остановить"]]}
+    if kind == "dispatch" and json.loads(key)[0] != "admin":
+        for reply in expected["replies"]:
+            reply["text"] = "\n".join(line for line in reply["text"].split("\n")
+                                        if not line.startswith(("• profile.env:", "• daemon pid:")))
     return expected

@@ -8,6 +8,7 @@ import time
 from private_logging import chat_log_path
 from state_store.private_journal import read_json_records
 from telegram_app.api import telegram_error_summary
+from telegram_app.command_queue import notification_delivery, notification_delivery_allowed
 from telegram_bot_ui import (
     ROLE_USER,
     _tail_text_file,
@@ -215,12 +216,15 @@ class TelegramMonitoring:
             except PermissionError:
                 # Deny this recipient without blocking alerts to other users.
                 continue
-            if principal and principal.get("role") == telegram_access.ROLE_TESTER:
+            if not principal or principal.get("role") == telegram_access.ROLE_TESTER:
                 # Diagnostics contain profile-wide log evidence; they cannot
                 # establish ownership of each line by the tester's direction.
                 continue
-            reply_markup = self._menu_reply_markup(principal) if principal else None
-            result = await self._send_text_safely(user_id, text, reply_markup=reply_markup)
+            with notification_delivery(self.profile_name):
+                if not notification_delivery_allowed(user_id):
+                    continue
+                reply_markup = self._menu_reply_markup(principal)
+                result = await self._send_text_safely(user_id, text, reply_markup=reply_markup)
             if result is not None:
                 sent += 1
         if sent:
