@@ -359,7 +359,8 @@ def test_queued_callback_revalidates_current_access_before_replay(monkeypatch):
         assert not bot.manual_calls
         assert not bot._active_commands
         assert any("доступ изменились" in text for _, text, _ in bot.messages)
-        assert bot.edits[-1][2] == source()["message"]["reply_markup"]
+        # Revoked initiators must not regain actionable controls on replay.
+        assert bot.edits[-1][2] is None
     asyncio.run(scenario())
 
 

@@ -28,7 +28,17 @@ _notification_delivery = contextvars.ContextVar("bot_notification_delivery", def
 @contextlib.contextmanager
 def notification_delivery(profile, directions=()):
     """Opt-in event boundary; ordinary direct replies keep their own access rules."""
-    token = _notification_delivery.set((profile, tuple(directions) or (None,)))
+    token = _notification_delivery.set((profile, tuple(directions) or (None,), None, None))
+    try:
+        yield
+    finally:
+        _notification_delivery.reset(token)
+
+
+@contextlib.contextmanager
+def command_reply_delivery(profile, directions, *, user_id, chat_id):
+    """Child runners retain their initiating actor and captured target profile."""
+    token = _notification_delivery.set((profile, tuple(directions) or (None,), user_id, chat_id))
     try:
         yield
     finally:
@@ -39,7 +49,12 @@ def notification_delivery_allowed(chat_id):
     event = _notification_delivery.get()
     if event is None:
         return True
-    profile, directions = event
+    profile, directions, user_id, reply_chat = event
+    if user_id is not None:
+        if chat_id != reply_chat:
+            return False
+        return all(telegram_access.command_reply_allowed(
+            user_id, profile_name=profile, direction=direction) for direction in directions)
     return all(telegram_access.notification_allowed(
         chat_id, profile_name=profile, direction=direction) for direction in directions)
 
@@ -248,11 +263,13 @@ class TelegramCommandQueue:
     async def _queue_entry_notice(self, entry, text, *, shared=False, **kwargs):
         directions = self._queue_event_directions(entry.profile) if shared else (entry.direction,)
         return await self._queue_notice(entry.chat_id, text, profile=entry.profile,
-                                        directions=directions, **kwargs)
+                                        directions=directions, reply_user_id=entry.user_id, **kwargs)
 
-    async def _queue_notice(self, chat_id, text, *, profile, directions=(), **kwargs):
+    async def _queue_notice(self, chat_id, text, *, profile, directions=(), reply_user_id=None, **kwargs):
         try:
-            with notification_delivery(profile, directions):
+            boundary = (notification_delivery(profile, directions) if reply_user_id is None else
+                        command_reply_delivery(profile, directions, user_id=reply_user_id, chat_id=chat_id))
+            with boundary:
                 if not notification_delivery_allowed(chat_id):
                     return None
                 return await self._send_text(chat_id, text, **kwargs)
@@ -271,7 +288,8 @@ class TelegramCommandQueue:
             markup = {"inline_keyboard": [[{"text": "Откликнуться с ИИ" if entry.label == "manual AI apply" else entry.label,
                                             "callback_data": entry.source["data"]}]]}
         try:
-            with notification_delivery(entry.profile, (entry.direction,)):
+            with command_reply_delivery(entry.profile, (entry.direction,),
+                                        user_id=entry.user_id, chat_id=entry.chat_id):
                 if notification_delivery_allowed(entry.chat_id):
                     await self._edit_reply_markup(entry.chat_id, message_id, reply_markup=markup if restore else None)
         except Exception:
@@ -355,7 +373,8 @@ class TelegramCommandQueue:
         token = _invocation.set((asyncio.current_task(), entry))
         try:
             # Child runners inherit this scope across capture/progress awaits.
-            with notification_delivery(entry.profile, (entry.direction,)):
+            with command_reply_delivery(entry.profile, (entry.direction,),
+                                        user_id=entry.user_id, chat_id=entry.chat_id):
                 await entry.invoke(revalidate)
             active = self._active_commands.get(entry.profile)
             if active:
@@ -444,8 +463,11 @@ class TelegramCommandQueue:
         except Exception:
             log.warning("Queue owner lookup failed for %s", profile, exc_info=True)
         for chat in sorted(chats):
+            actors = {entry.user_id for entry in entries if entry.chat_id == chat}
+            reply_user_id = next(iter(actors)) if len(actors) == 1 else None
             await self._queue_notice(chat, f"⏸ Очередь профиля {profile} на паузе: {human_pause_reason(reason)}",
-                                     profile=profile, directions=directions, reply_markup={"inline_keyboard": [[{"text": "Продолжить очередь", "callback_data": f"queue:resume:{resume_token}"}]]})
+                                     profile=profile, directions=directions, reply_user_id=reply_user_id,
+                                     reply_markup={"inline_keyboard": [[{"text": "Продолжить очередь", "callback_data": f"queue:resume:{resume_token}"}]]})
 
     @nonblocking_state_locks
     async def _drain_queue(self, profile):
@@ -497,14 +519,14 @@ class TelegramCommandQueue:
             return
         self._queue_resume_profiles = {token: name for token, name in self._queue_resume_profiles.items() if name != profile}
         history = self._queue_history.pop(profile, [])
-        for chat_id in dict.fromkeys(entry.chat_id for entry in history):
-            own = [entry for entry in history if entry.chat_id == chat_id
-                   and telegram_access.notification_allowed(chat_id, profile_name=profile, direction=entry.direction)]
+        for chat_id, user_id in dict.fromkeys((entry.chat_id, entry.user_id) for entry in history):
+            own = [entry for entry in history if (entry.chat_id, entry.user_id) == (chat_id, user_id)
+                   and telegram_access.command_reply_allowed(user_id, profile_name=profile, direction=entry.direction)]
             if not own:
                 continue
             await self._queue_notice(chat_id, f"✅ Очередь выполнена · {profile} · задач: {len(own)}\n" +
                                      "\n".join(f"• {entry.label}: {entry.outcome or 'завершена'}" for entry in own),
-                                     profile=profile, directions=tuple(entry.direction for entry in own))
+                                     profile=profile, directions=tuple(entry.direction for entry in own), reply_user_id=user_id)
 
     async def _queue_callback(self, callback):
         principal = telegram_access.resolve_user(int((callback.get("from") or {}).get("id") or 0))

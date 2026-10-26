@@ -203,7 +203,8 @@ def test_dispatch_outcome(dispatch_bot, monkeypatch, role, scenario, text, arg):
         monkeypatch.setattr(bot, "_has_active_command", lambda name: True)
     if scenario == "launching":
         bot._queue_launching["qa-dev"] = SimpleNamespace(profile="qa-dev", label="synthetic launching",
-                                                       chat_id=42, request_key=None, source=None, direction="qa")
+                                                       chat_id=42, user_id=42, request_key=None,
+                                                       source=None, direction="qa")
     if scenario == "queued":
         monkeypatch.setattr(bot, "_queue_length", lambda name: 1)
     if scenario == "llm_cooldown":

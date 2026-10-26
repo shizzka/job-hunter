@@ -256,6 +256,28 @@ def notification_allowed(user_id: int, *, profile_name: str | None, direction: s
     return False
 
 
+def command_reply_allowed(user_id: int, *, profile_name: str, direction: str | None) -> bool:
+    """Recheck an initiating actor's authority over a captured command target."""
+    try:
+        # A queue drainer can inherit a different actor's request scope.
+        with profile_access.principal_scope(None):
+            principal = resolve_user(user_id)
+            if not principal:
+                return False
+            with profile_access.principal_scope(principal):
+                if not profile_access.profile_allowed(profile_name):
+                    return False
+                if principal.get("role") == ROLE_ADMIN:
+                    return True
+                if principal.get("profile") != profile_name:
+                    return False
+                if principal.get("role") == ROLE_TESTER:
+                    return direction == principal.get("direction")
+                return True
+    except PermissionError:
+        return False
+
+
 def owner_notification_allowed(user_id: int) -> bool:
     """A captured global owner route cannot be rebound to a client or tester."""
     for item in load_registry()["users"]:
