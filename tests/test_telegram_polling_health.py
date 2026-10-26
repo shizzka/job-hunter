@@ -200,6 +200,10 @@ def test_cancellation_does_not_claim_poll_success(bot, monkeypatch):
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
 @pytest.mark.parametrize("bootstrap", [False, True])
 def test_signal_interrupts_pending_poll_before_closing_notification_session(bot, monkeypatch, sig, bootstrap):
+    monkeypatch.setattr(telegram_bot.telegram_access, "load_registry", lambda: {"users": [
+        {"user_id": uid, "role": "user", "profile": "synthetic", "enabled": True}
+        for uid in (42, 84)
+    ]})
     async def scenario():
         entered = asyncio.Event()
         events, sent, handlers = [], [], {}

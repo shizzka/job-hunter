@@ -368,6 +368,9 @@ def test_finishing_old_launch_cannot_release_new_preview_admission(monkeypatch, 
     """A fast runner can finish while its original markup request still awaits."""
     import chat_context
     import runtime_control
+    # The actor and private delivery chat must both belong to this profile.
+    for uid in (1, 42):
+        telegram_bot.telegram_access.upsert_user(uid, role='admin', profile='qa')
     monkeypatch.setattr(chat_context, 'safe_resolve', lambda *args: SimpleNamespace(
         status=chat_context.OWN, resume_id='1', direction='', owner_profile=''))
     async def scenario():

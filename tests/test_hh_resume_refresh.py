@@ -272,6 +272,7 @@ def test_refresh_is_queued_while_current_profile_has_active_command(tmp_path, mo
     monkeypatch.setattr(bot, "_send_text", AsyncMock(return_value={}))
     monkeypatch.setattr(bot, "_send_busy_status", AsyncMock())
     principal = {"user_id": 42, "role": ui.ROLE_USER, "profile": "qa"}
+    telegram_bot.telegram_access.upsert_user(42, role=ui.ROLE_USER, profile="qa")
     access = {42: principal}
     daemon = {"running": False, "pid": 123}
     monkeypatch.setattr(telegram_bot.telegram_access, "resolve_user", access.get)

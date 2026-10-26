@@ -233,7 +233,7 @@ def test_old_uncertain_remains_accessible_on_last_review_page(crowded_queue, mon
     monkeypatch.setattr(bot, "_send_text", send)
     asyncio.run(bot._show_review_list(42, principal, profile_name="qa", page=41, sort=sort))
     text, markup = sent[-1]
-    assert "Вакансии на проверку: 251" in text and "стр. 42/42" in text
+    assert "Ждут решения: 251" in text and "стр. 42/42" in text
     assert "251. Old uncertain vacancy" in text and "Нужна сверка" in text
     assert any(button.get("callback_data") == "rq:o:qa:old-uncertain"
                for row in markup["inline_keyboard"] for button in row)
@@ -260,7 +260,7 @@ def test_review_renders_uncertain_card_without_apply_or_bulk_dismiss(homes, monk
     assert "Pending vacancy" in sent[-1][0] and "Applied vacancy" not in sent[-1][0]
     # The complete list is the card's «☰ Вся очередь» action in F27.
     asyncio.run(bot._show_review_list(42, principal, profile_name="qa"))
-    assert "Вакансии на проверку: 2" in sent[-1][0]
+    assert "Ждут решения: 2" in sent[-1][0]
     assert "Нужна сверка" in sent[-1][0] and "Applied vacancy" not in sent[-1][0]
     asyncio.run(bot._open_review_card(42, "qa", uncertain["token"]))
     text, markup = sent[-1]
