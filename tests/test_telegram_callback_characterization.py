@@ -48,6 +48,13 @@ class CallbackBot(TelegramCallbackRouter):
     def _selected_profile(self, principal):
         return "qa-dev"
 
+    def _review_visible_items(self, profile, *, unspecified=False):
+        # The card router now reads eligibility before opening the shared inbox.
+        # This boundary is synchronous because production runs it via read_thread.
+        self.events.append(["_review_visible_items", [profile], {"unspecified": unspecified},
+                            list(profile_access.current_scope())])
+        return [{"token": "token", "status": "uncertain", "vacancy": {}}]
+
     def _profile(self, name):
         return SimpleNamespace(home_dir="/synthetic/qa-dev")
 
@@ -200,7 +207,22 @@ def f27_review_contract(case, expected):
     blocks = {"block", "block_user", "block_failed", "block_no_company"}
     for outcome in expected:
         events = outcome["events"]
-        if name == "orphan_retry_foreign":
+        if name in {"review_open", "review_open_user"}:
+            principal = {"user_id": 42, "role": case.get("role", "admin"),
+                         "profile": "qa-dev", "direction": "qa-dev"}
+            message_id = 8 if outcome["phase"] in {"copied", "restart"} else 7
+            outcome["events"] = [
+                ["get_candidate", ["token"], {"profile_name": "qa-dev"}],
+                ["_review_visible_items", ["qa-dev"], {"unspecified": False}, ["", "", ""]],
+                ["_answer_callback_query", ["callback"], {}, ["", "", ""]],
+                ["_show_review_queue", [42, principal], {"token": "token", "profile_name": "qa-dev",
+                    "message_id": message_id, "unspecified": False}, ["", "", ""]]]
+        elif name in {"review_open_group_user", "review_open_foreign"}:
+            # Shared inbox cards now reject group/foreign callbacks before any
+            # candidate read; those callbacks cannot open or mutate a card.
+            outcome["events"] = [["_answer_callback_query", ["callback", "Карточка недоступна."],
+                                   {"show_alert": True}, ["", "", ""]]]
+        elif name == "orphan_retry_foreign":
             # The manual route still refuses a foreign profile before reading
             # or mutating any candidate; only its denial message changes.
             for event in events:

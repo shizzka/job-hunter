@@ -161,8 +161,9 @@ def test_new_diagnosis_action_uses_latest_selected_profile_direction_run(user_bo
 
     bot, principal = user_bot
     two_directions(tmp_path)
-    run = {"run_id": "selected-latest", "direction": "qa", "ok": True, "applied": 0,
-           "found": 3, "reason_breakdown": {"low_score": 3}}
+    run = {"run_id": "selected-latest", "kind": "search", "mode": "search", "direction": "qa",
+           "ok": True, "status": "finished", "finished_at": "2026-10-27T10:00:00", "applied": 0,
+           "found": 3, "funnel": {"matcher_pass": 0, "evaluated": 3}, "reason_breakdown": {"low_score": 3}}
     runs = [{**run, "run_id": "selected-older", "applied": 1}, run,
             {**run, "run_id": "other-direction-newer", "direction": "electric", "applied": 2}]
     history_file = tmp_path / "run_history.jsonl"
@@ -171,7 +172,12 @@ def test_new_diagnosis_action_uses_latest_selected_profile_direction_run(user_bo
         home_dir=str(tmp_path), run_history_file=str(history_file),
         analytics_events_file=str(tmp_path / "analytics_events.jsonl")) if name == "qa" else None)
     asyncio.run(bot._dispatch(42, principal, "/why_no_apply", ""))
-    assert bot._send_text.call_args.args[1] == analytics.zero_apply_diagnosis(run)
+    text = bot._send_text.call_args.args[1]
+    assert "запуск selected-latest" in text
+    assert "Подходящих вакансий: 0" in text
+    assert "Низкая оценка соответствия: 3" in text
+    assert "selected-older" not in text and "other-direction-newer" not in text
+    assert "0 откликов" not in text
 
 
 @pytest.mark.parametrize('reason,retryable', [('unsupported_claims', True), ('model_unavailable', True),

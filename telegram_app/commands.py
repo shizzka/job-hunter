@@ -54,10 +54,18 @@ class TelegramCommands:
             return
 
         previous_run_id = None
+        diagnosis_available = True
         if flag in {"--search", "--dry-run"}:
             from telegram_app.guards import read_thread
-            previous_run = await read_thread(self._latest_run, profile_name)
-            previous_run_id = (previous_run or {}).get("run_id")
+            try:
+                previous_run = await read_thread(self._latest_run, profile_name)
+                previous_run_id = (previous_run or {}).get("run_id")
+            except PermissionError:
+                raise
+            except (OSError, ValueError):
+                # An optional history action cannot prevent an authorized search.
+                diagnosis_available = False
+                log.warning("Search diagnosis history unavailable for %s", profile_name)
         active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
         progress_markup = (build_active_stop_markup(profile_name, active_command)
                            if flag in {"--search", "--dry-run"} else self._menu_reply_markup(principal))
@@ -99,10 +107,16 @@ class TelegramCommands:
                 message, send_as_document, document_name, document_content = self._cli_command_result(
                     profile_name, principal, flag, label, result, role)
                 completion_markup = reply_markup
-                if flag in {"--search", "--dry-run"} and result.get("ok"):
+                if flag in {"--search", "--dry-run"} and result.get("ok") and diagnosis_available:
                     from telegram_app.guards import read_thread
-                    completion_markup = (await read_thread(
-                        self._empty_search_completion_markup, profile_name, previous_run_id)) or reply_markup
+                    try:
+                        completion_markup = (await read_thread(
+                            self._empty_search_completion_markup, profile_name, previous_run_id)) or reply_markup
+                    except PermissionError:
+                        raise
+                    except (OSError, ValueError):
+                        # Delivery still revalidates the initiator's authority.
+                        log.warning("Search diagnosis summary unavailable for %s", profile_name)
                 if progress_task:
                     progress_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
@@ -133,6 +147,10 @@ class TelegramCommands:
                     format_command_result(label, {"cancelled": True}, role=role),
                     reply_markup=reply_markup,
                 )
+            except PermissionError:
+                # Access denial must not become an optional-data fallback or
+                # expose private exception details through an error reply.
+                log.warning("Command result access denied for %s", profile_name)
             except Exception as exc:
                 log.error("Command %s failed: %s", label, exc, exc_info=True)
                 if progress_task:
@@ -217,7 +235,13 @@ class TelegramCommands:
                 else "✅ ИИ-анализ резюме готов."
             )
         if flag in {"--search", "--dry-run"}:
-            last_run = self._latest_run(profile_name)
+            try:
+                last_run = self._latest_run(profile_name)
+            except PermissionError:
+                raise
+            except (OSError, ValueError):
+                last_run = None
+                log.warning("Search result history unavailable for %s", profile_name)
             if last_run:
                 message = f"{message}\n\n🕓 Последний поиск:\n{format_run_summary(last_run, role=role)}"
         return message, send_as_document, document_name, document_content

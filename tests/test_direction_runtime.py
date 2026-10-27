@@ -270,7 +270,10 @@ def test_offline_direction_profile_matcher_queue_dispatch_smoke(active_direction
         def consume_antibot_signal(self):
             return None
     collected = asyncio.run(search_pipeline.collect_hh_vacancies(CollectionClient()))
-    assert searches == [("Электрик", {"page": 0, "area": 113, "schedule": "remote"})]
+    # Regions inherit from the profile; formats come from the active search's
+    # broad work conditions, so its retired schedule optimization is cleared.
+    assert set(direction["work_conditions"]["allowed_formats"]) == {"remote", "hybrid", "on_site", "field"}
+    assert searches == [("Электрик", {"page": 0, "area": 113, "schedule": ""})]
     vacancy, = collected
     claim = "Проверяю электрические щиты."
     scoring = client_for(json.dumps({"score": 95, "should_apply": True, "reason": "Подходит", "red_flags": []}))

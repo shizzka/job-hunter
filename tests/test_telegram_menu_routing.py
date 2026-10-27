@@ -44,7 +44,7 @@ SECTION_ACTION_COMMANDS = set(MENU_COMMANDS) | set("""
 SPECIAL_ACTIONS = {
     "/search_suggest": ["✅ Сохранить предложенное", "✏️ Изменить запросы"],
     "/search_application_auto": ["Да, включить", "Нет"],
-    "/directions": ["➕ Новое направление", "📊 Статистика резюме"],
+    "/directions": ["➕ Новый поиск"],
     "/find": ["🔎 Начать поиск", "🧪 Только показать результаты"],
     "/review": ["🔎 Найти вакансии"],
 }

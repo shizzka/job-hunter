@@ -45,11 +45,13 @@ def test_missing_salary_has_a_complete_label(salary):
     assert '💰 Зарплата не указана' in text
 
 
-def test_review_direction_refusal_names_a_visible_destination(setup):
+def test_review_owner_can_open_card_from_another_search(setup):
     from tests.direction_view_fakes import two_directions
     bot, principal, items = setup
     two_directions(bot.home)
     queue._store('qa').update(lambda data: data['items'][items[0]['token']].update(direction='electric'))
     asyncio.run(bot._open_review_card(42, 'qa', items[0]['token']))
-    assert '«📋 Ждут решения»' in bot.events[-1][1]
+    assert bot.events[-1][1].startswith('📋 Ждут решения · 1 из 1')
+    assert 'Job 0' in bot.events[-1][1]
     assert 'Вакансии на проверку' not in bot.events[-1][1]
+    assert bot.events[-1][2]['inline_keyboard'][0][0]['text'] == '✅ Откликнуться'

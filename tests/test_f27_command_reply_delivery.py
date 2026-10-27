@@ -230,8 +230,9 @@ def test_queue_delivery_rebinds_actor_scope_inherited_from_another_tester(comman
 @pytest.mark.parametrize('role,binding', [('user', 'target-dev'), ('admin', 'registry-dev'),
                                          ('admin', 'default')])
 @pytest.mark.parametrize('revoke', [False, True])
+@pytest.mark.parametrize('diagnosis_failure', [None, 'before', 'after', 'denied_after'])
 def test_real_cli_runner_replies_to_authorized_initiator_after_capture(
-        command_delivery, monkeypatch, role, binding, revoke):
+        command_delivery, monkeypatch, role, binding, revoke, diagnosis_failure):
     """Keep dispatch, admission, command starter, runner and transport guards real."""
     import runtime_control
     bot, users, messages, state = command_delivery
@@ -242,6 +243,21 @@ def test_real_cli_runner_replies_to_authorized_initiator_after_capture(
     monkeypatch.setattr(bot, '_sync_active_runtime', lambda: None)
     monkeypatch.setattr(runtime_control, 'agent_command_argv', lambda *args: ['synthetic'])
     monkeypatch.setattr(bot, '_cli_command_result', lambda *args: ('captured result', False, '', b''))
+    # History is an optional collaborator, outside this delivery/auth boundary.
+    # Exercise unavailable history without granting a synthetic profile access
+    # to real runtime files, and retain real delivery guards in every variant.
+    def latest_run(profile):
+        if diagnosis_failure == 'before':
+            raise OSError('history unavailable')
+        return None
+    def diagnosis_markup(*args):
+        if diagnosis_failure == 'denied_after':
+            raise PermissionError('profile history denied')
+        if diagnosis_failure == 'after':
+            raise ValueError('saved summary malformed')
+        return None
+    monkeypatch.setattr(bot, '_latest_run', latest_run)
+    monkeypatch.setattr(bot, '_empty_search_completion_markup', diagnosis_markup)
     async def scenario():
         captured = asyncio.Event()
         async def capture(command, argv, **kwargs):
@@ -259,8 +275,25 @@ def test_real_cli_runner_replies_to_authorized_initiator_after_capture(
         await task
     asyncio.run(scenario())
     text_outputs = [payload for method, payload in messages if method == 'sendMessage']
-    assert len(text_outputs) == (1 if revoke else 2)
+    delivered = not revoke and diagnosis_failure != 'denied_after'
+    assert len(text_outputs) == (2 if delivered else 1)
     assert text_outputs[0]['reply_markup']['inline_keyboard']
-    if not revoke:
+    if delivered:
         assert text_outputs[1]['text'] == 'captured result'
+    assert not bot._active_commands
+
+
+def test_cli_history_access_denial_propagates_before_progress_or_launch(command_delivery, monkeypatch):
+    from telegram_app.commands import TelegramCommands
+    bot, users, messages, _ = command_delivery
+    users.append(actor(role='user', profile='target-dev'))
+    monkeypatch.setattr(bot, '_daemon_state', lambda name: {'running': False})
+    monkeypatch.setattr(bot, '_menu_reply_markup', lambda p: {})
+    def denied(profile):
+        raise PermissionError('profile history denied')
+    monkeypatch.setattr(bot, '_latest_run', denied)
+    with pytest.raises(PermissionError):
+        asyncio.run(TelegramCommands._start_cli_command.__wrapped__(
+            bot, 7, dict(users[0]), 'target-dev', '--search', 'search', 30))
+    assert not messages
     assert not bot._active_commands

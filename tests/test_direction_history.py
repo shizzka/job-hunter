@@ -326,7 +326,8 @@ def test_history_screens_name_active_direction_and_offer_totals(account, monkeyp
     if command == "/log":
         write(home / "run_history.jsonl", [{"kind": "search", "run_id": "qa-run", "direction": "qa", "ok": True}])
     profile = SimpleNamespace(home_dir=str(home), analytics_events_file=config.ANALYTICS_EVENTS_FILE,
-        run_history_file=config.RUN_HISTORY_FILE, seen_file=config.SEEN_VACANCIES_FILE, log_file=str(home / "job-hunter.log"))
+        run_history_file=config.RUN_HISTORY_FILE, seen_file=config.SEEN_VACANCIES_FILE,
+        log_file=str(home / "job-hunter.log"), hh=SimpleNamespace(application_mode="confirm"))
     bot = telegram_bot.TelegramBot("synthetic")
     monkeypatch.setattr(bot, "_profile", lambda _: profile)
     monkeypatch.setattr(bot, "_profile_names", lambda: ["synthetic"])

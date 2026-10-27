@@ -173,3 +173,24 @@ def test_run_summary_adds_action_only_to_empty_active_run(bot, monkeypatch):
     bot.runs[0]["counters"]["matcher_pass"] = 1
     _, _, markup = history._run_report(bot, {"role": "user"}, "client", "/log", "")
     assert not any(b["text"] == history.EMPTY_SEARCH_LABEL for row in markup["inline_keyboard"] for b in row)
+
+
+@pytest.mark.parametrize("error", [OSError, ValueError])
+def test_saved_history_failure_preserves_completed_command_result(bot, monkeypatch, error):
+    from telegram_bot_ui import format_command_result
+    def unavailable(profile):
+        raise error("saved history unavailable")
+    monkeypatch.setattr(bot, "_latest_run", unavailable)
+    result = {"ok": True, "stdout": "completed"}
+    text, document, _, _ = bot._cli_command_result("client", {"user_id": 1}, "--search", "search", result, "user")
+    assert text == format_command_result("search", result, role="user")
+    assert not document
+
+
+def test_saved_history_access_denial_does_not_become_success_reply(bot, monkeypatch):
+    def denied(profile):
+        raise PermissionError("profile history denied")
+    monkeypatch.setattr(bot, "_latest_run", denied)
+    with pytest.raises(PermissionError):
+        bot._cli_command_result("client", {"user_id": 1}, "--search", "search", {"ok": True}, "user")
+    assert not bot.sent

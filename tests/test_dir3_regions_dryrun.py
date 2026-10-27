@@ -41,13 +41,18 @@ def test_bad_search_profiles_are_rejected(profiles):
         directions.validate_direction(_direction(search_profiles=profiles))
 
 
-def test_overlay_replaces_profile_regions_only_when_set(monkeypatch):
+@pytest.mark.parametrize('formats,schedule', [(['remote'], 'remote'),
+    (['remote', 'hybrid', 'on_site', 'field'], '')])
+def test_overlay_replaces_profile_regions_only_when_set(monkeypatch, formats, schedule):
     import profile
     base = profile.load_default_profile()
     base.hh.search_profiles = [{"area": 113, "schedule": "remote"}]
-    with_regions = directions.validate_direction(_direction(search_profiles=[{"area": 2, "schedule": ""}]))
+    conditions = {'allowed_formats': formats, 'allow_fly_in_fly_out': False, 'allowed_cities': []}
+    with_regions = directions.validate_direction(_direction(
+        search_profiles=[{"area": 2, "schedule": ""}], work_conditions=conditions))
     monkeypatch.setattr(directions, "active_direction", lambda home: copy.deepcopy(with_regions))
-    assert directions.overlay_profile(base).hh.search_profiles == [{"area": 2, "schedule": ""}]
-    without = directions.validate_direction(_direction())
+    assert directions.overlay_profile(base).hh.search_profiles == [{"area": 2, "schedule": schedule}]
+    without = directions.validate_direction(_direction(work_conditions=conditions))
     monkeypatch.setattr(directions, "active_direction", lambda home: copy.deepcopy(without))
-    assert directions.overlay_profile(base).hh.search_profiles == [{"area": 113, "schedule": "remote"}]
+    assert directions.overlay_profile(base).hh.search_profiles == [{"area": 113, "schedule": schedule}]
+    assert base.hh.search_profiles == [{"area": 113, "schedule": "remote"}]

@@ -25,7 +25,7 @@ def configured(dev_bot, monkeypatch):
     return bot, profile
 
 
-@pytest.mark.parametrize('role,selected,count', [('user', False, 2), ('user', True, 3), ('tester', True, 1)])
+@pytest.mark.parametrize('role,selected,count', [('user', False, 3), ('user', True, 4), ('tester', True, 1)])
 def test_start_and_review_expose_the_same_accessible_unresolved_groups(configured, role, selected, count):
     bot, profile = configured
     principal = telegram_access.upsert_user(202, profile='qa-dev', role=role, direction='qa')
@@ -38,9 +38,9 @@ def test_start_and_review_expose_the_same_accessible_unresolved_groups(configure
                                       {'score': 70}, profile_name='qa-dev')
         if identity == 'unknown-two':
             queue._store('qa-dev').update(lambda data: data['items'][item['token']].update(status='uncertain'))
-    foreign = queue.create_candidate({'id': 'foreign', 'title': 'Foreign card', 'source': 'hh'},
+    other_search = queue.create_candidate({'id': 'other-search', 'title': 'Other search card', 'source': 'hh'},
                                      {'score': 90}, profile_name='qa-dev')
-    queue._store('qa-dev').update(lambda data: data['items'][foreign['token']].update(direction='electric'))
+    queue._store('qa-dev').update(lambda data: data['items'][other_search['token']].update(direction='electric'))
     async def scenario():
         await bot._dispatch(202, principal, '/start', '')
         calls = bot._send_text.call_args_list
@@ -50,14 +50,17 @@ def test_start_and_review_expose_the_same_accessible_unresolved_groups(configure
         await bot._handle_callback_query(_callback(button['callback_data'], user_id=202, chat_id=202,
                                                   chat_type='private'))
         text = bot._send_text.call_args.args[1]
-        assert 'Всё разобрано' not in text and 'Foreign card' not in text
-        if not selected:
-            assert 'Ещё ждут решения или сверки: 2' in text
-        elif role == 'tester':
-            assert 'Selected card' in text and 'unknown-' not in text
+        assert 'Всё разобрано' not in text
+        if role == 'tester':
+            assert 'Selected card' in text and 'unknown-' not in text and 'Other search card' not in text
         else:
             await bot._show_review_list(202, principal, profile_name='qa-dev')
+            assert 'Other search card' in bot._send_text.call_args.args[1]
             assert 'Направление не указано: 2' in str(bot._send_text.call_args.kwargs)
+            await bot._show_review_list(202, principal, profile_name='qa-dev', unspecified=True)
+            unknown = bot._send_text.call_args.args[1]
+            assert 'unknown-one' in unknown and 'unknown-two' in unknown
+            assert 'Other search card' not in unknown and 'Selected card' not in unknown
     asyncio.run(scenario())
 
 

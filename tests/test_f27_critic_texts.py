@@ -180,6 +180,11 @@ def test_quoted_button_names_match_actual_reachable_keyboards(menu_bot, monkeypa
     make_direction(bot._profile("qa").home_dir)
     directions.set_active_direction(bot._profile("qa").home_dir, "qa")
     asyncio.run(bot._dispatch(42, principal, "/directions", ""))
+    # Names are plain text in the search list and quoted content on its saved card.
+    choose = next(button['callback_data'] for call in reversed(bot._send_text.call_args_list)
+                  for row in (call.kwargs.get('reply_markup') or {}).get('inline_keyboard', [])
+                  for button in row if button.get('callback_data', '').endswith(':choose:0'))
+    asyncio.run(bot._direction_callback(42, principal, choose))
     texts = [call.args[1] for call in bot._send_text.call_args_list]
     texts += [unavailable_text(), unavailable_text(HHResponseCounterProfileError()),
               _build_chat_ai_candidates_text({"ok": False, "url": "https://hh.ru/account/login"})]
