@@ -2,7 +2,7 @@
 
 **Telegram-бот, который ищет вакансии на hh.ru, SuperJob, Habr Career и GeekJob, объясняет, чем каждая подходит, и может откликаться за вас — по умолчанию только с вашего согласия.**
 
-[![Offline regression tests](https://github.com/shizzka/job-hunter/actions/workflows/offline-tests.yml/badge.svg)](https://github.com/shizzka/job-hunter/actions/workflows/offline-tests.yml) ![version](https://img.shields.io/badge/version-0.11.0-blue) ![python](https://img.shields.io/badge/python-3.12-blue) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Offline regression tests](https://github.com/shizzka/job-hunter/actions/workflows/offline-tests.yml/badge.svg)](https://github.com/shizzka/job-hunter/actions/workflows/offline-tests.yml) ![version](https://img.shields.io/badge/version-0.11.1-blue) ![python](https://img.shields.io/badge/python-3.12-blue) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 English version: [README.md](README.md)
 
@@ -20,7 +20,7 @@ English version: [README.md](README.md)
 
 **Кто делает.** Автор — электрик, не программист. Код пишут ИИ-агенты (Claude Code и Codex), а автор ставит задачи, тестирует бота как пользователь и решает, что выпускать. ИИ пишет, человек проектирует и проверяет: около 7000 офлайн-тестов в CI на каждый пуш, каждую ночь dev-бота проходит ИИ-тестировщик как живой человек, а сам бот каждый день работает на двух настоящих поисках работы. Если бот не может доказать, что действие безопасно, он останавливается и спрашивает.
 
-**Текущая версия:** `v0.11.0` (25.10.2026): отклики не теряются и не уходят дважды после сбоя страницы hh, «только удалёнка» в одно нажатие, статистика сходится на всех экранах, бесплатные модели Ollama Cloud в запасе. Подробно — в [CHANGELOG](CHANGELOG.md).
+**Текущая версия:** `v0.11.1` (27.10.2026): срочная правка — отклик с нужным резюме снова работает после обновления страницы hh. Подробно — в [CHANGELOG](CHANGELOG.md).
 
 ## Как он решает
 
