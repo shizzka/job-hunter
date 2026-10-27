@@ -132,6 +132,8 @@ async def handle_manual_recovery(self, context: CallbackContext):
             await self._open_review_card(chat_id, profile_name, resolved["token"])
         else:
             await self._send_text(chat_id, "Карточка отмечена как разобранная.")
+            await self._show_review_queue(chat_id, context.principal, profile_name=profile_name,
+                                          advance_from=token)
     else:
         await self._send_text(chat_id, "Повтор пока недоступен: есть другая или живая попытка либо "
                               "подтверждённый отклик. Проверьте на hh.ru.")

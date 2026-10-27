@@ -222,6 +222,18 @@ def f27_review_contract(case, expected):
             # candidate read; those callbacks cannot open or mutate a card.
             outcome["events"] = [["_answer_callback_query", ["callback", "Карточка недоступна."],
                                    {"show_alert": True}, ["", "", ""]]]
+        elif name == "orphan_handled":
+            # Marking an uncertain card handled now continues to the next card
+            # instead of ending on a bare confirmation; the resolve is unchanged.
+            principal = {"user_id": 42, "role": case.get("role", "admin"),
+                         "profile": "qa-dev", "direction": "qa-dev"}
+            updated = []
+            for event in events:
+                updated.append(event)
+                if event[0] == "_send_text" and event[1][1:] == ["Карточка отмечена как разобранная."]:
+                    updated.append(["_show_review_queue", [42, principal],
+                                    {"profile_name": "qa-dev", "advance_from": "token"}, ["", "", ""]])
+            outcome["events"] = updated
         elif name == "orphan_retry_foreign":
             # The manual route still refuses a foreign profile before reading
             # or mutating any candidate; only its denial message changes.
