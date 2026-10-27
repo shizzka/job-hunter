@@ -326,15 +326,31 @@ class TelegramMonitoring:
         return
 
     async def _route_why_no_apply(self, chat_id, principal, command, arg, profile_name, reply_menu):
-        def diagnose():  # reads the whole run journal: off the event loop (24.10: 6–8 s froze the bot)
-            runs = self._recent_runs(profile_name, limit=1)
-            run = runs[0] if runs else None
-            return run, (analytics.zero_apply_diagnosis(run) if run else "")
+        from telegram_app import history
+        def diagnose():
+            profile = self._profile(profile_name)
+            parts = str(arg).split()
+            if parts and (len(parts) != 2 or parts[0] != history.token(profile.home_dir)):
+                return "Экран изменился или недоступен. Откройте сводку поиска заново."
+            selected = None
+            if parts:
+                # Resolve the compact identity only in currently authorized,
+                # direction-filtered storage. Never fall back to the latest run.
+                runs = self._recent_runs(profile_name, limit=2 ** 31)
+                identities = {r.get("run_id") for r in runs if r.get("run_id")}
+                identities.update(e.get("run_id") for e in analytics.history_events(
+                    profile.analytics_events_file, scope="active")
+                    if e.get("event") in {"search_started", "search_finished"} and e.get("run_id"))
+                matches = [rid for rid in identities if history.empty_search_token(rid) == parts[1]]
+                if len(matches) != 1:
+                    return "Этот поиск недоступен. Откройте сводку поиска заново."
+                selected = matches[0]
+            run = history.search_summary(profile, profile_name, selected)
+            return history.empty_search_diagnosis(run) or (
+                "Нет завершённого поиска с подтверждённым нулём подходящих вакансий. Откройте /log.")
         from telegram_app.guards import read_thread
-        run, diagnosis = await read_thread(diagnose)
-        await self._send_text(chat_id, diagnosis or (
-            "В последнем поиске есть подтверждённые отклики." if run and (run.get("funnel") or run).get("applied")
-            else "Нет завершённого поиска с точным нулём откликов для диагностики."),
+        diagnosis = await read_thread(diagnose)
+        await self._send_text(chat_id, diagnosis,
             reply_markup=self._menu_reply_markup(principal))
         return
 

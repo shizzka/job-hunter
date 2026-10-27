@@ -922,6 +922,9 @@ def _soften_salary_red_flags(result: dict) -> dict:
 
 def _apply_auto_apply_threshold(result: dict) -> dict:
     threshold = max(50, _coerce_score(getattr(config, "HH_MATCHER_AUTO_APPLY_MIN_SCORE", 58), default=58))
+    direction = getattr(config, "ACTIVE_DIRECTION", None)
+    if direction:
+        threshold = max(threshold, direction.get("matcher_threshold", 60))
     if result.get("should_apply") and _coerce_score(result.get("score"), default=0) < threshold:
         result["should_apply"] = False
         _add_guard_flag(result, "below_auto_apply_threshold")
@@ -963,6 +966,10 @@ def is_manual_review_candidate(result: dict) -> bool:
     guard_flags = {str(flag) for flag in result.get("guard_flags", [])}
     if guard_flags & FATAL_MANUAL_REVIEW_GUARDS:
         return False
+    direction = getattr(config, "ACTIVE_DIRECTION", None)
+    if direction:
+        # A low custom threshold adds owner decisions, never automatic permission.
+        return result.get("score") is not None and _coerce_score(result["score"], default=0) >= direction.get("matcher_threshold", 60)
     score = _coerce_score(result.get("score"), default=0)
     lower, upper = _manual_review_score_window()
     return lower <= score <= upper

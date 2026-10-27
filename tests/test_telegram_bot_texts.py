@@ -77,7 +77,7 @@ def test_search_conditions_and_application_modes_are_available_to_regular_user()
     ]
     assert "👤 Опыт" in condition_labels
     assert "💰 Зарплата от" in condition_labels
-    assert "🏠 Только удалёнка" in condition_labels
+    assert "🏠 Только удалёнка" not in condition_labels
 
     mode_labels = [
         button["text"]

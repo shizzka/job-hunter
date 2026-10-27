@@ -103,6 +103,12 @@ async def handle_navigation(self, context: CallbackContext):
         await self._send_text(context.chat_id, "🔒 Нет доступа к этому профилю.")
         return
     parts = str(context.raw_data).split(":")
+    if len(parts) == 4 and parts[2] == "why_no_apply":
+        if parts[1] != history.token(self._profile(profile_name).home_dir):
+            await self._send_text(context.chat_id, "Экран изменился или недоступен. Откройте сводку поиска заново.")
+            return
+        await self._dispatch(context.chat_id, context.principal, "/why_no_apply", f"{parts[1]} {parts[3]}")
+        return
     if len(parts) == 4 and parts[2] == "profile":
         profiles = self._profile_names()
         if context.principal.get("role") != ROLE_ADMIN or parts[1] != history.profile_picker_token(self._profile(profile_name).home_dir, profiles):

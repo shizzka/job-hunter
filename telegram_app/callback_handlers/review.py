@@ -13,6 +13,7 @@ from telegram_bot_ui import (
 )
 from telegram_app.callback_handlers import CallbackContext
 from telegram_app.guards import read_thread
+from telegram_app import pending_inbox
 
 
 def _current_card_state(item):
@@ -56,7 +57,7 @@ async def handle_review_queue(self, context: CallbackContext):
     chat_id = context.chat_id
     can_access_profile = context.can_access_profile
     parts = str(raw_data).split(":")
-    if len(parts) >= 2 and parts[1] in {"h", "v", "c", "m", "w", "l", "L", "U", "g", "b", "s", "x", "X", "e"}:
+    if len(parts) >= 2 and parts[1] in {"h", "v", "c", "m", "w", "l", "L", "U", "g", "b", "s", "x", "X", "e", "o", "F", "S", "E", "P", "Q", "T"}:
         return await handle_review_card(self, context)
     await self._answer_callback_query(callback_id)
     if len(parts) not in (4, 5) or parts[2] not in self._profile_names() or not can_access_profile(parts[2]):
@@ -262,7 +263,7 @@ async def handle_review_card(self, context: CallbackContext):
         await self._answer_callback_query(context.callback_id, "Карточка недоступна.", show_alert=True)
         return
     _, action, profile_name, token = parts[:4]
-    if len(parts) == 5 and action not in {"L", "U"}:
+    if len(parts) == 5 and action not in {"L", "U", "P", "Q"}:
         await self._answer_callback_query(context.callback_id, "Карточка недоступна.", show_alert=True)
         return
     if action in {"l", "L", "U"}:
@@ -272,9 +273,11 @@ async def handle_review_card(self, context: CallbackContext):
                                      message_id=context.message_id, unspecified=action == "U",
                                      sort="new" if parts[4:] == ["n"] else "score")
         return
-    item = manual_apply_queue.get_candidate(token, profile_name=profile_name)
     from direction_views import DirectionView
     view = DirectionView(self._profile(profile_name).home_dir)
+    if len(token) > 12 and token[:1] in {"f", "d", "q"}:
+        return await _handle_workflow_card(self, context, action, profile_name, token, view)
+    item = manual_apply_queue.get_candidate(token, profile_name=profile_name)
     if not item:
         await self._answer_callback_query(context.callback_id, "Карточка недоступна. Обновите список.", show_alert=True)
         return
@@ -287,7 +290,8 @@ async def handle_review_card(self, context: CallbackContext):
         await self._answer_callback_query(context.callback_id)
         await self._send_text(context.chat_id, str(cover))
         return
-    if view.item_direction(item) not in (None, view.name):
+    import profile_access
+    if profile_access.current_scope()[1] and view.item_direction(item) != profile_access.current_scope()[1]:
         await self._answer_callback_query(context.callback_id, "Выбрано другое направление. Обновите список.", show_alert=True)
         return
     if action == "w" and status == "uncertain":
@@ -307,13 +311,13 @@ async def handle_review_card(self, context: CallbackContext):
     confirmations = self.__dict__.setdefault("_review_block_confirmations", set())
     if action in {"c", "m", "h", "v"}:
         confirmations.discard(confirmation_key)
-    if action in {"h", "v", "c"} and status in {"pending", "uncertain"}:
+    if action in {"h", "v", "c", "o"} and status in {"pending", "uncertain"}:
         items = await read_thread(self._review_visible_items, profile_name, unspecified=unspecified)
         tokens = [i['token'] for i in items]
         if token not in tokens:
             await self._answer_callback_query(context.callback_id, "Карточка уже не ждёт решения.")
             return
-        target = token if action == 'c' else tokens[(tokens.index(token) + (1 if action == 'v' else -1)) % len(tokens)]
+        target = token if action in {'c', 'o'} else tokens[(tokens.index(token) + (1 if action == 'v' else -1)) % len(tokens)]
         await self._answer_callback_query(context.callback_id)
         await self._show_review_queue(context.chat_id, context.principal, token=target, **show)
         return
@@ -371,7 +375,7 @@ async def handle_review_card(self, context: CallbackContext):
         markup = {"inline_keyboard": [back]}
     else:
         items = await read_thread(self._review_visible_items, profile_name, unspecified=unspecified)
-        key = (int(context.principal["user_id"]), profile_name, view.callback_scope, unspecified)
+        key = (int(context.principal["user_id"]), profile_name, self._review_scope(view), unspecified)
         session = self.__dict__.get("_review_sessions", {}).get(key, {})
         tokens = session.get("tokens") or [i["token"] for i in items]
         position = tokens.index(token) + 1 if token in tokens else 1
@@ -390,3 +394,78 @@ async def handle_review_card(self, context: CallbackContext):
         await self._edit_text(context.chat_id, context.message_id, text, reply_markup=markup)
     else:
         await self._send_text(context.chat_id, text, reply_markup=markup)
+
+
+async def _handle_workflow_card(self, context, action, profile, token, view):
+    """Open/edit/send through their existing workflows; old revisions fail closed."""
+    if (context.message.get("chat") or {}).get("type") != "private":
+        await self._answer_callback_query(context.callback_id, "Карточка недоступна. Откройте личный чат.", show_alert=True)
+        return
+    items = await read_thread(self._review_visible_items, profile)
+    available = {item['token']: item for item in items}
+    item = available.get(token)
+    if not item:
+        await self._answer_callback_query(context.callback_id,
+            "Карточка устарела или уже разобрана. Обновите очередь.", show_alert=True)
+        return
+    if action in {'h', 'v', 'c', 'o'}:
+        tokens = list(available)
+        target = token if action in {'c', 'o'} else tokens[(tokens.index(token) + (1 if action == 'v' else -1)) % len(tokens)]
+        await self._answer_callback_query(context.callback_id)
+        await self._show_review_queue(context.chat_id, context.principal, profile_name=profile,
+                                     token=target, message_id=context.message_id)
+        return
+    if action == 'P':
+        version = str(context.raw_data).split(":")[4:5]
+        changed = await read_thread(pending_inbox.InboxPostponements(view.home).postpone, token,
+                                    expected_version=version[0] if version else "")
+        if not changed:
+            await self._answer_callback_query(context.callback_id, 'Карточка уже отложена или кнопка устарела.')
+            return
+        await self._answer_callback_query(context.callback_id, 'Отложил на сутки.')
+        await self._show_review_queue(context.chat_id, context.principal, profile_name=profile,
+                                     advance_from=token, message_id=context.message_id)
+        return
+    if item.get('_inbox_kind') == 'question' and action in {'F', 'Q', 'T'}:
+        await self._answer_callback_query(context.callback_id)
+        if action in {'Q', 'T'}:
+            number = str(context.raw_data).split(':')[4:5]
+            choice = number[0] if action == 'Q' and number and number[0].isdigit() else 'text' if action == 'T' else ''
+            if not choice:
+                await self._send_text(context.chat_id, 'Неизвестный вариант ответа.')
+                return
+            await self._answer_employer_question(context.chat_id, context.principal, profile,
+                item['qid'], choice, inbox_token=token)
+            return
+        # Acknowledging the callback is an await; validate ownership and TTL again.
+        fresh = await read_thread(self._review_visible_items, profile)
+        item = next((entry for entry in fresh if entry['token'] == token), None)
+        if not item:
+            await self._send_text(context.chat_id, 'Вопрос устарел или недоступен. Обновите очередь.')
+            return
+        text = ('📝 Анкеты\n\n' + str(item.get('question') or '') +
+                '\n\nВыберите ответ или напишите свой. Ответ сохранится, затем бот повторит отклик на эту вакансию.')
+        markup = pending_inbox.question_markup(item, profile)
+        if context.message_id:
+            await self._edit_text(context.chat_id, context.message_id, text, reply_markup=markup)
+        else:
+            await self._send_text(context.chat_id, text, reply_markup=markup)
+        return
+    if action == 'F' and item.get('_inbox_kind') == 'form':
+        await self._answer_callback_query(context.callback_id)
+        try:
+            await self._show_form(context.chat_id, context.principal, profile, item['form_token'])
+        except ValueError as exc:
+            await self._send_text(context.chat_id, str(exc))
+        return
+    if action in {'S', 'E'} and item.get('_inbox_kind') == 'draft':
+        await self._answer_callback_query(context.callback_id)
+        if action == 'E':
+            await self._ask_inbox_reply(context.chat_id, context.principal, profile, item)
+        else:
+            await self._start_chat_ai_reply(context.chat_id, context.principal, profile_name=profile,
+                hh_chat_id=item['chat_id'],
+                hh_message_id=item['draft']['message_id'] + '~' + item['draft']['revision'],
+                force_send=True, allow_any=True)
+        return
+    await self._answer_callback_query(context.callback_id, 'Действие недоступно для этой карточки.', show_alert=True)

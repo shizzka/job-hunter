@@ -172,10 +172,10 @@ def test_settings_search_opens_real_direction_and_conditions(navigation_bot, rol
         start = bot._send_text.call_count
         await bot._dispatch(42, principal, "/menu_settings", "")
         calls = await follow(bot, bot._send_text.call_args_list[start:], "directions")
-        assert any("Ваши направления" in item.args[1] for item in calls)
+        assert any("🎯 Мои поиски" in item.args[1] for item in calls)
         choose = next(b["callback_data"] for b in buttons(calls) if b["callback_data"].endswith(":choose:0"))
         calls = await press(bot, choose)
-        assert any("Направление «QA Engineer»" in item.args[1] for item in calls)
+        assert any("Поиск «QA Engineer»" in item.args[1] for item in calls)
         calls = await follow(bot, calls, "editmenu")
         assert {"Ищу по словам", "Где и как работать", "Зарплата"} <= {b["text"] for b in buttons(calls)}
         data = next(b["callback_data"] for b in buttons(calls) if b["callback_data"].endswith(":edit:work_formats"))

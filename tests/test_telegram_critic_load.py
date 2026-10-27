@@ -87,6 +87,7 @@ def test_direction_navigation_can_be_repeated_on_new_screens(mode_bot):
     async def scenario():
         await bot._dispatch_direction(42, principal, '/direction_summary', '')
         for _ in range(3):
+            await click(bot, button(bot, 'variants'))
             await click(bot, button(bot, 'strategy'))
             await click(bot, button(bot, 'back'))
             assert 'Каким резюме откликаться' in bot._send_text.call_args.args[1]

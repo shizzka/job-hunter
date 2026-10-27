@@ -192,7 +192,7 @@ def test_entire_queue_pages_remain_reusable_in_place(setup):
     context = CallbackContext('cb', 42, principal, 'rq:L:qa:0:n',
         {'message_id': 7, 'chat': {'type': 'private'}}, 42, 7, lambda name: name == 'qa')
     asyncio.run(handle_review_queue(bot, context))
-    assert bot.events[-1][0] == 'edit' and 'Сверху новые.' in bot.events[-1][1]
+    assert bot.events[-1][0] == 'edit' and 'Сначала старые.' in bot.events[-1][1]
 
 
 def test_real_callback_claim_releases_refused_confirmation_then_blocks_once(setup, monkeypatch):

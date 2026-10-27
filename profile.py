@@ -574,7 +574,7 @@ def load_default_profile(*, _include_direction: bool = True) -> Profile:
         import copy
         for attr in ("resume_file", "filter_policy", "filter_relevant_keywords", "filter_exclude_keywords"):
             setattr(profile, attr, copy.deepcopy(getattr(base, attr)))
-        for attr in ("search_queries", "search_profiles", "primary_resume_id", "primary_resume_title",
+        for attr in ("search_queries", "search_profiles", "search_remote_only", "primary_resume_id", "primary_resume_title",
                      "secondary_resume_id", "secondary_resume_title", "tertiary_resume_id",
                      "tertiary_resume_title", "application_mode"):
             setattr(profile.hh, attr, copy.deepcopy(getattr(base.hh, attr)))

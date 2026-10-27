@@ -53,6 +53,11 @@ class TelegramCommands:
         ):
             return
 
+        previous_run_id = None
+        if flag in {"--search", "--dry-run"}:
+            from telegram_app.guards import read_thread
+            previous_run = await read_thread(self._latest_run, profile_name)
+            previous_run_id = (previous_run or {}).get("run_id")
         active_command = self._mark_active_command(principal=principal, label=label, profile_name=profile_name)
         progress_markup = (build_active_stop_markup(profile_name, active_command)
                            if flag in {"--search", "--dry-run"} else self._menu_reply_markup(principal))
@@ -93,6 +98,11 @@ class TelegramCommands:
                         active_command, profile_name, flag, timeout, search_directions, search_snapshot)
                 message, send_as_document, document_name, document_content = self._cli_command_result(
                     profile_name, principal, flag, label, result, role)
+                completion_markup = reply_markup
+                if flag in {"--search", "--dry-run"} and result.get("ok"):
+                    from telegram_app.guards import read_thread
+                    completion_markup = (await read_thread(
+                        self._empty_search_completion_markup, profile_name, previous_run_id)) or reply_markup
                 if progress_task:
                     progress_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
@@ -109,7 +119,7 @@ class TelegramCommands:
                         reply_markup=reply_markup,
                     )
                 else:
-                    await self._send_text(chat_id, message, reply_markup=reply_markup)
+                    await self._send_text(chat_id, message, reply_markup=completion_markup)
             except asyncio.CancelledError:
                 if progress_task:
                     progress_task.cancel()
@@ -145,6 +155,16 @@ class TelegramCommands:
                 self._clear_active_command(profile_name)
 
         active_command.task = self._create_active_task(active_command, runner)
+
+    def _empty_search_completion_markup(self, profile_name, previous_run_id):
+        from telegram_app import history
+        profile = self._profile(profile_name)
+        summary = history.search_summary(profile, profile_name)
+        displayed_run = self._latest_run(profile_name) or {}
+        if (not summary or summary.get("run_id") == previous_run_id
+                or summary.get("run_id") != displayed_run.get("run_id")):
+            return None
+        return history.empty_search_markup(profile.home_dir, summary)
 
     async def _run_selected_searches(self, active_command, profile_name, flag, timeout, selected, snapshot):
         import directions

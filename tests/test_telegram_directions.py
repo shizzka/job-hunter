@@ -417,7 +417,8 @@ async def test_registered_client_real_bot_dispatch_uses_own_client_profile_and_r
 
     paths = TelegramRuntimePaths(*(str(tmp_path / "bot" / name) for name in ("pid", "state.json", "runtime.json", "bot.log", "debug.jsonl")))
     actual_bot = TelegramBot(profile_name="qa", runtime_paths=paths)
-    profiles = {name: SimpleNamespace(name=name, home_dir=str(tmp_path / name), resume_file=str(tmp_path / name / "resume.md"))
+    profiles = {name: SimpleNamespace(name=name, home_dir=str(tmp_path / name), resume_file=str(tmp_path / name / "resume.md"),
+                                     hh=SimpleNamespace(application_mode="confirm"))
                 for name in ("qa", "client42", "foreign")}
     for name, profile in profiles.items():
         make_direction(profile.home_dir, name=name)
@@ -439,7 +440,7 @@ async def test_registered_client_real_bot_dispatch_uses_own_client_profile_and_r
 
     # Real public dispatcher wrapper selects the registered client, ignoring an arbitrary profile argument.
     await actual_bot._dispatch(42, principal, "/directions", "foreign")
-    assert "Ваши направления · профиль client42" in sent[-1]
+    assert "CLIENT42" in sent[-1] and "FOREIGN" not in sent[-1]
     assert "FOREIGN" not in sent[-1] and "QA" not in sent[-1]
     for command in ("/profile", "/direction_csv"):
         await actual_bot._dispatch(42, principal, command, "foreign")
@@ -549,8 +550,8 @@ async def test_work_conditions_remote_preset_checkboxes_and_save(bot):
     await click_direction(bot, 'editmenu')
     labels = condition_buttons(bot)
     assert labels['edit:work_formats'] == 'Где и как работать'
-    assert labels['edit:format'] == 'Фильтр формата на hh.ru'
-    assert labels['edit:search_profiles'] == 'Сочетания города и фильтра hh.ru'
+    assert 'edit:format' not in labels
+    assert 'edit:search_profiles' not in labels
     await click_direction(bot, 'edit:work_formats')
     buttons = condition_buttons(bot)
     assert next(iter(buttons.values())) == '🏠 Только удалёнка'
@@ -732,30 +733,32 @@ async def test_inline_switch_is_confirmed_and_stale_or_foreign_buttons_rejected(
     directions.set_active_direction(home, 'qa')
     await bot._dispatch_direction(1, USER, '/directions', '')
     actions = inline_actions(bot)
-    assert '✓ QA (сейчас)' in str(bot.sent[-1][2])
+    assert 'QA' in str(bot.sent[-1][2]) and '⚖️ сбалансированно' in bot.sent[-1][1]
     switch = next(a for a in actions if a.endswith('choose:0'))
     await bot._direction_callback(2, {'user_id': 2, 'role': 'user', 'profile': 'client_2'}, switch)
     assert 'устарела' in bot.sent[-1][1]
     await bot._direction_callback(1, USER, switch)
     assert directions.active_direction(home)['name'] == 'qa'
-    assert 'Искать по направлению' in bot.sent[-1][1]
-    save = next(a for a in inline_actions(bot) if a.endswith(':save'))
-    await bot._direction_callback(1, USER, save)
-    assert directions.active_direction(home)['name'] == 'other'
-    await bot._direction_callback(1, USER, save)
+    assert 'Поиск «OTHER»' in bot.sent[-1][1]
+    assert not bot._direction_sessions()[1].get('activate')
+    await bot._direction_callback(1, USER, switch)
     assert 'устарела' in bot.sent[-1][1]
 
 
 @run_async
-async def test_independent_city_format_rows_and_salary_are_drafts(bot):
+async def test_city_and_work_conditions_use_separate_geography_and_one_format_editor(bot):
     home = bot.profiles['client_1'].home_dir
     original = make_direction(home)
     directions.set_active_direction(home, 'qa')
     await bot._dispatch_direction(1, USER, '/direction_summary', '')
     state = bot._direction_sessions()[1]
-    await bot._direction_callback(1, USER, f"dir:{state['token']}:edit:search_profiles")
-    await bot._accept_direction_input(1, USER, '2\n113 flyInFlyOut')
-    assert state['draft']['search_profiles'] == [{'area': '2', 'schedule': ''}, {'area': '113', 'schedule': 'flyInFlyOut'}]
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:edit:city")
+    await bot._accept_direction_input(1, USER, '2, 113')
+    assert state['draft']['search_profiles'] == [{'area': '2', 'schedule': ''}, {'area': '113', 'schedule': ''}]
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:edit:format")
+    assert state['field'] == 'work_formats'
+    await bot._direction_callback(1, USER, f"dir:{state['token']}:workremote")
+    assert state['draft']['work_conditions']['allowed_formats'] == ['remote']
     await bot._direction_callback(1, USER, f"dir:{state['token']}:edit:salary")
     await bot._accept_direction_input(1, USER, '150000')
     assert state['draft']['salary_baseline'] == 150000
@@ -823,6 +826,7 @@ async def test_strategy_chooser_saves_existing_direction_in_one_tap(bot):
     directions.set_active_direction(home, 'qa')
     await bot._dispatch_direction(1, USER, '/directions', '')
     await bot._direction_callback(1, USER, next(a for a in inline_actions(bot) if a.endswith('choose:0')))
+    await bot._direction_callback(1, USER, next(a for a in inline_actions(bot) if a.endswith(':variants')))
     await bot._direction_callback(1, USER, next(a for a in inline_actions(bot) if a.endswith(':strategy')))
     assert 'Каким резюме откликаться' in bot.sent[-1][1]
     assert '✓ Всегда первое' in str(bot.sent[-1][2])
@@ -906,7 +910,8 @@ async def test_crawled_screens_hide_internal_data_and_keep_dynamic_values(bot, m
     state = bot._direction_sessions()[1]
     index = next(i for i, d in enumerate(state["choices"]) if d["name"] == other["name"])
     await bot._direction_callback(1, USER, f"dir:{state['token']}:choose:{index}")
-    assert "вместо «Электромонтажник»" in bot.sent[-1][1]
+    assert "Поиск «Другое направление»" in bot.sent[-1][1]
+    assert directions.active_direction(home) == direction
 
     (Path(home) / "negotiation_snapshots.jsonl").write_text(json.dumps({
         "id": 100, "resumeId": 910000001, "initialTopicType": "RESPONSE_BY_APPLICANT",

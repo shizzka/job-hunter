@@ -221,7 +221,7 @@ def test_old_uncertain_is_exempt_from_listing_limit(crowded_queue, limit):
 
 
 @pytest.mark.parametrize("sort", ["new", "score"])
-def test_old_uncertain_remains_accessible_on_last_review_page(crowded_queue, monkeypatch, sort):
+def test_old_uncertain_comes_first_in_oldest_first_review(crowded_queue, monkeypatch, sort):
     bot = telegram_bot.TelegramBot("qa")
     principal = {"user_id": 42, "role": "user", "profile": "qa"}
     sent = []
@@ -234,7 +234,10 @@ def test_old_uncertain_remains_accessible_on_last_review_page(crowded_queue, mon
     asyncio.run(bot._show_review_list(42, principal, profile_name="qa", page=41, sort=sort))
     text, markup = sent[-1]
     assert "Ждут решения: 251" in text and "стр. 42/42" in text
-    assert "251. Old uncertain vacancy" in text and "Нужна сверка" in text
+    assert "251. Pending vacancy 0" in text
+    asyncio.run(bot._show_review_list(42, principal, profile_name="qa", page=0, sort=sort))
+    text, markup = sent[-1]
+    assert "1. Old uncertain vacancy" in text and "Нужна сверка" in text
     assert any(button.get("callback_data") == "rq:o:qa:old-uncertain"
                for row in markup["inline_keyboard"] for button in row)
 
@@ -257,7 +260,7 @@ def test_review_renders_uncertain_card_without_apply_or_bulk_dismiss(homes, monk
     monkeypatch.setattr(bot, "_send_text", send)
     asyncio.run(bot._show_review_queue(42, principal, profile_name="qa"))
     assert "📋 Ждут решения · 1 из 2" in sent[-1][0]
-    assert "Pending vacancy" in sent[-1][0] and "Applied vacancy" not in sent[-1][0]
+    assert "Uncertain vacancy" in sent[-1][0] and "Applied vacancy" not in sent[-1][0]
     # The complete list is the card's «☰ Вся очередь» action in F27.
     asyncio.run(bot._show_review_list(42, principal, profile_name="qa"))
     assert "Ждут решения: 2" in sent[-1][0]

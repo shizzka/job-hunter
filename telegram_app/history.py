@@ -20,6 +20,7 @@ APPLICATION_FILTERS = {
     "/applications_rejections": ("rejected", "❌ Отказы"),
 }
 APPLICATION_PAGE_SIZE = 5
+EMPTY_SEARCH_LABEL = "❓ Почему ничего не нашлось"
 
 COMMANDS = {"/stats", "/digest", "/research", "/runs", "/log", "/hunter_log", "/chat_log", "/hunter_chat_log"}
 
@@ -32,6 +33,91 @@ def token(home):
 def profile_picker_token(home, profiles):
     """Also bind profile indexes to their displayed order."""
     return hashlib.sha256((token(home) + "|" + "|".join(profiles)).encode()).hexdigest()[:12]
+
+
+def empty_search_token(run_id):
+    return hashlib.sha256(str(run_id).encode()).hexdigest()[:12]
+
+
+def is_empty_finished_search(run):
+    """An exact suitable zero is independent of the number of sent applications."""
+    if not run or not run.get("run_id") or run.get("status") in {"incomplete", "running", "cancelled"}:
+        return False
+    if not (run.get("finished_at") or run.get("status") == "finished"
+            or run.get("execution_status") == "completed"):
+        return False
+    if run.get("counter_status") == "minimum_or_unknown":
+        return False
+    counters = run.get("counters") or run.get("funnel") or run
+    if ((counters.get("applied") or 0) > 0 or (counters.get("uncertain") or 0) > 0
+            or (counters.get("manual") or run.get("manual") or 0) > 0
+            or (run.get("reason_breakdown") or {}).get("manual_required", 0) > 0):
+        return False
+    suitable = counters.get("matcher_pass")
+    return type(suitable) is int and suitable == 0
+
+
+def search_summary(profile, profile_name, run_id=None, *, scope="active"):
+    """Retain saved manual decisions omitted by the general display summary."""
+    summary = analytics.get_run_summary(run_id, events_file=profile.analytics_events_file,
+        history_file=profile.run_history_file, profile=profile_name, scope=scope)
+    if summary:
+        try:
+            records = read_json_records(profile.run_history_file)
+        except FileNotFoundError:
+            records = []
+        record = next((r for r in reversed(records) if r.get("run_id") == summary.get("run_id")), {})
+        summary = {**summary, "reason_breakdown": record.get("reason_breakdown") or {},
+                   "manual": (record.get("funnel") or {}).get("manual", record.get("manual", 0))}
+        if is_empty_finished_search(summary):
+            # Older yellow cards were not counted in matcher_pass. Their saved
+            # decision remains positive evidence even without a run checkpoint.
+            manual = any(e.get("run_id") == summary["run_id"] and e.get("event") == "decision"
+                and (str(e.get("decision") or "").startswith("manual_")
+                     or e.get("decision") == "questions_required")
+                for e in analytics.history_events(profile.analytics_events_file, scope=scope))
+            if manual:
+                summary["manual"] = 1
+    return summary
+
+
+def empty_search_markup(home, run):
+    if not is_empty_finished_search(run):
+        return None
+    return {"inline_keyboard": [[{"text": EMPTY_SEARCH_LABEL,
+        "callback_data": f"nav:{token(home)}:why_no_apply:{empty_search_token(run['run_id'])}"}]]}
+
+
+def empty_search_diagnosis(run):
+    """Explain only recorded search evidence, without treating unsent as unsuitable."""
+    if not is_empty_finished_search(run):
+        return ""
+    counters = run.get("counters") or run.get("funnel") or run
+    lines = [f"❓ Почему ничего не нашлось · запуск {run['run_id']}", "Подходящих вакансий: 0."]
+    for key, label in (("fetched", "Получено"), ("already_seen", "Уже просмотрено"),
+                       ("new", "Новых"), ("keyword_pass", "Прошло фильтры поиска"),
+                       ("evaluated", "Оценено"), ("deferred_unscored", "Оценка отложена"),
+                       ("not_processed", "Не обработано")):
+        value = counters.get(key)
+        if type(value) is int:
+            lines.append(f"• {label}: {value}")
+    labels = {"keyword_filter": "Фильтры поиска", "low_score": "Низкая оценка соответствия",
+              "red_flags": "Стоп-факторы", "company_blacklisted": "Компания в исключениях"}
+    reasons = run.get("reason_breakdown") or {}
+    for key, label in labels.items():
+        if type(reasons.get(key)) is int and reasons[key] > 0:
+            lines.append(f"• {label}: {reasons[key]}")
+    if counters.get("fetched") == 0:
+        lines.append("Источники не вернули вакансий в этом поиске.")
+    elif counters.get("new") == 0:
+        lines.append("Новых вакансий для оценки не осталось.")
+    elif counters.get("evaluated", 0):
+        lines.append("Среди оценённых вакансий подходящих не оказалось.")
+    else:
+        lines.append("Точная причина отсутствия подходящих вакансий не записана.")
+    if run.get("stage_failures") or run.get("primary_failure"):
+        lines.append("Во время поиска были ошибки; результат может быть неполным. Подробнее: /log.")
+    return html.escape("\n".join(lines))
 
 
 def markup(home, command, *, scope="active"):
@@ -103,8 +189,7 @@ def _run_report(bot, principal, profile_name, command, arg):
     scope = scope_arg(arg)
     view = HistoryScope(profile.home_dir, scope)
     selected_id = None if scope != "active" or arg == "active" else arg or None
-    summary = analytics.get_run_summary(selected_id, events_file=profile.analytics_events_file,
-        history_file=profile.run_history_file, profile=profile_name, scope=scope)
+    summary = search_summary(profile, profile_name, selected_id, scope=scope)
     if summary is None:
         text = ("Запуск не найден. Посмотрите последний запуск: /log." if selected_id
                 else "Запусков пока не было.")
@@ -114,7 +199,13 @@ def _run_report(bot, principal, profile_name, command, arg):
         visible, profile_name=profile_name, role=principal.get("role", "user"))
     if scope == ALL:
         text = f"Направление: {summary['direction_title']}\n" + text
-    return text, view.title, markup(profile.home_dir, command, scope=scope)
+    controls = markup(profile.home_dir, command, scope=scope)
+    # A diagnosis always belongs to the active direction; all-direction and
+    # legacy views must not manufacture an active-direction callback binding.
+    empty_controls = empty_search_markup(profile.home_dir, summary) if scope == "active" else None
+    if empty_controls:
+        controls["inline_keyboard"].extend(empty_controls["inline_keyboard"])
+    return text, view.title, controls
 
 
 async def show_run(bot, chat_id, principal, profile_name, command, arg):

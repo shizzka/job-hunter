@@ -139,7 +139,7 @@ async def collect_hh_vacancies(client: HHClient | None, *, scan_stats: dict | No
             },
         )
     search_profiles = config.SEARCH_PROFILES
-    if getattr(config, "HH_SEARCH_REMOTE_ONLY", False):
+    if getattr(config, "HH_SEARCH_REMOTE_ONLY", False) and not getattr(config, "ACTIVE_DIRECTION", None):
         search_profiles = [profile for profile in search_profiles if profile.get("schedule") == "remote"]
     progress = _collection_progress(bucket, len(search_profiles) * len(clean_query_list(config.SEARCH_QUERIES)))
     for profile in search_profiles:

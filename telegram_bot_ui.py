@@ -92,7 +92,7 @@ BUTTON_PENDING = "📋 Ждут решения"
 BUTTON_SETTINGS = "⚙️ Настройки"
 BUTTON_HH = "🔐 hh.ru и резюме"
 BUTTON_LOGS = "📜 Журналы"
-BUTTON_ZERO_APPLY = "❓ Почему не было откликов"
+BUTTON_ZERO_APPLY = "❓ Почему ничего не нашлось"
 BUTTON_MENU_RUN = "🚀 Запуск"
 BUTTON_MENU_REPEAT = "⏰ Повтор"
 BUTTON_MENU_ADMIN = "🛠 Для админа"
@@ -380,6 +380,7 @@ LEGACY_BUTTON_MAP = {
     "Зарплата от": "/search_salary",
     "Только с зарплатой": "/search_salary_toggle",
     "Только удалёнка": "/search_remote_toggle",
+    "❓ Почему не было откликов": "/why_no_apply",
     "Режим откликов": "/search_application_mode",
     "Dry-run": "/dryrun",
     "Тестовый прогон": "/dryrun",
@@ -661,12 +662,12 @@ def reply_menu_layouts(role: str) -> dict[str, list[list[str]]]:
         MENU_SETTINGS: [[BUTTON_SEARCH_SETTINGS], [BUTTON_HH], [BUTTON_CANDIDATE_PROFILE],
                         [BUTTON_SCHEDULE, BUTTON_BLACKLIST], [BUTTON_HELP]],
         MENU_RESPONSES: [[BUTTON_HH_RESPONSES, BUTTON_CHECK], [BUTTON_RESEARCH],
-                         [BUTTON_STATS, BUTTON_RUNS], [BUTTON_ZERO_APPLY]],
+                         [BUTTON_STATS, BUTTON_RUNS]],
         MENU_SEARCH: [[BUTTON_DIRECTIONS], [BUTTON_SEARCH_EDIT, BUTTON_SEARCH_SUGGEST], [BUTTON_SEARCH_USE_DRAFT],
                       [BUTTON_SEARCH_CONDITIONS, BUTTON_BLACKLIST],
                       [BUTTON_SEARCH_APPLICATION_MODE, BUTTON_SCHEDULE]],
         MENU_SEARCH_CONDITIONS: [[BUTTON_SEARCH_EXPERIENCE, BUTTON_SEARCH_SALARY],
-                                 [BUTTON_SEARCH_SALARY_TOGGLE, BUTTON_SEARCH_REMOTE]],
+                                 [BUTTON_SEARCH_SALARY_TOGGLE]],
         MENU_COMPANIES: [[BUTTON_BLACKLIST_ADD, BUTTON_BLACKLIST_REMOVE]],
         MENU_APPLICATION_MODE: [[BUTTON_APPLICATION_PREVIEW], [BUTTON_APPLICATION_CONFIRM, BUTTON_APPLICATION_AUTO]],
         MENU_EXPERIENCE: [[BUTTON_EXPERIENCE_ANY, BUTTON_EXPERIENCE_NONE],
@@ -675,7 +676,7 @@ def reply_menu_layouts(role: str) -> dict[str, list[list[str]]]:
         MENU_HH: [[BUTTON_HH_AUTH, BUTTON_HH_RESUMES], [BUTTON_SEARCH_RESUME, BUTTON_REFRESH_RESUME],
                   [BUTTON_ANALYZE, BUTTON_GRAB_RESUME]],
         MENU_CANDIDATE: [[BUTTON_CANDIDATE_FACTS, BUTTON_CANDIDATE_INTERVIEW], [BUTTON_CANDIDATE_ADD_FACT, BUTTON_CANDIDATE_UPLOAD]],
-        MENU_MONITOR: [[BUTTON_STATUS], [BUTTON_ZERO_APPLY], [BUTTON_RUNS, BUTTON_STATS],
+        MENU_MONITOR: [[BUTTON_STATUS], [BUTTON_RUNS, BUTTON_STATS],
                        [BUTTON_RESEARCH, BUTTON_CHECK], [BUTTON_LOGS]],
         MENU_LOGS: [[BUTTON_LOG, BUTTON_RAW_LOG], [BUTTON_CHAT_LOG]],
         MENU_ADMIN: [[BUTTON_STATUS, BUTTON_LOGS], [BUTTON_DIAGNOSTICS, BUTTON_MARKET_RESEARCH], [BUTTON_SEEN_RESET], [BUTTON_PROFILES, BUTTON_USERS], [BUTTON_CLIENTS, BUTTON_LLM],

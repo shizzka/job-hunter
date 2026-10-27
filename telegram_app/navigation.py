@@ -334,6 +334,9 @@ class TelegramNavigation:
         if await self._accept_form_answer(chat_id, principal, message):
             return
 
+        if await self._accept_inbox_reply(chat_id, principal, message):
+            return
+
         if await self._accept_employer_question_text(chat_id, principal, text):
             return
 

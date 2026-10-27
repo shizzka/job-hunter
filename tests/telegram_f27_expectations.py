@@ -121,6 +121,33 @@ def _overlays():
     return json.loads((Path(__file__).with_name("fixtures") / "telegram_f27_overlays.json").read_text())
 
 
+@lru_cache(maxsize=1)
+def _phase2_overlays():
+    return json.loads((Path(__file__).with_name("fixtures") / "telegram_f27_phase2_overlays.json").read_text())
+
+
+def _phase2_expected(kind, key, expected):
+    """Pin the new search cards and the retirement of the global remote toggle.
+
+    Keep split-22 and phase-1 evidence intact above this layer. The only write
+    delta retires HH_SEARCH_REMOTE_ONLY; that old button now opens a draft.
+    Dedicated phase-2 tests cover its migration and stale draft ownership.
+    """
+    overlay = _phase2_overlays()
+    for patch_id in overlay[kind].get(key, []):
+        path, before, after = overlay["patches"][patch_id]
+        assert path[0] in {"replies", "sent", "texts", "handlers", "state", "settings_writes",
+                           "direction_sessions", "sessions"}, patch_id
+        if path[0] == "settings_writes":
+            assert before == [["qa-dev", {"HH_SEARCH_REMOTE_ONLY": 1}]] and after == [], patch_id
+        target = expected
+        for part in path[:-1]:
+            target = target[part]
+        assert target[path[-1]] == before, (kind, key, patch_id)
+        target[path[-1]] = deepcopy(after)
+    return expected
+
+
 def f27_expected(kind, key, baseline):
     """Layer reviewed atomic UX deltas over immutable split-22 recordings.
 
@@ -189,4 +216,4 @@ def f27_expected(kind, key, baseline):
         for reply in expected["replies"]:
             reply["text"] = "\n".join(line for line in reply["text"].split("\n")
                                         if not line.startswith(("• profile.env:", "• daemon pid:")))
-    return expected
+    return _phase2_expected(kind, key, expected)

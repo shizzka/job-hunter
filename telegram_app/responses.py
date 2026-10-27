@@ -180,7 +180,7 @@ class TelegramResponses:
             log.warning("chat AI audit write failed: %s", type(exc).__name__)
 
     async def _answer_employer_question(self, chat_id: int, principal: dict, profile_name: str, qid: str,
-                                        choice: str, text: str | None = None) -> None:
+                                        choice: str, text: str | None = None, *, inbox_token: str = "") -> None:
         """A button/message answer to «❓ Работодатель спрашивает»: remember it and retry the application."""
         import question_memory
         if profile_name not in self._profile_names() or (
@@ -188,14 +188,24 @@ class TelegramResponses:
             await self._send_text(chat_id, "Вопрос недоступен.")
             return
         home = self._profile(profile_name).home_dir
+        if inbox_token:
+            from telegram_app.guards import read_thread
+            visible = await read_thread(self._review_visible_items, profile_name)
+            if not any(item.get('token') == inbox_token and item.get('qid') == qid
+                       and item.get('_inbox_kind') == 'question' for item in visible):
+                self._clear_search_settings_state(principal['user_id'], 'question_answer')
+                await self._send_text(chat_id, 'Вопрос устарел или недоступен. Откройте очередь заново.')
+                return
         pending = question_memory.peek_pending(home, qid)
         if not pending:
             await self._send_text(chat_id, "Этот вопрос уже отвечен или устарел.")
             return
         if choice == "text" and text is None:
-            self._set_search_settings_state(principal["user_id"], question_answer={"profile": profile_name, "qid": qid})
+            self._set_search_settings_state(principal["user_id"], question_answer={"profile": profile_name, "qid": qid,
+                **({"inbox_token": inbox_token} if inbox_token else {})})
             await self._send_text(chat_id, "✏️ Пришлите ответ одним сообщением — я запомню его для этого вопроса.\n"
-                                           f"Вопрос: «{str(pending['question'])}»")
+                                           f"Вопрос: «{str(pending['question'])}»" +
+                                           ("\nПосле вашего ответа повторю отклик на эту вакансию." if inbox_token else ""))
             return
         labels: list[str] = []
         if text is not None:
@@ -227,7 +237,7 @@ class TelegramResponses:
             await self._send_text(chat_id, "Ответ отменён. Вопрос остался в чате — можно ответить позже.")
             return True
         await self._answer_employer_question(chat_id, principal, waiting.get("profile", ""), waiting.get("qid", ""),
-                                             "text", text=text)
+                                             "text", text=text, inbox_token=waiting.get('inbox_token', ''))
         return True
 
     async def _route_forms(self, chat_id, principal, command, arg, profile_name, reply_menu):

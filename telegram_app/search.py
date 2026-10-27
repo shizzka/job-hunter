@@ -89,7 +89,6 @@ class TelegramSearch:
             f"👤 Опыт: {self._experience_label(hh.search_experience)}",
             f"💰 Зарплата от: {salary}",
             f"💵 Только с указанной зарплатой: {'да' if hh.search_only_with_salary else 'нет'}",
-            f"🏠 Только удалёнка: {'да' if hh.search_remote_only else 'нет'}",
             "",
             "Изменения сохраняются в вашем профиле и подхватываются повтором сразу.",
         ])
@@ -558,16 +557,8 @@ class TelegramSearch:
         return
 
     async def _route_search_remote_toggle(self, chat_id, principal, command, arg, profile_name, reply_menu):
-        current = self._profile(profile_name).hh.search_remote_only
-        await self._save_search_setting(
-            chat_id,
-            principal,
-            {"HH_SEARCH_REMOTE_ONLY": 0 if current else 1},
-            "Оставлены только удалённые вакансии."
-            if not current else "Снова ищем во всех настроенных форматах работы.",
-            menu=reply_menu,
-        )
-        return
+        # Old keyboards lead to the same per-search editor without reviving a second setting.
+        return await self._dispatch_direction(chat_id, principal, "/direction_edit", "work_formats")
 
     async def _route_search_application_mode(self, chat_id, principal, command, arg, profile_name, reply_menu):
         self._set_selected_menu(principal["user_id"], MENU_APPLICATION_MODE)

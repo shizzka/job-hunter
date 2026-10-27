@@ -75,19 +75,19 @@ def test_review_list_pages_by_six(monkeypatch):
     asyncio.run(bot._show_review_list(42, principal, profile_name="client_42", sort="new"))
     asyncio.run(bot._show_review_list(42, principal, profile_name="client_42", page=2, message_id=5, sort="new"))
     assert "стр. 1/3" in messages[0][0] and "6. V6" in messages[0][0] and "7. V7" not in messages[0][0]
-    nav = messages[0][1]["inline_keyboard"][-3]
-    assert [b["callback_data"] for b in nav] == ["rq:L:client_42:2:n", "rq:L:client_42:0:n", "rq:L:client_42:1:n"]
+    nav = next(row for row in messages[0][1]["inline_keyboard"] if any(b["text"] == "1/3" for b in row))
+    assert [b["callback_data"] for b in nav] == ["rq:L:client_42:2:s", "rq:L:client_42:0:s", "rq:L:client_42:1:s"]
     assert "стр. 3/3" in messages[1][0] and "13. V13" in messages[1][0] and "14. V14" in messages[1][0]
 
 
-def test_review_list_puts_best_first_and_offers_bulk_dismiss(monkeypatch):
+def test_review_list_puts_oldest_first_and_offers_bulk_dismiss(monkeypatch):
     bot = telegram_bot.TelegramBot("qa")
     principal = {"user_id": 42, "role": telegram_bot.ROLE_USER, "profile": "client_42"}
-    items = [{"token": f"t{i}", "vacancy": {"title": f"V{i}"}, "evaluation": {"score": score}}
+    items = [{"token": f"t{i}", "created_ts": i, "vacancy": {"title": f"V{i}"}, "evaluation": {"score": score}}
              for i, score in enumerate([30, 80, None, 55, 45], start=1)]
     messages, feedback = [], []
     monkeypatch.setattr(bot, "_set_selected_menu", lambda *args: None)
-    monkeypatch.setattr(manual_apply_queue, "list_candidates", lambda *args, **kwargs: list(items))
+    monkeypatch.setattr(manual_apply_queue, "list_candidates", lambda *args, **kwargs: list(reversed(items)))
     monkeypatch.setattr(manual_apply_queue, "record_feedback",
                         lambda token, value, **kwargs: feedback.append((token, value)) or {"token": token})
 
@@ -98,9 +98,9 @@ def test_review_list_puts_best_first_and_offers_bulk_dismiss(monkeypatch):
     asyncio.run(bot._show_review_list(42, principal, profile_name="client_42"))
     text, markup = messages[0]
     order = [line.split(". ", 1)[1].split("\n")[0] for line in text.splitlines() if line[:1].isdigit()]
-    assert order == ["V2", "V4", "V5", "V1", "V3"]  # 80, 55, 45, 30, unscored last
+    assert order == ["V1", "V2", "V3", "V4", "V5"]  # Age order survives score differences.
     rows = markup["inline_keyboard"]
-    assert rows[-2] == [{"text": "🆕 Сначала новые", "callback_data": "rq:L:client_42:0:n"}]
+    assert "Сначала старые." in text
     assert [b["callback_data"] for b in rows[-1]] == ["rq:d:client_42:40", "rq:d:client_42:50", "rq:d:client_42:60"]
 
     asyncio.run(bot._review_dismiss_below(42, principal, "client_42", 50, confirmed=False))
@@ -109,7 +109,7 @@ def test_review_list_puts_best_first_and_offers_bulk_dismiss(monkeypatch):
     assert sorted(feedback) == [("t1", "bad"), ("t5", "bad")]
 
 
-def test_review_direction_filter_paging_legacy_and_switch(tmp_path, monkeypatch):
+def test_review_all_owned_searches_paging_legacy_unknown_and_switch(tmp_path, monkeypatch):
     two_directions(tmp_path)
     bot = telegram_bot.TelegramBot("qa")
     principal = {"user_id": 42, "role": "user", "profile": "qa"}
@@ -133,11 +133,12 @@ def test_review_direction_filter_paging_legacy_and_switch(tmp_path, monkeypatch)
     monkeypatch.setattr(bot, "_edit_text", lambda chat, message, text, **kw: send(chat, text, **kw))
     asyncio.run(bot._show_review_list(42, principal, profile_name="qa", page=1, sort="new"))
     text, markup = sent[-1]
-    assert "Ждут решения: 8 · QA Engineer · стр. 2/2" in text
-    assert "7. QA 6" in text and "8. Old query" in text
-    assert "Electric" not in text and "Unknown" not in text
+    assert "Ждут решения: 10 · стр. 2/2" in text
+    assert "7. QA 6" in text and "9. Old query" in text
+    assert "Electric" in text and "Old resume" in text and "Unknown" not in text
     assert markup['inline_keyboard'][0] == [
-        {"text": "7", "callback_data": "rq:o:qa:qa6"}, {"text": "8", "callback_data": "rq:o:qa:query"}]
+        {"text": "7", "callback_data": "rq:o:qa:qa6"}, {"text": "8", "callback_data": "rq:o:qa:electric"},
+        {"text": "9", "callback_data": "rq:o:qa:query"}, {"text": "10", "callback_data": "rq:o:qa:resume"}]
     assert any(b['callback_data'] == 'rq:U:qa:0:s' for r in markup['inline_keyboard'] for b in r)
     asyncio.run(bot._show_review_list(42, principal, profile_name="qa", unspecified=True))
     assert "Ждут решения: 1 · направление не указано" in sent[-1][0]
@@ -146,10 +147,10 @@ def test_review_direction_filter_paging_legacy_and_switch(tmp_path, monkeypatch)
     assert feedback == [f"qa{i}" for i in range(7)]
     directions.set_active_direction(str(tmp_path), "electric")
     asyncio.run(bot._show_review_list(42, principal, profile_name="qa", page=1, message_id=5))
-    assert "Ждут решения: 2 · Электромонтажник" in sent[-1][0]
+    assert "Ждут решения: 10 · стр. 2/2" in sent[-1][0]
     assert "Electric" in sent[-1][0] and "Old resume" in sent[-1][0] and "QA 0" not in sent[-1][0]
     asyncio.run(bot._open_review_card(42, "qa", "qa0"))
-    assert "Выбрано другое направление" in sent[-1][0]
+    assert "QA 0" in sent[-1][0]
 
 
 def test_review_legacy_evidence_must_be_unambiguous(tmp_path):
@@ -193,7 +194,7 @@ def test_review_bulk_confirmation_cannot_cross_direction_switch(tmp_path, monkey
     principal = {'user_id': 42, 'role': 'user', 'profile': 'qa'}
     scope = DirectionView(str(tmp_path)).callback_scope
     asyncio.run(bot._review_dismiss_below(42, principal, 'qa', 30, confirmed=False, expected_scope=scope))
-    assert 'Убрать 1 вакансий' in sent[-1][0]
+    assert 'Убрать 2 вакансий' in sent[-1][0]
     confirm = sent[-1][1]['inline_keyboard'][0][0]['callback_data']
     assert confirm == f'rq:D:qa:30:{scope}' and len(confirm.encode()) <= 64
     directions.set_active_direction(str(tmp_path), 'electric')

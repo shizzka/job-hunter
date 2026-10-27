@@ -123,8 +123,13 @@ def normalize(value, home):
             # F27 launch token and path-dependent settings digest are opaque;
             # retain all profile, search selection and mode fields around them.
             value = {**value, "token": "<launch-token>", "snapshot": "<launch-snapshot>"}
+        # Phase 2 adds migration/default metadata and a selected-search snapshot.
+        # Their behavioral contracts have dedicated stale-target/migration tests;
+        # keep the old recordings comparable at the pre-existing boundaries.
         return {str(key): "<fingerprint>" if key == "base" else normalize(item, home)
-                for key, item in value.items()}
+                for key, item in value.items()
+                if key not in {"work_format_version", "target_base", "switch_requested", "inherited_mode"}
+                and not (key == "matcher_threshold" and item == 60)}
     if isinstance(value, (list, tuple)):
         return [normalize(item, home) for item in value]
     if isinstance(value, bytes):

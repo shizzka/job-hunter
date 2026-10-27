@@ -148,9 +148,11 @@ def _prune(data: dict, now: float) -> None:
 
     if len(items) <= MAX_ITEMS:
         return
+    # Unresolved decisions remain available to the oldest-first inbox. The cap
+    # still bounds terminal history; age expiry and uncertain protection remain.
     ordered = sorted(items.items(), key=lambda pair: float((pair[1] or {}).get("created_ts") or 0), reverse=True)
     data["items"] = {token: item for index, (token, item) in enumerate(ordered)
-                     if index < MAX_ITEMS or item.get("status") in {"applying", "uncertain"}}
+                     if index < MAX_ITEMS or item.get("status") in {"pending", "applying", "uncertain"}}
 
 
 def create_candidate(

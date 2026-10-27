@@ -82,6 +82,9 @@ def validate_direction(value):
         raise DirectionError("Направление должно быть объектом.")
     result = copy.deepcopy(value)
     validate_direction_name(result.get("name"))
+    threshold = result.setdefault("matcher_threshold", 60)
+    if type(threshold) is not int or not 0 <= threshold <= 100:
+        raise DirectionError("Порог отбора: целое число от 0 до 100.")
     _text(result.get("title"), "title")
     if result.get("filter_policy") not in {"qa", "generic"}:
         raise DirectionError("filter_policy: qa или generic.")
@@ -180,12 +183,40 @@ def _verify_text(path, variant):
 def load_direction(home_dir, name):
     path = _path(home_dir, name)
     with path.open(encoding="utf-8") as stream:
-        value = validate_direction(json.load(stream))
+        raw = json.load(stream)
+    if isinstance(raw, dict) and "work_format_version" not in raw:
+        # Read migration: publish only on an explicit Save, never during browsing.
+        import work_conditions
+        if _legacy_remote_only(home_dir):
+            conditions = raw.get("work_conditions", work_conditions.defaults(raw))
+            if isinstance(conditions, dict):
+                raw["work_conditions"] = {**conditions, "allowed_formats": ["remote"]}
+        raw["work_format_version"] = 2
+    value = validate_direction(raw)
     if value["name"] != name:
         raise DirectionError("Имя направления не совпадает с именем файла.")
     for variant in value["variants"]:
         variant["text_file"] = str(_variant_path(home_dir, name, variant))
     return value
+
+
+def _legacy_remote_only(home_dir):
+    """Read the retired profile filter without activating a different profile."""
+    import config
+    import profile
+    home = _home(home_dir)
+    for filename in ("profile.env", "job-hunter.env"):
+        path = home / filename
+        if path.is_file():
+            settings = profile._parse_env_file(str(path))
+            if "HH_SEARCH_REMOTE_ONLY" in settings:
+                return settings["HH_SEARCH_REMOTE_ONLY"].strip().lower() in {"1", "true", "yes", "on"}
+    # Named profiles inherit missing search settings from the default profile,
+    # even when another profile is active. Mirror load_default_profile's base
+    # restoration so an active search's derived filter cannot broaden migration.
+    base = (getattr(config, "_DIRECTION_BASE_PROFILE", None)
+            if getattr(config, "ACTIVE_DIRECTION", None) is not None else None)
+    return base.hh.search_remote_only if base else getattr(config, "HH_SEARCH_REMOTE_ONLY", False)
 
 
 def list_directions(home_dir):
@@ -206,6 +237,7 @@ def save_direction(home_dir, direction, *, texts=None):
     if not isinstance(direction, dict):
         raise DirectionError("Направление должно быть объектом.")
     value = copy.deepcopy(direction)
+    value["work_format_version"] = 2
     name = validate_direction_name(value.get("name"))
     path = _path(home_dir, name)
     root = _root(home_dir)
@@ -371,6 +403,11 @@ def overlay_profile(profile):
     result.hh.search_queries = list(value["search_queries"])
     if value.get("search_profiles"):
         result.hh.search_profiles = [dict(item) for item in value["search_profiles"]]
+    # HH's old schedule filter is only an optimization of the actual conditions.
+    # Mixed formats require a broad collection; hard checks still run before scoring.
+    schedule = "remote" if value["work_conditions"]["allowed_formats"] == ["remote"] else ""
+    result.hh.search_profiles = [dict(item, schedule=schedule) for item in result.hh.search_profiles]
+    result.hh.search_remote_only = False
     result.hh.secondary_resume_id = result.hh.secondary_resume_title = ""
     result.hh.tertiary_resume_id = result.hh.tertiary_resume_title = ""
     active = [item for item in value["variants"] if item["status"] == "active"]

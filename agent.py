@@ -2060,6 +2060,10 @@ async def do_search(dry_run: bool = False) -> dict:
                     llm_issue_alert_sent = True
                 continue
             await observe_hh_receipts(shadow_verifier.check(run_id, v, details, evaluation))
+            if getattr(config, "ACTIVE_DIRECTION", None):
+                # Also gate cached evaluations and resume retries with today's settings.
+                from matcher import _apply_auto_apply_threshold
+                evaluation = _apply_auto_apply_threshold(evaluation)
             score = evaluation.get("score", 0)
             reason = evaluation.get("reason", "")
             red_flags = evaluation.get("red_flags", [])
@@ -2082,6 +2086,8 @@ async def do_search(dry_run: bool = False) -> dict:
 
             if not evaluation.get("should_apply", False):
                 if is_manual_review_candidate(evaluation):
+                    if getattr(config, "ACTIVE_DIRECTION", None):
+                        analytics.count_stage("matcher_pass", v)
                     allow_ai_apply = getattr(config, "HH_APPLICATION_MODE", "auto") != "preview"
                     profile_name = profile_mod.active().name
                     candidate = manual_apply_queue.create_candidate(

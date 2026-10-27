@@ -132,7 +132,8 @@ def test_overlay_is_profile_local_and_switch_changes_candidate_fields(tmp_path):
     assert person.hh.primary_resume_id == "legacy"
     assert overlaid.hh.primary_resume_id == "hash-0"
     assert overlaid.hh.search_queries == ["qa engineer"]
-    assert overlaid.hh.search_profiles == person.hh.search_profiles
+    assert overlaid.hh.search_profiles == [{"area": 113, "schedule": ""}, {"area": 1, "schedule": ""}]
+    assert person.hh.search_profiles == [{"area": 113}, {"area": 1, "schedule": "remote"}]
     assert overlaid.filter_policy == "generic"
     assert overlaid.hh.secondary_resume_id == ""
     untouched = profile.Profile(home_dir=str(second))

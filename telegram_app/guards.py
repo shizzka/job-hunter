@@ -104,7 +104,8 @@ def read_command(fn):
 
 def read_callback(data):
     parts = str(data).split(":")
-    return (parts[0] == "nav" and len(parts) == 3 and (parts[2].startswith("menu_") or parts[2] in {
+    return (parts[0] == "nav" and len(parts) == 4 and parts[2] == "why_no_apply"
+            or parts[0] == "nav" and len(parts) == 3 and (parts[2].startswith("menu_") or parts[2] in {
                 "back", "find", "review", "directions", "companies", "candidate_profile", "candidate_facts",
                 "schedule", "help", "getting_started", "hh_responses", "stats", "runs", "research",
                 "why_no_apply", "applications", "applications_invitations", "applications_rejections",
@@ -116,8 +117,9 @@ def read_callback(data):
             or parts[0] == "fs" and len(parts) > 1 and parts[1] in {"pick", "open"}
             or parts[0] == "gs" and len(parts) > 1 and parts[1] in {"auto", "dirs", "resumes", "check"}
             or parts[0] == "dir" and len(parts) > 2 and parts[2] in {
-                "stats", "list", "back", "editmenu", "edit", "delete", "strategy", "letteroffer", "variants"}
-            or parts[0] == "rq" and len(parts) > 1 and parts[1] in {"p", "u", "o", "d", "h", "v", "c", "m", "w", "l", "x", "e", "L", "U"}
+                "stats", "list", "back", "editmenu", "edit", "delete", "strategy", "letteroffer", "variants",
+                "threshold", "thresholdcustom", "applicationmode", "settings"}
+            or parts[0] == "rq" and len(parts) > 1 and parts[1] in {"p", "u", "o", "d", "h", "v", "c", "m", "w", "l", "x", "e", "L", "U", "F", "E", "T"}
             or parts[0] in {"manual_why", "chat_ai", "chat_ai_any", "chat_ai_alt", "chat_ai_any_alt",
                             "gform_preview"}
             or parts[0] == "gf" and len(parts) > 1 and parts[1] in {"view", "check"})
@@ -196,7 +198,7 @@ def callback_guard(fn):
             # The router rejects these before any control-state mutation.
             return await fn(self, callback)
         # Action tokens identify apply/send intents across copies of a message.
-        semantic = data.startswith(("manual_apply:", "chat_send:", "chat_send_any:", "gform_submit:", "mad:", "stub:", "dir:"))
+        semantic = data.startswith(("manual_apply:", "chat_send:", "chat_send_any:", "gform_submit:", "mad:", "stub:", "dir:", "rq:S:", "rq:P:", "rq:Q:"))
         identity = (user_id, chat_id, 0 if semantic else message.get("message_id", 0), data)
         claim = hashlib.sha256(repr(identity).encode()).hexdigest()
         accepted = False
