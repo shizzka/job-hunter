@@ -2,7 +2,7 @@
 
 **A Telegram bot that searches hh.ru, SuperJob, Habr Career and GeekJob, explains why each vacancy fits, and can apply for you, with your approval by default.**
 
-[![Offline regression tests](https://github.com/shizzka/job-hunter/actions/workflows/offline-tests.yml/badge.svg)](https://github.com/shizzka/job-hunter/actions/workflows/offline-tests.yml) ![version](https://img.shields.io/badge/version-0.11.0-blue) ![python](https://img.shields.io/badge/python-3.12-blue) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Offline regression tests](https://github.com/shizzka/job-hunter/actions/workflows/offline-tests.yml/badge.svg)](https://github.com/shizzka/job-hunter/actions/workflows/offline-tests.yml) ![version](https://img.shields.io/badge/version-0.11.1-blue) ![python](https://img.shields.io/badge/python-3.12-blue) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Русская версия: [README.ru.md](README.ru.md)
 
@@ -20,7 +20,7 @@
 
 **Who makes it.** The author is an electrician, not a programmer. The code is written by AI agents (Claude Code and Codex); the author sets the tasks, tests the bot as a user and decides what gets released. AI writes, a human designs and checks: about 7,000 offline tests run in CI on every push, an AI tester goes through the dev bot every night like a real person, and the bot runs daily for two real job searches. When it cannot prove an action is safe, it stops and asks.
 
-**Current version:** `v0.11.0` (2026-10-25): applications never get lost or sent twice after a broken hh page, a one-tap «remote only» choice, statistics that agree across screens, free Ollama Cloud models as fallbacks. See [CHANGELOG](CHANGELOG.md).
+**Current version:** `v0.11.1` (2026-10-27): hotfix — applying with a non-default resume works again after hh updated its page widgets. See [CHANGELOG](CHANGELOG.md).
 
 ## How it decides
 
